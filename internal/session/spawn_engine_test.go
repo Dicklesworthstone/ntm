@@ -14,6 +14,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -22,6 +24,95 @@ type stubCAAMResolver struct {
 	calls []string
 	seats map[string]*tools.CAAMRankedProfile
 	errs  map[string]error
+}
+
+func TestCAAMSeatCompatibilityPreservesExplicitPinsAndDisabledPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		selection bool
+		isolation bool
+		candidate CAAMSeatCandidate
+		conflict  bool
+		inherited string
+	}{
+		{"automatic Claude", true, true, CAAMSeatCandidate{Type: "claude"}, true, ""},
+		{"CLI Claude alias", true, true, CAAMSeatCandidate{Type: "cc"}, true, ""},
+		{"explicit Claude persona", true, true, CAAMSeatCandidate{Type: "claude", Pinned: true}, false, ""},
+		{"selection disabled", false, true, CAAMSeatCandidate{Type: "claude"}, false, ""},
+		{"isolation disabled", true, false, CAAMSeatCandidate{Type: "claude"}, false, ""},
+		{"Codex unaffected", true, true, CAAMSeatCandidate{Type: "codex"}, false, ""},
+		{"inherited Claude without selection", false, true, CAAMSeatCandidate{Type: "claude"}, true, "parent-profile"},
+		{"inherited pinned Claude", true, true, CAAMSeatCandidate{Type: "claude", Pinned: true}, true, "parent-profile"},
+		{"inherited Claude without isolation", false, false, CAAMSeatCandidate{Type: "claude"}, false, "parent-profile"},
+		{"inherited Codex", false, true, CAAMSeatCandidate{Type: "codex"}, false, "parent-profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SHALLOW_PROFILE", tc.inherited)
+			cfg := config.Default()
+			cfg.Integrations.CAAM.SeatSelection = tc.selection
+			cfg.Agents.ClaudeIsolateCredentials = tc.isolation
+			err := ValidateCAAMSeatCompatibility(cfg, []CAAMSeatCandidate{tc.candidate})
+			if errors.Is(err, resilience.ErrCAAMClaudeIsolationConflict) != tc.conflict {
+				t.Fatalf("compatibility error=%v, want conflict=%t", err, tc.conflict)
+			}
+		})
+	}
+}
+
+func TestCAAMSeatLaunchCommandRunsWholeCommandUnderSelectedAccount(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "caam with spaces")
+	script := `#!/bin/sh
+set -eu
+[ "$1" = 'shallow-spawn' ] && [ "$2" = '--tool' ] && [ "$3" = 'codex' ] && [ "$5" = '--' ] || exit 41
+[ "$4" != 'missing' ] || exit 42
+SHALLOW_PROFILE=$4
+export SHALLOW_PROFILE
+shift 5
+exec "$@"
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profile := "spend'me; reserve"
+	decision := CAAMSeatDecision{Provider: "codex", Profile: profile}
+	inner := `printf '%s\n' "$SHALLOW_PROFILE" && printf '%s\n' "$SHALLOW_PROFILE"`
+	command, err := decision.LaunchCommand(binary, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", command)
+	cmd.Env = append(os.Environ(), "SHALLOW_PROFILE=host-reserve")
+	got, err := cmd.CombinedOutput()
+	if err != nil || string(got) != profile+"\n"+profile+"\n" {
+		t.Fatalf("selected-account launch output=%q err=%v command=%q", got, err, command)
+	}
+	marker := filepath.Join(root, "agent-started")
+	decision.Profile = "missing"
+	command, err = decision.LaunchCommand(binary, "touch "+tmux.ShellQuote(marker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", command).CombinedOutput(); err == nil {
+		t.Fatalf("unavailable seat launched: %s", output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("agent ran despite unavailable selected profile: %v", err)
+	}
+}
+
+func TestCAAMSeatLaunchCommandRefusesInvalidBinding(t *testing.T) {
+	for _, decision := range []CAAMSeatDecision{
+		{Provider: "codex", Profile: "seat", Skip: true, Reason: "pool exhausted"},
+		{Provider: "codex"},
+		{Profile: "seat"},
+		{Provider: "codex", Profile: "seat\nother"},
+	} {
+		command, err := decision.LaunchCommand("caam", "agent")
+		if err == nil || strings.TrimSpace(command) != "" {
+			t.Fatalf("invalid decision %+v rendered %q: %v", decision, command, err)
+		}
+	}
 }
 
 func (s *stubCAAMResolver) RankedSeat(_ context.Context, provider, _ string) (*tools.CAAMRankedProfile, error) {

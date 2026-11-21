@@ -12,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
@@ -37,6 +38,7 @@ func TestRobotSpawnORI_CAAMSeatSelectionParity(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHALLOW_PROFILE", "host-reserve")
 	projectDir := t.TempDir()
 
 	cfg := config.Default()
@@ -59,6 +61,7 @@ func TestRobotSpawnORI_CAAMSeatSelectionParity(t *testing.T) {
 		command   string
 	}
 	var launched []launchedCall
+	var manifest resilience.SpawnMonitorRequest
 
 	deps := &SpawnLifecycleDependencies{
 		IsTMUXInstalled: func() bool { return true },
@@ -85,6 +88,10 @@ func TestRobotSpawnORI_CAAMSeatSelectionParity(t *testing.T) {
 		},
 		CAAMSeatResolver: resolver,
 		HookExecutor:     hooks.NewExecutor(nil),
+		StartSessionMonitor: func(_ context.Context, request resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
+			manifest = request
+			return &resilience.SpawnMonitorResult{MonitorStarted: true}, nil
+		},
 	}
 
 	// 1 unpinned Claude + 1 pinned reviewer persona (Claude) + 1 unpinned Codex (exhausted).
@@ -127,6 +134,80 @@ func TestRobotSpawnORI_CAAMSeatSelectionParity(t *testing.T) {
 	}
 	if out.Agents[1].Persona != "reviewer" || out.Agents[1].PersonaPromptSource == "" {
 		t.Fatalf("agents[1] missing persona/prompt source: %+v", out.Agents[1])
+	}
+	if len(manifest.Agents) != 2 || manifest.Agents[0].LaunchBinding == nil || manifest.Agents[0].LaunchBinding.Identifier != "soonest-reset" {
+		t.Fatalf("resilience retained host account instead of selected profile: %+v", manifest.Agents)
+	}
+}
+
+func writeSpawnSeatPersona(t *testing.T, project string) {
+	t.Helper()
+	dir := filepath.Join(project, ".ntm")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "personas.toml"), []byte(`[[personas]]
+name = "codex-spend-me"
+agent_type = "codex"
+model = "seat-default-model"
+reasoning_effort = "high"
+system_prompt = "Use the ranked account while preserving the requested work."
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRobotSpawnORI_CAAMIsolationConflictBeforeMutation(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		for _, inherited := range []bool{false, true} {
+			t.Run(fmt.Sprintf("dry_run=%t/inherited=%t", dryRun, inherited), func(t *testing.T) {
+				profile := ""
+				if inherited {
+					profile = "parent-profile"
+				}
+				t.Setenv("SHALLOW_PROFILE", profile)
+				cfg := testSpawnConfig()
+				cfg.Integrations.CAAM.SeatSelection = !inherited
+				cfg.Agents.ClaudeIsolateCredentials = true
+				cfg.Agents.ClaudeTokenFile = filepath.Join(t.TempDir(), "host-account-token")
+				deps := testSpawnLifecycleDependencies(nil)
+				resolver := &stubRobotCAAMResolver{}
+				deps.CAAMSeatResolver = resolver
+				hookFile := filepath.Join(t.TempDir(), "hook-ran")
+				deps.HookExecutor = hooks.NewExecutor(&hooks.CommandHooksConfig{Hooks: []hooks.CommandHook{
+					{Event: hooks.EventPreSpawn, Name: "must-not-run", Command: fmt.Sprintf("touch %q", hookFile)},
+				}})
+				mutations := 0
+				deps.CreateSession = func(context.Context, string, string, int) error { mutations++; return nil }
+				deps.SplitWindow = func(context.Context, string, string) (string, error) { mutations++; return "%1", nil }
+				deps.LaunchAgent = func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+					mutations++
+					return SpawnedAgent{}, nil
+				}
+				out, err := GetSpawn(t.Context(), SpawnOptions{
+					Session: "seat-isolation-conflict", CCCount: 1, NoUserPane: true,
+					// A non-repository path proves compatibility is checked before
+					// even worktree preflight, as well as hooks and tmux mutations.
+					WorkingDir: t.TempDir(), UseWorktrees: true, DryRun: dryRun, LifecycleDeps: deps,
+				}, cfg)
+				if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag ||
+					!strings.Contains(out.Error, "claude_isolate_credentials") || mutations != 0 || len(resolver.calls) != 0 {
+					t.Fatalf("conflicting account owners reached launch: output=%+v err=%v mutations=%d ranks=%v", out, err, mutations, resolver.calls)
+				}
+				if _, err := os.Stat(hookFile); !os.IsNotExist(err) {
+					t.Fatalf("conflicting account owners reached pre-spawn hook: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRobotSpawnORI_PersonaPromptCannotBeSilentlyDropped(t *testing.T) {
+	cfg := testSpawnConfig()
+	cfg.Agents.Codex = "custom-codex"
+	_, err := renderAgentCommandForSlot(cfg, SpawnOptions{Session: "persona-guard"}, "codex", 1, t.TempDir(), spawnLaunchModel{}, false, "reviewer", "/prepared/prompt")
+	if err == nil || !strings.Contains(err.Error(), "SystemPromptFile") {
+		t.Fatalf("persona prompt was silently discarded: %v", err)
 	}
 }
 

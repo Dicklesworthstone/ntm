@@ -13,7 +13,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/session"
-	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 type caamSeatResolver = session.CAAMSeatResolver
@@ -22,7 +21,7 @@ type caamSeatPlan = session.CAAMSeatPlan
 
 // newCAAMSeatResolver builds the resolver a CLI plan will use. A package
 // variable so unit tests can substitute a stub without a caam binary.
-var newCAAMSeatResolver = func() caamSeatResolver { return tools.NewCAAMAdapter() }
+var newCAAMSeatResolver func() caamSeatResolver
 
 type caamSeatCandidate struct {
 	Index  int
@@ -36,6 +35,18 @@ func planCAAMSeats(
 	projectDir string,
 	candidates []caamSeatCandidate,
 ) *caamSeatPlan {
+	shared := canonicalCAAMSeatCandidates(candidates)
+	if newCAAMSeatResolver == nil {
+		return session.PlanCAAMSeats(ctx, cfg, projectDir, shared)
+	}
+	return session.PlanCAAMSeatsWithResolver(ctx, cfg, projectDir, shared, newCAAMSeatResolver())
+}
+
+func validateCAAMSeatCompatibility(cfg *config.Config, candidates []caamSeatCandidate) error {
+	return session.ValidateCAAMSeatCompatibility(cfg, canonicalCAAMSeatCandidates(candidates))
+}
+
+func canonicalCAAMSeatCandidates(candidates []caamSeatCandidate) []session.CAAMSeatCandidate {
 	shared := make([]session.CAAMSeatCandidate, len(candidates))
 	for i, c := range candidates {
 		shared[i] = session.CAAMSeatCandidate{
@@ -44,7 +55,7 @@ func planCAAMSeats(
 			Pinned: c.Pinned,
 		}
 	}
-	return session.PlanCAAMSeatsWithResolver(ctx, cfg, projectDir, shared, newCAAMSeatResolver())
+	return shared
 }
 
 func caamSeatModelOverride(p *persona.Persona, modelRequested bool) (string, bool) {

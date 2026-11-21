@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -811,6 +809,9 @@ func captureAgentLaunchSpec(agentType AgentType, command, model, modelAlias, per
 	}
 	if agentType == AgentTypeClaude && cfg != nil && cfg.Agents.ClaudeIsolateCredentials {
 		spec.ClaudeIsolateCredentials = true
+		if spec.CAAMProfile != "" {
+			return spec, resilience.ErrCAAMClaudeIsolationConflict
+		}
 		var err error
 		spec.ClaudeTokenFile, err = swarm.ResolveClaudeSetupTokenFile(cfg.Agents.ClaudeTokenFile)
 		if err != nil {
@@ -818,26 +819,12 @@ func captureAgentLaunchSpec(agentType AgentType, command, model, modelAlias, per
 		}
 	}
 	if systemPromptFile != "" {
-		file, err := os.Open(systemPromptFile)
+		digest, err := session.PersonaPromptSHA256(systemPromptFile)
 		if err != nil {
-			return spec, fmt.Errorf("open prepared persona prompt: %w", err)
-		}
-		defer file.Close()
-		info, err := file.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			return spec, errors.New("prepared persona prompt must be a readable regular file")
-		}
-		hash := sha256.New()
-		const maxPromptBytes = 1 << 20
-		count, err := io.Copy(hash, io.LimitReader(file, maxPromptBytes+1))
-		if err != nil {
-			return spec, fmt.Errorf("read prepared persona prompt: %w", err)
-		}
-		if count > maxPromptBytes {
-			return spec, errors.New("prepared persona prompt exceeds launch metadata verification limit")
+			return spec, err
 		}
 		spec.SystemPromptFile = systemPromptFile
-		spec.SystemPromptSHA256 = fmt.Sprintf("%x", hash.Sum(nil))
+		spec.SystemPromptSHA256 = digest
 	}
 	keys := make(map[string]bool)
 	for _, environment := range environments {
@@ -2342,6 +2329,19 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 	}
 
+	// Local fallback has finalized agent types. Refuse conflicting account
+	// owners before hooks, worktrees, or tmux mutations.
+	spawnSeatCandidates := make([]caamSeatCandidate, 0, len(opts.Agents))
+	for i, agent := range opts.Agents {
+		_, mapped := opts.PersonaMap[agent.Model]
+		spawnSeatCandidates = append(spawnSeatCandidates, caamSeatCandidate{
+			Index: i, Type: agent.Type, Pinned: agent.Persona != nil || mapped,
+		})
+	}
+	if err := validateCAAMSeatCompatibility(cfg, spawnSeatCandidates); err != nil {
+		return outputError(markCLIInvalidInput(err))
+	}
+
 	// Preflight every agent's launch command before creating worktrees,
 	// sessions, or panes. A model/effort spec that the configured [agents]
 	// command would silently drop must abort here, with nothing to clean up
@@ -2746,6 +2746,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		model         string // alias
 		resolvedModel string // full name
 		persona       string // persona name when launched from --profile-set/--profiles (ntm#149)
+		caamProfile   string // actual creation-time account for recovery
 		// personaPromptSource is the prepared system-prompt file path so the
 		// spawn JSON output can surface *which* prompt source seeded each pane,
 		// not just the persona's display name. Lets orchestrators verify the
@@ -2887,15 +2888,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	// default. A pane that already carries a persona — from --persona,
 	// --profile-set, or a recipe — is not offered to the planner, so its pin
 	// is never overridden.
-	spawnSeatCandidates := make([]caamSeatCandidate, 0, len(opts.Agents))
-	for i, agent := range opts.Agents {
-		_, mapped := opts.PersonaMap[agent.Model]
-		spawnSeatCandidates = append(spawnSeatCandidates, caamSeatCandidate{
-			Index:  i,
-			Type:   agent.Type,
-			Pinned: agent.Persona != nil || mapped,
-		})
-	}
 	seatPlan := planCAAMSeats(ctx, cfg, dir, spawnSeatCandidates)
 	var seatSkips []output.SeatSkipResponse
 
@@ -3134,6 +3126,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		if err != nil {
 			return outputError(fmt.Errorf("capturing %s launch specification: %w", agent.Type, err))
 		}
+		if seat, selected := seatPlan.Seat(agentIdx); selected {
+			launchSpec.CAAMProfile = seat.Profile
+		}
 
 		// Per-pane Claude credential isolation (GH#237). Claude Code rewrites
 		// the shared ~/.claude/.credentials.json on every OAuth refresh, so N
@@ -3195,6 +3190,12 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// Apply spawn context environment variables
 		// These allow agents to programmatically access their spawn position
 		agentCmd = agentSpawnCtx.EnvVarPrefix() + agentCmd
+		if seat, selected := seatPlan.Seat(agentIdx); selected {
+			agentCmd, err = seat.LaunchCommand(cfg.Integrations.CAAM.BinaryPath, agentCmd)
+			if err != nil {
+				return outputError(fmt.Errorf("binding %s agent to selected CAAM account: %w", agent.Type, err))
+			}
+		}
 
 		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
 		if err != nil {
@@ -3417,6 +3418,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			model:               agent.Model,
 			resolvedModel:       resolvedModel,
 			persona:             personaName,
+			caamProfile:         launchSpec.CAAMProfile,
 			personaPromptSource: systemPromptFile,
 			command:             manifestAgentCmd,
 			promptDelay:         promptDelay,
@@ -3448,12 +3450,17 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	// (WS0-G6 single-definition contract, bd-ws1-truth-safety-l5ddi.8).
 	monitorAgents := make([]resilience.AgentConfig, 0, len(launchedAgents))
 	for _, agent := range launchedAgents {
+		var binding *resilience.LaunchBinding
+		if agent.caamProfile != "" {
+			binding = &resilience.LaunchBinding{Provider: agent.agentType, Launcher: "caam", Identifier: agent.caamProfile}
+		}
 		monitorAgents = append(monitorAgents, resilience.AgentConfig{
-			PaneID:    agent.paneID,
-			PaneIndex: agent.paneIndex,
-			Type:      agent.agentType,
-			Model:     agent.model,
-			Command:   agent.command,
+			PaneID:        agent.paneID,
+			PaneIndex:     agent.paneIndex,
+			Type:          agent.agentType,
+			Model:         agent.model,
+			Command:       agent.command,
+			LaunchBinding: binding,
 		})
 	}
 	monitorResult, monitorErr := resilience.StartSessionMonitor(ctx, resilience.SpawnMonitorRequest{

@@ -26,6 +26,11 @@ const (
 	caamProfileEnv    = "SHALLOW_PROFILE"
 )
 
+// ErrCAAMClaudeIsolationConflict refuses two independent credential owners.
+// Host-provisioned Claude isolation assignments would override the account
+// selected by the surrounding CAAM launch and make its binding inaccurate.
+var ErrCAAMClaudeIsolationConflict = errors.New("CAAM account binding cannot be combined with agents.claude_isolate_credentials: isolated Claude credentials can override the selected account")
+
 // LaunchAffinity reports whether a relaunch is bound to the same provider
 // profile selected at creation time. Unknown is the explicit compatibility
 // state for manifests created before launch bindings existed.
@@ -202,6 +207,19 @@ func wrapLaunchBindingCommand(binary string, binding *LaunchBinding, shell, comm
 		" -- " + shell + " -c " + tmux.ShellQuote(command)
 }
 
+// BindLaunchCommand renders a validated account-bound command without running
+// a subprocess. Fresh launches already resolved their profile from CAAM's
+// ranked pool; replay uses PrepareLaunchCommand to revalidate a saved binding.
+// The launcher repeats the provider constraint before executing the command,
+// so a removed or reassigned profile cannot fall through to host credentials.
+// Persist the inner command and binding separately, never this wrapper.
+func BindLaunchCommand(provider, configuredCAAMBinary string, binding *LaunchBinding, command string) (string, error) {
+	if err := validateLaunchBinding(provider, binding); err != nil {
+		return "", err
+	}
+	return wrapLaunchBindingCommand(caamBinaryPath(configuredCAAMBinary), binding, "/bin/sh", command), nil
+}
+
 // AgentLaunchPlan holds a validated snapshot of a pane's durable launch inputs.
 // Preflight performs no filesystem provisioning, so callers can validate an
 // entire checkpoint before replacing a session or while reporting a dry run.
@@ -229,6 +247,9 @@ func preflightAgentLaunchSpec(ctx context.Context, cfg *config.Config, spec tmux
 	}
 	if err := spec.ValidateReplay(spec.AgentType); err != nil {
 		return nil, err
+	}
+	if spec.CAAMProfile != "" && spec.ClaudeIsolateCredentials {
+		return nil, ErrCAAMClaudeIsolationConflict
 	}
 	// The directory is part of the eventual pane input too. Validate the
 	// assembled command during read-only preflight so a dry run cannot accept

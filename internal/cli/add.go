@@ -495,6 +495,18 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 	if err := validateGrokPhaseOneAdd(opts); err != nil {
 		return outputError(err)
 	}
+	// Check compact specs before hooks, without expanding rejected fleets.
+	caamCompatibilityCandidates := make([]caamSeatCandidate, 0, len(opts.Agents))
+	for i, spec := range opts.Agents {
+		if spec.Count == 0 {
+			continue
+		}
+		_, pinned := opts.PersonaMap[spec.Model]
+		caamCompatibilityCandidates = append(caamCompatibilityCandidates, caamSeatCandidate{Index: i, Type: spec.Type, Pinned: pinned})
+	}
+	if err := validateCAAMSeatCompatibility(cfg, caamCompatibilityCandidates); err != nil {
+		return outputError(markCLIInvalidInput(err))
+	}
 	for _, spec := range opts.Agents {
 		if spec.Count > 0 && spec.Type == AgentTypeWindsurf {
 			configured := ""
@@ -911,6 +923,9 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		if err != nil {
 			return outputError(fmt.Errorf("capturing %s launch specification: %w", agent.Type, err))
 		}
+		if seat, selected := seatPlan.Seat(agentIdx); selected {
+			launchSpec.CAAMProfile = seat.Profile
+		}
 
 		// Persist only the environment-free launch command. Credential
 		// isolation and plugin environment are applied below for the live
@@ -920,6 +935,9 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			return outputError(fmt.Errorf("invalid %s resilience command: %w", agent.Type, err))
 		}
 		launchBinding := resilience.CaptureLaunchBinding(agentTypeStr)
+		if seat, selected := seatPlan.Seat(agentIdx); selected {
+			launchBinding = &resilience.LaunchBinding{Provider: agentTypeStr, Launcher: "caam", Identifier: seat.Profile}
+		}
 
 		// Per-pane Claude credential isolation (GH#237). A pane added to an
 		// existing swarm joins the same subscription as the panes already in
@@ -944,6 +962,12 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 				envPrefix += fmt.Sprintf("%s=%s ", k, tmux.ShellQuote(v))
 			}
 			finalCmd = envPrefix + finalCmd
+		}
+		if seat, selected := seatPlan.Seat(agentIdx); selected {
+			finalCmd, err = seat.LaunchCommand(cfg.Integrations.CAAM.BinaryPath, finalCmd)
+			if err != nil {
+				return outputError(fmt.Errorf("binding %s agent to selected CAAM account: %w", agent.Type, err))
+			}
 		}
 
 		safeCmd, err := tmux.SanitizePaneCommand(finalCmd)

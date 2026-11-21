@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -450,6 +451,10 @@ type spawnLaunchPersona struct {
 	personaName      string
 	systemPromptFile string
 	agentMailProject string
+	caamProfile      string
+	caamBinary       string
+	claudeLaunchEnv  *swarm.ClaudeLaunchEnv
+	claudeTokenFile  string
 }
 
 func spawnLaunchPersonaFromContext(ctx context.Context) spawnLaunchPersona {
