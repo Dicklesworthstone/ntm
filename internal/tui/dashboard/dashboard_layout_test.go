@@ -1243,7 +1243,7 @@ func TestDashboardSpawnWizardOpensOverlay(t *testing.T) {
 }
 
 func TestDashboardWorkflowToggleShowsPanelAndStageDetails(t *testing.T) {
-	m := newTestModel(140)
+	m := newTestModel(220)
 	state := &workflow.WorkflowState{
 		WorkflowName:   "red-green",
 		CurrentStage:   "green",
@@ -3444,7 +3444,7 @@ func TestFleetCount_Consistent(t *testing.T) {
 	}
 
 	// Verify agent type counts sum correctly
-	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
+	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.piCount + m.userCount
 	if sumAgentTypes != totalPanes {
 		t.Errorf("agent type counts (%d) should equal total panes (%d)", sumAgentTypes, totalPanes)
 	}

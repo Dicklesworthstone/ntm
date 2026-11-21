@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
@@ -158,12 +159,21 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) subscribeToConfig() tea.Cmd {
+	sub := m.configSub
+	done := m.configWatcher.doneChan()
 	return func() tea.Msg {
-		if m.configSub == nil {
+		if sub == nil {
 			return nil
 		}
-		cfg := <-m.configSub
-		return ConfigReloadMsg{Config: cfg}
+		select {
+		case <-done:
+			return nil
+		case cfg, ok := <-sub:
+			if !ok {
+				return nil
+			}
+			return ConfigReloadMsg{Config: cfg}
+		}
 	}
 }
 
@@ -1207,6 +1217,12 @@ func (m Model) sidebarInteractivePanels() []sidebarPanelRef {
 	}
 	// C6-wire panels join focus cycling only while toggled visible.
 	// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+	if m.showWorkflowPanel && m.workflowPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.workflowPanel.Config().ID,
+			panel: m.workflowPanel,
+		})
+	}
 	if m.showQuotaPanel && m.quotaPanel != nil {
 		refs = append(refs, sidebarPanelRef{
 			id:    m.quotaPanel.Config().ID,
@@ -1378,6 +1394,9 @@ func (m *Model) syncSidebarPanelFocusState() {
 	}
 	if m.cassPanel != nil {
 		m.cassPanel.Blur()
+	}
+	if m.workflowPanel != nil {
+		m.workflowPanel.Blur()
 	}
 	if m.quotaPanel != nil {
 		m.quotaPanel.Blur()
@@ -1587,10 +1606,44 @@ var dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID
 	if err != nil {
 		return err
 	}
+	// Restoring from inside the live dashboard targets a non-destructive copy
+	// name so restoring a checkpoint of the active session does not always fail
+	// with ErrSessionExists or destroy the live session under the operator.
+	baseTarget := dashboardRestoreTargetName(session, checkpointID)
+	targetSession := baseTarget
+	for attempt := 2; tmux.SessionExists(targetSession) && attempt <= 100; attempt++ {
+		targetSession = fmt.Sprintf("%s-%d", baseTarget, attempt)
+	}
 	_, err = checkpoint.NewRestorerWithStorage(storage).RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
+		TargetSession: targetSession,
 		InjectContext: true,
 	})
 	return err
+}
+
+func dashboardRestoreTargetName(session, checkpointID string) string {
+	trimmed := strings.TrimSpace(checkpointID)
+	var cleaned strings.Builder
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			cleaned.WriteRune(r)
+		}
+	}
+	sanitized := strings.Trim(cleaned.String(), "-_")
+	if sanitized == "" {
+		return fmt.Sprintf("%s-restored-copy", session)
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(trimmed))
+	digest := fmt.Sprintf("%08x", h.Sum32())
+	runes := []rune(sanitized)
+	if len(runes) > 16 {
+		sanitized = strings.TrimRight(string(runes[:16]), "-_")
+	}
+	if sanitized == "" {
+		return fmt.Sprintf("%s-restored-%s", session, digest)
+	}
+	return fmt.Sprintf("%s-restored-%s-%s", session, sanitized, digest)
 }
 
 func dashboardCurrentApprover() string {
@@ -1932,6 +1985,36 @@ func (m *Model) fullRefresh(cancelInFlight bool) []tea.Cmd {
 		m.fetchingPendingRot = true
 		m.lastPendingFetch = now
 		cmds = append(cmds, m.fetchPendingRotations())
+	}
+
+	// Refresh visible C6 and operational sidebar panels when requested via 'r'.
+	if m.showWorkflowPanel && !m.fetchingWorkflow {
+		m.fetchingWorkflow = true
+		cmds = append(cmds, m.fetchWorkflowState())
+	}
+	if m.showQuotaPanel && !m.fetchingQuota {
+		m.fetchingQuota = true
+		cmds = append(cmds, m.fetchQuotaStatus())
+	}
+	if m.showRateLimitPanel && !m.fetchingOAuthHealth {
+		m.fetchingOAuthHealth = true
+		cmds = append(cmds, m.fetchOAuthHealth())
+	}
+	if m.showAccountsPanel && !m.fetchingAccounts {
+		m.fetchingAccounts = true
+		cmds = append(cmds, m.fetchAccountsStatus())
+	}
+	if m.showPipelinesPanel && !m.fetchingPipelines {
+		m.fetchingPipelines = true
+		cmds = append(cmds, m.fetchPipelinesStatus())
+	}
+	if m.showApprovalsPanel && !m.fetchingApprovals {
+		m.fetchingApprovals = true
+		cmds = append(cmds, m.fetchApprovalsStatus())
+	}
+	if m.showWorktreesPanel && !m.fetchingWorktrees {
+		m.fetchingWorktrees = true
+		cmds = append(cmds, m.fetchWorktreesCheckpoints())
 	}
 
 	// Agent mail status is light enough to refresh on demand.
@@ -3046,6 +3129,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					delete(m.paneObservations, id)
 				}
 			}
+			for id := range m.localPerfByPaneID {
+				if !validPaneIDs[id] {
+					delete(m.localPerfByPaneID, id)
+				}
+			}
+			for id := range m.velocityByPaneID {
+				if !validPaneIDs[id] {
+					delete(m.velocityByPaneID, id)
+				}
+			}
+			for id := range m.agentStatuses {
+				if !validPaneIDs[id] {
+					delete(m.agentStatuses, id)
+				}
+			}
+			for id := range m.routingScores {
+				if !validPaneIDs[id] {
+					delete(m.routingScores, id)
+				}
+			}
+			for id := range m.costInputTokens {
+				if !validPaneIDs[id] {
+					delete(m.costInputTokens, id)
+				}
+			}
+			for id := range m.costOutputTokens {
+				if !validPaneIDs[id] {
+					delete(m.costOutputTokens, id)
+				}
+			}
+			for id := range m.costModels {
+				if !validPaneIDs[id] {
+					delete(m.costModels, id)
+				}
+			}
+			for id := range m.costLastCosts {
+				if !validPaneIDs[id] {
+					delete(m.costLastCosts, id)
+				}
+			}
+			if len(m.agentMailInboxBodyCache) > 512 || len(m.seenMailAttentionIDs) > 1024 {
+				activeMailIDs := make(map[int]struct{})
+				for _, msgs := range m.agentMailInbox {
+					for _, mm := range msgs {
+						activeMailIDs[mm.ID] = struct{}{}
+					}
+				}
+				if len(m.agentMailInboxBodyCache) > 512 {
+					for id := range m.agentMailInboxBodyCache {
+						if _, ok := activeMailIDs[id]; !ok {
+							delete(m.agentMailInboxBodyCache, id)
+							delete(m.agentMailInboxBodyKnown, id)
+						}
+					}
+				}
+				if len(m.seenMailAttentionIDs) > 1024 {
+					for id := range m.seenMailAttentionIDs {
+						if _, ok := activeMailIDs[id]; !ok {
+							delete(m.seenMailAttentionIDs, id)
+						}
+					}
+				}
+			}
 
 			// Process compaction checks, context tracking, AND live status updates
 			timelineUpdated := false
@@ -3189,6 +3335,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.paneStatus[paneKey] = ps
+			}
+			if cmd := m.rebuildPaneList(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 			m.recordVelocitySnapshot()
 			if timelineUpdated {
@@ -3374,6 +3523,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastRefresh = msg.Time
 		m.refreshBackpressure()
+		if cmd := m.rebuildPaneList(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		// Also refresh health data after status update.
 		cmds = append(cmds, followUp, m.fetchHealthCmd())
 		return m, tea.Batch(cmds...)
@@ -3382,7 +3534,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearAllPaneHealthDetails()
 		if msg.Err != nil || msg.Health == nil {
 			m.refreshBackpressure()
-			return m, nil
+			return m, m.rebuildPaneList()
 		}
 
 		// Build physical-pane lookup for the current topology.
@@ -3407,7 +3559,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paneStatus[paneKey] = ps
 		}
 		m.refreshBackpressure()
-		return m, nil
+		return m, m.rebuildPaneList()
 
 	case ConfigReloadMsg:
 		if msg.Config != nil {
@@ -3416,8 +3568,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.subscribeToConfig()
 
 	case ConfigWatcherReadyMsg:
-		if msg.Err == nil && msg.Closer != nil && m.configCloser == nil {
-			m.configCloser = msg.Closer
+		if msg.Err == nil && msg.Closer != nil {
+			if msg.installed {
+				if m.configWatcher.isClosed() {
+					return m, nil
+				}
+			} else if !m.configWatcher.installCloser(msg.Closer) {
+				return m, nil
+			}
 			return m, m.subscribeToConfig()
 		}
 		return m, nil
@@ -3933,13 +4091,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if key.Matches(msg, dashKeys.WorkflowToggle) {
 			m.showWorkflowPanel = !m.showWorkflowPanel
-			if m.showWorkflowPanel && !m.fetchingWorkflow {
-				m.fetchingWorkflow = true
-				return m, m.fetchWorkflowState()
+			if m.showWorkflowPanel {
+				if m.workflowPanel != nil {
+					m.sidebarActivePanel = m.workflowPanel.Config().ID
+				}
+				m.setFocusedPanel(PanelSidebar)
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingWorkflow {
+					m.fetchingWorkflow = true
+					return m, m.fetchWorkflowState()
+				}
+			} else {
+				m.syncSidebarPanelFocusState()
+				if m.focusedPanel == PanelSidebar && len(m.sidebarInteractivePanels()) == 0 {
+					m.syncFocusRing()
+				}
 			}
 			return m, nil
 		}
-		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowPanel.HasData() && msg.String() == "enter" {
+		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowPanel.HasData() &&
+			m.focusedPanel == PanelSidebar && m.sidebarActivePanel == m.workflowPanel.Config().ID &&
+			msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
 			return m, cmd
 		}
@@ -4388,6 +4560,7 @@ func (m *Model) updateStats() {
 	m.geminiCount = 0
 	m.grokCount = 0
 	m.ompCount = 0
+	m.piCount = 0
 	m.opencodeCount = 0
 	m.antigravityCount = 0
 	m.cursorCount = 0
@@ -4408,6 +4581,8 @@ func (m *Model) updateStats() {
 			m.grokCount++
 		case tmux.AgentOmp:
 			m.ompCount++
+		case tmux.AgentPi:
+			m.piCount++
 		case tmux.AgentOpencode:
 			m.opencodeCount++
 		case tmux.AgentAntigravity:
@@ -4600,7 +4775,7 @@ func (m *Model) updateTickerData() {
 	if activeAgents == 0 && len(m.panes) > 0 {
 		// Status detection hasn't populated yet; show total agents as placeholder
 		// This prevents showing "0/17" when we simply haven't fetched status yet
-		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
+		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.piCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
 	}
 
 	// Count alerts by severity
@@ -4625,6 +4800,8 @@ func (m *Model) updateTickerData() {
 		GeminiCount:      m.geminiCount,
 		GrokCount:        m.grokCount,
 		OmpCount:         m.ompCount,
+		PiCount:          m.piCount,
+		OpencodeCount:    m.opencodeCount,
 		AntigravityCount: m.antigravityCount,
 		CursorCount:      m.cursorCount,
 		WindsurfCount:    m.windsurfCount,
@@ -5740,13 +5917,14 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 		}
 	}
 
+	wasFetchingContext := m.fetchingContext
 	if contextDue {
 		if cmd := m.requestStatusesFetch(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
 
-	if contextDue && !m.fetchingContext {
+	if contextDue && !wasFetchingContext {
 		if !m.fetchingMetrics {
 			m.fetchingMetrics = true
 			cmds = append(cmds, m.fetchMetricsCmd())

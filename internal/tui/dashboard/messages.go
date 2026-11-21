@@ -118,8 +118,9 @@ type ConfigReloadMsg struct {
 
 // ConfigWatcherReadyMsg reports the outcome of starting the config watcher.
 type ConfigWatcherReadyMsg struct {
-	Closer func()
-	Err    error
+	Closer    func()
+	Err       error
+	installed bool
 }
 
 // RendererReadyMsg reports that the deferred markdown renderer is available.

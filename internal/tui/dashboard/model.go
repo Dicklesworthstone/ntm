@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -139,6 +140,7 @@ type Model struct {
 	geminiCount      int
 	grokCount        int
 	ompCount         int
+	piCount          int
 	opencodeCount    int
 	antigravityCount int
 	cursorCount      int
@@ -280,9 +282,9 @@ type Model struct {
 	seenMailAttentionIDs     map[int]struct{} // Track messages with attention signals emitted
 
 	// Config watcher
-	configSub    chan *config.Config
-	configCloser func()
-	cfg          *config.Config
+	configSub     chan *config.Config
+	configWatcher *configWatcherState
+	cfg           *config.Config
 
 	// Markdown renderer
 	renderer *glamour.TermRenderer
@@ -716,20 +718,115 @@ func New(session, projectDir string) Model {
 	// Set up the reload channel immediately, but start the file watcher only
 	// after startup warmup so fsnotify/path setup never blocks first paint.
 	m.configSub = make(chan *config.Config, 1)
+	m.configWatcher = newConfigWatcherState()
 
 	return m
 }
 
-func (m Model) startConfigWatcher() tea.Cmd {
-	if m.configSub == nil || m.configCloser != nil {
+type configWatcherState struct {
+	mu      sync.Mutex
+	done    chan struct{}
+	started bool
+	closed  bool
+	closer  func()
+}
+
+func newConfigWatcherState() *configWatcherState {
+	return &configWatcherState{done: make(chan struct{})}
+}
+
+func (w *configWatcherState) doneChan() <-chan struct{} {
+	if w == nil {
 		return nil
 	}
+	return w.done
+}
+
+func (w *configWatcherState) installCloser(closer func()) bool {
+	if w == nil {
+		if closer != nil {
+			closer()
+		}
+		return false
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		if closer != nil {
+			closer()
+		}
+		return false
+	}
+	if w.closer != nil {
+		w.mu.Unlock()
+		if closer != nil {
+			closer()
+		}
+		return false
+	}
+	w.closer = closer
+	w.mu.Unlock()
+	return true
+}
+
+func (w *configWatcherState) isClosed() bool {
+	if w == nil {
+		return true
+	}
+	w.mu.Lock()
+	closed := w.closed
+	w.mu.Unlock()
+	return closed
+}
+
+func (w *configWatcherState) close() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if !w.closed {
+		w.closed = true
+		close(w.done)
+	}
+	closer := w.closer
+	w.closer = nil
+	w.mu.Unlock()
+	if closer != nil {
+		closer()
+	}
+}
+
+func (m *Model) startConfigWatcher() tea.Cmd {
+	if m.configSub == nil || m.configWatcher == nil {
+		return nil
+	}
+	w := m.configWatcher
+	w.mu.Lock()
+	if w.started || w.closed || w.closer != nil {
+		w.mu.Unlock()
+		return nil
+	}
+	w.started = true
+	w.mu.Unlock()
 
 	sub := m.configSub
+	done := w.done
+	projectDir := m.projectDir
 	return func() tea.Msg {
-		closer, err := config.Watch(m.projectDir, func(cfg *config.Config) {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		closer, err := config.Watch(projectDir, func(cfg *config.Config) {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			select {
 			case sub <- cfg:
+			case <-done:
 			default:
 				// If channel full, drop oldest
 				select {
@@ -738,11 +835,18 @@ func (m Model) startConfigWatcher() tea.Cmd {
 				}
 				select {
 				case sub <- cfg:
+				case <-done:
 				default:
 				}
 			}
 		})
-		return ConfigWatcherReadyMsg{Closer: closer, Err: err}
+		if err != nil {
+			return ConfigWatcherReadyMsg{Err: err}
+		}
+		if !w.installCloser(closer) {
+			return nil
+		}
+		return ConfigWatcherReadyMsg{Closer: closer, installed: true}
 	}
 }
 
@@ -764,11 +868,19 @@ func (m Model) startRendererInit() tea.Cmd {
 }
 
 // cleanup releases resources held by the dashboard model.
-// Must be called before tea.Quit to prevent goroutine leaks.
+// Must be called before tea.Quit and when RunWithOptions exits to prevent
+// goroutine and watcher leaks.
 func (m *Model) cleanup() {
-	if m.configCloser != nil {
-		m.configCloser()
-		m.configCloser = nil
+	if m.sessionFetchCancel != nil {
+		m.sessionFetchCancel()
+		m.sessionFetchCancel = nil
+	}
+	if m.scanFetchCancel != nil {
+		m.scanFetchCancel()
+		m.scanFetchCancel = nil
+	}
+	if m.configWatcher != nil {
+		m.configWatcher.close()
 	}
 }
 

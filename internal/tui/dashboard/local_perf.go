@@ -56,11 +56,16 @@ func newLocalPerfTracker(window time.Duration) *localPerfTracker {
 	}
 }
 
+const maxPendingPromptTimes = 128
+
 func (t *localPerfTracker) addPrompt(ts time.Time) {
 	if ts.IsZero() {
 		return
 	}
 	t.pendingPromptTimes = append(t.pendingPromptTimes, ts)
+	if len(t.pendingPromptTimes) > maxPendingPromptTimes {
+		t.pendingPromptTimes = append([]time.Time(nil), t.pendingPromptTimes[len(t.pendingPromptTimes)-maxPendingPromptTimes:]...)
+	}
 }
 
 func (t *localPerfTracker) addOutputDelta(at time.Time, deltaTokens int) {

@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
@@ -485,4 +486,183 @@ func TestDashboardOpsPanelsJoinSidebarNavigationAndHelp(t *testing.T) {
 			t.Errorf("FullHelp() missing operational panel toggle %q", k)
 		}
 	}
+}
+
+func TestDashboardWaveF5ReliabilityAndParityFixes(t *testing.T) {
+	t.Run("D1_scheduleRefreshes_runs_metrics_routing_history_files_when_contextDue", func(t *testing.T) {
+		m := testDashboardWithPanes(160, 48)
+		m.fetchingContext = false
+		m.fetchingMetrics = false
+		m.fetchingRouting = false
+		m.fetchingHistory = false
+		m.fetchingFileChanges = false
+		past := time.Now().Add(-time.Hour)
+		m.lastContextFetch = past
+		m.lastPaneFetch = time.Now()
+
+		cmds := m.scheduleRefreshes(time.Now())
+		if len(cmds) == 0 {
+			t.Fatal("scheduleRefreshes returned no commands when contextDue")
+		}
+		if !m.fetchingContext || !m.fetchingMetrics || !m.fetchingRouting || !m.fetchingHistory || !m.fetchingFileChanges {
+			t.Fatalf("D1 bug: secondary context refreshes were skipped: context=%v metrics=%v routing=%v history=%v files=%v",
+				m.fetchingContext, m.fetchingMetrics, m.fetchingRouting, m.fetchingHistory, m.fetchingFileChanges)
+		}
+	})
+
+	t.Run("D2_and_D6_session_update_rebuilds_paneList_and_prunes_stale_caches", func(t *testing.T) {
+		m := testDashboardWithPanes(160, 48)
+		m.ensureLocalPerfTracker("%999")
+		m.velocityByPaneID["%999"] = velocitySample{tokens: 100}
+		m.costInputTokens["%999"] = 500
+		m.routingScores = map[string]RoutingScore{"%999": {Score: 80}}
+
+		gen := m.nextGen(refreshSession)
+		updated, _ := m.Update(SessionDataWithOutputMsg{
+			Gen: gen,
+			Panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Title: "ops-test__pi_1", Type: tmux.AgentPi},
+				{ID: "%2", Index: 2, Title: "ops-test__cc_1", Type: tmux.AgentClaude},
+			},
+		})
+		next := updated.(Model)
+		if got := len(next.paneList.Items()); got != 2 {
+			t.Fatalf("paneList.Items() len = %d, want 2 after SessionDataWithOutputMsg", got)
+		}
+		if next.piCount != 1 || next.claudeCount != 1 {
+			t.Fatalf("counts = (pi=%d, cc=%d), want (1, 1)", next.piCount, next.claudeCount)
+		}
+		if _, leaked := next.localPerfByPaneID["%999"]; leaked {
+			t.Fatal("stale pane %999 leaked in localPerfByPaneID")
+		}
+		if _, leaked := next.velocityByPaneID["%999"]; leaked {
+			t.Fatal("stale pane %999 leaked in velocityByPaneID")
+		}
+		if _, leaked := next.costInputTokens["%999"]; leaked {
+			t.Fatal("stale pane %999 leaked in costInputTokens")
+		}
+		if _, leaked := next.routingScores["%999"]; leaked {
+			t.Fatal("stale pane %999 leaked in routingScores")
+		}
+	})
+
+	t.Run("D3_config_watcher_single_start_and_cleanup_unblocks_subscriber", func(t *testing.T) {
+		m := New("cfg-test", t.TempDir())
+		if cmd1 := m.startConfigWatcher(); cmd1 == nil {
+			t.Fatal("first startConfigWatcher returned nil")
+		}
+		if cmd2 := m.startConfigWatcher(); cmd2 != nil {
+			t.Fatal("second startConfigWatcher must be a no-op")
+		}
+		subCmd := m.subscribeToConfig()
+		done := make(chan tea.Msg, 1)
+		go func() { done <- subCmd() }()
+		m.cleanup()
+		select {
+		case msg := <-done:
+			if msg != nil {
+				t.Fatalf("expected nil msg after cleanup, got %#v", msg)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("subscribeToConfig leaked goroutine after cleanup()")
+		}
+	})
+
+	t.Run("D4_requestedAttentionItem_nil_feed_safe", func(t *testing.T) {
+		if got := requestedAttentionItem(nil, nil, 5); got != nil {
+			t.Fatalf("requestedAttentionItem(nil, ...) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("D6_localPerfTracker_bounds_pendingPromptTimes", func(t *testing.T) {
+		tr := newLocalPerfTracker(10 * time.Second)
+		now := time.Now()
+		for i := 0; i < 300; i++ {
+			tr.addPrompt(now.Add(time.Duration(i) * time.Millisecond))
+		}
+		if len(tr.pendingPromptTimes) > maxPendingPromptTimes {
+			t.Fatalf("pendingPromptTimes grew unbounded: %d > %d", len(tr.pendingPromptTimes), maxPendingPromptTimes)
+		}
+	})
+
+	t.Run("ops_restore_target_name_fullRefresh_and_workflow_enter_scope", func(t *testing.T) {
+		name1 := dashboardRestoreTargetName("myproj", "20261121-123001.100-1111111111111111")
+		name2 := dashboardRestoreTargetName("myproj", "20261121-123559.200-2222222222222222")
+		if !strings.HasPrefix(name1, "myproj-restored-") || name1 == name2 {
+			t.Fatalf("dashboardRestoreTargetName collided within same 10-min window: %q vs %q", name1, name2)
+		}
+
+		// Live unread mail IDs must be preserved when pruning seenMailAttentionIDs > 1024.
+		mMail := testDashboardWithPanes(160, 48)
+		mMail.agentMailInbox = map[string][]agentmail.InboxMessage{
+			"%1": {{ID: 42, Subject: "live"}},
+		}
+		mMail.seenMailAttentionIDs[42] = struct{}{}
+		for i := 1000; i < 2100; i++ {
+			mMail.seenMailAttentionIDs[i] = struct{}{}
+		}
+		gen := mMail.nextGen(refreshSession)
+		updatedMail, _ := mMail.Update(SessionDataWithOutputMsg{
+			Gen:   gen,
+			Panes: mMail.panes,
+			Outputs: []PaneOutputData{{
+				PaneID: "%1",
+				Observation: status.PaneObservation{
+					Current: status.StateObservation{
+						Freshness: status.FreshnessFresh,
+						Status:    status.AgentStatus{PaneID: "%1", State: status.StateWorking},
+					},
+				},
+			}},
+		})
+		nextMail := updatedMail.(Model)
+		if _, ok := nextMail.seenMailAttentionIDs[42]; !ok {
+			t.Fatal("pruning wiped live unread mail ID 42 from seenMailAttentionIDs")
+		}
+		if _, stale := nextMail.seenMailAttentionIDs[1500]; stale {
+			t.Fatal("pruning failed to evict stale seenMailAttentionIDs entry 1500")
+		}
+		if items := nextMail.paneList.Items(); len(items) > 0 {
+			if pi, ok := items[0].(paneItem); ok && pi.row.Status != string(status.StateWorking) {
+				t.Fatalf("paneList row status = %q, want %q in same SessionDataWithOutputMsg cycle", pi.row.Status, status.StateWorking)
+			}
+		}
+
+		m := testDashboardWithPanes(160, 48)
+		m.showPipelinesPanel = true
+		m.showApprovalsPanel = true
+		m.showWorktreesPanel = true
+		m.showWorkflowPanel = true
+		m.showQuotaPanel = true
+		m.showRateLimitPanel = true
+		m.showAccountsPanel = true
+		_ = m.fullRefresh(false)
+		if !m.fetchingPipelines || !m.fetchingApprovals || !m.fetchingWorktrees || !m.fetchingWorkflow ||
+			!m.fetchingQuota || !m.fetchingOAuthHealth || !m.fetchingAccounts {
+			t.Fatalf("fullRefresh omitted visible operational/C6 panels: pipelines=%v approvals=%v worktrees=%v workflow=%v quota=%v oauth=%v accounts=%v",
+				m.fetchingPipelines, m.fetchingApprovals, m.fetchingWorktrees, m.fetchingWorkflow, m.fetchingQuota, m.fetchingOAuthHealth, m.fetchingAccounts)
+		}
+
+		// Workflow enter must NOT hijack enter when focus is on PaneList; stub zoom so no live tmux runs.
+		oldZoom := dashboardZoomPane
+		defer func() { dashboardZoomPane = oldZoom }()
+		zoomCalled := false
+		dashboardZoomPane = func(session string, paneIndex int) error {
+			zoomCalled = true
+			return nil
+		}
+		m2 := testDashboardWithPanes(160, 48)
+		m2.showWorkflowPanel = true
+		m2.workflowPanel.SetData(panels.WorkflowPanelData{State: &workflow.WorkflowState{WorkflowName: "wf", CurrentStage: "s1"}}, nil)
+		m2.focusedPanel = PanelPaneList
+		m2.sidebarActivePanel = ""
+		updated, _ := m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		next := updated.(Model)
+		if !zoomCalled {
+			t.Fatal("expected Enter on PanelPaneList to reach dashboardZoomPane")
+		}
+		if strings.Contains(status.StripANSI(next.renderSidebar(90, 30)), "Stage details: s1") {
+			t.Fatal("workflow panel hijacked Enter while PanelPaneList was focused")
+		}
+	})
 }

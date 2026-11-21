@@ -85,11 +85,19 @@ func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitActio
 		}()
 	}
 	finalModel, err := p.Run()
+	if m, ok := finalModel.(Model); ok {
+		m.cleanup()
+		if err != nil {
+			return nil, err
+		}
+		if m.postQuitAction != nil {
+			return m.postQuitAction, nil
+		}
+		return nil, nil
+	}
+	model.cleanup()
 	if err != nil {
 		return nil, err
-	}
-	if m, ok := finalModel.(Model); ok && m.postQuitAction != nil {
-		return m.postQuitAction, nil
 	}
 	return nil, nil
 }

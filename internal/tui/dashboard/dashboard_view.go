@@ -423,6 +423,7 @@ func (m Model) renderFooterSection() string {
 		GeminiCount:      m.geminiCount,
 		GrokCount:        m.grokCount,
 		OmpCount:         m.ompCount,
+		PiCount:          m.piCount,
 		OpencodeCount:    m.opencodeCount,
 		AntigravityCount: m.antigravityCount,
 		UserCount:        m.userCount,
@@ -538,6 +539,14 @@ func (m Model) renderStatsBar() string {
 			Bold(true).
 			Padding(0, 1).
 			Render(fmt.Sprintf("OMP %d", m.ompCount)))
+	}
+	if m.piCount > 0 {
+		parts = append(parts, lipgloss.NewStyle().
+			Background(t.Sapphire).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("PI %d", m.piCount)))
 	}
 	if m.opencodeCount > 0 {
 		ocColor := t.Semantic().AgentOpencode

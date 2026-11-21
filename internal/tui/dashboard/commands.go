@@ -411,7 +411,7 @@ func attentionItemFromEvent(ev robot.AttentionEvent, paneAgents map[int]string) 
 }
 
 func requestedAttentionItem(feed *robot.AttentionFeed, paneAgents map[int]string, requestedCursor int64) *panels.AttentionItem {
-	if requestedCursor <= 0 {
+	if feed == nil || requestedCursor <= 0 {
 		return nil
 	}
 	events, _, err := feed.Replay(requestedCursor-1, 1)
