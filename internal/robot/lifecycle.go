@@ -838,7 +838,7 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout, poll
 func directExecExitInput(ctx context.Context, session string, original, current tmux.Pane) error {
 	latest, lookup := refreshLifecyclePane(ctx, session, original.ID)
 	if lookup != paneFound || !lifecyclePaneIdentityMatches(original, latest) || latest.PID != current.PID {
-		return fmt.Errorf("pane %s identity changed before exit input", original.ID)
+		return fmt.Errorf("pane %s identity changed before exit input: %w", original.ID, tmux.ErrPaneIdentityChanged)
 	}
 	return nil
 }
@@ -922,7 +922,7 @@ func restorePaneRemainOnExit(ctx context.Context, paneID, previous string) {
 	_ = tmux.DefaultClient.RunSilentContext(restoreCtx, "set-option", "-p", "-t", tmux.ExactTarget(paneID), "remain-on-exit", trimmed)
 }
 
-func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID int, timeout, pollInterval time.Duration) (tmux.Pane, paneLookup, bool) {
+func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID int, timeout, pollInterval time.Duration, requirePaneSettled bool) (tmux.Pane, paneLookup, bool) {
 	if pollInterval <= 0 {
 		pollInterval = lifecyclePollInterval
 	}
@@ -933,7 +933,7 @@ func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID 
 		case paneAbsent:
 			return pane, lookup, true
 		case paneFound:
-			if pane.Dead || (rootPID > 0 && pane.PID == rootPID && !process.IsAlive(rootPID)) {
+			if pane.Dead || (!requirePaneSettled && rootPID > 0 && pane.PID == rootPID && !process.IsAlive(rootPID)) {
 				return pane, lookup, true
 			}
 			if pane.PID != rootPID {
@@ -976,7 +976,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
 				return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 			})
-			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval())
+			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), true)
 			if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
 				exitErr = nil
 				exited = true
@@ -1038,7 +1038,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
 			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 		})
-		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval())
+		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), false)
 		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
 			exitErr = nil
 			exited = true
