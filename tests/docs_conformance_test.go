@@ -1258,3 +1258,160 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		}
 	}
 }
+
+// TestCommandPaletteNoDuplicatePromptBodies prevents copy-paste regressions in
+// command_palette.md where two distinct prompt headers accidentally share the
+// exact same prompt text (e.g., improve_readme carrying check_mail's body).
+func TestCommandPaletteNoDuplicatePromptBodies(t *testing.T) {
+	root := docsRepoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "command_palette.md"))
+	if err != nil {
+		t.Fatalf("reading command_palette.md: %v", err)
+	}
+
+	type entry struct {
+		key  string
+		body string
+	}
+	var entries []entry
+	var curKey string
+	var curLines []string
+	flush := func() {
+		if curKey == "" {
+			return
+		}
+		body := strings.TrimSpace(strings.Join(curLines, "\n"))
+		entries = append(entries, entry{key: curKey, body: body})
+		curKey = ""
+		curLines = nil
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") {
+			flush()
+			header := strings.TrimSpace(strings.TrimPrefix(trimmed, "### "))
+			key, _, _ := strings.Cut(header, "|")
+			curKey = strings.TrimSpace(key)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			flush()
+			continue
+		}
+		if curKey != "" {
+			curLines = append(curLines, line)
+		}
+	}
+	flush()
+
+	if len(entries) < 10 {
+		t.Fatalf("parsed only %d entries from command_palette.md, want >= 10", len(entries))
+	}
+
+	seenKeys := make(map[string]bool, len(entries))
+	seenBodies := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if seenKeys[e.key] {
+			t.Errorf("duplicate command_palette.md key %q", e.key)
+		}
+		seenKeys[e.key] = true
+		if e.body == "" {
+			t.Errorf("command_palette.md key %q has an empty prompt body", e.key)
+			continue
+		}
+		norm := strings.Join(strings.Fields(e.body), " ")
+		if prev, dup := seenBodies[norm]; dup {
+			t.Errorf("command_palette.md keys %q and %q have identical prompt bodies (copy-paste regression)", prev, e.key)
+		} else {
+			seenBodies[norm] = e.key
+		}
+	}
+}
+
+func readGoModVersion(t *testing.T, root string) string {
+	t.Helper()
+	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	for _, line := range strings.Split(string(gomod), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "go "); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	t.Fatal("could not find `go <version>` directive in go.mod")
+	return ""
+}
+
+// TestGoVersionLockstepAcrossDocsAndWorkflows ensures AGENTS.md, CONTRIBUTING.md,
+// and DSR/act workflow inputs stay lockstep with go.mod's declared Go version.
+func TestGoVersionLockstepAcrossDocsAndWorkflows(t *testing.T) {
+	root := docsRepoRoot(t)
+	goVersion := readGoModVersion(t, root)
+
+	checks := []struct {
+		rel  string
+		want string
+	}{
+		{"AGENTS.md", "Go " + goVersion + "+"},
+		{"CONTRIBUTING.md", "Go " + goVersion + "+"},
+		{".github/workflows/ci.yml", `GO_VERSION: "` + goVersion + `"`},
+		{".github/workflows/release.yml", `GO_VERSION: "` + goVersion + `"`},
+		{".github/workflows/e2e-tests.yml", `GO_VERSION: "` + goVersion + `"`},
+	}
+	for _, tc := range checks {
+		data, err := os.ReadFile(filepath.Join(root, tc.rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", tc.rel, err)
+		}
+		if !strings.Contains(string(data), tc.want) {
+			t.Errorf("%s does not contain %q (go.mod version is %s)", tc.rel, tc.want, goVersion)
+		}
+	}
+}
+
+// TestAllInternalPackagesHaveTests ensures no non-empty Go package under
+// internal/ silently ships with zero unit tests.
+func TestAllInternalPackagesHaveTests(t *testing.T) {
+	root := docsRepoRoot(t)
+	cmd := exec.Command("go", "list", "-f", "{{.ImportPath}} {{len .GoFiles}} {{len .TestGoFiles}} {{len .XTestGoFiles}}", "./internal/...")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list ./internal/... failed: %v\n%s", err, out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 4 {
+			continue
+		}
+		goFiles, _ := strconv.Atoi(fields[1])
+		testFiles, _ := strconv.Atoi(fields[2])
+		xTestFiles, _ := strconv.Atoi(fields[3])
+		if goFiles > 0 && testFiles == 0 && xTestFiles == 0 {
+			t.Errorf("internal package %s has %d Go files but 0 test files", fields[0], goFiles)
+		}
+	}
+}
+
+// TestArchitectureAndADRsExist ensures ARCHITECTURE.md and the formal
+// HyperSync/ACP disposition ADRs remain present and cross-linked.
+func TestArchitectureAndADRsExist(t *testing.T) {
+	root := docsRepoRoot(t)
+	archBytes, err := os.ReadFile(filepath.Join(root, "ARCHITECTURE.md"))
+	if err != nil {
+		t.Fatalf("reading ARCHITECTURE.md: %v", err)
+	}
+	arch := string(archBytes)
+	for _, adrRel := range []string{
+		"docs/adr/0001-hypersync-deferred-out-of-scope.md",
+		"docs/adr/0002-acp-vs-tmux-control-plane.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, adrRel)); err != nil {
+			t.Errorf("missing required ADR %s: %v", adrRel, err)
+		}
+		if !strings.Contains(arch, adrRel) {
+			t.Errorf("ARCHITECTURE.md must reference %s", adrRel)
+		}
+	}
+}

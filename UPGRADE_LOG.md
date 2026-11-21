@@ -1,5 +1,15 @@
 # Dependency Upgrade Log
 
+**Date:** 2026-11-20  |  **Project:** ntm  |  **Languages:** Go + `web/` Next.js Cockpit + `vscode/` Extension
+
+## Summary (2026-11-20)
+
+- **Go toolchain:** `go.mod` pinned at `go 1.26.10` with `ignore ./web/node_modules` so `go list ./...` never traverses frontend packages; workflows (`ci.yml`, `release.yml`, `e2e-tests.yml`) and docs (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`) synchronized to `1.26.10`.
+- **Web Cockpit (`web/package.json`):** Upgraded `next` (`^16.4.6`), `eslint-config-next` (`^16.4.6`), `zod` (`^4.6.7`), added overrides for `sharp` (`>=0.35.5`) and `source-map-js` (`>=1.2.4`), and pinned `engines.node >=22.12.0`. `npm audit --omit=dev` reports **0 vulnerabilities**; `typecheck`, `lint` (0 errors/0 warnings), `test:run` (98/98), and `next build` (18/18 static routes) all pass.
+- **VS Code Extension (`vscode/`):** Fixed async `setInterval` leak and unbounded test hang; `npm run compile` and `npm test` (42/42 in ~0.3s) pass cleanly.
+
+---
+
 **Date:** 2026-08-03  |  **Project:** ntm  |  **Language:** Go
 
 ## Summary

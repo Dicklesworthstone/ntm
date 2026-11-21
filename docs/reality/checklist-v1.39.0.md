@@ -1,6 +1,6 @@
 # Vision Checklist — v1.39.0
 
-generated: 2026-11-19T00:56:54Z by scripts/reality_audit.sh (seed 2553148806)
+generated: 2026-11-21T01:51:42Z by scripts/reality_audit.sh (seed 2553148806)
 
 - README.md:29 TL;DR
 - README.md:31 The Problem
@@ -28,45 +28,45 @@ generated: 2026-11-19T00:56:54Z by scripts/reality_audit.sh (seed 2553148806)
 - README.md:1464 Canonical Robot Surfaces
 - README.md:1503 REST, SSE, WebSocket, and OpenAPI
 - README.md:1570 Embedded Web Dashboard (`ntm web`)
-- README.md:1594 Command Map
-- README.md:1612 Configuration and Project Assets
-- README.md:1616 User-Level
-- README.md:1624 Project-Level
-- README.md:1654 CAAM Seat Selection (opt-in, default off)
-- README.md:1710 Rano Network Activity
-- README.md:1728 Agent Plugins
-- README.md:1746 Pi coding agent (`pi`)
-- README.md:1819 Design Principles
-- README.md:1821 No Silent Data Loss
-- README.md:1826 Graceful Degradation
-- README.md:1831 Idempotent Orchestration
-- README.md:1836 Recoverable State
-- README.md:1840 Auditable Actions
-- README.md:1844 Safe by Default
-- README.md:1849 Architecture
-- README.md:1886 Installation
-- README.md:1888 Install Script
-- README.md:1894 Homebrew
-- README.md:1900 Docker
-- README.md:1918 From Source
-- README.md:1926 Troubleshooting
-- README.md:1928 `tmux not found`
-- README.md:1936 Agent panes start empty or an agent CLI fails immediately
-- README.md:1941 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells
-- README.md:1976 A work command has nothing useful to say
-- README.md:1981 Mail, locks, or overseer commands say the server is unavailable
-- README.md:1986 Pipeline resume or cleanup does not see the state you expect
-- README.md:1991 FAQ
-- README.md:1993 Does NTM replace tmux?
-- README.md:1997 Can I use it with one agent instead of a swarm?
-- README.md:2001 Do I need every optional integration?
-- README.md:2006 Is robot mode the preferred automation surface?
-- README.md:2011 Can multiple swarms work on the same project?
-- README.md:2015 Does NTM preserve history and state?
-- README.md:2020 Limitations
-- README.md:2028 Development
-- README.md:2044 About Contributions
-- README.md:2048 License
+- README.md:1632 Command Map
+- README.md:1650 Configuration and Project Assets
+- README.md:1654 User-Level
+- README.md:1662 Project-Level
+- README.md:1692 CAAM Seat Selection (opt-in, default off)
+- README.md:1748 Rano Network Activity
+- README.md:1766 Agent Plugins
+- README.md:1784 Pi coding agent (`pi`)
+- README.md:1857 Design Principles
+- README.md:1859 No Silent Data Loss
+- README.md:1864 Graceful Degradation
+- README.md:1869 Idempotent Orchestration
+- README.md:1874 Recoverable State
+- README.md:1878 Auditable Actions
+- README.md:1882 Safe by Default
+- README.md:1887 Architecture
+- README.md:1926 Installation
+- README.md:1928 Install Script
+- README.md:1934 Homebrew
+- README.md:1940 Docker
+- README.md:1958 From Source
+- README.md:1966 Troubleshooting
+- README.md:1968 `tmux not found`
+- README.md:1976 Agent panes start empty or an agent CLI fails immediately
+- README.md:1981 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells
+- README.md:2016 A work command has nothing useful to say
+- README.md:2021 Mail, locks, or overseer commands say the server is unavailable
+- README.md:2026 Pipeline resume or cleanup does not see the state you expect
+- README.md:2031 FAQ
+- README.md:2033 Does NTM replace tmux?
+- README.md:2037 Can I use it with one agent instead of a swarm?
+- README.md:2041 Do I need every optional integration?
+- README.md:2046 Is robot mode the preferred automation surface?
+- README.md:2051 Can multiple swarms work on the same project?
+- README.md:2055 Does NTM preserve history and state?
+- README.md:2060 Limitations
+- README.md:2068 Development
+- README.md:2084 About Contributions
+- README.md:2088 License
 - docs/ORCHESTRATION_FEATURES.md:16 Revision History
 - docs/ORCHESTRATION_FEATURES.md:28 Key Improvements in v2.0
 - docs/ORCHESTRATION_FEATURES.md:30 Activity Detection
@@ -149,10 +149,10 @@ generated: 2026-11-19T00:56:54Z by scripts/reality_audit.sh (seed 2553148806)
 - SKILL.md:151 Coordination and Recovery
 - SKILL.md:198 Safety and Approvals
 - SKILL.md:221 Canonical Robot Mode
-- SKILL.md:302 Serve API and Pipeline Surfaces
-- SKILL.md:319 Project Resolution
-- SKILL.md:332 Reference Index
-- SKILL.md:343 Related Skills
+- SKILL.md:307 Serve API and Pipeline Surfaces
+- SKILL.md:324 Project Resolution
+- SKILL.md:337 Reference Index
+- SKILL.md:348 Related Skills
 - command_palette.md:27 Analysis & Review
 - command_palette.md:29 fresh_review | Fresh Review
 - command_palette.md:32 check_other_agents_work | Check Other Agents Work

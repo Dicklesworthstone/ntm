@@ -74,7 +74,7 @@ success** — one line, revert, next lever, no retraction narrative.
 
 We only use **Go** in this project. This is a pure Go project — never introduce non-Go tooling for building or testing.
 
-- **Version:** Go 1.26.3+ (as specified in `go.mod`)
+- **Version:** Go 1.26.10+ (as specified in `go.mod`)
 - **Lockfiles:** `go.mod` and `go.sum` only
 - **Build:** `go build ./cmd/ntm`
 - **Format:** `gofmt` or `goimports`
@@ -164,7 +164,7 @@ A capability may have **at most one implementation reachable from `cmd/ntm`**.
 - Any PR that lands an engine must, **in the same PR**, land the user surface (CLI/robot/serve) and an E2E or behavioral test exercising the feature **through that surface**. Surface-first; engine-only PRs do not merge.
 - A second implementation of an existing capability may only merge if the same PR **deletes or subsumes the first**.
 
-Enforcement is mechanical, not aspirational: the G1 dead-code gate (`scripts/guards/deadcode_gate.sh`, allowlist `ci/allowlists/deadcode.txt`) fails CI on any function unreachable from the `cmd/ntm` call graph — "impressive but unreachable" is a build failure, not an audit finding. (Adopted via WS0-G7, bd-ws0-guards-klz98.8; context: five separate engines were built, unit-tested, and never wired to any user surface.)
+Enforcement is mechanical, not aspirational: the WS0 guard suite (`bash scripts/guards/run_all.sh`) enforces G1 dead-code (`scripts/guards/deadcode_gate.sh`, allowlist `ci/allowlists/deadcode.txt`), G2-G6 allowlist/docs/release/parity/pagination gates, and G8 web/VSCode/workflow surface integrity (`scripts/guards/web_and_surface_gate.sh`). Any function unreachable from the `cmd/ntm` call graph is a build failure, not an audit finding. (Adopted via WS0-G7, bd-ws0-guards-klz98.8; context: five separate engines were built, unit-tested, and never wired to any user surface.)
 
 ---
 
@@ -377,7 +377,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 |------|---------------|---------------|-------------|
 | `--msg` | `--robot-send` | `--robot-ack` | Message content |
 | `--panes` | - | `--robot-tail`, `--robot-send`, `--robot-ack`, `--robot-interrupt` | Filter to pane indices |
-| `--type` | - | `--robot-send`, `--robot-ack`, `--robot-interrupt` | Agent type: claude\|cc, codex\|cod, antigravity\|agy, gemini\|gmi (legacy) |
+| `--type` | - | `--robot-send`, `--robot-ack`, `--robot-interrupt` | Agent type (12 declarative built-in harnesses in `internal/agent/capabilities.go`): `claude\|cc`, `codex\|cod`, `antigravity\|agy`, `gemini\|gmi` (legacy), `grok`, `omp`, `pi`, `opencode\|oc`, `cursor`, `windsurf`, `aider`, `ollama` |
 | `--all` | - | `--robot-send`, `--robot-interrupt` | Include user pane |
 | `--track` | - | `--robot-send` | Combined send+ack mode |
 | `--op-id` | - | `--robot-send` | Durable idempotent operation ID: identical retries replay the recorded outcome; conflicting reuse errors `IDEMPOTENCY_CONFLICT`; receipts queryable via `--robot-send-receipt` |

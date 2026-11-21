@@ -1886,6 +1886,8 @@ not bolt-on scripts.
 
 ## Architecture
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full package map, ORI invariants, declarative 12-harness registry, and formal Architecture Decision Records ([ADR-0001 HyperSync](docs/adr/0001-hypersync-deferred-out-of-scope.md), [ADR-0002 ACP vs. tmux](docs/adr/0002-acp-vs-tmux-control-plane.md)).
+
 ```text
                      +---------------------------+
                      |  Human Operator / Agent   |
