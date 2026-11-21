@@ -1243,7 +1243,7 @@ func TestDashboardSpawnWizardOpensOverlay(t *testing.T) {
 }
 
 func TestDashboardWorkflowToggleShowsPanelAndStageDetails(t *testing.T) {
-	m := newTestModel(220)
+	m := newTestModel(240)
 	state := &workflow.WorkflowState{
 		WorkflowName:   "red-green",
 		CurrentStage:   "green",
