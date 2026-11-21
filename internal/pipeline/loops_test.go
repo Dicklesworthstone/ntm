@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoopResultStruct(t *testing.T) {
+	t.Parallel()
 	result := LoopResult{
 		Status:      StatusCompleted,
 		Iterations:  5,
@@ -30,6 +31,7 @@ func TestLoopResultStruct(t *testing.T) {
 }
 
 func TestToInterfaceSlice(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   interface{}
@@ -89,6 +91,7 @@ func TestToInterfaceSlice(t *testing.T) {
 }
 
 func TestParseItemsString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -117,6 +120,7 @@ func TestParseItemsString(t *testing.T) {
 }
 
 func TestLoopExecutorNoLoopConfig(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	loopExec := NewLoopExecutor(executor)
 
@@ -132,6 +136,7 @@ func TestLoopExecutorNoLoopConfig(t *testing.T) {
 }
 
 func TestLoopExecutorEmptyLoopConfig(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	executor.state = &ExecutionState{
 		Variables: make(map[string]interface{}),
@@ -154,6 +159,7 @@ func TestLoopExecutorEmptyLoopConfig(t *testing.T) {
 }
 
 func TestLoopContextStruct(t *testing.T) {
+	t.Parallel()
 	ctx := LoopContext{
 		VarName: "file",
 		Item:    "test.go",
@@ -175,6 +181,7 @@ func TestLoopContextStruct(t *testing.T) {
 }
 
 func TestLoopControlConstants(t *testing.T) {
+	t.Parallel()
 	if LoopControlNone != "" {
 		t.Errorf("expected LoopControlNone to be empty, got %q", LoopControlNone)
 	}
@@ -187,12 +194,14 @@ func TestLoopControlConstants(t *testing.T) {
 }
 
 func TestDefaultMaxIterations(t *testing.T) {
+	t.Parallel()
 	if DefaultMaxIterations != 100 {
 		t.Errorf("expected DefaultMaxIterations to be 100, got %d", DefaultMaxIterations)
 	}
 }
 
 func TestLoopConfigValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		config LoopConfig
@@ -234,6 +243,7 @@ func TestLoopConfigValidation(t *testing.T) {
 }
 
 func TestSetAndClearLoopVars(t *testing.T) {
+	t.Parallel()
 	state := &ExecutionState{
 		Variables: make(map[string]interface{}),
 	}
@@ -281,6 +291,7 @@ func TestSetAndClearLoopVars(t *testing.T) {
 }
 
 func TestLoopTimesExceedsMaxIterations(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	executor.state = &ExecutionState{
 		Variables: make(map[string]interface{}),
@@ -306,6 +317,7 @@ func TestLoopTimesExceedsMaxIterations(t *testing.T) {
 }
 
 func TestLoopMaxIterationsExprResolvesDefaults(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
 	executor.defaults = map[string]interface{}{
 		"hard_caps": map[string]interface{}{
@@ -358,6 +370,7 @@ func TestLoopMaxIterationsExprResolvesDefaults(t *testing.T) {
 // message. The recorded `step.Loop.MaxIterations.Value` also reflects the
 // clamped value, which is the externally observable contract.
 func TestLoopMaxIterations_ExprResolvedAboveCapClampsToDefault(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
 	executor.defaults = map[string]interface{}{
 		"hard_caps": map[string]interface{}{
@@ -395,6 +408,7 @@ func TestLoopMaxIterations_ExprResolvedAboveCapClampsToDefault(t *testing.T) {
 }
 
 func TestLoopMaxIterationsLiteralStillWorks(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
 	executor.state = &ExecutionState{
 		RunID:      "run-max-literal",
@@ -425,6 +439,7 @@ func TestLoopMaxIterationsLiteralStillWorks(t *testing.T) {
 }
 
 func TestExecuteIterationLoopControlBodyRunsBeforeBreak(t *testing.T) {
+	t.Parallel()
 	// A loop body step that combines real work (command/template/prompt)
 	// with loop_control: break must execute the body first and only break
 	// AFTER the body completes. The legacy behaviour applied loop_control
@@ -468,6 +483,7 @@ func TestExecuteIterationLoopControlBodyRunsBeforeBreak(t *testing.T) {
 }
 
 func TestExecuteIterationControlOnlyStepStillBreaks(t *testing.T) {
+	t.Parallel()
 	// A pure control-only step (no command/template/prompt body, only
 	// loop_control + optional when) must still apply the directive
 	// without trying to dispatch a non-existent body. This case ensures
@@ -563,6 +579,7 @@ func TestLoopMaxIterationsExprFailsWhenUnresolvable(t *testing.T) {
 }
 
 func TestLoopMaxIterationsAbsentUsesDefault(t *testing.T) {
+	t.Parallel()
 	// Sanity check: when max_iterations is omitted entirely (zero value), the
 	// default safety cap still applies and the loop runs normally.
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
@@ -594,6 +611,7 @@ func TestLoopMaxIterationsAbsentUsesDefault(t *testing.T) {
 }
 
 func TestLoopCancelledContext(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	executor.state = &ExecutionState{
 		Variables: make(map[string]interface{}),
@@ -619,6 +637,7 @@ func TestLoopCancelledContext(t *testing.T) {
 }
 
 func TestExecuteLoopIntegration(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "test-session",
 		DryRun:        true, // Don't actually execute
@@ -647,6 +666,7 @@ func TestExecuteLoopIntegration(t *testing.T) {
 }
 
 func TestNewLoopExecutor(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	loopExec := NewLoopExecutor(executor)
 
@@ -659,6 +679,7 @@ func TestNewLoopExecutor(t *testing.T) {
 }
 
 func TestStoreCollected(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	executor.state = &ExecutionState{
 		Variables: make(map[string]interface{}),
@@ -682,6 +703,7 @@ func TestStoreCollected(t *testing.T) {
 }
 
 func TestStoreCollected_Empty(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test"})
 	executor.state = &ExecutionState{
 		Variables: make(map[string]interface{}),
@@ -704,6 +726,7 @@ func TestStoreCollected_Empty(t *testing.T) {
 }
 
 func TestExecuteWhile_DryRun_ImmediateFalse(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "test-session",
 		DryRun:        true,
@@ -737,6 +760,7 @@ func TestExecuteWhile_DryRun_ImmediateFalse(t *testing.T) {
 }
 
 func TestExecuteWhile_Cancelled(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
 	executor.state = &ExecutionState{
 		Variables: map[string]interface{}{
@@ -765,6 +789,7 @@ func TestExecuteWhile_Cancelled(t *testing.T) {
 }
 
 func TestExecuteLoop_ForEachDryRun(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "test-session",
 		DryRun:        true,
@@ -798,6 +823,7 @@ func TestExecuteLoop_ForEachDryRun(t *testing.T) {
 }
 
 func TestExecuteLoop_TimesWithCollect(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "test-session",
 		DryRun:        true,
@@ -833,6 +859,7 @@ func TestExecuteLoop_TimesWithCollect(t *testing.T) {
 // resume against a divergent items list fails fast instead of silently
 // applying old completion records to different items.
 func TestExecuteForEach_RecordsAndVerifiesItemsFingerprint(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "fp-session",
 		DryRun:        true,
@@ -919,6 +946,7 @@ func TestExecuteForEach_RecordsAndVerifiesItemsFingerprint(t *testing.T) {
 // the appendForeachCollectedOutput / loadForeachCollectedOutputs
 // round-trip in TestForeachCollectedOutputsPersistRoundTrip below.
 func TestExecuteForEach_ResumePreservesCollectedFromPriorIterations(t *testing.T) {
+	t.Parallel()
 	config := ExecutorConfig{
 		Session:       "collect-resume-session",
 		DryRun:        true,
@@ -984,6 +1012,7 @@ func TestExecuteForEach_ResumePreservesCollectedFromPriorIterations(t *testing.T
 // full executeStep path while still proving that successive resumes can
 // rebuild the collected variable losslessly.
 func TestForeachCollectedOutputsPersistRoundTrip(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("collect-helper-session"))
 	executor.state = &ExecutionState{
 		Variables: map[string]interface{}{},
@@ -1025,6 +1054,7 @@ func TestForeachCollectedOutputsPersistRoundTrip(t *testing.T) {
 // fresh entries don't sit alongside the stale prior ones in the final
 // stored variable.
 func TestForceResumeIteration_TruncatesCollectedOutputs(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("force-collect-session"))
 	executor.state = &ExecutionState{
 		Variables: map[string]interface{}{},
@@ -1074,6 +1104,7 @@ func TestForceResumeIteration_TruncatesCollectedOutputs(t *testing.T) {
 // cancelled mid-body — without this signal, partial iterations get
 // silently marked complete and resume drops the unfinished body steps.
 func TestExecuteIteration_CompletedAllStepsSignal(t *testing.T) {
+	t.Parallel()
 	// Pre-cancelled context: executeIteration's top-of-loop ctx check
 	// triggers immediately, so completedAllSteps must be false even
 	// though zero body steps have been observed.
@@ -1153,6 +1184,7 @@ func TestExecuteIteration_CompletedAllStepsSignal(t *testing.T) {
 // fingerprint is deterministic for equivalent inputs and diverges for
 // reordered or modified inputs (bd-3awat).
 func TestComputeForeachItemsFingerprint_StableAndDivergent(t *testing.T) {
+	t.Parallel()
 	a := computeForeachItemsFingerprint([]interface{}{"x", "y", "z"})
 	b := computeForeachItemsFingerprint([]interface{}{"x", "y", "z"})
 	if a != b {
@@ -1177,6 +1209,7 @@ func TestComputeForeachItemsFingerprint_StableAndDivergent(t *testing.T) {
 }
 
 func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
+	t.Parallel()
 	newTestExec := func(runID, wfID string) *Executor {
 		cfg := DefaultExecutorConfig("test")
 		executor := NewExecutor(cfg)
