@@ -3356,6 +3356,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/saved-sessions/{name}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Saved sessions restore
+         * @description Served route `POST /api/v1/saved-sessions/{name}/restore`. Handler: `handleSavedSessionsRestoreV1`. Response shape reflected from Go type `SavedSessionRestoreEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_saved_sessions_name_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/saved-sessions/{name}/unarchive": {
         parameters: {
             query?: never;
@@ -4824,6 +4844,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflows/{name}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflows run
+         * @description Served route `POST /api/v1/workflows/{name}/run`. Handler: `handleWorkflowsRunV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_workflows_name_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflows/{name}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflows stop
+         * @description Served route `POST /api/v1/workflows/{name}/stop`. Handler: `handleWorkflowsStopV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_workflows_name_stop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflows/{name}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflows trigger
+         * @description Served route `POST /api/v1/workflows/{name}/trigger`. Handler: `handleWorkflowsTriggerV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_workflows_name_trigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/worktrees": {
         parameters: {
             query?: never;
@@ -5566,10 +5646,15 @@ export interface components {
             gmi_count?: number;
             grok_count?: number;
             label?: string;
+            no_hooks?: boolean;
             oc_count?: number;
             omp_count?: number;
+            personas?: string[];
             preset?: string;
+            profile_set?: string;
             wait_ready?: boolean;
+            worktree_name?: string;
+            worktrees?: boolean;
         };
         AgentTypeSpec: {
             Count: number;
@@ -6682,6 +6767,14 @@ export interface components {
             ID: string;
             Value: number;
         };
+        CAAMSeatSkip: {
+            /** @description Agent type */
+            agent_type: string;
+            /** @description Provider */
+            provider?: string;
+            /** @description Reason */
+            reason: string;
+        };
         CASSCapabilitiesEnvelopeResponse: {
             api_version: number;
             connectors: string[];
@@ -6911,6 +7004,8 @@ export interface components {
             error_code?: string;
             /** @description Filter */
             filter?: components["schemas"]["CapabilitiesFilter"];
+            /** @description Harnesses */
+            harnesses?: components["schemas"]["HarnessCapabilitySummary"][];
             /** @description Hint */
             hint?: string;
             /** @description Output format */
@@ -8408,6 +8503,26 @@ export interface components {
             /** @description Size */
             size: number;
         };
+        FileTriggerStamp: {
+            /** Format: date-time */
+            mod_time: string;
+            sha256: string;
+            /** Format: int64 */
+            size: number;
+        };
+        FileTriggerState: {
+            baseline: {
+                [key: string]: components["schemas"]["FileTriggerStamp"];
+            };
+            excludes?: string[];
+            fired: boolean;
+            kind: string;
+            pattern: string;
+            project_root: string;
+            stage: string;
+            transition_index: number;
+            version: number;
+        };
         Finding: {
             category: string;
             column: number;
@@ -8838,6 +8953,38 @@ export interface components {
             success: boolean;
             timestamp: string;
             total_returned: number;
+        };
+        HarnessCapabilitySummary: {
+            /** @description Aliases */
+            aliases?: string[];
+            /** @description Builtin compact command */
+            builtin_compact_command?: string;
+            /** @description C a a m tool */
+            caam_tool?: string;
+            /** @description Composer gated */
+            composer_gated: boolean;
+            /** @description Default context window */
+            default_context_window: number;
+            /** @description Display name */
+            display_name: string;
+            /** @description Graceful exit */
+            graceful_exit: string;
+            /** @description History clear command */
+            history_clear_command?: string;
+            /** @description Needs double enter */
+            needs_double_enter: boolean;
+            /** @description Provider */
+            provider: string;
+            /** @description Supports automated delivery */
+            supports_automated_delivery: boolean;
+            /** @description Supports automated relaunch */
+            supports_automated_relaunch: boolean;
+            /** @description Supports builtin compact */
+            supports_builtin_compact: boolean;
+            /** @description Supports history clear */
+            supports_history_clear: boolean;
+            /** @description Type */
+            type: string;
         };
         HealthBackpressureEnvelopeResponse: {
             _meta?: components["schemas"]["RobotResponseMeta"];
@@ -9625,6 +9772,37 @@ export interface components {
              */
             timestamp: string;
             total_messages?: number;
+        };
+        ManualDecision: {
+            reason: string;
+            replayed?: boolean;
+            /** Format: date-time */
+            requested_at: string;
+            session: string;
+            stage: string;
+            to: string;
+            token: string;
+            transition: number;
+            version: number;
+            visit_hash: string;
+        };
+        ManualGate: {
+            stage: string;
+            token: string;
+            transitions: components["schemas"]["ManualTransitionChoice"][];
+            version: number;
+            visit_hash: string;
+        };
+        ManualGateStatus: {
+            decision?: components["schemas"]["ManualDecision"];
+            stage: string;
+            token: string;
+            transitions: components["schemas"]["ManualTransitionChoice"][];
+        };
+        ManualTransitionChoice: {
+            index: number;
+            label?: string;
+            to: string;
         };
         MediaType: {
             examples?: {
@@ -11149,6 +11327,14 @@ export interface components {
              */
             timestamp: string;
         };
+        RecoveryBudgets: {
+            restarts: {
+                [key: string]: number;
+            };
+            retries: {
+                [key: string]: number;
+            };
+        };
         RedactPreviewEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
             finding_count: number;
@@ -11372,6 +11558,26 @@ export interface components {
              */
             timestamp: string;
             warnings?: string[];
+        };
+        ResumePane: {
+            action: string;
+            agent_type: string;
+            command?: string;
+            error?: string;
+            index: number;
+            pane_id?: string;
+            provider?: string;
+            session_id?: string;
+            title?: string;
+            window_index: number;
+        };
+        ResumeResult: {
+            failed: number;
+            launched: number;
+            panes: components["schemas"]["ResumePane"][];
+            resumed: number;
+            session: string;
+            skipped: number;
         };
         ReviewSuggestion: {
             agent: string;
@@ -11741,6 +11947,23 @@ export interface components {
             name: string;
             /** Format: date-time */
             saved_at: string;
+        };
+        SavedSessionRestoreEnvelopeResponse: {
+            action: string;
+            launch: boolean;
+            name: string;
+            request_id?: string;
+            resume?: components["schemas"]["ResumeResult"];
+            session: string;
+            state?: components["schemas"]["SessionState"];
+            success: boolean;
+            timestamp: string;
+        };
+        SavedSessionRestoreRequest: {
+            force?: boolean;
+            launch?: boolean;
+            native?: boolean;
+            target_name?: string;
         };
         SavedSessionSaveRequest: {
             name?: string;
@@ -13107,10 +13330,14 @@ export interface components {
             output_format?: string;
             /** @description Preset used */
             preset_used?: string;
+            /** @description Profile set */
+            profile_set?: string;
             /** @description Prompt deliveries */
             prompt_deliveries?: components["schemas"]["SpawnPromptDelivery"][];
             /** @description Recovery */
             recovery?: components["schemas"]["SpawnRecovery"];
+            /** @description Seat skips */
+            seat_skips?: components["schemas"]["CAAMSeatSkip"][];
             /** @description Session */
             session: string;
             /** @description Stagger */
@@ -13199,6 +13426,10 @@ export interface components {
             pane: string;
             /** @description Pane i d */
             pane_id?: string;
+            /** @description Persona */
+            persona?: string;
+            /** @description Persona prompt source */
+            persona_prompt_source?: string;
             /** @description Ready */
             ready: boolean;
             /** @description Startup ms */
@@ -13209,6 +13440,78 @@ export interface components {
             type: string;
             /** @description Variant */
             variant?: string;
+            /** @description Worktree path */
+            worktree_path?: string;
+        };
+        StageDispatch: {
+            pane: string;
+            pi_prompt_echo_hash?: string;
+            pi_prompt_echo_length?: number;
+            prompt_echo_hash?: string;
+            prompt_echo_length?: number;
+            resolution?: string;
+            resolution_token?: string;
+            /** Format: date-time */
+            resolved_at?: string;
+            role: string;
+            status: string;
+            turn: number;
+        };
+        StageEvidence: {
+            matches?: {
+                [key: string]: string[];
+            };
+            panes: {
+                [key: string]: components["schemas"]["StagePaneEvidence"];
+            };
+            round: number;
+            stage: string;
+            /** Format: date-time */
+            started_at: string;
+            version: number;
+        };
+        StageFileEvidence: {
+            round: number;
+            stage: string;
+            /** Format: date-time */
+            started_at: string;
+            triggers: {
+                [key: string]: components["schemas"]["FileTriggerState"];
+            };
+            version: number;
+        };
+        StagePaneEvidence: {
+            agent_type?: string;
+            capture: string;
+            fresh?: string;
+            /** Format: date-time */
+            last_activity: string;
+            pid: number;
+            screen_hash?: string;
+        };
+        StageRecord: {
+            /** Format: date-time */
+            completed_at: string;
+            duration_sec: number;
+            manual_decision?: components["schemas"]["ManualDecision"];
+            result: string;
+            stage: string;
+            /** Format: date-time */
+            started_at: string;
+            trigger: string;
+        };
+        StageTimeout: {
+            action: string;
+            /** Format: date-time */
+            deadline: string;
+            handled: boolean;
+            handling: boolean;
+            round: number;
+            stage: string;
+            /** Format: date-time */
+            started_at: string;
+            stop_reason?: string;
+            version: number;
         };
         StaggerSpec: {
             Enabled: boolean;
@@ -14637,6 +14940,29 @@ export interface components {
             Profile: string;
             Role: string;
         };
+        WorkflowControlEnvelopeResponse: {
+            action: string;
+            checkpoint_token?: string;
+            decision?: components["schemas"]["ManualDecision"];
+            dry_run?: boolean;
+            manual_gate?: components["schemas"]["ManualGateStatus"];
+            request_id?: string;
+            session?: string;
+            stage?: string;
+            state?: components["schemas"]["WorkflowState"];
+            success: boolean;
+            timestamp: string;
+            workflow?: string;
+        };
+        WorkflowError: {
+            agent_id?: string;
+            message: string;
+            retryable?: boolean;
+            stage: string;
+            /** Format: date-time */
+            timestamp: string;
+            type: string;
+        };
         WorkflowInfo: {
             agent_count: number;
             coordination: string;
@@ -14644,6 +14970,14 @@ export interface components {
             name: string;
             roles?: string[];
             source: string;
+        };
+        WorkflowRunRequest: {
+            dry_run?: boolean;
+            project_dir?: string;
+            session: string;
+            variables?: {
+                [key: string]: string;
+            };
         };
         WorkflowSettings: {
             limits?: components["schemas"]["LimitsConfig"];
@@ -14677,12 +15011,59 @@ export interface components {
             source: string;
             validated_triggers?: components["schemas"]["WorkflowTransitionDiagnostic"][];
         };
+        WorkflowState: {
+            agents: {
+                [key: string]: string;
+            };
+            completed: boolean;
+            current_stage: string;
+            dispatches: components["schemas"]["StageDispatch"][];
+            errors: components["schemas"]["WorkflowError"][];
+            evidence?: components["schemas"]["StageEvidence"];
+            files?: components["schemas"]["StageFileEvidence"];
+            history: components["schemas"]["StageRecord"][];
+            manual_gate?: components["schemas"]["ManualGate"];
+            next_by_role?: {
+                [key: string]: number;
+            };
+            pane_pids?: {
+                [key: string]: number;
+            };
+            pause_reason?: string;
+            paused: boolean;
+            /** Format: date-time */
+            paused_at?: string;
+            project_root?: string;
+            recovery?: components["schemas"]["RecoveryBudgets"];
+            resume_version?: number;
+            session: string;
+            /** Format: date-time */
+            stage_started_at: string;
+            template_hash?: string;
+            timeout?: components["schemas"]["StageTimeout"];
+            tmux_endpoint?: string;
+            turn: number;
+            variables: {
+                [key: string]: string;
+            };
+            workflow: string;
+        };
+        WorkflowStopRequest: {
+            project_dir?: string;
+            reason?: string;
+        };
         WorkflowTransitionDiagnostic: {
             error?: string;
             from: string;
             runtime_type: string;
             to: string;
             valid: boolean;
+        };
+        WorkflowTriggerRequest: {
+            project_dir?: string;
+            reason: string;
+            token: string;
+            transition: number;
         };
         WorkflowsEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
@@ -26405,6 +26786,78 @@ export interface operations {
             };
         };
     };
+    post_api_v1_saved_sessions_name_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SavedSessionRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionRestoreEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     post_api_v1_saved_sessions_name_unarchive: {
         parameters: {
             query?: never;
@@ -31845,6 +32298,222 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_workflows_name_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_workflows_name_stop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WorkflowStopRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_workflows_name_trigger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
                 };
             };
             /** @description Bad request */

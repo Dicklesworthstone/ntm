@@ -14516,6 +14516,98 @@
         }
       }
     },
+    "/api/v1/saved-sessions/{name}/restore": {
+      "post": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions restore",
+        "description": "Served route `POST /api/v1/saved-sessions/{name}/restore`. Handler: `handleSavedSessionsRestoreV1`. Response shape reflected from Go type `SavedSessionRestoreEnvelopeResponse`.",
+        "operationId": "post_api_v1_saved_sessions_name_restore",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedSessionRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionRestoreEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/saved-sessions/{name}/unarchive": {
       "post": {
         "tags": [
@@ -21649,6 +21741,284 @@
         }
       }
     },
+    "/api/v1/workflows/{name}/run": {
+      "post": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows run",
+        "description": "Served route `POST /api/v1/workflows/{name}/run`. Handler: `handleWorkflowsRunV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.",
+        "operationId": "post_api_v1_workflows_name_run",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/{name}/stop": {
+      "post": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows stop",
+        "description": "Served route `POST /api/v1/workflows/{name}/stop`. Handler: `handleWorkflowsStopV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.",
+        "operationId": "post_api_v1_workflows_name_stop",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowStopRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/{name}/trigger": {
+      "post": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows trigger",
+        "description": "Served route `POST /api/v1/workflows/{name}/trigger`. Handler: `handleWorkflowsTriggerV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.",
+        "operationId": "post_api_v1_workflows_name_trigger",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowTriggerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/worktrees": {
       "get": {
         "tags": [
@@ -24057,16 +24427,34 @@
           "label": {
             "type": "string"
           },
+          "no_hooks": {
+            "type": "boolean"
+          },
           "oc_count": {
             "type": "integer"
           },
           "omp_count": {
             "type": "integer"
           },
+          "personas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "preset": {
             "type": "string"
           },
+          "profile_set": {
+            "type": "string"
+          },
           "wait_ready": {
+            "type": "boolean"
+          },
+          "worktree_name": {
+            "type": "string"
+          },
+          "worktrees": {
             "type": "boolean"
           }
         }
@@ -27478,6 +27866,27 @@
           "Value"
         ]
       },
+      "CAAMSeatSkip": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string",
+            "description": "Agent type"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason"
+          }
+        },
+        "required": [
+          "agent_type",
+          "reason"
+        ]
+      },
       "CASSCapabilitiesEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -28139,6 +28548,13 @@
           "filter": {
             "description": "Filter",
             "$ref": "#/components/schemas/CapabilitiesFilter"
+          },
+          "harnesses": {
+            "type": "array",
+            "description": "Harnesses",
+            "items": {
+              "$ref": "#/components/schemas/HarnessCapabilitySummary"
+            }
           },
           "hint": {
             "type": "string",
@@ -33003,6 +33419,75 @@
           "size"
         ]
       },
+      "FileTriggerStamp": {
+        "type": "object",
+        "properties": {
+          "mod_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "mod_time",
+          "sha256",
+          "size"
+        ]
+      },
+      "FileTriggerState": {
+        "type": "object",
+        "properties": {
+          "baseline": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FileTriggerStamp"
+            }
+          },
+          "excludes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fired": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "transition_index": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "baseline",
+          "fired",
+          "kind",
+          "pattern",
+          "project_root",
+          "stage",
+          "transition_index",
+          "version"
+        ]
+      },
       "Finding": {
         "type": "object",
         "properties": {
@@ -34339,6 +34824,87 @@
           "success",
           "timestamp",
           "total_returned"
+        ]
+      },
+      "HarnessCapabilitySummary": {
+        "type": "object",
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "description": "Aliases",
+            "items": {
+              "type": "string"
+            }
+          },
+          "builtin_compact_command": {
+            "type": "string",
+            "description": "Builtin compact command"
+          },
+          "caam_tool": {
+            "type": "string",
+            "description": "C a a m tool"
+          },
+          "composer_gated": {
+            "type": "boolean",
+            "description": "Composer gated"
+          },
+          "default_context_window": {
+            "type": "integer",
+            "description": "Default context window"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Display name"
+          },
+          "graceful_exit": {
+            "type": "string",
+            "description": "Graceful exit"
+          },
+          "history_clear_command": {
+            "type": "string",
+            "description": "History clear command"
+          },
+          "needs_double_enter": {
+            "type": "boolean",
+            "description": "Needs double enter"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider"
+          },
+          "supports_automated_delivery": {
+            "type": "boolean",
+            "description": "Supports automated delivery"
+          },
+          "supports_automated_relaunch": {
+            "type": "boolean",
+            "description": "Supports automated relaunch"
+          },
+          "supports_builtin_compact": {
+            "type": "boolean",
+            "description": "Supports builtin compact"
+          },
+          "supports_history_clear": {
+            "type": "boolean",
+            "description": "Supports history clear"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type"
+          }
+        },
+        "required": [
+          "type",
+          "display_name",
+          "provider",
+          "needs_double_enter",
+          "graceful_exit",
+          "supports_builtin_compact",
+          "supports_history_clear",
+          "composer_gated",
+          "default_context_window",
+          "supports_automated_delivery",
+          "supports_automated_relaunch"
         ]
       },
       "HealthBackpressureEnvelopeResponse": {
@@ -36807,6 +37373,126 @@
           "summary",
           "thread_id",
           "timestamp"
+        ]
+      },
+      "ManualDecision": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "transition": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "visit_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "requested_at",
+          "session",
+          "stage",
+          "to",
+          "token",
+          "transition",
+          "version",
+          "visit_hash"
+        ]
+      },
+      "ManualGate": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualTransitionChoice"
+            }
+          },
+          "version": {
+            "type": "integer"
+          },
+          "visit_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "token",
+          "transitions",
+          "version",
+          "visit_hash"
+        ]
+      },
+      "ManualGateStatus": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ManualDecision"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualTransitionChoice"
+            }
+          }
+        },
+        "required": [
+          "stage",
+          "token",
+          "transitions"
+        ]
+      },
+      "ManualTransitionChoice": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "to"
         ]
       },
       "MediaType": {
@@ -41910,6 +42596,27 @@
           "change"
         ]
       },
+      "RecoveryBudgets": {
+        "type": "object",
+        "properties": {
+          "restarts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "retries": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "restarts",
+          "retries"
+        ]
+      },
       "RedactPreviewEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -42639,6 +43346,81 @@
           "stage",
           "success",
           "timestamp"
+        ]
+      },
+      "ResumePane": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "window_index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "agent_type",
+          "index",
+          "window_index"
+        ]
+      },
+      "ResumeResult": {
+        "type": "object",
+        "properties": {
+          "failed": {
+            "type": "integer"
+          },
+          "launched": {
+            "type": "integer"
+          },
+          "panes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResumePane"
+            }
+          },
+          "resumed": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "failed",
+          "launched",
+          "panes",
+          "resumed",
+          "session",
+          "skipped"
         ]
       },
       "ReviewSuggestion": {
@@ -43770,6 +44552,63 @@
           "name",
           "saved_at"
         ]
+      },
+      "SavedSessionRestoreEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "launch": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "resume": {
+            "$ref": "#/components/schemas/ResumeResult"
+          },
+          "session": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "launch",
+          "name",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SavedSessionRestoreRequest": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "launch": {
+            "type": "boolean"
+          },
+          "native": {
+            "type": "boolean"
+          },
+          "target_name": {
+            "type": "string"
+          }
+        }
       },
       "SavedSessionSaveRequest": {
         "type": "object",
@@ -48009,6 +48848,10 @@
             "type": "string",
             "description": "Preset used"
           },
+          "profile_set": {
+            "type": "string",
+            "description": "Profile set"
+          },
           "prompt_deliveries": {
             "type": "array",
             "description": "Prompt deliveries",
@@ -48019,6 +48862,13 @@
           "recovery": {
             "description": "Recovery",
             "$ref": "#/components/schemas/SpawnRecovery"
+          },
+          "seat_skips": {
+            "type": "array",
+            "description": "Seat skips",
+            "items": {
+              "$ref": "#/components/schemas/CAAMSeatSkip"
+            }
           },
           "session": {
             "type": "string",
@@ -48235,6 +49085,14 @@
             "type": "string",
             "description": "Pane i d"
           },
+          "persona": {
+            "type": "string",
+            "description": "Persona"
+          },
+          "persona_prompt_source": {
+            "type": "string",
+            "description": "Persona prompt source"
+          },
           "ready": {
             "type": "boolean",
             "description": "Ready"
@@ -48254,6 +49112,10 @@
           "variant": {
             "type": "string",
             "description": "Variant"
+          },
+          "worktree_path": {
+            "type": "string",
+            "description": "Worktree path"
           }
         },
         "required": [
@@ -48262,6 +49124,231 @@
           "title",
           "ready",
           "startup_ms"
+        ]
+      },
+      "StageDispatch": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "pi_prompt_echo_hash": {
+            "type": "string"
+          },
+          "pi_prompt_echo_length": {
+            "type": "integer"
+          },
+          "prompt_echo_hash": {
+            "type": "string"
+          },
+          "prompt_echo_length": {
+            "type": "integer"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "resolution_token": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "turn": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pane",
+          "role",
+          "status",
+          "turn"
+        ]
+      },
+      "StageEvidence": {
+        "type": "object",
+        "properties": {
+          "matches": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "panes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StagePaneEvidence"
+            }
+          },
+          "round": {
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "panes",
+          "round",
+          "stage",
+          "started_at",
+          "version"
+        ]
+      },
+      "StageFileEvidence": {
+        "type": "object",
+        "properties": {
+          "round": {
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "triggers": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FileTriggerState"
+            }
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "round",
+          "stage",
+          "started_at",
+          "triggers",
+          "version"
+        ]
+      },
+      "StagePaneEvidence": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "capture": {
+            "type": "string"
+          },
+          "fresh": {
+            "type": "string"
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "screen_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture",
+          "last_activity",
+          "pid"
+        ]
+      },
+      "StageRecord": {
+        "type": "object",
+        "properties": {
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_sec": {
+            "type": "integer"
+          },
+          "manual_decision": {
+            "$ref": "#/components/schemas/ManualDecision"
+          },
+          "result": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trigger": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "completed_at",
+          "duration_sec",
+          "result",
+          "stage",
+          "started_at",
+          "trigger"
+        ]
+      },
+      "StageTimeout": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "handled": {
+            "type": "boolean"
+          },
+          "handling": {
+            "type": "boolean"
+          },
+          "round": {
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stop_reason": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "deadline",
+          "handled",
+          "handling",
+          "round",
+          "stage",
+          "started_at",
+          "version"
         ]
       },
       "StaggerSpec": {
@@ -52578,6 +53665,82 @@
           "Role"
         ]
       },
+      "WorkflowControlEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "checkpoint_token": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ManualDecision"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "manual_gate": {
+            "$ref": "#/components/schemas/ManualGateStatus"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/WorkflowState"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "workflow": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "success",
+          "timestamp"
+        ]
+      },
+      "WorkflowError": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "stage",
+          "timestamp",
+          "type"
+        ]
+      },
       "WorkflowInfo": {
         "type": "object",
         "properties": {
@@ -52609,6 +53772,29 @@
           "description",
           "name",
           "source"
+        ]
+      },
+      "WorkflowRunRequest": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "session"
         ]
       },
       "WorkflowSettings": {
@@ -52731,6 +53917,134 @@
           "source"
         ]
       },
+      "WorkflowState": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "current_stage": {
+            "type": "string"
+          },
+          "dispatches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StageDispatch"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowError"
+            }
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/StageEvidence"
+          },
+          "files": {
+            "$ref": "#/components/schemas/StageFileEvidence"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StageRecord"
+            }
+          },
+          "manual_gate": {
+            "$ref": "#/components/schemas/ManualGate"
+          },
+          "next_by_role": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "pane_pids": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "pause_reason": {
+            "type": "string"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "paused_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/RecoveryBudgets"
+          },
+          "resume_version": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stage_started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "template_hash": {
+            "type": "string"
+          },
+          "timeout": {
+            "$ref": "#/components/schemas/StageTimeout"
+          },
+          "tmux_endpoint": {
+            "type": "string"
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "workflow": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agents",
+          "completed",
+          "current_stage",
+          "dispatches",
+          "errors",
+          "history",
+          "paused",
+          "session",
+          "stage_started_at",
+          "turn",
+          "variables",
+          "workflow"
+        ]
+      },
+      "WorkflowStopRequest": {
+        "type": "object",
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "WorkflowTransitionDiagnostic": {
         "type": "object",
         "properties": {
@@ -52755,6 +54069,28 @@
           "runtime_type",
           "to",
           "valid"
+        ]
+      },
+      "WorkflowTriggerRequest": {
+        "type": "object",
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "transition": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reason",
+          "token",
+          "transition"
         ]
       },
       "WorkflowsEnvelopeResponse": {

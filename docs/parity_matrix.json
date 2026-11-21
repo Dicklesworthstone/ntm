@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 270,
+  "count": 274,
   "endpoints": [
     {
       "method": "GET",
@@ -931,6 +931,11 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/saved-sessions/{name}/restore",
+      "handler": "handleSavedSessionsRestoreV1"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/saved-sessions/{name}/unarchive",
       "handler": "handleSavedSessionsUnarchiveV1"
     },
@@ -1327,6 +1332,21 @@
       "method": "GET",
       "path": "/api/v1/workflows/{name}",
       "handler": "handleWorkflowsShowV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows/{name}/run",
+      "handler": "handleWorkflowsRunV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows/{name}/stop",
+      "handler": "handleWorkflowsStopV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows/{name}/trigger",
+      "handler": "handleWorkflowsTriggerV1"
     },
     {
       "method": "GET",

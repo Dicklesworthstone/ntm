@@ -1504,6 +1504,11 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Response: SavedSessionsEnvelopeResponse{},
 		Envelope: true,
 	},
+	"handleSavedSessionsRestoreV1": {
+		Response: SavedSessionRestoreEnvelopeResponse{},
+		Envelope: true,
+		Request:  SavedSessionRestoreRequest{},
+	},
 	"handleSessionMappingV1": {
 		Response: SessionMappingEnvelopeResponse{},
 		Envelope: true,
@@ -1526,6 +1531,23 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 			{Name: "role", Type: "string", Description: "Optional agent role filter for displayed workflow agents."},
 			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
 		},
+	},
+	"handleWorkflowsRunV1": {
+		Response:   WorkflowControlEnvelopeResponse{},
+		Envelope:   true,
+		Request:    WorkflowRunRequest{},
+		RequestReq: true,
+	},
+	"handleWorkflowsTriggerV1": {
+		Response:   WorkflowControlEnvelopeResponse{},
+		Envelope:   true,
+		Request:    WorkflowTriggerRequest{},
+		RequestReq: true,
+	},
+	"handleWorkflowsStopV1": {
+		Response: WorkflowControlEnvelopeResponse{},
+		Envelope: true,
+		Request:  WorkflowStopRequest{},
 	},
 	"handleSequencesCreateV1": {
 		Response:   SequenceEnvelopeResponse{},

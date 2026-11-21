@@ -15,33 +15,16 @@ import { WorkspaceConfigPanel } from "@/components/overview/WorkspaceConfigPanel
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
-  apiFetch,
   formatApiErrorMessage,
-  type ApiEnvelope,
+  typedGet,
   type components,
 } from "@/lib/api/client";
 
-interface SessionRecord {
-  id?: string;
-  name: string;
-  project_path?: string;
-  created_at?: string;
-  status?: string;
-}
-
-interface SessionsResponse extends ApiEnvelope {
-  sessions?: SessionRecord[];
-  count?: number;
-}
-
-type HealthBackpressureResponse =
-  components["schemas"]["HealthBackpressureEnvelopeResponse"];
-type AttentionDigest = components["schemas"]["AttentionDigest"];
-type WorktreesListResponse =
-  components["schemas"]["WorktreesListEnvelopeResponse"];
-type JobsListResponse = components["schemas"]["JobsListEnvelopeResponse"];
 type ServerDoctorResponse =
   components["schemas"]["ServerDoctorEnvelopeResponse"];
+type SessionRecord = NonNullable<
+  Awaited<ReturnType<typeof typedGet<"/api/v1/sessions">>>["sessions"]
+>[number];
 
 interface DoctorCheckRow {
   id: string;
@@ -298,36 +281,35 @@ export default function SessionsPage() {
     error,
   } = useQuery({
     queryKey: ["sessions"],
-    queryFn: () => apiFetch<SessionsResponse>("/api/v1/sessions"),
+    queryFn: () => typedGet("/api/v1/sessions"),
     refetchInterval: 10000, // Poll every 10 seconds as backup
   });
 
   // Secondary pulse queries are strictly non-blocking: failures fall back in-card
   const backpressureQuery = useQuery({
     queryKey: ["overview", "backpressure"],
-    queryFn: () =>
-      apiFetch<HealthBackpressureResponse>("/api/v1/health/backpressure"),
+    queryFn: () => typedGet("/api/v1/health/backpressure"),
     refetchInterval: 15000,
     retry: false,
   });
 
   const attentionQuery = useQuery({
     queryKey: ["overview", "attention-digest"],
-    queryFn: () => apiFetch<AttentionDigest>("/api/v1/attention/digest"),
+    queryFn: () => typedGet("/api/v1/attention/digest"),
     refetchInterval: 15000,
     retry: false,
   });
 
   const worktreesQuery = useQuery({
     queryKey: ["overview", "worktrees"],
-    queryFn: () => apiFetch<WorktreesListResponse>("/api/v1/worktrees"),
+    queryFn: () => typedGet("/api/v1/worktrees"),
     refetchInterval: 20000,
     retry: false,
   });
 
   const jobsQuery = useQuery({
     queryKey: ["overview", "jobs"],
-    queryFn: () => apiFetch<JobsListResponse>("/api/v1/jobs/"),
+    queryFn: () => typedGet("/api/v1/jobs/"),
     refetchInterval: 15000,
     retry: false,
   });
@@ -337,9 +319,9 @@ export default function SessionsPage() {
   // On-demand ONLY: /api/v1/doctor is never polled on mount.
   const doctorMutation = useMutation({
     mutationFn: (withContention?: boolean) =>
-      apiFetch<ServerDoctorResponse>(
-        withContention ? "/api/v1/doctor?contention=true" : "/api/v1/doctor"
-      ),
+      typedGet("/api/v1/doctor", {
+        params: { query: withContention ? { contention: true } : undefined },
+      }),
   });
 
   const doctorReport = useMemo(

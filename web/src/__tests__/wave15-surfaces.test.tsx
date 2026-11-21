@@ -121,6 +121,13 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
           );
         }
 
+        if (method === "POST" && url.pathname === "/api/v1/saved-sessions/active-snap/restore") {
+          return new Response(
+            JSON.stringify({ success: true, action: "restore", name: "active-snap", session: "ntm_live" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
     ) as unknown as typeof fetch;
@@ -131,6 +138,17 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     await screen.findByText(/Antigravity \(agy\): 1/);
     expect(screen.getByText(/antigravity:agy-uuid-99/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await screen.findByTestId("saved-session-restore-confirm");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.path === "/api/v1/saved-sessions/active-snap/restore"
+        )
+      ).toBe(true)
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Capture Snapshot" }));
     await waitFor(() =>
@@ -243,6 +261,43 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
           );
         }
 
+        if (url.pathname === "/api/v1/workflows/red-green/run" && method === "POST") {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              action: "run",
+              workflow: "red-green",
+              session: "ntm_live",
+              stage: "red",
+              manual_gate: { token: "gate-tok-1" },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        if (url.pathname === "/api/v1/workflows/ntm_live/trigger" && method === "POST") {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              action: "trigger",
+              session: "ntm_live",
+              decision: { to: "green" },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        if (url.pathname === "/api/v1/workflows/ntm_live/stop" && method === "POST") {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              action: "stop",
+              session: "ntm_live",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
         if (url.pathname === "/api/v1/workflows/red-green") {
           return new Response(
             JSON.stringify({
@@ -316,9 +371,9 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
                 sequence: "review-loop",
                 pane: "%1",
                 position: 0,
-                total: 2,
                 prompt: "inspect",
-                done: false,
+                complete: false,
+                advanced: false,
               },
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
@@ -334,9 +389,8 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
                 sequence: "review-loop",
                 pane: "%1",
                 position: 1,
-                total: 2,
                 prompt: "challenge",
-                done: false,
+                complete: false,
                 advanced: true,
               },
             }),
@@ -367,6 +421,32 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
     await waitFor(() =>
       expect(
         calls.some((c) => c.method === "POST" && c.path === "/api/v1/sequences/review-loop/advance")
+      ).toBe(true)
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/red-green/run")
+      ).toBe(true)
+    );
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("Workflow Gate Token") as HTMLInputElement).value).toBe(
+        "gate-tok-1"
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Trigger Manual Gate" }));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/ntm_live/trigger")
+      ).toBe(true)
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop Workflow" }));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/ntm_live/stop")
       ).toBe(true)
     );
   });

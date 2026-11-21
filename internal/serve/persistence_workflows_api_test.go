@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 func TestPersistenceWorkflowsOpenAPISchemaContracts(t *testing.T) {
@@ -32,9 +33,13 @@ func TestPersistenceWorkflowsOpenAPISchemaContracts(t *testing.T) {
 		{http.MethodGet, "/api/v1/saved-sessions/{name}", "#/components/schemas/SavedSessionsEnvelopeResponse", ""},
 		{http.MethodPost, "/api/v1/saved-sessions/{name}/archive", "#/components/schemas/SavedSessionsEnvelopeResponse", ""},
 		{http.MethodPost, "/api/v1/saved-sessions/{name}/unarchive", "#/components/schemas/SavedSessionsEnvelopeResponse", ""},
+		{http.MethodPost, "/api/v1/saved-sessions/{name}/restore", "#/components/schemas/SavedSessionRestoreEnvelopeResponse", "#/components/schemas/SavedSessionRestoreRequest"},
 		{http.MethodGet, "/api/v1/sessions/{id}/mapping", "#/components/schemas/SessionMappingEnvelopeResponse", ""},
 		{http.MethodGet, "/api/v1/workflows", "#/components/schemas/WorkflowsEnvelopeResponse", ""},
 		{http.MethodGet, "/api/v1/workflows/{name}", "#/components/schemas/WorkflowsEnvelopeResponse", ""},
+		{http.MethodPost, "/api/v1/workflows/{name}/run", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowRunRequest"},
+		{http.MethodPost, "/api/v1/workflows/{name}/trigger", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowTriggerRequest"},
+		{http.MethodPost, "/api/v1/workflows/{name}/stop", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowStopRequest"},
 		{http.MethodPost, "/api/v1/sequences", "#/components/schemas/SequenceEnvelopeResponse", "#/components/schemas/SequenceCreateRequest"},
 		{http.MethodGet, "/api/v1/sequences/{name}/next", "#/components/schemas/SequenceEnvelopeResponse", ""},
 		{http.MethodPost, "/api/v1/sequences/{name}/advance", "#/components/schemas/SequenceEnvelopeResponse", "#/components/schemas/SequenceAdvanceRequest"},
@@ -230,6 +235,119 @@ spec:
 	wfMissingRec := doReq(http.MethodGet, "/api/v1/workflows/missing-wf-xyz", "")
 	if statusOf(wfMissingRec) != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing workflow, got %d", statusOf(wfMissingRec))
+	}
+
+	// 3b. Saved-session restore validation (404 on missing snapshot, 400 on invalid target_name)
+	restoreMissingRec := doReq(http.MethodPost, "/api/v1/saved-sessions/missing-snap-xyz/restore", `{}`)
+	if statusOf(restoreMissingRec) != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing saved-session restore, got %d (%s)", statusOf(restoreMissingRec), restoreMissingRec.Body.String())
+	}
+	restoreBadTargetRec := doReq(http.MethodPost, "/api/v1/saved-sessions/wave15-rest-snap/restore", `{"target_name":"bad:name"}`)
+	if statusOf(restoreBadTargetRec) != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid target_name restore, got %d (%s)", statusOf(restoreBadTargetRec), restoreBadTargetRec.Body.String())
+	}
+
+	// 3c. Workflow run (dry-run + real checkpoint with manual gate) -> trigger -> stop lifecycle
+	if err := os.MkdirAll(filepath.Join(repoDir, ".ntm", "workflows"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.ntm/workflows): %v", err)
+	}
+	manualWfTOML := `name = "rest-manual-gate"
+description = "REST workflow control E2E"
+coordination = "pipeline"
+
+[[agents]]
+profile = "build"
+role = "build"
+
+[flow]
+initial = "review"
+stages = ["review", "ship"]
+
+[[flow.transitions]]
+from = "review"
+to = "ship"
+[flow.transitions.trigger]
+type = "manual"
+label = "Approve release"
+`
+	if err := os.WriteFile(filepath.Join(repoDir, ".ntm", "workflows", "rest-manual-gate.toml"), []byte(manualWfTOML), 0o644); err != nil {
+		t.Fatalf("WriteFile(rest-manual-gate.toml): %v", err)
+	}
+
+	wfDryRunRec := doReq(http.MethodPost, "/api/v1/workflows/rest-manual-gate/run", `{"session":"wf_rest_sess","dry_run":true,"project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfDryRunRec) != http.StatusOK {
+		t.Fatalf("POST /api/v1/workflows/rest-manual-gate/run dry_run = %d, body = %s", statusOf(wfDryRunRec), wfDryRunRec.Body.String())
+	}
+	var wfDryRunResp WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(wfDryRunRec.Body.Bytes(), &wfDryRunResp); err != nil || !wfDryRunResp.DryRun || wfDryRunResp.Stage != "review" {
+		t.Fatalf("unexpected dry_run response: %+v (%v)", wfDryRunResp, err)
+	}
+
+	wfRunRec := doReq(http.MethodPost, "/api/v1/workflows/rest-manual-gate/run", `{"session":"wf_rest_sess","project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfRunRec) != http.StatusOK {
+		t.Fatalf("POST /api/v1/workflows/rest-manual-gate/run = %d, body = %s", statusOf(wfRunRec), wfRunRec.Body.String())
+	}
+	var wfRunResp WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(wfRunRec.Body.Bytes(), &wfRunResp); err != nil || wfRunResp.CheckpointToken == "" || wfRunResp.State == nil || wfRunResp.State.TemplateHash == "" {
+		t.Fatalf("expected saved checkpoint with template hash from workflow run, got %+v (%v)", wfRunResp, err)
+	}
+
+	// Mark stage deliveries completed on the durable checkpoint (preserving the
+	// delivery-journal safety invariant) so RefreshManualGate publishes a gate token.
+	wfStore := workflowStateStoreForProject(repoDir)
+	wfLoader := workflow.NewLoader()
+	wfLoader.ProjectDir = repoDir
+	wfTmpl, err := wfLoader.Get("rest-manual-gate")
+	if err != nil {
+		t.Fatalf("reload rest-manual-gate: %v", err)
+	}
+	loadedWfState, err := wfStore.Load("wf_rest_sess")
+	if err != nil || loadedWfState == nil {
+		t.Fatalf("load wf_rest_sess checkpoint: %+v (%v)", loadedWfState, err)
+	}
+	loadedWfState.Agents = map[string]string{"%1": "build"}
+	loadedWfState.PanePIDs = map[string]int{"%1": 1001}
+	loadedWfState.Evidence = &workflow.StageEvidence{
+		Version:   1,
+		Stage:     loadedWfState.CurrentStage,
+		StartedAt: loadedWfState.StageStartedAt,
+		Round:     loadedWfState.Turn,
+		Panes: map[string]workflow.StagePaneEvidence{
+			"%1": {PID: 1001},
+		},
+	}
+	loadedWfState.Dispatches = []workflow.StageDispatch{{Pane: "%1", Role: "build", Turn: 1, Status: "delivered"}}
+	if err := loadedWfState.RefreshManualGate(wfTmpl); err != nil {
+		t.Fatalf("RefreshManualGate: %v", err)
+	}
+	if err := wfStore.Save(loadedWfState); err != nil {
+		t.Fatalf("Save manual gate checkpoint: %v", err)
+	}
+	if loadedWfState.ManualGate == nil || loadedWfState.ManualGate.Token == "" {
+		t.Fatalf("expected published manual gate token, got %+v", loadedWfState.ManualGate)
+	}
+
+	wfTrigRec := doReq(http.MethodPost, "/api/v1/workflows/wf_rest_sess/trigger", `{"token":`+strconvQuote(loadedWfState.ManualGate.Token)+`,"transition":0,"reason":"Approved via REST","project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfTrigRec) != http.StatusOK {
+		t.Fatalf("POST /api/v1/workflows/wf_rest_sess/trigger = %d, body = %s", statusOf(wfTrigRec), wfTrigRec.Body.String())
+	}
+	var wfTrigResp WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(wfTrigRec.Body.Bytes(), &wfTrigResp); err != nil || wfTrigResp.Decision == nil || wfTrigResp.Decision.To != "ship" {
+		t.Fatalf("unexpected trigger response: %+v (%v)", wfTrigResp, err)
+	}
+
+	wfStopRec := doReq(http.MethodPost, "/api/v1/workflows/wf_rest_sess/stop", `{"reason":"Paused by operator","project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfStopRec) != http.StatusOK {
+		t.Fatalf("POST /api/v1/workflows/wf_rest_sess/stop = %d, body = %s", statusOf(wfStopRec), wfStopRec.Body.String())
+	}
+	var wfStopResp WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(wfStopRec.Body.Bytes(), &wfStopResp); err != nil || wfStopResp.State == nil || !wfStopResp.State.Paused {
+		t.Fatalf("expected paused state after stop, got %+v (%v)", wfStopResp, err)
+	}
+
+	wfStopMissingRec := doReq(http.MethodPost, "/api/v1/workflows/no_such_wf_session/stop", `{"project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfStopMissingRec) != http.StatusNotFound {
+		t.Fatalf("expected 404 stopping missing workflow session, got %d (%s)", statusOf(wfStopMissingRec), wfStopMissingRec.Body.String())
 	}
 
 	// 4. Sequences create -> next -> advance (expected_position=0) -> idempotent retry -> 409 conflict on future expected_position

@@ -11,48 +11,19 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  apiFetch,
   formatApiErrorMessage,
-  type ApiEnvelope,
+  typedGet,
+  type components,
 } from "@/lib/api/client";
 
-export interface PaneBadgeIdentityRecord {
-  pane_id: string;
-  pane_index: number;
-  assigned_name?: string;
-  resolved_name?: string;
-  label?: string;
-  assignment_state?: string;
-  observation_state?: string;
-  lifecycle?: string;
-  published?: boolean;
-  problems?: string[];
-}
-
-export interface AgentMappingEntryItem {
-  name: string;
-  session: string;
-  pane_index: number;
-  pane_id: string;
-  pane_title?: string;
-  agent_type?: string;
-  identity?: PaneBadgeIdentityRecord;
-}
-
-export interface SessionMappingEnvelope extends ApiEnvelope {
-  session: string;
-  count: number;
-  entries: AgentMappingEntryItem[];
-  discrepancies: PaneBadgeIdentityRecord[];
-  badges?: {
-    enabled: boolean;
-    published: number;
-    cleared: number;
-    windows_prepared: number;
-    windows_restored: number;
-    tmux_error?: string;
-  };
-}
+export type SessionMappingEnvelope =
+  components["schemas"]["SessionMappingEnvelopeResponse"];
+export type AgentMappingEntryItem = NonNullable<
+  SessionMappingEnvelope["entries"]
+>[number];
+export type PaneBadgeIdentityRecord = NonNullable<
+  SessionMappingEnvelope["discrepancies"]
+>[number];
 
 export function AgentMappingAndBadgesPanel({
   sessionOptions = [],
@@ -65,9 +36,9 @@ export function AgentMappingAndBadgesPanel({
   const mappingQuery = useQuery({
     queryKey: ["session-agent-mapping", queriedSession],
     queryFn: () =>
-      apiFetch<SessionMappingEnvelope>(
-        `/api/v1/sessions/${encodeURIComponent(queriedSession)}/mapping`
-      ),
+      typedGet("/api/v1/sessions/{id}/mapping", {
+        params: { path: { id: queriedSession } },
+      }),
     enabled: Boolean(queriedSession),
   });
 

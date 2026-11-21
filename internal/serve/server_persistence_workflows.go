@@ -2,14 +2,17 @@ package serve
 
 import (
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
@@ -20,6 +23,61 @@ type SavedSessionSaveRequest struct {
 	Session   string `json:"session"`
 	Name      string `json:"name,omitempty"`
 	Overwrite bool   `json:"overwrite,omitempty"`
+}
+
+// SavedSessionRestoreRequest is the JSON request body for POST /api/v1/saved-sessions/{name}/restore.
+type SavedSessionRestoreRequest struct {
+	TargetName string `json:"target_name,omitempty"`
+	Force      bool   `json:"force,omitempty"`
+	Launch     bool   `json:"launch,omitempty"`
+	Native     bool   `json:"native,omitempty"`
+}
+
+// SavedSessionRestoreEnvelopeResponse is the REST JSON envelope for POST /api/v1/saved-sessions/{name}/restore.
+type SavedSessionRestoreEnvelopeResponse struct {
+	APIResponse
+	Action  string                `json:"action"`
+	Name    string                `json:"name"`
+	Session string                `json:"session"`
+	Launch  bool                  `json:"launch"`
+	State   *session.SessionState `json:"state,omitempty"`
+	Resume  *session.ResumeResult `json:"resume,omitempty"`
+}
+
+// WorkflowRunRequest is the JSON request body for POST /api/v1/workflows/{name}/run.
+type WorkflowRunRequest struct {
+	Session    string            `json:"session"`
+	ProjectDir string            `json:"project_dir,omitempty"`
+	Variables  map[string]string `json:"variables,omitempty"`
+	DryRun     bool              `json:"dry_run,omitempty"`
+}
+
+// WorkflowTriggerRequest is the JSON request body for POST /api/v1/workflows/{name}/trigger.
+type WorkflowTriggerRequest struct {
+	Token      string `json:"token"`
+	Transition int    `json:"transition"`
+	Reason     string `json:"reason"`
+	ProjectDir string `json:"project_dir,omitempty"`
+}
+
+// WorkflowStopRequest is the JSON request body for POST /api/v1/workflows/{name}/stop.
+type WorkflowStopRequest struct {
+	Reason     string `json:"reason,omitempty"`
+	ProjectDir string `json:"project_dir,omitempty"`
+}
+
+// WorkflowControlEnvelopeResponse is the REST JSON envelope for POST /api/v1/workflows/{name}/(run|trigger|stop).
+type WorkflowControlEnvelopeResponse struct {
+	APIResponse
+	Action          string                     `json:"action"`
+	Workflow        string                     `json:"workflow,omitempty"`
+	Session         string                     `json:"session,omitempty"`
+	DryRun          bool                       `json:"dry_run,omitempty"`
+	Stage           string                     `json:"stage,omitempty"`
+	State           *workflow.WorkflowState    `json:"state,omitempty"`
+	CheckpointToken string                     `json:"checkpoint_token,omitempty"`
+	ManualGate      *workflow.ManualGateStatus `json:"manual_gate,omitempty"`
+	Decision        *workflow.ManualDecision   `json:"decision,omitempty"`
 }
 
 // SavedSessionsEnvelopeResponse is the REST JSON envelope for /api/v1/saved-sessions*.
@@ -104,19 +162,23 @@ type SessionTemplatesEnvelopeResponse struct {
 }
 
 func (s *Server) registerPersistenceWorkflowRoutes(r chi.Router) {
-	// Saved sessions (non-destructive list, capture, inspect, archive, unarchive)
+	// Saved sessions (list, capture, inspect, archive, unarchive, restore)
 	r.With(s.RequirePermission(PermReadSessions)).Get("/saved-sessions", s.handleSavedSessionsListV1)
 	r.With(s.RequirePermission(PermWriteSessions)).Post("/saved-sessions", s.handleSavedSessionsSaveV1)
 	r.With(s.RequirePermission(PermReadSessions)).Get("/saved-sessions/{name}", s.handleSavedSessionsShowV1)
 	r.With(s.RequirePermission(PermWriteSessions)).Post("/saved-sessions/{name}/archive", s.handleSavedSessionsArchiveV1)
 	r.With(s.RequirePermission(PermWriteSessions)).Post("/saved-sessions/{name}/unarchive", s.handleSavedSessionsUnarchiveV1)
+	r.With(s.RequirePermission(PermWriteSessions)).Post("/saved-sessions/{name}/restore", s.handleSavedSessionsRestoreV1)
 
 	// Session Agent Mail <-> tmux pane mapping & border badge reconciliation
 	r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{id}/mapping", s.handleSessionMappingV1)
 
-	// Multi-agent workflow coordination templates
+	// Multi-agent workflow coordination templates & runtime controls
 	r.With(s.RequirePermission(PermReadSessions)).Get("/workflows", s.handleWorkflowsListV1)
 	r.With(s.RequirePermission(PermReadSessions)).Get("/workflows/{name}", s.handleWorkflowsShowV1)
+	r.With(s.RequirePermission(PermWritePipelines)).Post("/workflows/{name}/run", s.handleWorkflowsRunV1)
+	r.With(s.RequirePermission(PermWritePipelines)).Post("/workflows/{name}/trigger", s.handleWorkflowsTriggerV1)
+	r.With(s.RequirePermission(PermWritePipelines)).Post("/workflows/{name}/stop", s.handleWorkflowsStopV1)
 
 	// Durable per-pane prompt sequences
 	r.With(s.RequirePermission(PermWriteSessions)).Post("/sequences", s.handleSequencesCreateV1)
@@ -274,6 +336,99 @@ func (s *Server) handleSavedSessionsUnarchiveV1(w http.ResponseWriter, r *http.R
 	writeRobotEnvelopeOrError(w, out, out.RobotResponse, "saved-sessions unarchive", reqID)
 }
 
+// handleSavedSessionsRestoreV1 handles POST /api/v1/saved-sessions/{name}/restore.
+func (s *Server) handleSavedSessionsRestoreV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	name, err := validateSafeWorktreeIdentifier("name", chi.URLParam(r, "name"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxServePersistenceBodyBytes)
+	var req SavedSessionRestoreRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
+		return
+	}
+	savedState, err := session.Load(name)
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "not found") || strings.Contains(lower, "no such file") || strings.Contains(lower, "no saved session") {
+			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, reqID)
+			return
+		}
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	targetName := strings.TrimSpace(req.TargetName)
+	if targetName == "" {
+		targetName = savedState.Name
+	}
+	if err := tmux.ValidateSessionName(targetName); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid target_name: "+err.Error(), nil, reqID)
+		return
+	}
+
+	var resumeRes *session.ResumeResult
+	if req.Launch {
+		cfg := s.loadEnsembleConfig(savedState.WorkDir)
+		cmds := session.AgentCommands{}
+		if cfg != nil {
+			cmds = session.AgentCommands{
+				Claude:      cfg.Agents.Claude,
+				Codex:       cfg.Agents.Codex,
+				Gemini:      cfg.Agents.Gemini,
+				Antigravity: cfg.Agents.Antigravity,
+				Grok:        cfg.Agents.Grok,
+				Cursor:      cfg.Agents.Cursor,
+				Windsurf:    cfg.Agents.Windsurf,
+				Aider:       cfg.Agents.Aider,
+				Opencode:    cfg.Agents.Opencode,
+				Omp:         cfg.Agents.Omp,
+				Ollama:      cfg.Agents.Ollama,
+			}
+		}
+		resumeRes, err = session.ResumeContext(r.Context(), savedState, cmds, session.ResumeOptions{
+			Name:       targetName,
+			Force:      req.Force,
+			PreferCASR: !req.Native,
+			Config:     cfg,
+		})
+	} else {
+		err = session.RestoreContext(r.Context(), savedState, session.RestoreOptions{
+			Name:  targetName,
+			Force: req.Force,
+		})
+	}
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		switch {
+		case strings.Contains(lower, "already exists"):
+			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		case strings.Contains(lower, "invalid") || strings.Contains(lower, "missing"):
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		default:
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		}
+		return
+	}
+
+	resp := SavedSessionRestoreEnvelopeResponse{
+		Action:  "restore",
+		Name:    name,
+		Session: targetName,
+		Launch:  req.Launch,
+		State:   savedState,
+		Resume:  resumeRes,
+	}
+	data, err := toJSONMap(resp)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize saved-sessions restore response", nil, reqID)
+		return
+	}
+	writeSuccessResponse(w, http.StatusOK, data, reqID)
+}
+
 // handleSessionMappingV1 handles GET /api/v1/sessions/{id}/mapping.
 func (s *Server) handleSessionMappingV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -338,6 +493,254 @@ func (s *Server) handleWorkflowsShowV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeRobotEnvelopeOrError(w, out, out.RobotResponse, "workflow show", reqID)
+}
+
+func workflowStateStoreForProject(projectDir string) *workflow.StateStore {
+	return &workflow.StateStore{Dir: filepath.Join(projectDir, ".ntm", "workflows", "state")}
+}
+
+// handleWorkflowsRunV1 handles POST /api/v1/workflows/{name}/run.
+func (s *Server) handleWorkflowsRunV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	name, err := validateSafeWorktreeIdentifier("workflow", chi.URLParam(r, "name"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxServePersistenceBodyBytes)
+	var req WorkflowRunRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
+		return
+	}
+	sessName, err := validateSafeWorktreeIdentifier("session", req.Session)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	projectDir, ok := s.resolvePersistenceProjectDir(w, r, req.ProjectDir, reqID)
+	if !ok {
+		return
+	}
+
+	loader := workflow.NewLoader()
+	loader.ProjectDir = projectDir
+	tmpl, err := loader.Get(name)
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "not found") {
+			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, reqID)
+			return
+		}
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+
+	vars := make(map[string]string, len(req.Variables))
+	for k, v := range req.Variables {
+		vars[k] = v
+	}
+	for _, prompt := range tmpl.Prompts {
+		if prompt.Required && strings.TrimSpace(vars[prompt.Key]) == "" {
+			if strings.TrimSpace(prompt.Default) != "" {
+				vars[prompt.Key] = prompt.Default
+			} else {
+				writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "missing required workflow variable "+prompt.Key, nil, reqID)
+				return
+			}
+		}
+	}
+
+	initialStage := "initial"
+	if tmpl.Flow != nil {
+		if strings.TrimSpace(tmpl.Flow.Initial) != "" {
+			initialStage = tmpl.Flow.Initial
+		} else if len(tmpl.Flow.Stages) > 0 {
+			initialStage = tmpl.Flow.Stages[0]
+		}
+	}
+
+	templateHash, err := tmpl.Fingerprint()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+
+	now := time.Now().UTC()
+	state := &workflow.WorkflowState{
+		WorkflowName:   tmpl.Name,
+		SessionName:    sessName,
+		CurrentStage:   initialStage,
+		StageStartedAt: now,
+		Agents:         map[string]string{},
+		Variables:      vars,
+		StageHistory:   []workflow.StageRecord{},
+		Errors:         []workflow.WorkflowError{},
+		ResumeVersion:  1,
+		TemplateHash:   templateHash,
+		ProjectRoot:    projectDir,
+		Turn:           1,
+		Dispatches:     []workflow.StageDispatch{},
+	}
+	if err := state.RefreshManualGate(tmpl); err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+
+	resp := WorkflowControlEnvelopeResponse{
+		Action:   "run",
+		Workflow: tmpl.Name,
+		Session:  sessName,
+		DryRun:   req.DryRun,
+		Stage:    initialStage,
+		State:    state,
+	}
+
+	if !req.DryRun {
+		store := workflowStateStoreForProject(projectDir)
+		unlock, err := store.Acquire(r.Context(), sessName)
+		if err != nil {
+			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+			return
+		}
+		defer unlock()
+		if err := store.Save(state); err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+			return
+		}
+		if tok, err := state.CheckpointToken(); err == nil {
+			resp.CheckpointToken = tok
+		}
+		if gate, err := store.ManualStatus(state); err == nil {
+			resp.ManualGate = gate
+		}
+	}
+
+	data, err := toJSONMap(resp)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize workflow run response", nil, reqID)
+		return
+	}
+	writeSuccessResponse(w, http.StatusOK, data, reqID)
+}
+
+// handleWorkflowsTriggerV1 handles POST /api/v1/workflows/{name}/trigger where {name} is the workflow session.
+func (s *Server) handleWorkflowsTriggerV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	sessName, err := validateSafeWorktreeIdentifier("session", chi.URLParam(r, "name"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxServePersistenceBodyBytes)
+	var req WorkflowTriggerRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
+		return
+	}
+	if strings.TrimSpace(req.Token) == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "token is required", nil, reqID)
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "reason is required", nil, reqID)
+		return
+	}
+	projectDir, ok := s.resolvePersistenceProjectDir(w, r, req.ProjectDir, reqID)
+	if !ok {
+		return
+	}
+
+	store := workflowStateStoreForProject(projectDir)
+	decision, err := store.RequestManualTransition(r.Context(), sessName, req.Token, req.Transition, req.Reason)
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		switch {
+		case strings.Contains(lower, "no workflow checkpoint") || strings.Contains(lower, "not found"):
+			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, reqID)
+		case strings.Contains(lower, "conflict") || strings.Contains(lower, "already recorded") || strings.Contains(lower, "token") || strings.Contains(lower, "manual gate"):
+			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		default:
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		}
+		return
+	}
+
+	resp := WorkflowControlEnvelopeResponse{
+		Action:   "trigger",
+		Session:  sessName,
+		Stage:    decision.Stage,
+		Decision: decision,
+	}
+	data, err := toJSONMap(resp)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize workflow trigger response", nil, reqID)
+		return
+	}
+	writeSuccessResponse(w, http.StatusOK, data, reqID)
+}
+
+// handleWorkflowsStopV1 handles POST /api/v1/workflows/{name}/stop where {name} is the workflow session.
+func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	sessName, err := validateSafeWorktreeIdentifier("session", chi.URLParam(r, "name"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxServePersistenceBodyBytes)
+	var req WorkflowStopRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
+		return
+	}
+	projectDir, ok := s.resolvePersistenceProjectDir(w, r, req.ProjectDir, reqID)
+	if !ok {
+		return
+	}
+
+	store := workflowStateStoreForProject(projectDir)
+	unlock, err := store.Acquire(r.Context(), sessName)
+	if err != nil {
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		return
+	}
+	defer unlock()
+
+	state, err := store.Load(sessName)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	if state == nil {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "no workflow checkpoint found for session "+sessName, nil, reqID)
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "stopped via REST API"
+	}
+	if err := store.Pause(state, reason, time.Now().UTC()); err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+
+	resp := WorkflowControlEnvelopeResponse{
+		Action:   "stop",
+		Workflow: state.WorkflowName,
+		Session:  sessName,
+		Stage:    state.CurrentStage,
+		State:    state,
+	}
+	if tok, err := state.CheckpointToken(); err == nil {
+		resp.CheckpointToken = tok
+	}
+	data, err := toJSONMap(resp)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize workflow stop response", nil, reqID)
+		return
+	}
+	writeSuccessResponse(w, http.StatusOK, data, reqID)
 }
 
 func writeSequenceError(w http.ResponseWriter, err error, reqID string) {

@@ -329,4 +329,13 @@ func init() {
 	config.RegisterReader("cass.context.min_relevance", robotSendCASSOptions)
 	config.RegisterReader("cass.context.skip_if_context_above", robotSendCASSOptions)
 	config.RegisterReader("cass.context.prefer_same_project", robotSendCASSOptions)
+
+	// HTTP/WS admission rate limiting ([serve.rate_limit], validated and wired
+	// into serve.Config by runServe in internal/cli/serve.go).
+	config.RegisterReader("serve.rate_limit.enabled", runServe)
+	config.RegisterReader("serve.rate_limit.requests_per_second", runServe)
+	config.RegisterReader("serve.rate_limit.burst", runServe)
+	config.RegisterReader("serve.rate_limit.max_entries", runServe)
+	config.RegisterReader("serve.rate_limit.idle_ttl", runServe)
+	config.RegisterReader("serve.rate_limit.trusted_proxy_cidrs", runServe)
 }

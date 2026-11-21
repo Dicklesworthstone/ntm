@@ -15,57 +15,28 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  apiFetch,
   formatApiErrorMessage,
-  type ApiEnvelope,
+  typedGet,
+  typedPost,
+  type components,
 } from "@/lib/api/client";
 
-export interface SavedSessionSummaryItem {
-  name: string;
-  saved_at: string;
-  cwd: string;
-  agents: number;
-  git_branch?: string;
-  file_path: string;
-  file_size: number;
-}
+export type SavedSessionsEnvelope =
+  components["schemas"]["SavedSessionsEnvelopeResponse"];
+export type SavedSessionSummaryItem = NonNullable<
+  SavedSessionsEnvelope["sessions"]
+>[number];
+export type SavedSessionStatePayload = NonNullable<
+  SavedSessionsEnvelope["state"]
+>;
+export type SavedSessionPaneItem = NonNullable<
+  SavedSessionStatePayload["panes"]
+>[number];
 
-export interface SavedSessionPaneItem {
-  title: string;
-  index: number;
-  window_index?: number;
-  agent_type: string;
-  model?: string;
-  session_id?: string;
-  session_provider?: string;
-  session_freshness?: string;
-  session_confidence?: number;
-}
-
-export interface SavedSessionStatePayload {
-  name: string;
-  saved_at: string;
-  cwd: string;
-  git_branch?: string;
-  git_commit?: string;
-  layout: string;
-  agents: Record<string, number>;
-  panes: SavedSessionPaneItem[];
-}
-
-export interface SavedSessionsEnvelope extends ApiEnvelope {
-  action: string;
-  archived?: boolean;
-  sessions?: SavedSessionSummaryItem[];
-  count?: number;
-  session?: string;
-  saved_as?: string;
-  file_path?: string;
-  state?: SavedSessionStatePayload;
-  resumable_panes?: number;
-}
-
-const HARNESS_LABELS: Array<{ key: string; label: string }> = [
+const HARNESS_LABELS: Array<{
+  key: keyof SavedSessionStatePayload["agents"];
+  label: string;
+}> = [
   { key: "cc", label: "Claude (cc)" },
   { key: "cod", label: "Codex (cod)" },
   { key: "gmi", label: "Gemini (gmi)" },
@@ -91,6 +62,10 @@ export function SavedSessionsAndResumePanel({
   const [captureSession, setCaptureSession] = useState(sessionId);
   const [captureName, setCaptureName] = useState("");
   const [overwrite, setOverwrite] = useState(true);
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+  const [restoreTargetName, setRestoreTargetName] = useState("");
+  const [restoreForce, setRestoreForce] = useState(false);
+  const [restoreLaunch, setRestoreLaunch] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
@@ -102,26 +77,23 @@ export function SavedSessionsAndResumePanel({
   const listQuery = useQuery({
     queryKey: ["saved-sessions", archived ? "archived" : "active"],
     queryFn: () =>
-      apiFetch<SavedSessionsEnvelope>(
-        `/api/v1/saved-sessions?archived=${archived ? "true" : "false"}`
-      ),
+      typedGet("/api/v1/saved-sessions", {
+        params: { query: { archived } },
+      }),
   });
 
   const detailQuery = useQuery({
     queryKey: ["saved-session-detail", selectedName],
     queryFn: () =>
-      apiFetch<SavedSessionsEnvelope>(
-        `/api/v1/saved-sessions/${encodeURIComponent(selectedName)}`
-      ),
+      typedGet("/api/v1/saved-sessions/{name}", {
+        params: { path: { name: selectedName } },
+      }),
     enabled: Boolean(selectedName) && !archived,
   });
 
   const saveMutation = useMutation({
     mutationFn: (payload: { session: string; name?: string; overwrite: boolean }) =>
-      apiFetch<SavedSessionsEnvelope>("/api/v1/saved-sessions", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }),
+      typedPost("/api/v1/saved-sessions", { body: payload }),
     onSuccess: (res) => {
       setFeedback(`Captured snapshot "${res.saved_as || captureSession}".`);
       void queryClient.invalidateQueries({ queryKey: ["saved-sessions"] });
@@ -136,10 +108,9 @@ export function SavedSessionsAndResumePanel({
 
   const archiveMutation = useMutation({
     mutationFn: (name: string) =>
-      apiFetch<SavedSessionsEnvelope>(
-        `/api/v1/saved-sessions/${encodeURIComponent(name)}/archive`,
-        { method: "POST" }
-      ),
+      typedPost("/api/v1/saved-sessions/{name}/archive", {
+        params: { path: { name } },
+      }),
     onSuccess: (_, name) => {
       setFeedback(`Archived snapshot "${name}".`);
       if (selectedName === name) {
@@ -154,16 +125,43 @@ export function SavedSessionsAndResumePanel({
 
   const unarchiveMutation = useMutation({
     mutationFn: (name: string) =>
-      apiFetch<SavedSessionsEnvelope>(
-        `/api/v1/saved-sessions/${encodeURIComponent(name)}/unarchive`,
-        { method: "POST" }
-      ),
+      typedPost("/api/v1/saved-sessions/{name}/unarchive", {
+        params: { path: { name } },
+      }),
     onSuccess: (_, name) => {
       setFeedback(`Restored snapshot "${name}" to active saved sessions.`);
       void queryClient.invalidateQueries({ queryKey: ["saved-sessions"] });
     },
     onError: (err) => {
       setFeedback(`Unarchive failed: ${formatApiErrorMessage(err)}`);
+    },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: (payload: {
+      name: string;
+      target_name?: string;
+      force: boolean;
+      launch: boolean;
+    }) =>
+      typedPost("/api/v1/saved-sessions/{name}/restore", {
+        params: { path: { name: payload.name } },
+        body: {
+          ...(payload.target_name ? { target_name: payload.target_name } : {}),
+          force: payload.force,
+          launch: payload.launch,
+        },
+      }),
+    onSuccess: (res, vars) => {
+      setFeedback(
+        `Restored saved session "${vars.name}" into tmux session "${res.session || vars.target_name || vars.name}".`
+      );
+      setRestoreTarget(null);
+      setRestoreTargetName("");
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: (err) => {
+      setFeedback(`Restore failed: ${formatApiErrorMessage(err)}`);
     },
   });
 
@@ -323,6 +321,16 @@ export function SavedSessionsAndResumePanel({
                     </button>
                     <button
                       type="button"
+                      onClick={() => {
+                        setRestoreTarget(item.name);
+                        setRestoreTargetName("");
+                      }}
+                      className="rounded border border-blue-300 dark:border-blue-700 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                    >
+                      Restore
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => archiveMutation.mutate(item.name)}
                       disabled={archiveMutation.isPending}
                       className="rounded border border-amber-300 dark:border-amber-700 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
@@ -343,6 +351,72 @@ export function SavedSessionsAndResumePanel({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Restore Confirmation Drawer */}
+      {restoreTarget && (
+        <div
+          data-testid="saved-session-restore-confirm"
+          className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 p-4 space-y-3"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Confirm Restore: <span className="font-mono">{restoreTarget}</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setRestoreTarget(null)}
+              className="text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+            <input
+              type="text"
+              aria-label="Restore Target Session Name"
+              value={restoreTargetName}
+              onChange={(e) => setRestoreTargetName(e.target.value)}
+              placeholder="Target session name (optional)"
+              className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+            />
+            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={restoreForce}
+                onChange={(e) => setRestoreForce(e.target.checked)}
+              />
+              Force replace existing session
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={restoreLaunch}
+                onChange={(e) => setRestoreLaunch(e.target.checked)}
+              />
+              Launch / resume agents
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={restoreMutation.isPending}
+              onClick={() =>
+                restoreMutation.mutate({
+                  name: restoreTarget,
+                  ...(restoreTargetName.trim()
+                    ? { target_name: restoreTargetName.trim() }
+                    : {}),
+                  force: restoreForce,
+                  launch: restoreLaunch,
+                })
+              }
+              className="rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
+            >
+              {restoreMutation.isPending ? "Restoring…" : "Confirm Restore"}
+            </button>
+          </div>
         </div>
       )}
 

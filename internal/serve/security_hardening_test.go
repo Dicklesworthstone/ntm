@@ -217,14 +217,14 @@ func TestOIDC_MultiAlg_RS256_PS256_ES256_ES384_EdDSA_AndPinning(t *testing.T) {
 func TestLegacyRoutes_RBACEnforced(t *testing.T) {
 	t.Parallel()
 
-	// AuthModeAPIKey with an invalid/unknown role that holds zero permissions
-	// verifies every legacy /events and /api/* route enforces RequirePermission
-	// (matching /api/v1/*) rather than bypassing RBAC.
+	// AuthModeAPIKey with RoleNone (explicit zero-permission role) verifies every
+	// legacy /events and /api/* route enforces RequirePermission (matching /api/v1/*)
+	// rather than bypassing RBAC.
 	srv := New(Config{
 		Auth: AuthConfig{
 			Mode:   AuthModeAPIKey,
 			APIKey: "secret-key-rbac",
-			Role:   Role("none"),
+			Role:   RoleNone,
 		},
 	})
 	defer srv.Stop()
@@ -241,7 +241,9 @@ func TestLegacyRoutes_RBACEnforced(t *testing.T) {
 
 	for _, path := range legacyPaths {
 		t.Run("unauth_"+path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			rr := httptest.NewRecorder()
 			srv.router.ServeHTTP(rr, req)
 			if rr.Code != http.StatusUnauthorized {
@@ -249,7 +251,9 @@ func TestLegacyRoutes_RBACEnforced(t *testing.T) {
 			}
 		})
 		t.Run("forbidden_role_"+path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			req.Header.Set("Authorization", "Bearer secret-key-rbac")
 			rr := httptest.NewRecorder()
 			srv.router.ServeHTTP(rr, req)

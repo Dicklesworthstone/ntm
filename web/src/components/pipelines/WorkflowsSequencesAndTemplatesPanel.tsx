@@ -18,82 +18,15 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
-  apiFetch,
   formatApiErrorMessage,
-  type ApiEnvelope,
+  typedGet,
+  typedPost,
+  type components,
 } from "@/lib/api/client";
 
-interface WorkflowSummaryItem {
-  name: string;
-  description: string;
-  source: string;
-  coordination: string;
-  agent_count: number;
-  roles?: string[];
-}
-
-interface WorkflowDetailPayload {
-  name: string;
-  description: string;
-  source: string;
-  coordination: string;
-  agent_count: number;
-  roles?: string[];
-  validated_triggers?: Array<{
-    from: string;
-    to: string;
-    runtime_type: string;
-    valid: boolean;
-    error?: string;
-  }>;
-}
-
-interface WorkflowsEnvelope extends ApiEnvelope {
-  action: string;
-  workflows?: WorkflowSummaryItem[];
-  total?: number;
-  workflow?: WorkflowDetailPayload;
-}
-
-interface SessionTemplateSummaryItem {
-  name: string;
-  description: string;
-  source: string;
-  tags?: string[];
-  agent_count: number;
-}
-
-interface SessionTemplatesEnvelope extends ApiEnvelope {
-  action: string;
-  templates?: SessionTemplateSummaryItem[];
-  total?: number;
-  template?: {
-    name: string;
-    description: string;
-    source: string;
-    tags?: string[];
-    agents?: Record<string, unknown>;
-  };
-}
-
-interface SequencePaneState {
-  sequence: string;
-  pane: string;
-  position: number;
-  total: number;
-  prompt?: string;
-  done: boolean;
-  advanced?: boolean;
-}
-
-interface SequenceEnvelope extends ApiEnvelope {
-  action: string;
-  sequence?: {
-    name: string;
-    steps: string[];
-  };
-  pane?: SequencePaneState;
-}
+type SequencePaneState = NonNullable<
+  components["schemas"]["SequenceEnvelopeResponse"]["pane"]
+>;
 
 export function WorkflowsSequencesAndTemplatesPanel() {
   const [roleFilter, setRoleFilter] = useState("");
@@ -107,36 +40,44 @@ export function WorkflowsSequencesAndTemplatesPanel() {
   const [paneState, setPaneState] = useState<SequencePaneState | null>(null);
   const [seqMessage, setSeqMessage] = useState<string | null>(null);
 
+  // Workflow runtime control state (/workflows/{name}/run|trigger|stop)
+  const [wfSession, setWfSession] = useState("ntm_live");
+  const [wfDryRun, setWfDryRun] = useState(false);
+  const [wfGateToken, setWfGateToken] = useState("");
+  const [wfTransitionIdx, setWfTransitionIdx] = useState("0");
+  const [wfReason, setWfReason] = useState("Approved via Web Cockpit");
+  const [wfControlMsg, setWfControlMsg] = useState<string | null>(null);
+
   const workflowsQuery = useQuery({
     queryKey: ["workflows-catalog", roleFilter],
     queryFn: () =>
-      apiFetch<WorkflowsEnvelope>(
-        roleFilter.trim()
-          ? `/api/v1/workflows?role=${encodeURIComponent(roleFilter.trim())}`
-          : "/api/v1/workflows"
-      ),
+      typedGet("/api/v1/workflows", {
+        params: {
+          query: roleFilter.trim() ? { role: roleFilter.trim() } : undefined,
+        },
+      }),
   });
 
   const workflowDetailQuery = useQuery({
     queryKey: ["workflow-detail", selectedWorkflow],
     queryFn: () =>
-      apiFetch<WorkflowsEnvelope>(
-        `/api/v1/workflows/${encodeURIComponent(selectedWorkflow)}`
-      ),
+      typedGet("/api/v1/workflows/{name}", {
+        params: { path: { name: selectedWorkflow } },
+      }),
     enabled: Boolean(selectedWorkflow),
   });
 
   const templatesQuery = useQuery({
     queryKey: ["session-templates-catalog"],
-    queryFn: () => apiFetch<SessionTemplatesEnvelope>("/api/v1/session-templates"),
+    queryFn: () => typedGet("/api/v1/session-templates"),
   });
 
   const templateDetailQuery = useQuery({
     queryKey: ["session-template-detail", selectedTemplate],
     queryFn: () =>
-      apiFetch<SessionTemplatesEnvelope>(
-        `/api/v1/session-templates/${encodeURIComponent(selectedTemplate)}`
-      ),
+      typedGet("/api/v1/session-templates/{name}", {
+        params: { path: { name: selectedTemplate } },
+      }),
     enabled: Boolean(selectedTemplate),
   });
 
@@ -146,14 +87,13 @@ export function WorkflowsSequencesAndTemplatesPanel() {
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      return apiFetch<SequenceEnvelope>("/api/v1/sequences", {
-        method: "POST",
-        body: JSON.stringify({ name: seqName.trim(), steps }),
+      return typedPost("/api/v1/sequences", {
+        body: { name: seqName.trim(), steps },
       });
     },
     onSuccess: (res) => {
       setSeqMessage(
-        `Created sequence "${res.sequence?.name || seqName}" (${res.sequence?.steps.length ?? 0} steps).`
+        `Created sequence "${res.sequence?.name || seqName}" (${res.sequence?.steps?.length ?? 0} steps).`
       );
     },
     onError: (err) => {
@@ -163,9 +103,12 @@ export function WorkflowsSequencesAndTemplatesPanel() {
 
   const inspectNextMutation = useMutation({
     mutationFn: () =>
-      apiFetch<SequenceEnvelope>(
-        `/api/v1/sequences/${encodeURIComponent(seqName.trim())}/next?pane=${encodeURIComponent(seqPane.trim())}`
-      ),
+      typedGet("/api/v1/sequences/{name}/next", {
+        params: {
+          path: { name: seqName.trim() },
+          query: { pane: seqPane.trim() },
+        },
+      }),
     onSuccess: (res) => {
       if (res.pane) {
         setPaneState(res.pane);
@@ -179,26 +122,79 @@ export function WorkflowsSequencesAndTemplatesPanel() {
 
   const advanceSeqMutation = useMutation({
     mutationFn: () =>
-      apiFetch<SequenceEnvelope>(
-        `/api/v1/sequences/${encodeURIComponent(seqName.trim())}/advance`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            pane: seqPane.trim(),
-            ...(paneState ? { expected_position: paneState.position } : {}),
-          }),
-        }
-      ),
+      typedPost("/api/v1/sequences/{name}/advance", {
+        params: { path: { name: seqName.trim() } },
+        body: {
+          pane: seqPane.trim(),
+          ...(paneState ? { expected_position: paneState.position } : {}),
+        },
+      }),
     onSuccess: (res) => {
       if (res.pane) {
         setPaneState(res.pane);
         setSeqMessage(
-          `Advanced pane ${res.pane.pane} to step ${res.pane.position}/${res.pane.total}.`
+          `Advanced pane ${res.pane.pane} to step ${res.pane.position}${res.pane.complete ? " (completed)" : ""}.`
         );
       }
     },
     onError: (err) => {
       setSeqMessage(`Sequence advance failed: ${formatApiErrorMessage(err)}`);
+    },
+  });
+
+  const runWorkflowMutation = useMutation({
+    mutationFn: (name: string) =>
+      typedPost("/api/v1/workflows/{name}/run", {
+        params: { path: { name } },
+        body: {
+          session: wfSession.trim(),
+          dry_run: wfDryRun,
+        },
+      }),
+    onSuccess: (res, name) => {
+      if (res.manual_gate?.token) {
+        setWfGateToken(res.manual_gate.token);
+      }
+      setWfControlMsg(
+        `Workflow "${name}" ${wfDryRun ? "validated (dry-run)" : "started"} for session "${wfSession.trim()}" at stage "${res.stage || "initial"}".`
+      );
+    },
+    onError: (err) => {
+      setWfControlMsg(`Run workflow failed: ${formatApiErrorMessage(err)}`);
+    },
+  });
+
+  const triggerWorkflowMutation = useMutation({
+    mutationFn: () =>
+      typedPost("/api/v1/workflows/{name}/trigger", {
+        params: { path: { name: wfSession.trim() } },
+        body: {
+          token: wfGateToken.trim(),
+          transition: Number.parseInt(wfTransitionIdx, 10) || 0,
+          reason: wfReason.trim(),
+        },
+      }),
+    onSuccess: (res) => {
+      setWfControlMsg(
+        `Recorded manual transition for "${wfSession.trim()}" -> "${res.decision?.to || "next"}".`
+      );
+    },
+    onError: (err) => {
+      setWfControlMsg(`Trigger gate failed: ${formatApiErrorMessage(err)}`);
+    },
+  });
+
+  const stopWorkflowMutation = useMutation({
+    mutationFn: () =>
+      typedPost("/api/v1/workflows/{name}/stop", {
+        params: { path: { name: wfSession.trim() } },
+        body: { reason: wfReason.trim() || "Stopped via Web Cockpit" },
+      }),
+    onSuccess: () => {
+      setWfControlMsg(`Paused/stopped workflow checkpoint for session "${wfSession.trim()}".`);
+    },
+    onError: (err) => {
+      setWfControlMsg(`Stop workflow failed: ${formatApiErrorMessage(err)}`);
     },
   });
 
@@ -404,12 +400,111 @@ export function WorkflowsSequencesAndTemplatesPanel() {
 
         {paneState && (
           <div className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-            Pane {paneState.pane} · Position {paneState.position}/{paneState.total} ·{" "}
-            {paneState.done ? "Completed" : `Prompt: ${paneState.prompt || "—"}`}
+            Pane {paneState.pane} · Position {paneState.position} ·{" "}
+            {paneState.complete ? "Completed" : `Prompt: ${paneState.prompt || "—"}`}
           </div>
         )}
         {seqMessage && (
           <div className="text-xs text-blue-700 dark:text-blue-300">{seqMessage}</div>
+        )}
+      </div>
+
+      {/* 3. Multi-Agent Workflow Runtime Controls (Run / Trigger Gate / Stop) */}
+      <div
+        data-testid="workflow-runtime-controls"
+        className="rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-950/30 p-4 space-y-3"
+      >
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+          Workflow Runtime Control (Run, Trigger Manual Gate &amp; Stop)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Target Session
+            </label>
+            <input
+              type="text"
+              aria-label="Workflow Target Session"
+              value={wfSession}
+              onChange={(e) => setWfSession(e.target.value)}
+              className="w-full rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Manual Gate Token
+            </label>
+            <input
+              type="text"
+              aria-label="Workflow Gate Token"
+              value={wfGateToken}
+              onChange={(e) => setWfGateToken(e.target.value)}
+              placeholder="gate-token"
+              className="w-full rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Transition Index
+            </label>
+            <input
+              type="number"
+              min={0}
+              aria-label="Workflow Transition Index"
+              value={wfTransitionIdx}
+              onChange={(e) => setWfTransitionIdx(e.target.value)}
+              className="w-full rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Operator Reason
+            </label>
+            <input
+              type="text"
+              aria-label="Workflow Operator Reason"
+              value={wfReason}
+              onChange={(e) => setWfReason(e.target.value)}
+              className="w-full rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300 mr-2">
+            <input
+              type="checkbox"
+              checked={wfDryRun}
+              onChange={(e) => setWfDryRun(e.target.checked)}
+            />
+            Dry-run only
+          </label>
+          <button
+            type="button"
+            disabled={!(selectedWorkflow || workflows[0]?.name) || !wfSession.trim() || runWorkflowMutation.isPending}
+            onClick={() => runWorkflowMutation.mutate(selectedWorkflow || workflows[0]?.name || "")}
+            className="rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
+          >
+            Run Workflow
+          </button>
+          <button
+            type="button"
+            disabled={!wfSession.trim() || !wfGateToken.trim() || !wfReason.trim() || triggerWorkflowMutation.isPending}
+            onClick={() => triggerWorkflowMutation.mutate()}
+            className="rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
+          >
+            Trigger Manual Gate
+          </button>
+          <button
+            type="button"
+            disabled={!wfSession.trim() || stopWorkflowMutation.isPending}
+            onClick={() => stopWorkflowMutation.mutate()}
+            className="rounded bg-rose-600 hover:bg-rose-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
+          >
+            Stop Workflow
+          </button>
+        </div>
+        {wfControlMsg && (
+          <div className="text-xs text-blue-700 dark:text-blue-300">{wfControlMsg}</div>
         )}
       </div>
     </section>

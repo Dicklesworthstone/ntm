@@ -13,6 +13,9 @@ import (
 type Role string
 
 const (
+	// RoleNone grants zero permissions (explicit fail-closed role for revoked/unassigned principals).
+	RoleNone Role = "none"
+
 	// RoleViewer can read data but not make changes.
 	RoleViewer Role = "viewer"
 
@@ -26,6 +29,8 @@ const (
 // ParseRole converts a string to a Role, defaulting to viewer if unknown.
 func ParseRole(s string) Role {
 	switch strings.ToLower(s) {
+	case "none":
+		return RoleNone
 	case "admin":
 		return RoleAdmin
 	case "operator":

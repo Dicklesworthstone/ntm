@@ -41,6 +41,8 @@ import {
   resetClient,
   resolveKernelRESTPath,
   saveConnectionConfig,
+  typedGet,
+  typedPost,
 } from "../lib/api/client";
 
 describe("API Client", () => {
@@ -314,6 +316,89 @@ describe("API Client", () => {
           sessionId: "   ",
         })
       ).toThrow("Missing required parameter: sessionId");
+    });
+  });
+
+  describe("typedGet & typedPost (openapi-fetch schema.d.ts contract)", () => {
+    afterEach(() => {
+      resetClient();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it("executes schema-typed GET with Bearer auth and query params", async () => {
+      saveConnectionConfig({
+        baseUrl: "http://127.0.0.1:7337",
+        authToken: "typed-tok-99",
+      });
+      const fetchSpy = vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            action: "list",
+            archived: true,
+            sessions: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const data = await typedGet("/api/v1/saved-sessions", {
+        params: { query: { archived: true } },
+      });
+      expect(data.action).toBe("list");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("http://127.0.0.1:7337/api/v1/saved-sessions?archived=true");
+      expect((init.headers as Record<string, string>).authorization).toBe(
+        "Bearer typed-tok-99"
+      );
+    });
+
+    it("executes schema-typed POST with path params, JSON body, and ApiError normalization", async () => {
+      saveConnectionConfig({ baseUrl: "http://127.0.0.1:7337" });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              action: "restore",
+              name: "snap-1",
+              session: "proj",
+              launch: false,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          )
+        )
+      );
+
+      const restored = await typedPost("/api/v1/saved-sessions/{name}/restore", {
+        params: { path: { name: "snap-1" } },
+        body: { target_name: "proj", force: false, launch: false },
+      });
+      expect(restored.session).toBe("proj");
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              success: false,
+              error_code: "NOT_FOUND",
+              error: "no saved session",
+            }),
+            { status: 404, headers: { "Content-Type": "application/json" } }
+          )
+        )
+      );
+      await expect(
+        typedPost("/api/v1/saved-sessions/{name}/restore", {
+          params: { path: { name: "missing" } },
+          body: {},
+        })
+      ).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
     });
   });
 });

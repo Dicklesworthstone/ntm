@@ -191,6 +191,10 @@ export function handleUnauthorizedRedirect(): boolean {
 
 /**
  * Create the NTM API client with current connection config.
+ *
+ * The fetch adapter unwraps Request objects into (url, RequestInit) calls so
+ * openapi-fetch works identically in browsers and Vitest fetch spies while
+ * enforcing timeouts and Bearer authentication.
  */
 export function createNtmClient() {
   const authHeaders = getAuthHeaders();
@@ -198,10 +202,23 @@ export function createNtmClient() {
   const client = createClient<paths>({
     baseUrl: getBaseUrl(),
     headers: Object.keys(authHeaders).length > 0 ? authHeaders : undefined,
-    fetch: (input: Request) =>
-      fetch(input, {
+    fetch: async (input: Request) => {
+      const headers: Record<string, string> = {};
+      input.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      const method = input.method.toUpperCase();
+      const body =
+        method !== "GET" && method !== "HEAD" && input.body !== null
+          ? await input.clone().text()
+          : undefined;
+      return fetch(input.url, {
+        method,
+        headers,
+        body,
         signal: input.signal ?? apiRequestSignal(),
-      }),
+      });
+    },
   });
 
   client.use({
@@ -214,6 +231,80 @@ export function createNtmClient() {
   });
 
   return client;
+}
+
+type PathsWithMethod<M extends "get" | "post" | "put" | "patch" | "delete"> = {
+  [P in keyof paths]: paths[P] extends { [K in M]: NonNullable<unknown> }
+    ? P
+    : never;
+}[keyof paths];
+
+type OpSuccessJson<Op> = Op extends {
+  responses: { 200: { content: { "application/json": infer T } } };
+}
+  ? T
+  : Op extends {
+        responses: { 201: { content: { "application/json": infer T } } };
+      }
+    ? T
+    : ApiEnvelope;
+
+function unwrapTypedResponse<T>(
+  result: { data?: unknown; error?: unknown; response: Response }
+): T {
+  const { data, error, response } = result;
+  const payload = (data ?? error ?? null) as ApiEnvelope | null;
+  if (!response.ok || error !== undefined || !payload || payload.success === false) {
+    const message =
+      payload?.error ||
+      payload?.message ||
+      formatApiErrorMessage(error) ||
+      `Request failed (${response.status})`;
+    throw new ApiError(
+      response.status,
+      payload?.error_code || `HTTP_${response.status}`,
+      message,
+      payload ?? error
+    );
+  }
+  return data as T;
+}
+
+/**
+ * Schema-checked GET request backed by openapi-fetch (`paths` from schema.d.ts).
+ * Any route rename or parameter/response drift becomes a compile-time `tsc` error.
+ */
+export async function typedGet<P extends PathsWithMethod<"get">>(
+  path: P,
+  ...init: Parameters<ReturnType<typeof createNtmClient>["GET"]> extends [
+    unknown,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never
+): Promise<OpSuccessJson<paths[P]["get"]>> {
+  const client = createNtmClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res = await (client.GET as any)(path, ...init);
+  return unwrapTypedResponse<OpSuccessJson<paths[P]["get"]>>(res);
+}
+
+/**
+ * Schema-checked POST request backed by openapi-fetch (`paths` from schema.d.ts).
+ */
+export async function typedPost<P extends PathsWithMethod<"post">>(
+  path: P,
+  ...init: Parameters<ReturnType<typeof createNtmClient>["POST"]> extends [
+    unknown,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never
+): Promise<OpSuccessJson<paths[P]["post"]>> {
+  const client = createNtmClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res = await (client.POST as any)(path, ...init);
+  return unwrapTypedResponse<OpSuccessJson<paths[P]["post"]>>(res);
 }
 
 /**
