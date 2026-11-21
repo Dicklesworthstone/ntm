@@ -61,6 +61,7 @@ func TestBuildAgentCommands_RendersTemplates(t *testing.T) {
 	check("windsurf", cmds.Windsurf)
 	check("aider", cmds.Aider)
 	check("opencode", cmds.Opencode)
+	check("pi", cmds.Pi)
 	check("ollama", cmds.Ollama)
 
 	// The rendered Claude command must actually invoke `claude` (proving the
@@ -72,7 +73,7 @@ func TestBuildAgentCommands_RendersTemplates(t *testing.T) {
 
 // TestBuildAgentCommands_NilConfig verifies the helper is safe when cfg is nil
 // (no config loaded): it must return empty commands rather than panicking, so
-// the launch path simply skips agents.
+// the launch preflight can report the missing command before replacing a session.
 func TestBuildAgentCommands_NilConfig(t *testing.T) {
 	prevCfg := cfg
 	cfg = nil
@@ -205,6 +206,73 @@ func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
 	}
 }
 
+func TestSessionsCommandRestoresLegacyPiAndPreservesRecordedLaunch(t *testing.T) {
+	for _, operation := range []string{"restore", "resume"} {
+		for _, source := range []string{"default", "saved model", "saved command", "launch specification"} {
+			t.Run(operation+"/"+source, func(t *testing.T) {
+				logPath := sessionRecoveryCommandFixture(t)
+				t.Setenv("NTM_SESSION_CLI_AGENT_TYPE", "pi")
+				state := &session.SessionState{Name: "pi-recovery", WorkDir: t.TempDir(), Agents: session.AgentConfig{Pi: 1, User: 1}, Panes: []session.PaneState{
+					{Index: 0, AgentType: "pi-agent"},
+					{Index: 1, AgentType: "user"},
+				}}
+				expected := "pi"
+				switch source {
+				case "saved model":
+					state.Panes[0].Model = "provider/saved model"
+					expected = "pi --model 'provider/saved model'"
+				case "saved command":
+					expected = "/opt/custom-pi --model recorded --thinking high"
+					state.Panes[0].Command = expected
+					state.Panes[0].Model = "stale-title"
+				case "launch specification":
+					expected = "/opt/custom-pi --model recorded --thinking high"
+					state.Panes[0].LaunchSpec = &tmux.AgentLaunchSpec{
+						Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentPi, Command: expected,
+					}
+					state.Panes[0].Model = "stale-title"
+				}
+				if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				cmd := newSessionPersistCmd()
+				args := []string{operation, state.Name, "--force"}
+				if operation == "restore" {
+					args = append(args, "--launch")
+				}
+				cmd.SetArgs(args)
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				stdout, err := captureStdout(t, cmd.Execute)
+				t.Logf("recovery command=%v source=%s output=%s", args, source, stdout)
+				calls, readErr := os.ReadFile(logPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if err != nil {
+					t.Fatalf("Pi recovery command failed: %v; calls=%s", err, calls)
+				}
+				var result struct {
+					Success    bool `json:"success"`
+					Launched   int  `json:"launched"`
+					Skipped    int  `json:"skipped"`
+					AgentCount int  `json:"agent_count"`
+				}
+				if err := json.Unmarshal([]byte(stdout), &result); err != nil || !result.Success {
+					t.Fatalf("invalid recovery envelope: %s, %v", stdout, err)
+				}
+				if operation == "restore" && result.AgentCount != 1 || operation == "resume" && (result.Launched != 1 || result.Skipped != 1) {
+					t.Fatalf("Pi recovery reported wrong launch counts: %s", stdout)
+				}
+				payload := "send-keys -t %0 -l -- cd " + tmux.ShellQuote(state.WorkDir) + " && " + expected
+				if !strings.Contains(string(calls), payload) || strings.Contains(string(calls), "send-keys -t %1") || strings.Contains(string(calls), "stale-title") {
+					t.Fatalf("Pi command/settings were lost or user pane was launched; want %q; calls=%s", payload, calls)
+				}
+			})
+		}
+	}
+}
+
 // GH#251 phase 2: Grok Build relaunch is implemented, so launching restores
 // of saved grok panes now validate like topology-only restores.
 func TestValidateSessionsAutomatedRelaunchAcceptsGrok(t *testing.T) {
@@ -244,6 +312,7 @@ func sessionRecoveryCommandFixture(t *testing.T) string {
 	logPath := filepath.Join(dir, "tmux-calls")
 	t.Setenv("NTM_SESSION_CLI_LOG", logPath)
 	t.Setenv("NTM_SESSION_CLI_FAIL_PANE", "")
+	t.Setenv("NTM_SESSION_CLI_AGENT_TYPE", "cod")
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SESSION_CLI_LOG"
@@ -252,7 +321,7 @@ case "$1" in
   list-windows) echo 0 ;;
   list-panes)
     for i in 0 1; do
-      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$NTM_SESSION_CLI_AGENT_TYPE"
     done ;;
   send-keys)
     if [ "$3" = "$NTM_SESSION_CLI_FAIL_PANE" ]; then
@@ -275,7 +344,7 @@ esac
 
 func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
 	for _, command := range []string{"restore", "resume"} {
-		for _, malformed := range []string{"command", "directory"} {
+		for _, malformed := range []string{"command", "directory", "missing command"} {
 			t.Run(command+"_"+malformed, func(t *testing.T) {
 				logPath := sessionRecoveryCommandFixture(t)
 				state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []session.PaneState{
@@ -284,6 +353,9 @@ func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
 				}}
 				if malformed == "command" {
 					state.Panes[1].Command = "codex\ninvalid"
+				} else if malformed == "missing command" {
+					state.Panes[1].Command = ""
+					cfg.Agents.Codex = "{{invalid-template}}"
 				} else {
 					state.WorkDir = filepath.Join(t.TempDir(), "file")
 					if err := os.WriteFile(state.WorkDir, []byte("not a directory"), 0600); err != nil {

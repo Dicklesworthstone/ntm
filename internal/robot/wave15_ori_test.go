@@ -12,7 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/session"
 )
 
-func TestWave15SavedSessionsORILifecycleAnd11HarnessResume(t *testing.T) {
+func TestWave15SavedSessionsORILifecycleAnd12HarnessResume(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
@@ -35,6 +35,7 @@ func TestWave15SavedSessionsORILifecycleAnd11HarnessResume(t *testing.T) {
 			Aider:       1,
 			Opencode:    1,
 			Omp:         1,
+			Pi:          1,
 			Ollama:      1,
 			User:        1,
 		},
@@ -76,6 +77,9 @@ func TestWave15SavedSessionsORILifecycleAnd11HarnessResume(t *testing.T) {
 			t.Fatalf("FormatAgentConfigSummary missing %q in:\n%s", want, joinedSummary)
 		}
 	}
+	if !strings.Contains("\n"+joinedSummary+"\n", "\nPi: 1\n") {
+		t.Fatalf("Pi count is absent or conflated with Oh My Pi: %s", joinedSummary)
+	}
 
 	if _, err := session.Save(snapshot, session.SaveOptions{Name: "wave15-snap", Overwrite: true}); err != nil {
 		t.Fatalf("session.Save: %v", err)
@@ -89,8 +93,8 @@ func TestWave15SavedSessionsORILifecycleAnd11HarnessResume(t *testing.T) {
 	if !listOut.Success || listOut.Count == nil || *listOut.Count != 1 || strings.Compare(listOut.Sessions[0].Name, "wave15-snap") != 0 {
 		t.Fatalf("unexpected list output: %+v", listOut)
 	}
-	if listOut.Sessions[0].Agents != 13 {
-		t.Fatalf("expected total 13 agents across all harnesses + user, got %d", listOut.Sessions[0].Agents)
+	if listOut.Sessions[0].Agents != 14 {
+		t.Fatalf("expected total 14 agents across all harnesses + user, got %d", listOut.Sessions[0].Agents)
 	}
 
 	// 2. Show snapshot with fresh casr/native resume binding count
@@ -100,6 +104,9 @@ func TestWave15SavedSessionsORILifecycleAnd11HarnessResume(t *testing.T) {
 	}
 	if !showOut.Success || showOut.State == nil || showOut.ResumablePanes == nil || *showOut.ResumablePanes != 2 {
 		t.Fatalf("expected 2 resumable panes on show, got %+v", showOut)
+	}
+	if showOut.State.Agents.Pi != 1 || showOut.State.Agents.Omp != 1 {
+		t.Fatalf("saved Pi and Oh My Pi counts did not round trip: %+v", showOut.State.Agents)
 	}
 
 	// 3. Archive -> list archived -> unarchive

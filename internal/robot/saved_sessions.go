@@ -57,7 +57,7 @@ func CountResumablePanes(state *session.SessionState) int {
 	return resumable
 }
 
-// FormatAgentConfigSummary formats all 11 agent harnesses plus user panes in human-readable lines.
+// FormatAgentConfigSummary formats all 12 agent harnesses plus user panes in human-readable lines.
 func FormatAgentConfigSummary(cfg session.AgentConfig) []string {
 	lines := []string{
 		fmt.Sprintf("Claude: %d", cfg.Claude),
@@ -75,6 +75,7 @@ func FormatAgentConfigSummary(cfg session.AgentConfig) []string {
 		{"Aider", cfg.Aider},
 		{"OpenCode", cfg.Opencode},
 		{"Oh My Pi", cfg.Omp},
+		{"Pi", cfg.Pi},
 		{"Ollama", cfg.Ollama},
 		{"User", cfg.User},
 	}

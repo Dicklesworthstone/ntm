@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -52,8 +53,10 @@ func RestoreAgentTemplate(cfg *config.Config, rawType string) (string, string, b
 		return command, "oc", true
 	case tmux.AgentOmp:
 		return config.OmpCommandOrDefault(cfg.Agents.Omp), "omp", true
-	case agent.AgentTypePi:
-		return "pi", "pi", true
+	case tmux.AgentPi:
+		// Managed Pi panes retain their exact plugin command in LaunchSpec.
+		// Legacy saves without one use the same default preset as spawning.
+		return plugins.ShippedPiPlugin().Command, "pi", true
 	case tmux.AgentOllama:
 		return cfg.Agents.Ollama, "ollama", true
 	default:
@@ -537,7 +540,7 @@ func getAgentCommand(agentType string, cmds AgentCommands) string {
 		return cmds.Opencode
 	case tmux.AgentOmp:
 		return cmds.Omp
-	case agent.AgentTypePi:
+	case tmux.AgentPi:
 		return cmds.Pi
 	case tmux.AgentOllama:
 		return cmds.Ollama

@@ -1286,6 +1286,8 @@ func restorableAgentCommand(pane PaneState) string {
 		// Relaunch with omp's skip-approval flag so the restored pane does
 		// not block on tool approvals; omp picks its own default model.
 		return "omp --auto-approve"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeCursor:
 		return "cursor-agent"
 	case agent.AgentTypeWindsurf:

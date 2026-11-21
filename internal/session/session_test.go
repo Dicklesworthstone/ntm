@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
@@ -51,6 +52,11 @@ func TestAgentConfig_Total(t *testing.T) {
 			name:   "grok only",
 			config: AgentConfig{Grok: 3},
 			want:   3,
+		},
+		{
+			name:   "pi distinct from omp",
+			config: AgentConfig{Pi: 2, Omp: 3},
+			want:   5,
 		},
 		{
 			name:   "all types",
@@ -712,6 +718,7 @@ func TestGetAgentCommand(t *testing.T) {
 		Windsurf: "windsurf start",
 		Aider:    "aider --watch",
 		Opencode: "opencode run",
+		Pi:       "pi --model exact",
 		Ollama:   "ollama serve",
 	}
 
@@ -734,6 +741,8 @@ func TestGetAgentCommand(t *testing.T) {
 		{"aider", "aider --watch"},
 		{"oc", "opencode run"},
 		{"opencode", "opencode run"},
+		{"pi", "pi --model exact"},
+		{"pi-agent", "pi --model exact"},
 		{"ollama", "ollama serve"},
 		{"unknown", ""},
 		{"", ""},
@@ -945,6 +954,38 @@ func TestCountAgents(t *testing.T) {
 			t.Errorf("Total() = %d, want 1 (unknown should not count)", cfg.Total())
 		}
 	})
+}
+
+func TestSavedSessionCountsCoverEveryHarness(t *testing.T) {
+	t.Parallel()
+	for _, harness := range agent.AllHarnesses() {
+		for _, alias := range append([]string{string(harness.Type)}, harness.Aliases...) {
+			t.Run(alias, func(t *testing.T) {
+				counts := countAgents([]tmux.Pane{{Type: tmux.AgentType(alias)}})
+				if counts.Total() != 1 {
+					t.Fatalf("saved session dropped %s (%s): %+v", alias, harness.Type, counts)
+				}
+				if harness.Type == agent.AgentTypePi && (counts.Pi != 1 || counts.Omp != 0) {
+					t.Fatalf("Pi was conflated with Oh My Pi: %+v", counts)
+				}
+			})
+		}
+	}
+}
+
+func TestSavedSessionDefaultCommandsCoverEveryHarness(t *testing.T) {
+	t.Parallel()
+	defaults := config.Default()
+	commands := RestoreAgentCommands(&SessionState{Name: "recovery", WorkDir: "/tmp/recovery"}, defaults)
+	for _, harness := range agent.AllHarnesses() {
+		command := getAgentCommand(string(harness.Type), commands)
+		if strings.TrimSpace(command) == "" {
+			t.Errorf("saved-session recovery has no default for supported harness %s", harness.Type)
+		}
+	}
+	if commands.Pi != "pi" {
+		t.Fatalf("Pi fallback changed its own defaults: %q", commands.Pi)
+	}
 }
 
 // --- mapPaneStates Tests ---

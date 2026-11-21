@@ -549,6 +549,9 @@ func (r *SessionsRestoreResult) Text(w io.Writer) error {
 		if r.State.Agents.Omp > 0 {
 			fmt.Fprintf(w, "  Oh My Pi: %d\n", r.State.Agents.Omp)
 		}
+		if r.State.Agents.Pi > 0 {
+			fmt.Fprintf(w, "  Pi: %d\n", r.State.Agents.Pi)
+		}
 	}
 	if r.PromptSent > 0 || r.PromptFailed > 0 {
 		fmt.Fprintf(w, "  Prompt injected into %d pane(s)", r.PromptSent)
@@ -843,9 +846,9 @@ func (r *SessionsResumeResult) JSON() interface{} { return r }
 //
 // Rendering uses session-level template vars (session name + project dir); the
 // fresh-launch fallback does not request a specific model, so the no-model
-// branch of each template is taken. A render failure for any single agent is
-// non-fatal: that agent's command is left empty so the restore/resume path
-// simply skips launching it rather than sending a broken template into a pane.
+// branch of each template is taken. A failed rendering leaves the command
+// empty so the restore/resume preflight rejects the batch before replacing
+// any session rather than sending a broken template into a pane.
 func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 	return session.RestoreAgentCommands(state, cfg)
 }

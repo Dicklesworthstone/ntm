@@ -514,6 +514,9 @@ func TestRestoreLifecycleReconstructsBareRuntimeAgentLaunch(t *testing.T) {
 		{"bun-backed claude", "cc", "/usr/bin/bun", "claude", true},
 		{"versioned python", "aider", `"/opt/python3.13"`, "aider", true},
 		{"node-backed cursor", "cursor", "node", "cursor-agent", true},
+		{"node-backed pi", "pi", "node", "pi", true},
+		{"pi alias without a command", "pi-agent", "", "pi", false},
+		{"recorded pi launcher", "pi", `/opt/pi --model custom --thinking high`, `/opt/pi --model custom --thinking high`, false},
 		{"explicit node script", "codex", `node "/opt/my agents/codex.js" --model o3`, `node "/opt/my agents/codex.js" --model o3`, false},
 		{"explicit runtime flags and script", "cc", `bun --cwd "/my project" /opt/agent.js`, `bun --cwd "/my project" /opt/agent.js`, false},
 		{"explicit env and script", "cc", `env FOO=bar node /opt/agent.js`, `env FOO=bar node /opt/agent.js`, false},
@@ -524,6 +527,7 @@ func TestRestoreLifecycleReconstructsBareRuntimeAgentLaunch(t *testing.T) {
 			// The launched CLI is observed under its interpreter. It need not
 			// retain the basename of the command that started it.
 			t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "node")
+			t.Setenv("NTM_RESTORE_TEST_AGENT_TYPE", string(agent.AgentType(tc.agentType).Canonical()))
 			cp := lifecycleCheckpoint(t, 1)
 			cp.Session.Panes[0].AgentType, cp.Session.Panes[0].Command = tc.agentType, tc.captured
 			out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true})
