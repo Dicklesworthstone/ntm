@@ -1765,6 +1765,9 @@ func (m Model) activeOperationalPanel() panels.Panel {
 		{m.showWorktreesPanel, m.worktreesPanel},
 		{m.showMailInboxPanel, m.mailInboxPanel},
 		{m.showWorkflowPanel, m.workflowPanel},
+		{m.showQuotaPanel, m.quotaPanel},
+		{m.showRateLimitPanel, m.rateLimitPanel},
+		{m.showAccountsPanel, m.accountsPanel},
 	}
 	for _, c := range candidates {
 		if c.show && c.panel != nil && c.panel.Config().ID == m.sidebarActivePanel {
@@ -4139,29 +4142,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// When the history panel's full-prompt preview overlay is open, route
+		// keys directly to it so q/esc close the preview instead of quitting
+		// the dashboard and j/k scroll the preview cleanly.
+		if m.focusedPanel == PanelHistory && m.historyPanel != nil && m.historyPanel.IsPreviewOpen() {
+			_, cmd := m.historyPanel.Update(msg)
+			return m, cmd
+		}
+
 		// C6-wire panel toggles: quota ('$'), oauth/rate status ('o'),
 		// accounts ('a'). [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
 		if key.Matches(msg, dashKeys.QuotaToggle) {
 			m.showQuotaPanel = !m.showQuotaPanel
-			if m.showQuotaPanel && !m.fetchingQuota {
-				m.fetchingQuota = true
-				return m, m.fetchQuotaStatus()
+			if m.showQuotaPanel {
+				if m.quotaPanel != nil {
+					m.sidebarActivePanel = m.quotaPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingQuota {
+					m.fetchingQuota = true
+					return m, m.fetchQuotaStatus()
+				}
+			} else {
+				m.syncSidebarPanelFocusState()
 			}
 			return m, nil
 		}
 		if key.Matches(msg, dashKeys.RateLimitToggle) {
 			m.showRateLimitPanel = !m.showRateLimitPanel
-			if m.showRateLimitPanel && !m.fetchingOAuthHealth {
-				m.fetchingOAuthHealth = true
-				return m, m.fetchOAuthHealth()
+			if m.showRateLimitPanel {
+				if m.rateLimitPanel != nil {
+					m.sidebarActivePanel = m.rateLimitPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingOAuthHealth {
+					m.fetchingOAuthHealth = true
+					return m, m.fetchOAuthHealth()
+				}
+			} else {
+				m.syncSidebarPanelFocusState()
 			}
 			return m, nil
 		}
 		if key.Matches(msg, dashKeys.AccountsToggle) && m.accountsToggleShortcutAvailable() {
 			m.showAccountsPanel = !m.showAccountsPanel
-			if m.showAccountsPanel && !m.fetchingAccounts {
-				m.fetchingAccounts = true
-				return m, m.fetchAccountsStatus()
+			if m.showAccountsPanel {
+				if m.accountsPanel != nil {
+					m.sidebarActivePanel = m.accountsPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingAccounts {
+					m.fetchingAccounts = true
+					return m, m.fetchAccountsStatus()
+				}
+			} else {
+				m.syncSidebarPanelFocusState()
 			}
 			return m, nil
 		}
@@ -4288,6 +4323,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 		case key.Matches(msg, dashKeys.Diagnostics):
+			if m.focusedPanel == PanelHistory && m.historyPanel != nil && msg.String() == "ctrl+d" {
+				_, cmd := m.historyPanel.Update(msg)
+				return m, cmd
+			}
 			m.showDiagnostics = !m.showDiagnostics
 			return m, nil
 		case key.Matches(msg, dashKeys.ScanToggle):

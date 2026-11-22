@@ -73,6 +73,11 @@ const (
 	historyAgentGrok
 	historyAgentOmp
 	historyAgentOpencode
+	historyAgentPi
+	historyAgentCursor
+	historyAgentWindsurf
+	historyAgentAider
+	historyAgentOllama
 )
 
 func (f historyAgentFilter) Next() historyAgentFilter {
@@ -91,6 +96,16 @@ func (f historyAgentFilter) Next() historyAgentFilter {
 		return historyAgentOmp
 	case historyAgentOmp:
 		return historyAgentOpencode
+	case historyAgentOpencode:
+		return historyAgentPi
+	case historyAgentPi:
+		return historyAgentCursor
+	case historyAgentCursor:
+		return historyAgentWindsurf
+	case historyAgentWindsurf:
+		return historyAgentAider
+	case historyAgentAider:
+		return historyAgentOllama
 	default:
 		return historyAgentAll
 	}
@@ -110,8 +125,18 @@ func (f historyAgentFilter) Label() string {
 		return "Grok"
 	case historyAgentOmp:
 		return "Omp"
+	case historyAgentPi:
+		return "Pi"
 	case historyAgentOpencode:
 		return "OpenCode"
+	case historyAgentCursor:
+		return "Cursor"
+	case historyAgentWindsurf:
+		return "Windsurf"
+	case historyAgentAider:
+		return "Aider"
+	case historyAgentOllama:
+		return "Ollama"
 	default:
 		return "any"
 	}
@@ -131,8 +156,18 @@ func (f historyAgentFilter) AgentType() tmux.AgentType {
 		return tmux.AgentGrok
 	case historyAgentOmp:
 		return tmux.AgentOmp
+	case historyAgentPi:
+		return tmux.AgentPi
 	case historyAgentOpencode:
 		return tmux.AgentOpencode
+	case historyAgentCursor:
+		return tmux.AgentCursor
+	case historyAgentWindsurf:
+		return tmux.AgentWindsurf
+	case historyAgentAider:
+		return tmux.AgentAider
+	case historyAgentOllama:
+		return tmux.AgentOllama
 	default:
 		return ""
 	}
@@ -229,6 +264,11 @@ func NewHistoryPanel() *HistoryPanel {
 // HasError returns true if there's an active error
 func (m *HistoryPanel) HasError() bool {
 	return m.err != nil
+}
+
+// IsPreviewOpen reports whether the full-prompt preview overlay is active.
+func (m *HistoryPanel) IsPreviewOpen() bool {
+	return m.showPreview
 }
 
 // SetPanes provides pane metadata used for agent-type filtering and rendering targets.

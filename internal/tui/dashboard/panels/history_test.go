@@ -633,8 +633,8 @@ func TestHistoryPanel_FilterAgentCycle_UsesPaneMeta(t *testing.T) {
 		t.Fatalf("expected 0 visible entries after Gemini filter, got %d", got)
 	}
 
-	// a => Antigravity, Grok, Omp, OpenCode (none in this fixture)
-	for _, wantLabel := range []string{"Antigravity", "Grok", "Omp", "OpenCode"} {
+	// a => Antigravity, Grok, Omp, OpenCode, Pi, Cursor, Windsurf, Aider, Ollama (none in this fixture)
+	for _, wantLabel := range []string{"Antigravity", "Grok", "Omp", "OpenCode", "Pi", "Cursor", "Windsurf", "Aider", "Ollama"} {
 		panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 		if got := panel.agentFilter.Label(); got != wantLabel {
 			t.Fatalf("agentFilter.Label() = %q, want %q", got, wantLabel)
@@ -730,6 +730,11 @@ func TestHistoryAgentFilter_FullEightStateCycle(t *testing.T) {
 		{historyAgentGrok, "Grok", tmux.AgentGrok},
 		{historyAgentOmp, "Omp", tmux.AgentOmp},
 		{historyAgentOpencode, "OpenCode", tmux.AgentOpencode},
+		{historyAgentPi, "Pi", tmux.AgentPi},
+		{historyAgentCursor, "Cursor", tmux.AgentCursor},
+		{historyAgentWindsurf, "Windsurf", tmux.AgentWindsurf},
+		{historyAgentAider, "Aider", tmux.AgentAider},
+		{historyAgentOllama, "Ollama", tmux.AgentOllama},
 	}
 
 	cur := historyAgentAll
@@ -814,10 +819,19 @@ func TestHistoryPanel_FilterAgentCanonicalMatching(t *testing.T) {
 		t.Fatalf("OpenCode visible entries = %+v, want [oc-prefix, oc-types]", panel.visibleEntries)
 	}
 
-	// Next: wraps to All
-	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if got := panel.agentFilter; got != historyAgentAll {
-		t.Fatalf("expected wrap to historyAgentAll, got %v", got)
+	// Advance through Pi, Cursor, Windsurf, Aider, Ollama, then wrap to All.
+	for _, want := range []historyAgentFilter{
+		historyAgentPi,
+		historyAgentCursor,
+		historyAgentWindsurf,
+		historyAgentAider,
+		historyAgentOllama,
+		historyAgentAll,
+	} {
+		panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		if got := panel.agentFilter; got != want {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
 	}
 	if got := len(panel.visibleEntries); got != len(entries) {
 		t.Fatalf("All visible entries = %d, want %d", got, len(entries))
