@@ -594,3 +594,61 @@ func TestRobotHealthAndAttentionParityPolicyDecisionsAndMTLSClientCN(t *testing.
 		t.Fatal("VerifyConnection accepted mismatched CN")
 	}
 }
+
+func TestSafetyInstallPreChecksAllFilesAndPolicyResetUsesHardenedYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projDir := t.TempDir()
+
+	// Pre-create ONLY the 3rd file (claude hook) so !force must fail with 409
+	// WITHOUT creating gitWrapper or rmWrapper on disk.
+	hookPath := filepath.Join(home, ".claude", "hooks", "PreToolUse", "ntm-safety.sh")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{projectDir: projDir}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/install", strings.NewReader(`{"force":false}`))
+	rr := httptest.NewRecorder()
+	s.handleSafetyInstallV1(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("handleSafetyInstallV1 existing hook status = %d, want %d (body=%s)", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	binDir := filepath.Join(home, ".ntm", "bin")
+	for _, wrapper := range []string{"git", "rm"} {
+		if _, err := os.Stat(filepath.Join(binDir, wrapper)); !os.IsNotExist(err) {
+			t.Fatalf("handleSafetyInstallV1 wrote partial %s wrapper despite pre-check failure (err=%v)", wrapper, err)
+		}
+	}
+
+	// Policy reset must emit the canonical hardened DefaultPolicyYAML.
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/policy/reset", nil)
+	resetRR := httptest.NewRecorder()
+	s.handlePolicyResetV1(resetRR, resetReq)
+	if resetRR.Code != http.StatusOK {
+		t.Fatalf("handlePolicyResetV1 status = %d, want 200 (body=%s)", resetRR.Code, resetRR.Body.String())
+	}
+	var resetResp PolicyResetResponse
+	if err := json.Unmarshal(resetRR.Body.Bytes(), &resetResp); err != nil {
+		t.Fatalf("decode reset response: %v (body=%s)", err, resetRR.Body.String())
+	}
+	wantPolicyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	if resetResp.PolicyPath != wantPolicyPath {
+		t.Fatalf("reset policy_path = %q, want %q", resetResp.PolicyPath, wantPolicyPath)
+	}
+	policyBytes, err := os.ReadFile(resetResp.PolicyPath)
+	if err != nil {
+		t.Fatalf("read reset policy.yaml: %v", err)
+	}
+	if !strings.Contains(string(policyBytes), "no-optional-locks") {
+		t.Fatalf("reset policy.yaml did not emit hardened canonical DefaultPolicyYAML:\n%s", string(policyBytes))
+	}
+
+	// OPERATION_CANCELED must map to 409 Conflict.
+	if got := robotErrorHTTPStatus("OPERATION_CANCELED"); got != http.StatusConflict {
+		t.Fatalf("robotErrorHTTPStatus(OPERATION_CANCELED) = %d, want %d", got, http.StatusConflict)
+	}
+}

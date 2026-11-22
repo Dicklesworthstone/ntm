@@ -1049,3 +1049,89 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 		t.Errorf("Check(sh -c rm -rf /) = %q, want %q", got, ActionBlock)
 	}
 }
+
+func TestPolicyWave10Hardening(t *testing.T) {
+	t.Parallel()
+	p := DefaultPolicy()
+
+	mustBlock := []string{
+		`rm / -rf`,
+		`rm -r / -f`,
+		`rm ~ -rf`,
+		`rm -rf "/"`,
+		`rm -rf /*`,
+		`rm -rf foo /`,
+		`'rm' '-rf' '/'`,
+		`git -P reset --hard`,
+		`git --no-optional-locks reset --hard`,
+		`git -C/tmp reset --hard`,
+		`git -C "/tmp/my repo" reset --hard`,
+		`git reset '--hard'`,
+		`git push origin '+main'`,
+		`git push --force-with-lease -f origin main`,
+		`git push --force-with-lease --no-force-with-lease --force origin main`,
+		`git push -o --force-with-lease --force origin main`,
+		`git push -o--force-with-lease origin +main`,
+		`git push --force-with-lease '--force' origin main`,
+		`git push --force-with-lease "-f" origin main`,
+		`git reset --soft --hard HEAD~1`,
+		`git reset --soft '--hard' HEAD~1`,
+		`rm my-dir / -rf`,
+		`rm -r / my-dir -f`,
+		`git branch -f -rd old-branch`,
+		`echo "$(git reset --hard)"`,
+	}
+	for _, cmd := range mustBlock {
+		if got := checkAction(p, cmd); got != ActionBlock {
+			t.Errorf("Check(%q) = %q, want %q", cmd, got, ActionBlock)
+		}
+	}
+
+	mustNotBlock := []string{
+		`swarm -rf /`,
+		`terraform -rf /`,
+		`rm -r -- -f`,
+		`git branch -d my-f`,
+		`git push --force-with-lease origin main`,
+		`git reset --soft HEAD~1`,
+	}
+	for _, cmd := range mustNotBlock {
+		if got := checkAction(p, cmd); got == ActionBlock {
+			t.Errorf("Check(%q) = %q, must not block benign command", cmd, got)
+		}
+	}
+
+	// Permuted GNU rm flags targeting non-critical paths (including hyphenated names) must still require approval.
+	for _, cmd := range []string{`rm node_modules -rf`, `rm foo-bar baz-qux -rf`, `rm -r foo-bar baz-qux -f`} {
+		if got := checkAction(p, cmd); got != ActionApprove {
+			t.Errorf("Check(%q) = %q, want %q", cmd, got, ActionApprove)
+		}
+	}
+
+	// Unclosed nested "$(" must complete in linear time (no exponential backtracking).
+	nested := "$(" + strings.Repeat("\"$(", 60)
+	if idx := findMatchingParen(nested, 1); idx != -1 {
+		t.Errorf("findMatchingParen(unclosed nested) = %d, want -1", idx)
+	}
+	_ = p.Check(nested)
+
+	// DefaultPolicyYAML must round-trip cleanly and retain hardened rules.
+	yamlPath := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(yamlPath, []byte(DefaultPolicyYAML()), 0o600); err != nil {
+		t.Fatalf("write DefaultPolicyYAML: %v", err)
+	}
+	parsed, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load(DefaultPolicyYAML()) error = %v", err)
+	}
+	for _, cmd := range []string{`rm / -rf`, `git -C/tmp reset --hard`, `git push --force-with-lease -f origin main`} {
+		if got := checkAction(parsed, cmd); got != ActionBlock {
+			t.Errorf("parsed DefaultPolicyYAML Check(%q) = %q, want %q", cmd, got, ActionBlock)
+		}
+	}
+
+	// ResolveEffectivePathForProject must reject whitespace-only projectDir.
+	if _, _, err := ResolveEffectivePathForProject("   \t  "); err == nil {
+		t.Error("ResolveEffectivePathForProject(whitespace) = nil error, want error")
+	}
+}

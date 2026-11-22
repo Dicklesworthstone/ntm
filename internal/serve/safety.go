@@ -74,15 +74,36 @@ type SafetyStatusResponse struct {
 	HookSettingsError string `json:"hook_settings_error,omitempty"`
 }
 
+var errSafetyFileExists = errors.New("safety file already exists")
+
 func (s *Server) resolvePolicyPath() (string, bool, error) {
 	return policy.ResolveEffectivePathForProject(s.projectDirSnapshot())
 }
 
 func (s *Server) loadPolicy() (*policy.Policy, error) {
-	if projectDir := strings.TrimSpace(s.projectDirSnapshot()); projectDir != "" {
+	if projectDir := s.projectDirSnapshot(); projectDir != "" {
 		return policy.LoadForProject(projectDir)
 	}
 	return policy.LoadOrDefault()
+}
+
+// loadResolvedPolicy snapshots projectDir once, resolves the effective policy
+// path once, and loads that exact file (or DefaultPolicy when absent) so status
+// and GET /policy cannot observe split-brain metadata vs rules under concurrent
+// PATCH /config updates.
+func (s *Server) loadResolvedPolicy() (*policy.Policy, string, bool, error) {
+	policyPath, policyExists, err := s.resolvePolicyPath()
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !policyExists {
+		return policy.DefaultPolicy(), policyPath, false, nil
+	}
+	p, err := policy.Load(policyPath)
+	if err != nil {
+		return nil, policyPath, true, err
+	}
+	return p, policyPath, true, nil
 }
 
 func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +131,8 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 	hookRegistered, registeredErr := policy.ClaudeHookRegistered(settingsPath, hookPath)
 	hookInstalled := hookScriptPresent && hookRegistered
 
-	// Load policy
-	p, err := s.loadPolicy()
+	// Load policy and path from a single projectDir snapshot.
+	p, effectivePath, policyExists, err := s.loadResolvedPolicy()
 	if err != nil {
 		// Safety status must not present a parse or read failure as an empty
 		// policy. Zero rule counts would tell an operator that no commands are
@@ -120,15 +141,10 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 			"failed to load safety policy", nil, reqID)
 		return
 	}
-	var blocked, approval, allowed int
-	var policyPath string
-	blocked, approval, allowed = p.Stats()
-	// Report the path LoadOrDefault actually read. Looking only at
-	// ~/.ntm/policy.yaml reported "no policy file" for a project-local
-	// policy that was being enforced, while the stats beside it were
-	// computed from that very file.
-	if effective, exists, resolveErr := s.resolvePolicyPath(); resolveErr == nil && exists {
-		policyPath = effective
+	blocked, approval, allowed := p.Stats()
+	policyPath := ""
+	if policyExists {
+		policyPath = effectivePath
 	}
 
 	resp := SafetyStatusResponse{
@@ -326,6 +342,22 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 		policyExists = safetyFileExists(policyPath)
 	}
 
+	gitWrapper := filepath.Join(binDir, "git")
+	rmWrapper := filepath.Join(binDir, "rm")
+	hookPath := policy.ClaudeHookScriptPath(home)
+
+	// When force is false, pre-check all target wrapper/hook paths before
+	// mutating disk so a conflict on rm or hook never leaves a partial install.
+	if !req.Force {
+		for _, target := range []string{gitWrapper, rmWrapper, hookPath} {
+			if safetyFileExists(target) {
+				writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+					fmt.Sprintf("%s already exists (use force=true to overwrite)", target), nil, reqID)
+				return
+			}
+		}
+	}
+
 	// Create directories
 	for _, dir := range []string{ntmDir, binDir, logsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -335,30 +367,35 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeInstallError := func(installErr error) {
+		if errors.Is(installErr, errSafetyFileExists) {
+			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, installErr.Error(), nil, reqID)
+			return
+		}
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, installErr.Error(), nil, reqID)
+	}
+
 	// Install git wrapper
-	gitWrapper := filepath.Join(binDir, "git")
 	if err := installWrapperFile(gitWrapper, policy.GitWrapperScript, req.Force); err != nil {
-		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		writeInstallError(err)
 		return
 	}
 
 	// Install rm wrapper
-	rmWrapper := filepath.Join(binDir, "rm")
 	if err := installWrapperFile(rmWrapper, policy.RmWrapperScript, req.Force); err != nil {
-		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		writeInstallError(err)
 		return
 	}
 
 	// Install the Claude Code hook script and register it in Claude's
 	// settings: Claude Code runs only hooks a settings file lists.
-	hookPath := policy.ClaudeHookScriptPath(home)
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0755); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to create hook directory", nil, reqID)
 		return
 	}
 	if err := installWrapperFile(hookPath, policy.ClaudeHookScript, req.Force); err != nil {
-		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+		writeInstallError(err)
 		return
 	}
 	settingsPath := policy.ClaudeUserSettingsPath(home)
@@ -504,19 +541,9 @@ func (s *Server) handlePolicyGetV1(w http.ResponseWriter, r *http.Request) {
 	includeRules := r.URL.Query().Get("rules") == "true"
 	includeContent := r.URL.Query().Get("content") == "true"
 
-	// Describe the policy LoadOrDefault actually reads, which prefers the home
-	// file but otherwise uses the project-local .ntm/policy.yaml that
-	// `ntm setup` creates. Hardcoding the home path made this endpoint report
-	// is_default:true for a project policy that was actively blocking
-	// commands — and report it alongside stats computed from that same file.
-	policyPath, policyExists, resolveErr := s.resolvePolicyPath()
-	if resolveErr != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to resolve policy path", nil, reqID)
-		return
-	}
-
-	p, err := s.loadPolicy()
+	// Snapshot projectDir, resolve effective policy path, and load rules once
+	// so is_default, policy_path, content, and stats describe the exact same file.
+	p, policyPath, policyExists, err := s.loadResolvedPolicy()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to load policy", nil, reqID)
@@ -1558,7 +1585,7 @@ func safetyFileExists(path string) bool {
 // intended install root) — an attacker-chosen path here writes an executable.
 func installWrapperFile(path, content string, force bool) error {
 	if safetyFileExists(path) && !force {
-		return fmt.Errorf("%s already exists (use force=true to overwrite)", path)
+		return fmt.Errorf("%w: %s already exists (use force=true to overwrite)", errSafetyFileExists, path)
 	}
 
 	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
@@ -1583,63 +1610,7 @@ func (s *Server) mkdirPolicyDir(path string) error {
 }
 
 func writeDefaultPolicyFile(path string) error {
-	content := `# NTM Policy Configuration
-# Version 1 - with automation settings and SLB support
-version: 1
-
-# Automation settings
-automation:
-  auto_commit: true        # Allow automatic git commits
-  auto_push: false         # Require explicit git push
-  force_release: approval  # "never", "approval", or "auto" for file reservation force-release
-
-# Explicitly allowed patterns (checked first - highest priority)
-allowed:
-  - pattern: 'git\s+push\s+.*--force-with-lease'
-    reason: "Safe force push with lease protection"
-  - pattern: 'git\s+reset\s+--soft'
-    reason: "Soft reset preserves changes"
-  - pattern: 'git\s+reset\s+HEAD~?\d*$'
-    reason: "Mixed reset preserves working directory"
-
-# Blocked patterns (dangerous operations)
-blocked:
-  - pattern: 'git\s+reset\s+--hard'
-    reason: "Hard reset loses uncommitted changes"
-  - pattern: 'git\s+clean\s+-fd'
-    reason: "Removes untracked files permanently"
-  - pattern: 'git\s+push\s+.*--force'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+.*\s-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'rm\s+-rf\s+/$'
-    reason: "Recursive delete of root is catastrophic"
-  - pattern: 'rm\s+-rf\s+~'
-    reason: "Recursive delete of home directory"
-  - pattern: 'rm\s+-rf\s+\*'
-    reason: "Recursive delete of everything in current directory"
-  - pattern: 'git\s+branch\s+-D'
-    reason: "Force delete branch loses unmerged work"
-  - pattern: 'git\s+stash\s+drop'
-    reason: "Dropping stash loses saved work"
-  - pattern: 'git\s+stash\s+clear'
-    reason: "Clearing all stashes loses saved work"
-
-# Approval required patterns (need confirmation)
-approval_required:
-  - pattern: 'git\s+rebase\s+-i'
-    reason: "Interactive rebase rewrites history"
-  - pattern: 'git\s+commit\s+--amend'
-    reason: "Amending rewrites history"
-  - pattern: 'rm\s+-rf\s+\S'
-    reason: "Recursive force delete"
-  - pattern: 'force_release'
-    reason: "Force release another agent's reservation"
-    slb: true  # Requires two-person approval
-`
-	return os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(policy.DefaultPolicyYAML()), 0644)
 }
 
 func generatePolicyYAMLFromPolicy(p *policy.Policy) string {

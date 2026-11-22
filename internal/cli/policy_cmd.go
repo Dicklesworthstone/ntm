@@ -433,62 +433,7 @@ func runPolicyReset(force bool) error {
 }
 
 func generateDefaultPolicyYAML() string {
-	return `# NTM Policy Configuration
-# Version 1 - with automation settings and SLB support
-version: 1
-
-# Automation settings
-automation:
-  auto_commit: true        # Allow automatic git commits
-  auto_push: false         # Require explicit git push
-  force_release: approval  # "never", "approval", or "auto" for file reservation force-release
-
-# Explicitly allowed patterns (checked first - highest priority)
-allowed:
-  - pattern: 'git\s+push\s+.*--force-with-lease'
-    reason: "Safe force push with lease protection"
-  - pattern: 'git\s+reset\s+--soft'
-    reason: "Soft reset preserves changes"
-  - pattern: 'git\s+reset\s+HEAD~?\d*$'
-    reason: "Mixed reset preserves working directory"
-
-# Blocked patterns (dangerous operations)
-blocked:
-  - pattern: 'git\s+reset\s+--hard'
-    reason: "Hard reset loses uncommitted changes"
-  - pattern: 'git\s+clean\s+-fd'
-    reason: "Removes untracked files permanently"
-  - pattern: 'git\s+push\s+.*--force'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+.*\s-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'rm\s+-rf\s+/$'
-    reason: "Recursive delete of root is catastrophic"
-  - pattern: 'rm\s+-rf\s+~'
-    reason: "Recursive delete of home directory"
-  - pattern: 'rm\s+-rf\s+\*'
-    reason: "Recursive delete of everything in current directory"
-  - pattern: 'git\s+branch\s+-D'
-    reason: "Force delete branch loses unmerged work"
-  - pattern: 'git\s+stash\s+drop'
-    reason: "Dropping stash loses saved work"
-  - pattern: 'git\s+stash\s+clear'
-    reason: "Clearing all stashes loses saved work"
-
-# Approval required patterns (need confirmation)
-approval_required:
-  - pattern: 'git\s+rebase\s+-i'
-    reason: "Interactive rebase rewrites history"
-  - pattern: 'git\s+commit\s+--amend'
-    reason: "Amending rewrites history"
-  - pattern: 'rm\s+-rf\s+\S'
-    reason: "Recursive force delete"
-  - pattern: 'force_release'
-    reason: "Force release another agent's reservation"
-    slb: true  # Requires two-person approval
-`
+	return policy.DefaultPolicyYAML()
 }
 
 func newPolicyEditCmd() *cobra.Command {
