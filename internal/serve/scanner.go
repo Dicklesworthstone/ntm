@@ -569,6 +569,39 @@ func (s *Server) handleRunScan(w http.ResponseWriter, r *http.Request) {
 
 // runScanAsync runs the scan in the background
 func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
+	completed := false
+	defer func() {
+		if r := recover(); r != nil {
+			now := time.Now()
+			errMsg := fmt.Sprintf("scanner panic: %v", r)
+			scannerStore.UpdateScan(scan.ID, func(sr *ScanRecord) {
+				if sr.State == ScanStatePending || sr.State == ScanStateRunning {
+					sr.State = ScanStateFailed
+					sr.Error = errMsg
+					sr.CompletedAt = &now
+				}
+			})
+			slog.Error("scan panicked", "scan_id", scan.ID, "panic", r)
+			s.publishScannerEvent("scanner.failed", map[string]interface{}{
+				"scan_id": scan.ID,
+				"error":   errMsg,
+			})
+			return
+		}
+		if !completed {
+			now := time.Now()
+			scannerStore.UpdateScan(scan.ID, func(sr *ScanRecord) {
+				if sr.State == ScanStatePending || sr.State == ScanStateRunning {
+					sr.State = ScanStateFailed
+					if sr.Error == "" {
+						sr.Error = "scan terminated before completion"
+					}
+					sr.CompletedAt = &now
+				}
+			})
+		}
+	}()
+
 	// Update state to running
 	scannerStore.UpdateScan(scan.ID, func(sr *ScanRecord) {
 		sr.State = ScanStateRunning
@@ -583,6 +616,7 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 			sr.Error = err.Error()
 			sr.CompletedAt = &now
 		})
+		completed = true
 		s.publishScannerEvent("scanner.failed", map[string]interface{}{
 			"scan_id": scan.ID,
 			"error":   err.Error(),
@@ -612,8 +646,20 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 		scanOpts.Timeout = maxScanTimeout
 	}
 
-	// Run scan
-	ctx := context.Background()
+	// Tie background scan lifetime to server shutdown and bounded timeout so
+	// Stop() cancels active scans instead of wedging SCAN_IN_PROGRESS.
+	ctx, cancel := context.WithTimeout(context.Background(), scanOpts.Timeout)
+	defer cancel()
+	if shutdownCh := s.shutdownChan(); shutdownCh != nil {
+		go func() {
+			select {
+			case <-shutdownCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+
 	var result *scanner.ScanResult
 	useIncrementalDefaults := len(opts.Languages) == 0 &&
 		len(opts.Exclude) == 0 &&
@@ -638,10 +684,25 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 			sr.Error = err.Error()
 			sr.CompletedAt = &now
 		})
+		completed = true
 		slog.Error("scan failed", "scan_id", scan.ID, "error", err)
 		s.publishScannerEvent("scanner.failed", map[string]interface{}{
 			"scan_id": scan.ID,
 			"error":   err.Error(),
+		})
+		return
+	}
+	if result == nil {
+		scannerStore.UpdateScan(scan.ID, func(sr *ScanRecord) {
+			sr.State = ScanStateFailed
+			sr.Error = "scanner returned nil result"
+			sr.CompletedAt = &now
+		})
+		completed = true
+		slog.Error("scan returned nil result", "scan_id", scan.ID)
+		s.publishScannerEvent("scanner.failed", map[string]interface{}{
+			"scan_id": scan.ID,
+			"error":   "scanner returned nil result",
 		})
 		return
 	}
@@ -676,6 +737,7 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 		sr.CompletedAt = &now
 		sr.FindingIDs = findingIDs
 	})
+	completed = true
 
 	slog.Info("scan completed", "scan_id", scan.ID, "findings", len(result.Findings),
 		"critical", result.Totals.Critical, "warning", result.Totals.Warning)
