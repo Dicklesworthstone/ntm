@@ -249,10 +249,21 @@ func (t *TimelineTracker) RecordEvent(event AgentEvent) AgentEvent {
 	// Add to global event list
 	t.allEvents = append(t.allEvents, event)
 
-	// Prune if over limit (per agent)
+	// Prune if over limit (per agent), zeroing evicted slots so Details maps can be GC'd.
 	if len(timeline.events) > t.config.MaxEventsPerAgent {
 		excess := len(timeline.events) - t.config.MaxEventsPerAgent
-		timeline.events = timeline.events[excess:]
+		copy(timeline.events, timeline.events[excess:])
+		clear(timeline.events[len(timeline.events)-excess:])
+		timeline.events = timeline.events[:len(timeline.events)-excess]
+	}
+	// Bound global event list proportionally so allEvents cannot grow unboundedly
+	// between periodic Prune() runs.
+	maxAllEvents := t.config.MaxEventsPerAgent * max(len(t.timelines), 1)
+	if maxAllEvents > 0 && len(t.allEvents) > maxAllEvents {
+		excess := len(t.allEvents) - maxAllEvents
+		copy(t.allEvents, t.allEvents[excess:])
+		clear(t.allEvents[len(t.allEvents)-excess:])
+		t.allEvents = t.allEvents[:len(t.allEvents)-excess]
 	}
 
 	// Notify callbacks (copy to avoid holding lock during callback)
@@ -399,10 +410,13 @@ func (t *TimelineTracker) Prune() int {
 
 		if keepFrom == -1 {
 			pruned += len(timeline.events)
+			clear(timeline.events)
 			timeline.events = timeline.events[:0]
 		} else if keepFrom > 0 {
 			pruned += keepFrom
-			timeline.events = timeline.events[keepFrom:]
+			n := copy(timeline.events, timeline.events[keepFrom:])
+			clear(timeline.events[n:])
+			timeline.events = timeline.events[:n]
 		}
 	}
 
@@ -416,9 +430,12 @@ func (t *TimelineTracker) Prune() int {
 	}
 
 	if keepFrom == -1 {
+		clear(t.allEvents)
 		t.allEvents = t.allEvents[:0]
 	} else if keepFrom > 0 {
-		t.allEvents = t.allEvents[keepFrom:]
+		n := copy(t.allEvents, t.allEvents[keepFrom:])
+		clear(t.allEvents[n:])
+		t.allEvents = t.allEvents[:n]
 	}
 
 	return pruned

@@ -550,6 +550,8 @@ func (p *TimelinePersister) StopCheckpoint(sessionID string) {
 	if err != nil {
 		return
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 	p.stopCheckpointRunner(normalizedSessionID)
 }
 

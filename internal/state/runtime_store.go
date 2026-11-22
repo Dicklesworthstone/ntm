@@ -1620,6 +1620,96 @@ func (s *Store) GetAttentionEventsSince(sinceCursor int64, limit int) ([]StoredA
 	return events, rows.Err()
 }
 
+// GetRecentAttentionEvents returns up to limit newest non-expired attention
+// events ordered by cursor DESC, optionally scoped to sessionName.
+func (s *Store) GetRecentAttentionEvents(limit int, sessionName string) ([]StoredAttentionEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if sessionName != "" {
+		rows, err = s.db.Query(`
+			SELECT cursor, ts, COALESCE(session_name, ''), COALESCE(pane, ''),
+				category, event_type, source, actionability, severity, COALESCE(reason_code, ''),
+				summary, COALESCE(details, ''), COALESCE(next_actions, ''),
+				COALESCE(dedup_key, ''), dedup_count, expires_at
+			FROM attention_events
+			WHERE session_name = ?
+			  AND (expires_at IS NULL OR expires_at >= datetime('now'))
+			ORDER BY cursor DESC
+			LIMIT ?`, sessionName, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT cursor, ts, COALESCE(session_name, ''), COALESCE(pane, ''),
+				category, event_type, source, actionability, severity, COALESCE(reason_code, ''),
+				summary, COALESCE(details, ''), COALESCE(next_actions, ''),
+				COALESCE(dedup_key, ''), dedup_count, expires_at
+			FROM attention_events
+			WHERE (expires_at IS NULL OR expires_at >= datetime('now'))
+			ORDER BY cursor DESC
+			LIMIT ?`, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get recent attention events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []StoredAttentionEvent
+	for rows.Next() {
+		var event StoredAttentionEvent
+		if err := rows.Scan(
+			&event.Cursor, &event.Ts, &event.SessionName, &event.Pane,
+			&event.Category, &event.EventType, &event.Source,
+			&event.Actionability, &event.Severity, &event.ReasonCode, &event.Summary,
+			&event.Details, &event.NextActions, &event.DedupKey,
+			&event.DedupCount, &event.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent attention event: %w", err)
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+// GetLatestAttentionEventByDedupKey returns the newest non-expired attention
+// event matching dedupKey (or nil, nil when none exists).
+func (s *Store) GetLatestAttentionEventByDedupKey(dedupKey string) (*StoredAttentionEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var event StoredAttentionEvent
+	err := s.db.QueryRow(`
+		SELECT cursor, ts, COALESCE(session_name, ''), COALESCE(pane, ''),
+			category, event_type, source, actionability, severity, COALESCE(reason_code, ''),
+			summary, COALESCE(details, ''), COALESCE(next_actions, ''),
+			COALESCE(dedup_key, ''), dedup_count, expires_at
+		FROM attention_events
+		WHERE dedup_key = ?
+		  AND (expires_at IS NULL OR expires_at >= datetime('now'))
+		ORDER BY cursor DESC
+		LIMIT 1`, dedupKey).Scan(
+		&event.Cursor, &event.Ts, &event.SessionName, &event.Pane,
+		&event.Category, &event.EventType, &event.Source,
+		&event.Actionability, &event.Severity, &event.ReasonCode, &event.Summary,
+		&event.Details, &event.NextActions, &event.DedupKey,
+		&event.DedupCount, &event.ExpiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get attention event by dedup key: %w", err)
+	}
+	return &event, nil
+}
+
 // GetEventsForIncident returns replayable attention events linked to the given incident.
 func (s *Store) GetEventsForIncident(incidentID string, limit int) ([]StoredAttentionEvent, error) {
 	s.mu.RLock()
