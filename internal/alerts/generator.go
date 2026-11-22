@@ -152,6 +152,9 @@ func (g *Generator) scanAgentSessions(
 		contextUsage := g.paneContextUsage(sess.Name, panes)
 
 		for _, pane := range panes {
+			if pane.Type == tmux.AgentUser || pane.IsServicePane() {
+				continue
+			}
 			if alert := g.contextWarning(sess.Name, pane, contextUsage); alert != nil {
 				alerts = append(alerts, *alert)
 			}

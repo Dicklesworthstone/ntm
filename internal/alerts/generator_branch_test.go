@@ -327,6 +327,31 @@ func TestScanAgentSessions_ContextWarningAtThreshold(t *testing.T) {
 	}
 }
 
+func TestScanAgentSessions_SkipsUserAndServicePanes(t *testing.T) {
+	t.Parallel()
+	panes := []tmux.Pane{
+		{ID: "%1", Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Title: "proj__user_0", Type: tmux.AgentUser},
+		{ID: "%3", Title: "proj__svc_1", Type: tmux.AgentUnknown, Service: "postgres"},
+	}
+	var captured []string
+	g := &Generator{config: Config{Enabled: true}}
+	_, failed := g.scanAgentSessions(
+		[]tmux.Session{{Name: "proj"}},
+		func(string) ([]tmux.Pane, error) { return panes, nil },
+		func(paneID string, _ int) (string, error) {
+			captured = append(captured, paneID)
+			return "all good", nil
+		},
+	)
+	if len(failed) != 0 {
+		t.Fatalf("failed sources = %v", failed)
+	}
+	if len(captured) != 1 || captured[0] != "%1" {
+		t.Fatalf("expected only agent pane %%1 to be captured (user %%2 and service %%3 skipped), got %v", captured)
+	}
+}
+
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
