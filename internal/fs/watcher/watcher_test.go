@@ -855,3 +855,71 @@ func TestIsPathUnderRoots_AllBranches(t *testing.T) {
 		})
 	}
 }
+
+func TestWatcherIgnoresMatchingFileEventsAndEvictsRenamedDirWatch(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var seen []Event
+	w, err := New(
+		func(events []Event) {
+			mu.Lock()
+			seen = append(seen, events...)
+			mu.Unlock()
+		},
+		WithRecursive(true),
+		WithIgnorePaths([]string{"*.log", ".git"}),
+		WithDebounceDuration(10*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	if err := w.Add(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ignored file event must be dropped before debouncer dispatch.
+	if err := os.WriteFile(filepath.Join(dir, "debug.log"), []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	foundKeep := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		for _, ev := range seen {
+			if filepath.Base(ev.Path) == "debug.log" {
+				mu.Unlock()
+				t.Fatalf("watcher emitted ignored file event: %+v", ev)
+			}
+			if filepath.Base(ev.Path) == "keep.txt" {
+				foundKeep = true
+			}
+		}
+		mu.Unlock()
+		if foundKeep {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !foundKeep {
+		t.Fatalf("watcher never emitted expected non-ignored file event keep.txt (seen=%+v)", seen)
+	}
+
+	// Verify removeWatchedPathLocked returns evicted paths for fsWatcher cleanup.
+	w.mu.Lock()
+	evicted := w.removeWatchedPathLocked(subDir)
+	w.mu.Unlock()
+	if len(evicted) == 0 {
+		t.Fatalf("expected removeWatchedPathLocked(%q) to return evicted watch path", subDir)
+	}
+}

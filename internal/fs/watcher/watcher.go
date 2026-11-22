@@ -404,6 +404,11 @@ func (w *Watcher) runPoll() {
 
 // handleEvent processes a single fsnotify event.
 func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
+	// Honor WithIgnorePaths uniformly across all event types (matching pollMode).
+	if w.isIgnored(fsEvent.Name) {
+		return
+	}
+
 	eventType := eventTypeFromFsnotify(fsEvent.Op)
 
 	// Check if it's a directory
@@ -422,20 +427,21 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 	// A watcher interested only in Write events still needs Create events for
 	// new subdirectories, otherwise later writes inside them are invisible.
 	if w.recursive && isDir && eventType&Create != 0 {
-		// Check ignores
-		if w.isIgnored(fsEvent.Name) {
-			return
-		}
-
 		if err := w.addRecursive(fsEvent.Name); err != nil && w.errorHandler != nil {
 			w.errorHandler(fmt.Errorf("watching new directory %s: %w", fsEvent.Name, err))
 		}
 	}
 
-	// If a watched directory was removed, clean up
+	// If a watched directory was removed or renamed, release its watch descriptor(s)
+	// so Linux inotify watches are not leaked on renamed inodes.
 	if eventType&Remove != 0 || eventType&Rename != 0 {
 		w.mu.Lock()
-		w.removeWatchedPathLocked(fsEvent.Name)
+		evicted := w.removeWatchedPathLocked(fsEvent.Name)
+		if !w.closed && w.fsWatcher != nil {
+			for _, p := range evicted {
+				_ = w.fsWatcher.Remove(p)
+			}
+		}
 		w.mu.Unlock()
 	}
 
@@ -452,19 +458,26 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 }
 
 // removeWatchedPathLocked removes path and, in recursive mode, any watched
-// descendants. It must be called with w.mu held.
-func (w *Watcher) removeWatchedPathLocked(path string) {
+// descendants, returning the evicted paths so callers can release OS watches.
+// It must be called with w.mu held.
+func (w *Watcher) removeWatchedPathLocked(path string) []string {
 	if !w.recursive {
-		delete(w.watchedPaths, path)
-		return
+		if w.watchedPaths[path] {
+			delete(w.watchedPaths, path)
+			return []string{path}
+		}
+		return nil
 	}
 
+	var evicted []string
 	sep := string(os.PathSeparator)
 	for watched := range w.watchedPaths {
 		if watched == path || strings.HasPrefix(watched, path+sep) {
 			delete(w.watchedPaths, watched)
+			evicted = append(evicted, watched)
 		}
 	}
+	return evicted
 }
 
 // pollOnce scans watched paths and emits events for changes since the last scan.
