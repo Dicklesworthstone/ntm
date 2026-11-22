@@ -861,7 +861,7 @@ func registerRobotFlags() {
 	// CASS confirm, so the flag is a documented no-op here.
 	var robotNoCassCheckCompat bool
 	rootCmd.Flags().BoolVar(&robotNoCassCheckCompat, "no-cass-check", false, "Accepted for parity with 'ntm send'; robot commands never run the interactive CASS duplicate check (no-op)")
-	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, antigravity|agy, gemini|gmi (legacy), cursor, windsurf, aider. Works with --robot-history, --robot-wait, --robot-route, --robot-send, --robot-ack, --robot-interrupt, --robot-errors, and --robot-restart-pane")
+	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, antigravity|agy, gemini|gmi (legacy), grok, omp, pi, opencode|oc, cursor, windsurf, aider, ollama. Works with --robot-history, --robot-wait, --robot-route, --robot-send, --robot-ack, --robot-interrupt, --robot-errors, and --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-send and --robot-route. Example: --exclude=0,3")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 	rootCmd.Flags().BoolVar(&robotSendClearInput, "clear-input", false, "Clear residual composer text (agent-specific keys, verified) before typing. Optional with --robot-send; recommended after interrupts on codex panes")

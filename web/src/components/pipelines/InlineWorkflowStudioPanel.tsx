@@ -69,7 +69,10 @@ const INLINE_AGENT_HARNESSES = [
   { value: "grok", label: "Grok (grok)" },
   { value: "oc", label: "OpenCode (oc)" },
   { value: "omp", label: "Oh My Pi (omp)" },
+  { value: "pi", label: "Pi Agent (pi)" },
   { value: "gemini", label: "Gemini CLI (gemini)" },
+  { value: "cursor", label: "Cursor (cursor)" },
+  { value: "windsurf", label: "Windsurf (windsurf)" },
   { value: "aider", label: "Aider (aider)" },
   { value: "ollama", label: "Ollama (ollama)" },
 ];

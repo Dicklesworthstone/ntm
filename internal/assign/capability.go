@@ -286,6 +286,8 @@ func ParseAgentType(s string) tmux.AgentType {
 		return tmux.AgentOpencode
 	case agent.AgentTypeOmp:
 		return tmux.AgentOmp
+	case agent.AgentTypePi:
+		return tmux.AgentPi
 	case agent.AgentTypeCursor:
 		return tmux.AgentCursor
 	case agent.AgentTypeWindsurf:

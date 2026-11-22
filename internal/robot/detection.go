@@ -207,6 +207,29 @@ func detectFromProcess(command string) AgentDetection {
 			Method:     MethodProcess,
 		}
 	}
+	// "pi" and "agy" are short executable names that appear as substrings in
+	// unrelated binaries (pip, pigz, python-pip, legacy); match exact basename only.
+	if exactProcessExecutable(command, "pi") {
+		return AgentDetection{
+			Type:       "pi",
+			Confidence: 0.95,
+			Method:     MethodProcess,
+		}
+	}
+	if exactProcessExecutable(command, "agy") || exactProcessExecutable(command, "agy-locked") || strings.Contains(command, "antigravity") {
+		return AgentDetection{
+			Type:       "antigravity",
+			Confidence: 0.95,
+			Method:     MethodProcess,
+		}
+	}
+	if exactProcessExecutable(command, "opencode") {
+		return AgentDetection{
+			Type:       "oc",
+			Confidence: 0.95,
+			Method:     MethodProcess,
+		}
+	}
 
 	for pattern, agentType := range processPatterns {
 		if strings.Contains(command, pattern) {
@@ -258,11 +281,24 @@ func detectFromContent(content string) AgentDetection {
 func DetectFromTitle(title string) AgentDetection {
 	title = strings.ToLower(title)
 
-	agents := []string{"claude", "codex", "gemini", "cursor", "windsurf", "aider", "ollama"}
-	for _, agent := range agents {
-		if strings.Contains(title, agent) {
+	agents := []struct {
+		keyword string
+		typ     string
+	}{
+		{"claude", "claude"},
+		{"codex", "codex"},
+		{"gemini", "gemini"},
+		{"antigravity", "antigravity"},
+		{"opencode", "oc"},
+		{"cursor", "cursor"},
+		{"windsurf", "windsurf"},
+		{"aider", "aider"},
+		{"ollama", "ollama"},
+	}
+	for _, entry := range agents {
+		if strings.Contains(title, entry.keyword) {
 			return AgentDetection{
-				Type:       agent,
+				Type:       entry.typ,
 				Confidence: 0.6,
 				Method:     MethodTitle,
 			}
@@ -285,10 +321,16 @@ func DetectFromNTMTitle(title string) AgentDetection {
 		return AgentDetection{Type: "codex", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "gmi"):
 		return AgentDetection{Type: "gemini", Confidence: 0.9, Method: MethodTitle}
+	case containsShortForm(lower, "agy"), containsShortForm(lower, "antigravity"):
+		return AgentDetection{Type: "antigravity", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "grok"):
 		return AgentDetection{Type: "grok", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "omp"):
 		return AgentDetection{Type: "omp", Confidence: 0.9, Method: MethodTitle}
+	case containsShortForm(lower, "pi"):
+		return AgentDetection{Type: "pi", Confidence: 0.9, Method: MethodTitle}
+	case containsShortForm(lower, "oc"), containsShortForm(lower, "opencode"):
+		return AgentDetection{Type: "oc", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "cursor"):
 		return AgentDetection{Type: "cursor", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "windsurf"), containsShortForm(lower, "ws"):

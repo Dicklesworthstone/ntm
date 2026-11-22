@@ -171,9 +171,9 @@ func ValidateSpawnPacingConfig(cfg *SpawnPacingConfig) error {
 	sort.Strings(types)
 	for _, kind := range types {
 		switch kind {
-		case "claude", "codex", "gemini", "antigravity", "grok", "omp", "opencode":
+		case "claude", "codex", "gemini", "antigravity", "grok", "omp", "pi", "opencode", "cursor", "windsurf", "aider", "ollama":
 		default:
-			return fmt.Errorf("agent_type_limits: unknown agent type %q; use claude, codex, gemini, antigravity, grok, omp, or opencode", kind)
+			return fmt.Errorf("agent_type_limits: unknown agent type %q; use claude, codex, gemini, antigravity, grok, omp, pi, opencode, cursor, windsurf, aider, or ollama", kind)
 		}
 		if cfg.AgentTypeLimits[kind] < 0 {
 			return fmt.Errorf("agent_type_limits: %s must be non-negative, got %d", kind, cfg.AgentTypeLimits[kind])

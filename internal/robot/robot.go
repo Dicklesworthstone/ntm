@@ -229,7 +229,7 @@ Common Modifiers:
 --robot-limit=N  Explicit pagination alias for robot list outputs
 --robot-offset=N Explicit pagination alias for robot list outputs
 --since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)
---type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, omp, gemini, cursor, windsurf, aider)
+--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, gemini, grok, omp, pi, opencode, cursor, windsurf, aider, ollama)
 --timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait
 --poll=VALUE    Shared polling interval for wait/ack/send --track
 --strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work
@@ -468,6 +468,8 @@ func detectAgentType(title string) string {
 		return "oc"
 	case containsShortForm(titleLower, "omp"):
 		return "omp"
+	case containsShortForm(titleLower, "pi"):
+		return "pi"
 	}
 
 	return "unknown"
@@ -660,6 +662,8 @@ func agentTypeString(t tmux.AgentType) string {
 		return "oc"
 	case tmux.AgentOmp:
 		return "omp"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:

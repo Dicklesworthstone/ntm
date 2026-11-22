@@ -1448,7 +1448,7 @@ func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
 
 	for _, want := range []string{
 		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)",
-		"--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, omp, gemini, cursor, windsurf, aider)",
+		"--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, gemini, grok, omp, pi, opencode, cursor, windsurf, aider, ollama)",
 		"--timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait",
 		"--strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work",
 		"--msg=TEXT      Shared message payload for send, ack echo detection, interrupt retasks, and route affinity",

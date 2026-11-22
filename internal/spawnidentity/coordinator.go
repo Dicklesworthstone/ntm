@@ -686,22 +686,32 @@ func modelDefaultKeyForType(agentType string) string {
 
 // agentTypeToProgram maps NTM agent types to Agent Mail program names.
 func agentTypeToProgram(agentType string) string {
-	switch agentType {
-	case "cc":
+	switch agentpkg.AgentType(agentType).Canonical() {
+	case agentpkg.AgentTypeClaudeCode:
 		return "claude-code"
-	case "cod":
+	case agentpkg.AgentTypeCodex:
 		return "codex-cli"
-	case "gmi":
+	case agentpkg.AgentTypeGemini:
 		return "gemini-cli"
-	case "cursor":
+	case agentpkg.AgentTypeAntigravity:
+		return "antigravity"
+	case agentpkg.AgentTypeGrok:
+		return "grok"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
+	case agentpkg.AgentTypePi:
+		return "pi"
+	case agentpkg.AgentTypeCursor:
 		return "cursor"
-	case "windsurf":
+	case agentpkg.AgentTypeWindsurf:
 		return "windsurf"
-	case "aider":
+	case agentpkg.AgentTypeAider:
 		return "aider"
-	case "oc":
+	case agentpkg.AgentTypeOpencode:
 		return "opencode"
+	case agentpkg.AgentTypeOllama:
+		return "ollama"
 	default:
-		return agentType
+		return strings.ToLower(strings.TrimSpace(agentType))
 	}
 }
