@@ -597,3 +597,32 @@ func TestScopedIdempotencyKeyIncludesPrincipal(t *testing.T) {
 		t.Fatalf("missing Idempotency-Key produced %q, want empty", got)
 	}
 }
+
+func TestExtractRoleFromClaims_ExplicitNullAndNonStringFailClosed(t *testing.T) {
+	t.Parallel()
+	srv := &Server{auth: AuthConfig{Mode: AuthModeOIDC}}
+
+	tests := []struct {
+		name   string
+		claims map[string]interface{}
+		want   Role
+	}{
+		{"explicit null role", map[string]interface{}{"role": nil}, RoleNone},
+		{"explicit null roles", map[string]interface{}{"roles": nil}, RoleNone},
+		{"non-array roles string", map[string]interface{}{"roles": "revoked"}, RoleNone},
+		{"non-string custom claim", map[string]interface{}{"ntm_role": 123}, RoleNone},
+		{"explicit null realm_access", map[string]interface{}{"realm_access": nil}, RoleNone},
+		{"explicit null realm_access roles", map[string]interface{}{"realm_access": map[string]interface{}{"roles": nil}}, RoleNone},
+		{"typed string slice roles", map[string]interface{}{"roles": []string{"viewer", "operator"}}, RoleOperator},
+		{"absent role claims still default to viewer", map[string]interface{}{"sub": "alice"}, RoleViewer},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := srv.extractRoleFromClaims(tc.claims); got != tc.want {
+				t.Errorf("extractRoleFromClaims(%v) = %q, want %q", tc.claims, got, tc.want)
+			}
+		})
+	}
+}
