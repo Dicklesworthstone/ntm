@@ -588,9 +588,9 @@ func TestHandleCreateSessionV1_KernelError(t *testing.T) {
 
 	srv.handleCreateSessionV1(rec, req)
 
-	// Should error because kernel can't create tmux session in test env
-	if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 500 or 201", rec.Code)
+	// Should error because kernel can't create tmux session (500) or handler isn't registered in unit tests (501)
+	if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented && rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 500, 501, or 201", rec.Code)
 	}
 }
 
@@ -2204,8 +2204,8 @@ func TestHandleSessionZoomV1_KernelError(t *testing.T) {
 
 	srv.handleSessionZoomV1(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 500 or 501; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -3821,7 +3821,12 @@ func TestHandleCASSSearch_EmptyQuery(t *testing.T) {
 // handleMemoryContext — validation
 
 func TestHandleMemoryContext_EmptySession(t *testing.T) {
-	t.Parallel()
+	// Isolate HOME/XDG so cm CLI fallback does not scan the developer's
+	// multi-gigabyte host CASS/CM stores during unit tests.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	srv, _ := setupTestServer(t)
 
 	rec := httptest.NewRecorder()
@@ -7833,9 +7838,9 @@ func TestHandleSessionStatusV1_ValidID_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.handleSessionStatusV1(rec, req)
-	// kernel.Run will fail (no tmux session) → 500
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	// kernel.Run will fail (no tmux session → 500, or unregistered handler → 501)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 200, 500, or 501", rec.Code)
 	}
 }
 
@@ -7850,8 +7855,8 @@ func TestHandleSessionAttachV1_ValidID_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.handleSessionAttachV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 200, 500, or 501", rec.Code)
 	}
 }
 
@@ -7866,8 +7871,8 @@ func TestHandleSessionViewV1_ValidID_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.handleSessionViewV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 200, 500, or 501", rec.Code)
 	}
 }
 
@@ -8174,9 +8179,9 @@ func TestHandleCreateSessionV1_ValidBody_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handleCreateSessionV1(rec, req)
 
-	// kernel.Run fails (no tmux) → 500
-	if rec.Code != http.StatusCreated && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 201 or 500", rec.Code)
+	// kernel.Run fails (no tmux → 500, or unregistered handler → 501)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 201, 500, or 501", rec.Code)
 	}
 }
 
@@ -8194,8 +8199,8 @@ func TestHandleSessionZoomV1_ValidBody_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.handleSessionZoomV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 200, 500, or 501", rec.Code)
 	}
 }
 

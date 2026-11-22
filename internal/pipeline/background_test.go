@@ -369,7 +369,9 @@ func TestBackgroundWorkerRequiresExplicitStartupAuthorization(t *testing.T) {
 }
 
 func TestBackgroundWorkerDeadlineClosesAuthorizationPipe(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): sibling parallel tests spawning subprocesses can
+	// briefly inherit reader's O_CLOEXEC FD between fork() and execve(),
+	// allowing writer.Write to succeed before execve closes the inherited copy.
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
