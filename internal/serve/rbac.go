@@ -26,9 +26,10 @@ const (
 	RoleAdmin Role = "admin"
 )
 
-// ParseRole converts a string to a Role, defaulting to viewer if unknown.
+// ParseRole converts a string to a Role, failing closed to RoleNone if unknown
+// or empty.
 func ParseRole(s string) Role {
-	switch strings.ToLower(s) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "none":
 		return RoleNone
 	case "admin":
@@ -38,7 +39,7 @@ func ParseRole(s string) Role {
 	case "viewer":
 		return RoleViewer
 	default:
-		return RoleViewer
+		return RoleNone
 	}
 }
 
@@ -220,24 +221,6 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// parseExplicitRole parses a role claim strictly and fails closed to RoleNone
-// on unknown or empty values (unlike ParseRole, which preserves the legacy
-// default-to-viewer helper behavior).
-func parseExplicitRole(s string) (Role, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "none":
-		return RoleNone, true
-	case "viewer":
-		return RoleViewer, true
-	case "operator":
-		return RoleOperator, true
-	case "admin":
-		return RoleAdmin, true
-	default:
-		return RoleNone, false
-	}
-}
-
 // extractRoleFromClaims determines the user's role from auth claims.
 func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	// For local mode without auth, grant admin access
@@ -245,8 +228,8 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 		return RoleAdmin
 	}
 	// Shared credentials have an operator-configured role. Preserve an
-	// explicit unknown role as unprivileged instead of ParseRole promoting it
-	// to viewer, which would silently grant read access on a misconfiguration.
+	// explicit unknown role as unprivileged instead of promoting it to viewer,
+	// which would silently grant read access on a misconfiguration.
 	if (s.auth.Mode == AuthModeAPIKey || s.auth.Mode == AuthModeMTLS) && s.auth.Role != "" {
 		return s.auth.Role
 	}
@@ -255,8 +238,7 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	// RoleNone on "none", empty arrays, or unrecognized role values).
 	// 1. "role" claim (direct)
 	if role, ok := claims["role"].(string); ok {
-		parsed, _ := parseExplicitRole(role)
-		return parsed
+		return ParseRole(role)
 	}
 
 	// 2. "roles" claim (array)
@@ -264,7 +246,7 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 		maxRole := RoleNone
 		for _, r := range roles {
 			if roleStr, ok := r.(string); ok {
-				if parsed, valid := parseExplicitRole(roleStr); valid && roleHierarchy(parsed) > roleHierarchy(maxRole) {
+				if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
 					maxRole = parsed
 				}
 			}
@@ -275,8 +257,7 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	// 3. Custom claim path (e.g., "ntm_role" or "https://ntm.dev/role")
 	for _, key := range []string{"ntm_role", "https://ntm.dev/role", "user_role"} {
 		if role, ok := claims[key].(string); ok {
-			parsed, _ := parseExplicitRole(role)
-			return parsed
+			return ParseRole(role)
 		}
 	}
 
@@ -286,7 +267,7 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 			maxRole := RoleNone
 			for _, r := range roles {
 				if roleStr, ok := r.(string); ok {
-					if parsed, valid := parseExplicitRole(roleStr); valid && roleHierarchy(parsed) > roleHierarchy(maxRole) {
+					if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
 						maxRole = parsed
 					}
 				}

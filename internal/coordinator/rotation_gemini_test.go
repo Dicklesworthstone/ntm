@@ -293,7 +293,7 @@ func TestRotationRemotePanesNeverReadControllerTranscripts(t *testing.T) {
 				return nil, false
 			},
 		}
-		if got := rc.resolvePaneTranscripts([]tmux.Pane{{ID: "%1", PID: 101, Type: typ}}); len(got) != 0 {
+		if got := rc.resolvePaneTranscriptsContext(context.Background(), []tmux.Pane{{ID: "%1", PID: 101, Type: typ}}); len(got) != 0 {
 			t.Fatalf("remote %s acquired local accounting: %+v", typ, got)
 		}
 	}
@@ -327,7 +327,7 @@ func TestRotationGaugeDoesNotMakeSiblingWorkspaceUnique(t *testing.T) {
 		},
 		now: func() time.Time { return now },
 	}
-	got := rc.resolvePaneTranscripts([]tmux.Pane{
+	got := rc.resolvePaneTranscriptsContext(context.Background(), []tmux.Pane{
 		{ID: "%1", Type: agent.AgentTypeOmp}, {ID: "%2", Type: agent.AgentTypeOmp},
 	})
 	if calls != 0 || len(got) != 1 || got["%1"] == nil || got["%1"].Tokens != 18340 || got["%2"] != nil {

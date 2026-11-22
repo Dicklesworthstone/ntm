@@ -577,7 +577,7 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	return ""
 }
 
-// resolvePaneTranscripts correlates panes with their agent CLI's own session
+// resolvePaneTranscriptsContext correlates panes with their agent CLI's own session
 // transcripts, returning usage keyed by pane ID, under the same attribution
 // rule as robot's context and snapshot views (ntmctx.AttributePaneTranscripts).
 //
@@ -595,10 +595,6 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 // OpenCode uses its visible context sidebar with a recognizable current
 // composer. Missing/unknown native capacity never falls back to a guessed
 // model window, another pane's transcript, or the scrollback estimator.
-func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
-	return rc.resolvePaneTranscriptsContext(context.Background(), panes)
-}
-
 func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
 	if ctx == nil {
 		ctx = context.Background()

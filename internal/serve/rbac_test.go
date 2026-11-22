@@ -102,8 +102,10 @@ func TestParseRole(t *testing.T) {
 		{"Operator", RoleOperator},
 		{"viewer", RoleViewer},
 		{"Viewer", RoleViewer},
-		{"unknown", RoleViewer}, // Defaults to viewer
-		{"", RoleViewer},        // Defaults to viewer
+		{" viewer ", RoleViewer},
+		{"none", RoleNone},
+		{"unknown", RoleNone}, // Fails closed to RoleNone
+		{"", RoleNone},        // Fails closed to RoleNone
 	}
 
 	for _, tc := range tests {
