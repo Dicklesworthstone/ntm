@@ -63,19 +63,19 @@ type InterruptError struct {
 // InterruptOptions configures the PrintInterrupt operation
 type InterruptOptions struct {
 	Context        context.Context `json:"-"` // Optional cancellation context (defaults to context.Background())
-	Session        string   // Target session name
-	Message        string   // Message to send after interrupt (optional)
-	Panes          []string // Specific pane indices to interrupt (empty = all agents)
-	AgentTypes     []string // Only interrupt panes of these agent types (aliases accepted; empty = any type)
-	All            bool     // Include all panes (including user)
-	Force          bool     // Send Ctrl+C even if agent appears idle
-	NoWait         bool     // Don't wait for ready state after interrupt
-	TimeoutMs      int      // Timeout for waiting for ready state (default 10000)
-	PollMs         int      // Poll interval (default 300)
-	DryRun         bool     // Preview mode: show what would happen without executing
-	RequestID      string   // External request identifier for REST parity
-	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
-	IdempotencyKey string   // Durable operation ID (--op-id / REST Idempotency-Key), claimed before any pane is touched
+	Session        string          // Target session name
+	Message        string          // Message to send after interrupt (optional)
+	Panes          []string        // Specific pane indices to interrupt (empty = all agents)
+	AgentTypes     []string        // Only interrupt panes of these agent types (aliases accepted; empty = any type)
+	All            bool            // Include all panes (including user)
+	Force          bool            // Send Ctrl+C even if agent appears idle
+	NoWait         bool            // Don't wait for ready state after interrupt
+	TimeoutMs      int             // Timeout for waiting for ready state (default 10000)
+	PollMs         int             // Poll interval (default 300)
+	DryRun         bool            // Preview mode: show what would happen without executing
+	RequestID      string          // External request identifier for REST parity
+	CorrelationID  string          // Correlation identifier for tracing request/outcome/verification
+	IdempotencyKey string          // Durable operation ID (--op-id / REST Idempotency-Key), claimed before any pane is touched
 	Redaction      redaction.Config
 	// MessageGuard checks a follow-up against the resolved physical targets
 	// before any interrupt key or durable operation claim. Control-only
@@ -151,11 +151,17 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			Pane:   "panes",
 			Reason: fmt.Sprintf("failed to get panes: %v", err),
 		})
-		output.RobotResponse = NewErrorResponse(
-			err,
-			ErrCodeInternalError,
-			"Check tmux session state",
-		)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			resp, timedOut := interruptContextErrorResponse(ctxErr, false, "Interrupt canceled while inspecting panes")
+			output.TimedOut = timedOut
+			output.RobotResponse = resp
+		} else {
+			output.RobotResponse = NewErrorResponse(
+				err,
+				ErrCodeInternalError,
+				"Check tmux session state",
+			)
+		}
 		output.CompletedAt = time.Now().UTC()
 		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
@@ -332,7 +338,9 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 		// Small initial delay for interrupt to take effect
 		if !waitForPollOrCancellation(ctx, 200*time.Millisecond) {
-			output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt wait was canceled by caller")
+			resp, timedOut := interruptContextErrorResponse(ctx.Err(), true, "Interrupt wait was canceled by caller")
+			output.TimedOut = timedOut
+			output.RobotResponse = resp
 			output.CompletedAt = time.Now().UTC()
 			return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
 		}
@@ -344,7 +352,9 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 		for time.Now().Before(deadline) && len(pending) > 0 {
 			if err := ctx.Err(); err != nil {
-				output.RobotResponse = NewErrorResponse(err, "CANCELED", "Interrupt wait was canceled by caller")
+				resp, timedOut := interruptContextErrorResponse(err, true, "Interrupt wait was canceled by caller")
+				output.TimedOut = timedOut
+				output.RobotResponse = resp
 				output.CompletedAt = time.Now().UTC()
 				return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
 			}
@@ -382,7 +392,9 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 			if len(pending) > 0 {
 				if !waitForPollOrCancellation(ctx, pollInterval) {
-					output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt wait was canceled by caller")
+					resp, timedOut := interruptContextErrorResponse(ctx.Err(), true, "Interrupt wait was canceled by caller")
+					output.TimedOut = timedOut
+					output.RobotResponse = resp
 					output.CompletedAt = time.Now().UTC()
 					return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
 				}
@@ -412,7 +424,9 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	if opts.Message != "" && len(output.ReadyForInput) > 0 {
 		// Small delay to ensure interrupt settled
 		if !waitForPollOrCancellation(ctx, 100*time.Millisecond) {
-			output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt follow-up canceled by caller")
+			resp, timedOut := interruptContextErrorResponse(ctx.Err(), false, "Interrupt follow-up canceled by caller")
+			output.TimedOut = output.TimedOut || timedOut
+			output.RobotResponse = resp
 			output.CompletedAt = time.Now().UTC()
 			return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
 		}
@@ -899,6 +913,13 @@ type interruptMessageTarget struct {
 	Pane      string
 	Target    string
 	AgentType tmux.AgentType
+}
+
+func interruptContextErrorResponse(err error, waitPhase bool, cancelHint string) (RobotResponse, bool) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return NewErrorResponse(err, ErrCodeTimeout, "Increase --interrupt-timeout or request deadline"), waitPhase
+	}
+	return NewErrorResponse(err, "CANCELED", cancelHint), false
 }
 
 // The private last-meaningful-output extractor that used to live here was
