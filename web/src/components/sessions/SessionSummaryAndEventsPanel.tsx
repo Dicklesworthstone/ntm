@@ -37,7 +37,9 @@ export interface SessionSummaryResponse extends ApiEnvelope {
     total_agents?: number;
     active_agents?: number;
     total_files?: number;
+    total_output_lines?: number;
     total_errors?: number;
+    conflicts?: string[];
     agents?: SessionSummaryAgentRow[];
     text?: string;
   };
@@ -54,16 +56,21 @@ export interface StoredSummariesResponse extends ApiEnvelope {
   count: number;
 }
 
+export interface LatestHandoffRecord {
+  session?: string;
+  goal?: string;
+  now?: string;
+  status?: string;
+  updated_at?: string;
+}
+
 export interface LatestHandoffResponse extends ApiEnvelope {
   session: string;
   found?: boolean;
   path?: string;
-  handoff?: {
-    session?: string;
-    goal?: string;
-    now?: string;
-    status?: string;
-  };
+  latest_path?: string;
+  latest?: LatestHandoffRecord;
+  handoff?: LatestHandoffRecord;
 }
 
 export interface SessionEventsResponse extends ApiEnvelope {
@@ -212,6 +219,21 @@ export function SessionSummaryAndEventsPanel({
           {formatApiErrorMessage(summaryQuery.error)}
         </div>
       )}
+      {storedQuery.error && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          Stored summaries: {formatApiErrorMessage(storedQuery.error)}
+        </div>
+      )}
+      {latestHandoffQuery.error && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          Latest handoff: {formatApiErrorMessage(latestHandoffQuery.error)}
+        </div>
+      )}
+      {eventsQuery.error && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          Session events: {formatApiErrorMessage(eventsQuery.error)}
+        </div>
+      )}
 
       {summaryQuery.data && (
         <div
@@ -220,7 +242,39 @@ export function SessionSummaryAndEventsPanel({
         >
           <div className="font-semibold text-gray-900 dark:text-white">
             Session Summary ({sessionId}) — {summaryAgents.length} agent pane(s)
+            {typeof summaryQuery.data.summary?.total_files === "number"
+              ? ` · ${summaryQuery.data.summary.total_files} file(s)`
+              : ""}
+            {typeof summaryQuery.data.summary?.total_output_lines === "number"
+              ? ` · ${summaryQuery.data.summary.total_output_lines} line(s)`
+              : ""}
           </div>
+          {summaryAgents.length > 0 && (
+            <div className="space-y-1">
+              {summaryAgents.map((agent, idx) => (
+                <div
+                  key={agent.pane_id ?? agent.pane_title ?? idx}
+                  className="font-mono text-[11px] text-gray-700 dark:text-gray-300"
+                >
+                  {agent.pane_title || agent.pane_id || `pane-${idx}`}
+                  {agent.agent_type ? ` (${agent.agent_type})` : ""}
+                  {agent.state ? ` · ${agent.state}` : ""}
+                  {agent.files_modified && agent.files_modified.length > 0
+                    ? ` · files: ${agent.files_modified.join(", ")}`
+                    : ""}
+                  {agent.key_actions && agent.key_actions.length > 0
+                    ? ` · ${agent.key_actions.slice(0, 2).join("; ")}`
+                    : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          {summaryQuery.data.summary?.conflicts &&
+            summaryQuery.data.summary.conflicts.length > 0 && (
+              <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                Conflicts: {summaryQuery.data.summary.conflicts.join(", ")}
+              </div>
+            )}
           {(summaryQuery.data.summary?.text || summaryQuery.data.text) && (
             <pre className="whitespace-pre-wrap font-mono text-[11px] text-gray-700 dark:text-gray-300">
               {summaryQuery.data.summary?.text || summaryQuery.data.text}
@@ -248,27 +302,40 @@ export function SessionSummaryAndEventsPanel({
         </div>
       )}
 
-      {latestHandoffQuery.data && (
-        <div
-          data-testid="latest-handoff-snapshot"
-          className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 text-xs space-y-1"
-        >
-          <div className="font-semibold text-gray-900 dark:text-white">
-            Latest Handoff ({latestHandoffQuery.data.session})
+      {latestHandoffQuery.data && (() => {
+        const latestHandoff =
+          latestHandoffQuery.data.latest ?? latestHandoffQuery.data.handoff;
+        const latestPath =
+          latestHandoffQuery.data.latest_path ?? latestHandoffQuery.data.path;
+        return (
+          <div
+            data-testid="latest-handoff-snapshot"
+            className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 text-xs space-y-1"
+          >
+            <div className="font-semibold text-gray-900 dark:text-white">
+              Latest Handoff ({latestHandoffQuery.data.session})
+              {latestHandoff?.status ? ` · ${latestHandoff.status}` : ""}
+            </div>
+            {latestHandoff ? (
+              <div className="space-y-1 text-gray-700 dark:text-gray-300">
+                <div>
+                  <strong>Goal:</strong> {latestHandoff.goal || "—"} ·{" "}
+                  <strong>Now:</strong> {latestHandoff.now || "—"}
+                </div>
+                {latestPath && (
+                  <div className="font-mono text-[11px] text-gray-500 dark:text-gray-400">
+                    {latestPath}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-gray-500 dark:text-gray-400">
+                No saved handoff found for this session.
+              </div>
+            )}
           </div>
-          {latestHandoffQuery.data.handoff ? (
-            <div className="text-gray-700 dark:text-gray-300">
-              <strong>Goal:</strong>{" "}
-              {latestHandoffQuery.data.handoff.goal || "—"} ·{" "}
-              <strong>Now:</strong> {latestHandoffQuery.data.handoff.now || "—"}
-            </div>
-          ) : (
-            <div className="text-gray-500 dark:text-gray-400">
-              No saved handoff found for this session.
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {eventsQuery.data && (
         <div

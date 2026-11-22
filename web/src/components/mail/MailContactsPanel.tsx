@@ -328,7 +328,10 @@ export function MailContactsPanel({
             Mail Server:{" "}
             <strong>
               {healthQuery.data?.status ||
-                (healthQuery.data?.healthy !== false ? "healthy" : "degraded")}
+                (healthQuery.data?.available === false ||
+                healthQuery.data?.healthy === false
+                  ? "unavailable"
+                  : "healthy")}
             </strong>
             {healthQuery.data?.server_url
               ? ` (${healthQuery.data.server_url})`

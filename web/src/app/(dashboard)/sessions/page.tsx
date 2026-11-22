@@ -348,8 +348,15 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           lines: backfillLines.slice(-maxBuffer),
         };
       }
-      // If a full WS snapshot already arrived for this pane, keep live stream state.
-      if (wsFullSnapshotKeyRef.current === activePaneKey && prev.lines.length > 0) {
+      // If a full WS snapshot already arrived before the initial REST backfill
+      // settled (and outputLines was not explicitly changed), keep live state.
+      const linesChanged = prevApplied != null && prevApplied.lines !== outputLines;
+      if (
+        !hadPriorBackfill &&
+        !linesChanged &&
+        wsFullSnapshotKeyRef.current === activePaneKey &&
+        prev.lines.length > 0
+      ) {
         return prev;
       }
       // Merge initial REST backfill with any early incremental WS lines that
@@ -405,6 +412,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           };
         });
       } else if (event.event_type === "pane.output.dropped") {
+        wsFullSnapshotKeyRef.current = null;
         void refetchOutputBackfill();
       }
     });
@@ -548,7 +556,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     }
-  }, [encodedSessionId, isConnected, prompt, paneIndex, queryClient, sessionId, setStatusNotice]);
+  }, [encodedSessionId, isConnected, prompt, paneIndex, queryClient, sessionId, setStatusNotice, streamActive]);
 
   const interruptPane = useCallback(async () => {
     if (paneIndex === null) return;

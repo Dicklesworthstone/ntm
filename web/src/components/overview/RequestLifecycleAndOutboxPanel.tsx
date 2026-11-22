@@ -76,6 +76,7 @@ export interface WebhookOutboxResponse extends ApiEnvelope {
 
 export function RequestLifecycleAndOutboxPanel() {
   const [requestIdInput, setRequestIdInput] = useState("");
+  const [requestSessionInput, setRequestSessionInput] = useState("");
   const [waitTimeout, setWaitTimeout] = useState("5s");
   const [requestResult, setRequestResult] =
     useState<DurableRequestStatus | null>(null);
@@ -87,30 +88,41 @@ export function RequestLifecycleAndOutboxPanel() {
   const [outboxError, setOutboxError] = useState<string | null>(null);
 
   const trimmedReqId = requestIdInput.trim();
+  const trimmedSession = requestSessionInput.trim();
 
   const requestActionMutation = useMutation({
     mutationFn: (mode: "inspect" | "wait" | "cancel") => {
       const encoded = encodeURIComponent(trimmedReqId);
+      const params = new URLSearchParams();
+      if (trimmedSession) {
+        params.set("session", trimmedSession);
+      }
       if (mode === "inspect") {
-        return apiFetch<DurableRequestStatus>(`/api/v1/requests/${encoded}`);
+        const qs = params.toString();
+        return apiFetch<DurableRequestStatus>(
+          `/api/v1/requests/${encoded}${qs ? `?${qs}` : ""}`
+        );
       }
       if (mode === "wait") {
-        const qs = new URLSearchParams({
-          timeout: waitTimeout.trim() || "5s",
-        }).toString();
+        const timeoutVal = waitTimeout.trim() || "5s";
+        params.set("timeout", timeoutVal);
         return apiFetch<DurableRequestStatus>(
-          `/api/v1/requests/${encoded}/wait?${qs}`,
+          `/api/v1/requests/${encoded}/wait?${params.toString()}`,
           {
             method: "POST",
-            body: JSON.stringify({ timeout: waitTimeout.trim() || "5s" }),
+            body: JSON.stringify({
+              timeout: timeoutVal,
+              ...(trimmedSession ? { session: trimmedSession } : {}),
+            }),
           }
         );
       }
+      const qs = params.toString();
       return apiFetch<DurableRequestStatus>(
-        `/api/v1/requests/${encoded}/cancel`,
+        `/api/v1/requests/${encoded}/cancel${qs ? `?${qs}` : ""}`,
         {
           method: "POST",
-          body: JSON.stringify({}),
+          body: JSON.stringify(trimmedSession ? { session: trimmedSession } : {}),
         }
       );
     },
@@ -206,6 +218,13 @@ export function RequestLifecycleAndOutboxPanel() {
               onChange={(e) => setRequestIdInput(e.target.value)}
               placeholder="Request or operation ID (e.g. deploy-42)..."
               className="flex-1 min-w-[180px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs text-gray-900 dark:text-white"
+            />
+            <input
+              aria-label="Request session scope"
+              value={requestSessionInput}
+              onChange={(e) => setRequestSessionInput(e.target.value)}
+              placeholder="Session (optional)"
+              className="w-36 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
             />
             <input
               aria-label="Wait timeout"

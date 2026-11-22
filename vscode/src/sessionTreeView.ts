@@ -121,13 +121,42 @@ export function registerSessionTreeView(
         provider.refresh();
     });
 
-    const attachCmd = vscode.commands.registerCommand('ntm.attachSession', (item?: NtmTreeItem) => {
+    const attachCmd = vscode.commands.registerCommand('ntm.attachSession', async (item?: NtmTreeItem) => {
+        let sessionName: string | undefined;
         if (item?.itemType === 'session') {
-            const session = item.data as SessionInfo;
-            const terminal = vscode.window.createTerminal({ name: `NTM: ${session.name}` });
-            terminal.show(true);
-            terminal.sendText(buildNtmTerminalCommand(client.getBinaryPath(), 'attach', session.name), true);
+            sessionName = (item.data as SessionInfo).name;
+        } else {
+            try {
+                const status = await client.getStatus();
+                const sessions = status.sessions ?? [];
+                if (sessions.length === 0) {
+                    vscode.window.showInformationMessage('No active NTM sessions to attach.');
+                    return;
+                }
+                if (sessions.length === 1) {
+                    sessionName = sessions[0].name;
+                } else {
+                    const picked = await vscode.window.showQuickPick(
+                        sessions.map((s) => ({
+                            label: s.name,
+                            description: `${s.panes ?? 0} panes${s.attached ? ' (attached)' : ''}`,
+                        })),
+                        { placeHolder: 'Select an NTM session to attach' }
+                    );
+                    sessionName = picked?.label;
+                }
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                vscode.window.showErrorMessage(`Failed to list NTM sessions: ${msg}`);
+                return;
+            }
         }
+        if (!sessionName) {
+            return;
+        }
+        const terminal = vscode.window.createTerminal({ name: `NTM: ${sessionName}` });
+        terminal.show(true);
+        terminal.sendText(buildNtmTerminalCommand(client.getBinaryPath(), 'attach', sessionName), true);
     });
 
     let disposed = false;

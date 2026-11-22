@@ -260,7 +260,7 @@ export default function ScannerPage() {
   const [scanPath, setScanPath] = useState<string>('');
   const [stagedOnly, setStagedOnly] = useState<boolean>(false);
   const [diffOnly, setDiffOnly] = useState<boolean>(false);
-  const [notifyChannel, setNotifyChannel] = useState<'webhook' | 'slack' | 'email'>('webhook');
+  const [notifyChannel, setNotifyChannel] = useState<'webhook' | 'slack'>('webhook');
   const [notifyEndpoint, setNotifyEndpoint] = useState<string>('');
   const [notifyMinSeverity, setNotifyMinSeverity] = useState<'critical' | 'warning' | 'info'>('critical');
   const [notifyConfirmation, setNotifyConfirmation] = useState<string | null>(null);
@@ -467,12 +467,11 @@ export default function ScannerPage() {
             <select
               aria-label="Notification Channel"
               value={notifyChannel}
-              onChange={(e) => setNotifyChannel(e.target.value as 'webhook' | 'slack' | 'email')}
+              onChange={(e) => setNotifyChannel(e.target.value as 'webhook' | 'slack')}
               className="bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200"
             >
               <option value="webhook">webhook</option>
               <option value="slack">slack</option>
-              <option value="email">email</option>
             </select>
             <select
               aria-label="Minimum Alert Severity"

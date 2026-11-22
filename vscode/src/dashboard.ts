@@ -524,7 +524,10 @@ export class NtmDashboard {
         this.disposables.push({ dispose: () => clearInterval(interval) });
     }
 
+    private disposed = false;
+
     public dispose() {
+        this.disposed = true;
         NtmDashboard.currentPanel = undefined;
         this.panel.dispose();
         while (this.disposables.length) {
@@ -536,13 +539,22 @@ export class NtmDashboard {
     }
 
     private async update() {
+        if (this.disposed) {
+            return;
+        }
         try {
             const [status, mail] = await Promise.all([
                 this.client.getStatus(),
                 this.client.getMail().catch(() => undefined),
             ]);
+            if (this.disposed) {
+                return;
+            }
             this.panel.webview.html = this.getHtmlForWebview(status, mail);
         } catch (e) {
+            if (this.disposed) {
+                return;
+            }
             const emptyStatus: RobotStatus = {
                 generated_at: new Date().toISOString(),
                 system: { version: 'unknown', os: process.platform },
