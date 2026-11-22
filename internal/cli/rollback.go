@@ -192,7 +192,11 @@ func showRollbackPreview(cp *checkpoint.Checkpoint, workDir string, noStash, noG
 	actionNum := 1
 	if !noGit && workDir != "" {
 		// Check current git state
-		if hasUncommittedChanges(workDir) {
+		dirty, err := hasUncommittedChanges(workDir)
+		if err != nil {
+			return fmt.Errorf("checking uncommitted changes: %w", err)
+		}
+		if dirty {
 			if !noStash {
 				fmt.Printf("    %d. %sStash%s current uncommitted changes\n", actionNum, colorize(t.Warning), "\033[0m")
 				actionNum++
@@ -258,13 +262,19 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 
 	if plan != nil {
 		// Stash current changes if needed
-		if !noStash && hasUncommittedChanges(workDir) {
-			stashName = fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
-			if err := gitStash(workDir, stashName); err != nil {
-				return fmt.Errorf("stashing changes: %w", err)
+		if !noStash {
+			dirty, err := hasUncommittedChanges(workDir)
+			if err != nil {
+				return fmt.Errorf("checking uncommitted changes before rollback: %w", err)
 			}
-			if !jsonOutput {
-				fmt.Printf("%s\u2713%s Stashed current changes: %s\n", colorize(t.Success), "\033[0m", stashName)
+			if dirty {
+				stashName = fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
+				if err := gitStash(workDir, stashName); err != nil {
+					return fmt.Errorf("stashing changes: %w", err)
+				}
+				if !jsonOutput {
+					fmt.Printf("%s\u2713%s Stashed current changes: %s\n", colorize(t.Success), "\033[0m", stashName)
+				}
 			}
 		}
 
@@ -336,13 +346,13 @@ func getSessionWorkDir(session string) (string, error) {
 }
 
 // hasUncommittedChanges checks if there are uncommitted changes.
-func hasUncommittedChanges(dir string) bool {
+func hasUncommittedChanges(dir string) (bool, error) {
 	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v1", "--untracked-files=all")
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return false, err
 	}
-	return strings.TrimSpace(string(out)) != ""
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // gitStash creates a named stash.
