@@ -140,6 +140,7 @@ export class NtmWebSocket {
   private errorHandlers = new Set<ErrorHandler>();
   private pendingAcks = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
   private lastSeq: number | null = null;
+  private lastAttentionCursor: number | null = null;
   private refCounter = 0;
   private connectGeneration = 0;
   private ticketAbortController: AbortController | null = null;
@@ -458,6 +459,24 @@ export class NtmWebSocket {
                 (message as Partial<WSEvent>).event_type || message.type,
               topic: message.topic || "",
             };
+            if (
+              event.topic === "attention" ||
+              event.topic.startsWith("attention:")
+            ) {
+              const cursor =
+                event.data &&
+                typeof event.data === "object" &&
+                typeof (event.data as { cursor?: unknown }).cursor === "number"
+                  ? (event.data as { cursor: number }).cursor
+                  : null;
+              if (
+                cursor !== null &&
+                (this.lastAttentionCursor === null ||
+                  cursor > this.lastAttentionCursor)
+              ) {
+                this.lastAttentionCursor = cursor;
+              }
+            }
             this.eventHandlers.forEach((h) => h(event));
             break;
           }
@@ -468,6 +487,7 @@ export class NtmWebSocket {
               console.log("[WS] Stream reset, resubscribing");
             }
             this.lastSeq = null;
+            this.lastAttentionCursor = null;
             this.resubscribeAll();
             break;
           }
@@ -552,10 +572,16 @@ export class NtmWebSocket {
   }
 
   private resubscribeAll(): void {
-    // Resubscribe to all topics with since cursor for replay
+    // Resubscribe to all topics with the appropriate cursor domain for replay:
+    // attention topics use attention cursor (since_cursor), while other topics
+    // use the hub's WS frame sequence (since).
     for (const [topic, options] of this.subscriptions) {
-      const subscribeOptions = { ...options };
-      if (this.lastSeq !== null) {
+      const subscribeOptions: Record<string, unknown> = { ...options };
+      if (topic === "attention" || topic.startsWith("attention:")) {
+        if (this.lastAttentionCursor !== null) {
+          subscribeOptions.since_cursor = this.lastAttentionCursor;
+        }
+      } else if (this.lastSeq !== null) {
         subscribeOptions.since = this.lastSeq;
       }
 

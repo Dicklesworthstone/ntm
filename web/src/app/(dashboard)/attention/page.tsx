@@ -150,7 +150,12 @@ export default function AttentionPage() {
   const eventsPath = useMemo(() => {
     const params = new URLSearchParams();
     params.set("limit", "100");
-    if (sinceCursor > 0) params.set("since_cursor", String(sinceCursor));
+    if (sinceCursor > 0) {
+      params.set("since_cursor", String(sinceCursor));
+    } else {
+      params.set("tail", "true");
+      params.set("order", "desc");
+    }
     if (actionabilityFilter !== "all") {
       params.set("actionability", actionabilityFilter);
     }
