@@ -1395,6 +1395,12 @@ func attentionEventIsMuted(event robot.AttentionEvent) bool {
 	if event.Details == nil {
 		return false
 	}
+	if pinned, ok := event.Details["attention_pinned"].(bool); ok && pinned {
+		return false
+	}
+	if reason, ok := event.Details["attention_hidden_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		return strings.EqualFold(strings.TrimSpace(reason), "muted")
+	}
 	if muted, ok := event.Details["attention_muted"].(bool); ok && muted {
 		return true
 	}
@@ -1408,18 +1414,28 @@ func attentionEventIsSnoozed(event robot.AttentionEvent, now time.Time) bool {
 	if event.Details == nil {
 		return false
 	}
-	if st, ok := event.Details["attention_state"].(string); ok && strings.EqualFold(strings.TrimSpace(st), "snoozed") {
-		return true
+	if pinned, ok := event.Details["attention_pinned"].(bool); ok && pinned {
+		return false
+	}
+	hasState := false
+	stateIsSnoozed := false
+	if st, ok := event.Details["attention_state"].(string); ok && strings.TrimSpace(st) != "" {
+		hasState = true
+		stateIsSnoozed = strings.EqualFold(strings.TrimSpace(st), "snoozed")
+		if !stateIsSnoozed {
+			return false
+		}
 	}
 	if raw, ok := event.Details["attention_snoozed_until"].(string); ok && strings.TrimSpace(raw) != "" {
-		if until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw)); err == nil && now.Before(until) {
-			return true
+		trimmed := strings.TrimSpace(raw)
+		if until, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+			return now.Before(until)
 		}
-		if until, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil && now.Before(until) {
-			return true
+		if until, err := time.Parse(time.RFC3339, trimmed); err == nil {
+			return now.Before(until)
 		}
 	}
-	return false
+	return hasState && stateIsSnoozed
 }
 
 // Applies subscription filters, runs redaction immediately (so redaction
@@ -1444,6 +1460,16 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 	// Skip transport heartbeat events (handled separately)
 	if event.Type == robot.EventType(robot.DefaultTransportLiveness.HeartbeatType) {
 		return
+	}
+
+	// Hydrate live events with durable operator state when mute/snooze exclusion
+	// is active so muted or snoozed items are filtered on live delivery as well
+	// as during historical replay.
+	if (criteria.ExcludeMuted || criteria.ExcludeSnoozed) &&
+		(event.Details == nil || event.Details["attention_state"] == nil) {
+		if feed := robot.GetAttentionFeed(); feed != nil {
+			event = feed.HydrateEvent(event)
+		}
 	}
 
 	// Apply session, profile, category, actionability, and muted/snoozed filters
@@ -1536,10 +1562,22 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		return 0, nil
 	}
 
+	c.attentionSubMu.Lock()
+	criteria := WSAttentionSub{
+		SinceCursor:         sub.SinceCursor,
+		Session:             sub.Session,
+		Profile:             sub.Profile,
+		CategoryFilter:      sub.CategoryFilter,
+		ActionabilityFilter: sub.ActionabilityFilter,
+		ExcludeMuted:        sub.ExcludeMuted,
+		ExcludeSnoozed:      sub.ExcludeSnoozed,
+	}
+	c.attentionSubMu.Unlock()
+
 	delivered := 0
 	for _, event := range events {
 		// Skip events before cursor
-		if event.Cursor <= sub.SinceCursor {
+		if event.Cursor <= criteria.SinceCursor {
 			continue
 		}
 
@@ -1549,7 +1587,7 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		}
 
 		// Apply session, profile, category, actionability, and muted/snoozed filters
-		if !matchesAttentionSub(*sub, event) {
+		if !matchesAttentionSub(criteria, event) {
 			continue
 		}
 

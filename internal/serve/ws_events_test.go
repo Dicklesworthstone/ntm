@@ -1291,4 +1291,48 @@ func TestWSAttentionSubscriptionProfileAndMuteSnoozeFilters(t *testing.T) {
 	}) {
 		t.Fatal("unmuted action-required error alert should match alerts profile")
 	}
+
+	// Resurfaced critical alert keeps historical future snoozed_until, but
+	// effective attention_state is "new" so it MUST NOT be suppressed.
+	if !matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        5,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityCritical,
+		Details: map[string]any{
+			"attention_state":         "new",
+			"attention_snoozed_until": future,
+		},
+	}) {
+		t.Fatal("resurfaced critical alert with attention_state=new must not be suppressed by ExcludeSnoozed")
+	}
+
+	// Expired snooze (past snoozed_until) MUST NOT be suppressed even if state still says snoozed.
+	past := now.Add(-time.Hour).Format(time.RFC3339)
+	if !matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        6,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+		Details: map[string]any{
+			"attention_state":         "snoozed",
+			"attention_snoozed_until": past,
+		},
+	}) {
+		t.Fatal("expired snooze must not be suppressed by ExcludeSnoozed")
+	}
+
+	// Pinned item overrides mute/snooze hiding.
+	if !matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        7,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+		Details: map[string]any{
+			"attention_muted":  true,
+			"attention_pinned": true,
+		},
+	}) {
+		t.Fatal("pinned muted event must not be suppressed by ExcludeMuted")
+	}
 }
