@@ -236,31 +236,51 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 	if !validateBeadArgument(w, req.Title, "title", reqID) {
 		return
 	}
+	if req.Type != "" && !validateBeadArgument(w, req.Type, "type", reqID) {
+		return
+	}
+	if req.Priority != "" && !validateBeadArgument(w, req.Priority, "priority", reqID) {
+		return
+	}
+	if req.Parent != "" && !validateBeadArgument(w, req.Parent, "parent", reqID) {
+		return
+	}
+	for _, label := range req.Labels {
+		if !validateBeadArgument(w, label, "labels", reqID) {
+			return
+		}
+	}
+	for _, dep := range req.BlockedBy {
+		if !validateBeadArgument(w, dep, "blocked_by", reqID) {
+			return
+		}
+	}
 
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
-	// Build br create command using the live CLI contract.
+	// Build br create command using `--flag=value` form so values (including
+	// Markdown bullet descriptions starting with '-') cannot be parsed as flags.
 	args := []string{"create", req.Title, "--json"}
 	if req.Description != "" {
-		args = append(args, "--description", req.Description)
+		args = append(args, "--description="+req.Description)
 	}
 	if req.Type != "" {
-		args = append(args, "--type", req.Type)
+		args = append(args, "--type="+req.Type)
 	}
 	if req.Priority != "" {
-		args = append(args, "--priority", req.Priority)
+		args = append(args, "--priority="+req.Priority)
 	}
 	if req.Parent != "" {
-		args = append(args, "--parent", req.Parent)
+		args = append(args, "--parent="+req.Parent)
 	}
 	if len(req.Labels) > 0 {
-		args = append(args, "--labels", strings.Join(req.Labels, ","))
+		args = append(args, "--labels="+strings.Join(req.Labels, ","))
 	}
 	if len(req.BlockedBy) > 0 {
-		args = append(args, "--deps", strings.Join(req.BlockedBy, ","))
+		args = append(args, "--deps="+strings.Join(req.BlockedBy, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDirSnapshot(), args...)
@@ -345,28 +365,39 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 	if req.Title != nil && !validateBeadArgument(w, *req.Title, "title", reqID) {
 		return
 	}
+	if req.Priority != nil && *req.Priority != "" && !validateBeadArgument(w, *req.Priority, "priority", reqID) {
+		return
+	}
+	if req.Assignee != nil && *req.Assignee != "" && !validateBeadArgument(w, *req.Assignee, "assignee", reqID) {
+		return
+	}
+	for _, label := range req.Labels {
+		if !validateBeadArgument(w, label, "labels", reqID) {
+			return
+		}
+	}
 
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
-	// Build br update command
+	// Build br update command using `--flag=value` form to prevent option injection.
 	args := []string{"update", beadID, "--json"}
 	if req.Title != nil {
-		args = append(args, "--title", *req.Title)
+		args = append(args, "--title="+*req.Title)
 	}
 	if req.Description != nil {
-		args = append(args, "--description", *req.Description)
+		args = append(args, "--description="+*req.Description)
 	}
 	if req.Priority != nil {
-		args = append(args, "--priority", *req.Priority)
+		args = append(args, "--priority="+*req.Priority)
 	}
 	if req.Assignee != nil {
-		args = append(args, "--assignee", *req.Assignee)
+		args = append(args, "--assignee="+*req.Assignee)
 	}
 	if req.Labels != nil {
-		args = append(args, "--set-labels", strings.Join(req.Labels, ","))
+		args = append(args, "--set-labels="+strings.Join(req.Labels, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDirSnapshot(), args...)
