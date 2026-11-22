@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -102,10 +103,10 @@ func (g *Generator) GenerateAll() ([]Alert, []string) {
 	}
 
 	// Check bead state
-	if beadAlerts, err := g.checkBeadState(); err != nil {
+	beadAlerts, beadErr := g.checkBeadState()
+	alerts = append(alerts, beadAlerts...)
+	if beadErr != nil {
 		failed = append(failed, "beads")
-	} else {
-		alerts = append(alerts, beadAlerts...)
 	}
 
 	return alerts, failed
@@ -308,7 +309,7 @@ func (g *Generator) detectRateLimit(session string, pane tmux.Pane, lines []stri
 				guidance := ""
 
 				// Codex-specific guidance (bd-3qoly)
-				if string(pane.Type) == "cod" {
+				if pane.Type.Canonical() == agentpkg.AgentTypeCodex {
 					msg = "Codex (OpenAI) rate limiting detected"
 					guidance = "New cod launches are paused automatically. " +
 						"Claude and Gemini agents continue unaffected. " +
@@ -387,21 +388,46 @@ func (g *Generator) buildDiskSpaceAlert(freeGB float64, checkPath string) *Alert
 
 // checkBeadState analyzes beads for stale in-progress items and dependency cycles
 func (g *Generator) checkBeadState() ([]Alert, error) {
-	var alerts []Alert
+	var (
+		alerts []Alert
+		errs   []error
+	)
 
 	// Check for stale in-progress beads
-	alerts = append(alerts, g.checkStaleBeads()...)
-
-	// Check for dependency cycles (use bv if available)
-	if alert := g.checkDependencyCycles(); alert != nil {
-		alerts = append(alerts, *alert)
+	staleAlerts, err := g.checkStaleBeads()
+	alerts = append(alerts, staleAlerts...)
+	if err != nil {
+		errs = append(errs, err)
 	}
 
-	return alerts, nil
+	// Check for dependency cycles (use bv if available)
+	cycleAlert, err := g.checkDependencyCycles()
+	if cycleAlert != nil {
+		alerts = append(alerts, *cycleAlert)
+	}
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	return alerts, errors.Join(errs...)
+}
+
+func isBeadsToolUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, bv.ErrNotInstalled) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "executable file not found") ||
+		strings.Contains(lower, "no .beads") ||
+		strings.Contains(lower, "beads directory not found") ||
+		strings.Contains(lower, "not a beads")
 }
 
 // checkStaleBeads finds in-progress beads that haven't been updated recently
-func (g *Generator) checkStaleBeads() []Alert {
+func (g *Generator) checkStaleBeads() ([]Alert, error) {
 	var alerts []Alert
 
 	wd := g.config.ProjectsDir
@@ -410,11 +436,18 @@ func (g *Generator) checkStaleBeads() []Alert {
 		wd, err = os.Getwd()
 		if err != nil {
 			slog.Warn("checkStaleBeads: failed to get working directory", "error", err)
-			return nil
+			return nil, err
 		}
 	}
 	// Get all in-progress beads (limit 100)
-	beads := bv.GetInProgressList(wd, 100)
+	beads, err := bv.GetInProgressListContext(context.Background(), wd, 100)
+	if err != nil {
+		if isBeadsToolUnavailableError(err) {
+			return nil, nil
+		}
+		slog.Warn("failed to check stale in-progress beads", "tool", "br", "error", err)
+		return nil, err
+	}
 
 	staleThreshold := time.Duration(g.config.BeadStaleHours) * time.Hour
 	now := time.Now()
@@ -441,28 +474,30 @@ func (g *Generator) checkStaleBeads() []Alert {
 		}
 	}
 
-	return alerts
+	return alerts, nil
 }
 
 // checkDependencyCycles uses bv to detect cycles in the dependency graph
-func (g *Generator) checkDependencyCycles() *Alert {
+func (g *Generator) checkDependencyCycles() (*Alert, error) {
 	wd := g.config.ProjectsDir
 	if wd == "" {
 		var err error
 		wd, err = os.Getwd()
 		if err != nil {
 			slog.Warn("checkDependencyCycles: failed to get working directory", "error", err)
-			return nil
+			return nil, err
 		}
 	}
 	// Run bv --robot-insights and check for cycles
 	insights, err := bv.GetInsights(wd)
 	if err != nil {
-		// Silently skip when bv is not installed; only warn on real errors.
-		if !errors.Is(err, bv.ErrNotInstalled) && !strings.Contains(err.Error(), "executable file not found") {
-			slog.Warn("failed to check dependency cycles", "tool", "bv", "error", err)
+		// Silently skip when bv is not installed; propagate real errors so tracker
+		// treats "beads" as failed instead of falsely resolving active bead alerts.
+		if isBeadsToolUnavailableError(err) {
+			return nil, nil
 		}
-		return nil
+		slog.Warn("failed to check dependency cycles", "tool", "bv", "error", err)
+		return nil, err
 	}
 
 	if len(insights.Cycles) > 0 {
@@ -484,10 +519,10 @@ func (g *Generator) checkDependencyCycles() *Alert {
 			CreatedAt:  time.Now(),
 			LastSeenAt: time.Now(),
 			Count:      1,
-		}
+		}, nil
 	}
 
-	return nil
+	return nil, nil
 }
 
 // generateAlertID creates a deterministic ID for deduplication

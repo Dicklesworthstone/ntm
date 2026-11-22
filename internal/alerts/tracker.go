@@ -200,6 +200,7 @@ func (t *Tracker) ManualResolve(id string) bool {
 		alert.ResolvedAt = &now
 		t.resolved = append(t.resolved, alert)
 		delete(t.active, id)
+		t.pruneResolved(now)
 		return true
 	}
 
@@ -222,6 +223,7 @@ func (t *Tracker) resolveIfUnchanged(id string, lastSeenAt time.Time, count int)
 	alert.ResolvedAt = &now
 	t.resolved = append(t.resolved, alert)
 	delete(t.active, id)
+	t.pruneResolved(now)
 	return true
 }
 
