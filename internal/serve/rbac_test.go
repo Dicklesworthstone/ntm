@@ -309,6 +309,40 @@ func TestServerExtractRoleFromClaims(t *testing.T) {
 			claims:   map[string]interface{}{"role": "admin"},
 			want:     RoleViewer,
 		},
+		{
+			name:     "OIDC explicit role none fails closed",
+			authMode: AuthModeOIDC,
+			claims:   map[string]interface{}{"role": "none"},
+			want:     RoleNone,
+		},
+		{
+			name:     "OIDC explicit unknown role fails closed",
+			authMode: AuthModeOIDC,
+			claims:   map[string]interface{}{"role": "suspended"},
+			want:     RoleNone,
+		},
+		{
+			name:     "OIDC explicit empty roles array fails closed",
+			authMode: AuthModeOIDC,
+			claims:   map[string]interface{}{"roles": []interface{}{}},
+			want:     RoleNone,
+		},
+		{
+			name:     "OIDC explicit unknown roles array fails closed",
+			authMode: AuthModeOIDC,
+			claims:   map[string]interface{}{"roles": []interface{}{"none", "revoked"}},
+			want:     RoleNone,
+		},
+		{
+			name:     "OIDC realm_access unknown roles fails closed",
+			authMode: AuthModeOIDC,
+			claims: map[string]interface{}{
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"banned"},
+				},
+			},
+			want: RoleNone,
+		},
 	}
 
 	for _, tc := range tests {
