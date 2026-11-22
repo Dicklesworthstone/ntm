@@ -85,8 +85,9 @@ type WorktreesCheckpointsMsg struct {
 
 // CheckpointRestoreResultMsg reports the result of restoring a selected checkpoint.
 type CheckpointRestoreResultMsg struct {
-	CheckpointID string
-	Err          error
+	CheckpointID  string
+	TargetSession string
+	Err           error
 }
 
 // ActivityState tracks dashboard activity for adaptive tick rate.

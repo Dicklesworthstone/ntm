@@ -1600,25 +1600,38 @@ var dashboardFetchWorktreesCheckpointsData = func(ctx context.Context, projectDi
 	return data
 }
 
-var dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID string) error {
+var dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID string) (string, error) {
 	storage := checkpoint.NewStorage()
 	cp, err := storage.Load(session, checkpointID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// Restoring from inside the live dashboard targets a non-destructive copy
 	// name so restoring a checkpoint of the active session does not always fail
 	// with ErrSessionExists or destroy the live session under the operator.
 	baseTarget := dashboardRestoreTargetName(session, checkpointID)
 	targetSession := baseTarget
-	for attempt := 2; tmux.SessionExists(targetSession) && attempt <= 100; attempt++ {
+	for attempt := 2; attempt <= 100; attempt++ {
+		exists, existsErr := tmux.SessionExistsContext(ctx, targetSession)
+		if existsErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			break
+		}
+		if !exists {
+			break
+		}
 		targetSession = fmt.Sprintf("%s-%d", baseTarget, attempt)
 	}
 	_, err = checkpoint.NewRestorerWithStorage(storage).RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
 		TargetSession: targetSession,
 		InjectContext: true,
 	})
-	return err
+	if err != nil {
+		return "", err
+	}
+	return targetSession, nil
 }
 
 func dashboardRestoreTargetName(session, checkpointID string) string {
@@ -1706,8 +1719,8 @@ func (m Model) restoreCheckpointCmd(checkpointID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := dashboardRestoreCheckpoint(ctx, session, checkpointID)
-		return CheckpointRestoreResultMsg{CheckpointID: checkpointID, Err: err}
+		targetSession, err := dashboardRestoreCheckpoint(ctx, session, checkpointID)
+		return CheckpointRestoreResultMsg{CheckpointID: checkpointID, TargetSession: targetSession, Err: err}
 	}
 }
 
@@ -1751,6 +1764,7 @@ func (m Model) activeOperationalPanel() panels.Panel {
 		{m.showApprovalsPanel, m.approvalsPanel},
 		{m.showWorktreesPanel, m.worktreesPanel},
 		{m.showMailInboxPanel, m.mailInboxPanel},
+		{m.showWorkflowPanel, m.workflowPanel},
 	}
 	for _, c := range candidates {
 		if c.show && c.panel != nil && c.panel.Config().ID == m.sidebarActivePanel {
@@ -3012,9 +3026,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			if m.toasts != nil {
+				toastMsg := fmt.Sprintf("Restored checkpoint %s", msg.CheckpointID)
+				if msg.TargetSession != "" {
+					toastMsg = fmt.Sprintf("Restored checkpoint %s -> %s", msg.CheckpointID, msg.TargetSession)
+				}
 				m.toasts.Push(components.Toast{
 					ID:      "checkpoint-restore-ok-" + msg.CheckpointID,
-					Message: fmt.Sprintf("Restored checkpoint %s", msg.CheckpointID),
+					Message: toastMsg,
 					Level:   components.ToastSuccess,
 				})
 			}
@@ -4095,7 +4113,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.workflowPanel != nil {
 					m.sidebarActivePanel = m.workflowPanel.Config().ID
 				}
-				m.setFocusedPanel(PanelSidebar)
+				if m.tier >= layout.TierUltra {
+					m.setFocusedPanel(PanelSidebar)
+				} else {
+					m.setFocusedPanel(PanelDetail)
+				}
 				m.syncSidebarPanelFocusState()
 				if !m.fetchingWorkflow {
 					m.fetchingWorkflow = true
@@ -4110,7 +4132,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowPanel.HasData() &&
-			m.focusedPanel == PanelSidebar && m.sidebarActivePanel == m.workflowPanel.Config().ID &&
+			((m.focusedPanel == PanelSidebar && m.sidebarActivePanel == m.workflowPanel.Config().ID) ||
+				(m.tier < layout.TierUltra && m.focusedPanel != PanelPaneList && m.activeOperationalPanel() == m.workflowPanel)) &&
 			msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
 			return m, cmd
@@ -6585,14 +6608,18 @@ func (m Model) focusedOperationalPanelForKeys() panels.Panel {
 	if m.focusedPanel == PanelSidebar {
 		if ref, ok := m.sidebarActivePanelRef(); ok {
 			switch ref.id {
-			case "pipelines", "approvals", "worktrees_checkpoints", "mail_inbox":
+			case "pipelines", "approvals", "worktrees_checkpoints", "mail_inbox", "workflow":
 				return ref.panel
 			}
 		}
 		return nil
 	}
 	if m.tier < layout.TierUltra {
-		return m.activeOperationalPanel()
+		active := m.activeOperationalPanel()
+		if active != nil && active.Config().ID == "workflow" && m.focusedPanel == PanelPaneList {
+			return nil
+		}
+		return active
 	}
 	return nil
 }

@@ -243,7 +243,7 @@ func (m *TickerPanel) buildPlainFleetSegment() string {
 			agentParts = append(agentParts, fmt.Sprintf("Oc:%d", m.data.OpencodeCount))
 		}
 		if m.data.AntigravityCount > 0 {
-			agentParts = append(agentParts, fmt.Sprintf("A:%d", m.data.AntigravityCount))
+			agentParts = append(agentParts, fmt.Sprintf("Agy:%d", m.data.AntigravityCount))
 		}
 		if m.data.CursorCount > 0 {
 			agentParts = append(agentParts, fmt.Sprintf("Cur:%d", m.data.CursorCount))

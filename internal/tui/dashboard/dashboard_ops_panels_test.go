@@ -292,9 +292,9 @@ func TestDashboardOpsWorktreesCheckpointsPanelToggleSaveRestoreAndStates(t *test
 		return fixture
 	}
 	var restoredID string
-	dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID string) error {
+	dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID string) (string, error) {
 		restoredID = checkpointID
-		return nil
+		return session + "-restored-copy", nil
 	}
 
 	m := testDashboardWithPanes(180, 50)
