@@ -1891,6 +1891,8 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		ExitCodeFile:         exitCodeFile,
 		StepID:               step.ID,
 		StepHash:             stepHash,
+		OutputLimit:          e.limits.MaxCommandStdoutBytes,
+		MergeStderr:          stderrBuf == nil,
 	})
 	if err != nil {
 		result.Status = StatusFailed
@@ -2206,7 +2208,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 // read it after the command's wait and group cleanup have returned, so it
 // holds everything the command wrote before it was stopped.
 func (e *Executor) capturedCommandOutput(step *Step, stdoutBuf, stderrBuf *cappedWriter) string {
-	output := strings.TrimSpace(stdoutBuf.String())
+	output := capturedCommandText(stdoutBuf)
 	if stdoutBuf.Truncated() {
 		slog.Warn("command stdout truncated",
 			"run_id", e.state.RunID,
@@ -2214,7 +2216,6 @@ func (e *Executor) capturedCommandOutput(step *Step, stdoutBuf, stderrBuf *cappe
 			"bytes_total", stdoutBuf.Total(),
 			"limit", e.limits.MaxCommandStdoutBytes,
 		)
-		output += fmt.Sprintf("\n[TRUNCATED at %d bytes]", e.limits.MaxCommandStdoutBytes)
 	}
 	if stderrBuf != nil && stderrBuf.Truncated() {
 		slog.Warn("command stderr truncated",
