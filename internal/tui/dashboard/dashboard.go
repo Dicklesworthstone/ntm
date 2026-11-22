@@ -4018,10 +4018,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
-		// When the history panel's full-prompt preview overlay is open, route
-		// keys directly to it before popupMode Esc / global toggles so q/esc
-		// close the preview instead of closing the popup or shifting focus.
-		if m.focusedPanel == PanelHistory && m.historyPanel != nil && m.historyPanel.IsPreviewOpen() {
+		// When the history panel's full-prompt preview overlay is open (either as
+		// its own focused panel or hosted inside PanelSidebar in TierUltra), route
+		// keys directly to it before popupMode Esc / global toggles so q/esc close
+		// the preview instead of closing the popup or shifting focus.
+		if m.historyPanel != nil && m.historyPanel.IsPreviewOpen() &&
+			(m.focusedPanel == PanelHistory ||
+				(m.focusedPanel == PanelSidebar && m.sidebarActivePanelID() == m.historyPanel.Config().ID)) {
 			_, cmd := m.historyPanel.Update(msg)
 			return m, cmd
 		}
