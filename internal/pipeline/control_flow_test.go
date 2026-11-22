@@ -2199,6 +2199,7 @@ func TestBranchPhaseDispatchHonorsAllFiveResumeModes(t *testing.T) {
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			executor := NewExecutor(DefaultExecutorConfig("resume-phase-dispatch"))
 
 			workflow := &Workflow{

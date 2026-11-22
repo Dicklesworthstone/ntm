@@ -44,10 +44,17 @@ func TestMain(m *testing.M) {
 	cleanupBinary := findInstalledTmuxBinaryPath()
 	if cleanupBinary != "" {
 		startupCtx, cancelStartup := context.WithTimeout(context.Background(), 8*time.Second)
+		startArgs := []string{"start-server", ";", "set-option", "-s", "exit-empty", "off"}
+		if _, statErr := os.Stat("/bin/sh"); statErr == nil {
+			// Use lightweight POSIX /bin/sh as default-shell (never default-command,
+			// which would spawn a wrapper child process and make IdleShell() false)
+			// so panes skip heavy interactive .zshrc startup and never drop keys.
+			startArgs = append(startArgs, ";", "set-option", "-g", "default-shell", "/bin/sh")
+		}
 		cmd := exec.CommandContext(
 			startupCtx,
 			cleanupBinary,
-			"start-server", ";", "set-option", "-s", "exit-empty", "off",
+			startArgs...,
 		)
 		cmd.Env = isolatedTmuxTestEnvironment(tmuxRoot)
 		output, startupErr := cmd.CombinedOutput()
@@ -601,8 +608,8 @@ func createTestSession(t *testing.T) string {
 		// Skip instead of fail when tmux server has issues (common on CI)
 		t.Skipf("failed to create test session: %v", err)
 	}
-	// Small delay to let tmux settle
-	time.Sleep(100 * time.Millisecond)
+	// Small delay to let tmux settle (/bin/sh starts in ~1ms on isolated test servers)
+	time.Sleep(25 * time.Millisecond)
 	return name
 }
 

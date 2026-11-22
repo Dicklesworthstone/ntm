@@ -77,9 +77,33 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "set isolated CLI TMPDIR: %v\n", err)
 		os.Exit(1)
 	}
+	// Isolate XDG data/config dirs and Agent Mail URL so CLI unit tests never
+	// touch the developer's live audit logs, manifests, or Agent Mail server.
+	// Tests needing custom stubs override via t.Setenv.
+	origDataHome, hadDataHome := os.LookupEnv("XDG_DATA_HOME")
+	origConfigHome, hadConfigHome := os.LookupEnv("XDG_CONFIG_HOME")
+	origMailURL, hadMailURL := os.LookupEnv("AGENT_MAIL_URL")
+	_ = os.Setenv("XDG_DATA_HOME", filepath.Join(isolatedTmp, "xdg-data"))
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(isolatedTmp, "xdg-config"))
+	_ = os.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 
 	code := m.Run()
 
+	if hadDataHome {
+		_ = os.Setenv("XDG_DATA_HOME", origDataHome)
+	} else {
+		_ = os.Unsetenv("XDG_DATA_HOME")
+	}
+	if hadConfigHome {
+		_ = os.Setenv("XDG_CONFIG_HOME", origConfigHome)
+	} else {
+		_ = os.Unsetenv("XDG_CONFIG_HOME")
+	}
+	if hadMailURL {
+		_ = os.Setenv("AGENT_MAIL_URL", origMailURL)
+	} else {
+		_ = os.Unsetenv("AGENT_MAIL_URL")
+	}
 	if hadTMPDIR {
 		_ = os.Setenv("TMPDIR", origTMPDIR)
 	} else {

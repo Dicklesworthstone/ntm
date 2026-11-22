@@ -366,6 +366,9 @@ func TestFetchHistoryCmd(t *testing.T) {
 }
 
 func TestFetchCASSContextCmd_NoCass(t *testing.T) {
+	// Hide host cass binary so this test deterministically exercises the
+	// no-cass path instead of running a 30s query against the developer index.
+	t.Setenv("PATH", t.TempDir())
 
 	m := newTestModel(120)
 	m.session = "test-session"
@@ -376,10 +379,9 @@ func TestFetchCASSContextCmd_NoCass(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected CASSContextMsg, got %T", msg)
 	}
-
-	// If CASS is not installed, we expect an error
-	// If CASS is installed, we may get hits or empty hits
-	_ = cassMsg
+	if cassMsg.Err == nil {
+		t.Fatalf("expected error when cass is not installed, got nil (hits=%d)", len(cassMsg.Hits))
+	}
 }
 
 func TestFetchAttentionCmdParsesRFC3339NanoAndSorts(t *testing.T) {

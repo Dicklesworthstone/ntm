@@ -186,6 +186,23 @@ func IsolateTmuxTestProcess() (func() error, error) {
 		}
 	}
 	cleanupBinary := findSystemTmuxBinary()
+	if cleanupBinary != "" {
+		if _, statErr := os.Stat("/bin/sh"); statErr == nil {
+			// Pre-start the isolated test tmux server with lightweight /bin/sh
+			// so test panes never block on interactive login shell rc files.
+			startCtx, cancelStart := context.WithTimeout(context.Background(), 8*time.Second)
+			startCmd := exec.CommandContext(
+				startCtx,
+				cleanupBinary,
+				"start-server", ";",
+				"set-option", "-s", "exit-empty", "off", ";",
+				"set-option", "-g", "default-shell", "/bin/sh",
+			)
+			startCmd.Env = isolatedTmuxEnvironment(dir)
+			_ = startCmd.Run()
+			cancelStart()
+		}
+	}
 
 	var cleanupOnce sync.Once
 	var cleanupErr error

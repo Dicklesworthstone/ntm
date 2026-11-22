@@ -1225,6 +1225,7 @@ func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
 	}
 
 	t.Run("until executes body until predicate exits 0", func(t *testing.T) {
+		t.Parallel()
 		tmp := t.TempDir()
 		counterFile := tmp + "/count.txt"
 		executor := newTestExec("run-until-1", "wf-until")
@@ -1260,6 +1261,7 @@ func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
 	})
 
 	t.Run("until fails explicitly when max_iterations reached without exit 0", func(t *testing.T) {
+		t.Parallel()
 		executor := newTestExec("run-until-max", "wf-until-max")
 		workflow := &Workflow{
 			SchemaVersion: SchemaVersion,
@@ -1289,6 +1291,7 @@ func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
 	})
 
 	t.Run("times loop resumes from persisted checkpoint skipping completed iterations", func(t *testing.T) {
+		t.Parallel()
 		tmp := t.TempDir()
 		logFile := tmp + "/iters.log"
 		executor := newTestExec("run-times-resume", "wf-times")

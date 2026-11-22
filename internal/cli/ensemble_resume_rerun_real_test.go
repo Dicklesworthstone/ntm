@@ -637,6 +637,7 @@ func TestEnsembleTOMLConfigKeys_AllSixAndCLIOverrides(t *testing.T) {
 	})
 
 	t.Run("Estimate_InheritsBudgetReservesAndCLIOverrides", func(t *testing.T) {
+		t.Chdir(projectDir)
 		estTOMLOut, err := executeEnsembleCLICmd(
 			t,
 			"ensemble", "estimate",

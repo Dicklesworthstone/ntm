@@ -647,7 +647,7 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 			command.SetOut(&out)
 			command.SetErr(new(bytes.Buffer))
 			command.SetArgs([]string{pending.AgentID, "--action=rotate"})
-			timeout := 3 * time.Second
+			timeout := 500 * time.Millisecond
 			if tc.bound && tc.kind == "assistant" {
 				timeout = 15 * time.Second
 			}

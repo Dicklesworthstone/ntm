@@ -419,6 +419,13 @@ func TestCLIClientGetContextNotInstalled(t *testing.T) {
 }
 
 func TestCLIClientGetRecoveryContext(t *testing.T) {
+	// Isolate HOME/XDG so the real installed cm CLI does not index or scan
+	// the developer's multi-gigabyte host CASS/CM stores during unit tests.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
 	// This test requires cm to be installed
 	client := NewCLIClient()
 	if !client.IsInstalled() {
@@ -1265,6 +1272,9 @@ func TestFallback_HTTPToCliDegradation(t *testing.T) {
 
 	// Scenario: HTTP daemon is not running (PID file doesn't exist)
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 
 	_, err := NewClient(tmpDir, "nonexistent-session")
 	if err == nil {
