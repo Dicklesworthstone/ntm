@@ -239,6 +239,7 @@ type failoverChecker struct {
 
 	storeOnce sync.Once
 	store     *state.Store
+	closed    bool
 }
 
 // declineMark tracks the last published decline for republish suppression.
@@ -326,6 +327,7 @@ func (fc *failoverChecker) Close() error {
 		return nil
 	}
 	fc.mu.Lock()
+	fc.closed = true
 	store := fc.store
 	fc.store = nil
 	fc.mu.Unlock()
@@ -339,6 +341,12 @@ func (fc *failoverChecker) Close() error {
 // unavailable; the in-memory cooldown map still bounds this process.
 func (fc *failoverChecker) runtimeStore() *state.Store {
 	fc.storeOnce.Do(func() {
+		fc.mu.Lock()
+		closed := fc.closed
+		fc.mu.Unlock()
+		if closed {
+			return
+		}
 		path, err := accountFailoverStatePath()
 		if err != nil {
 			return
@@ -358,6 +366,11 @@ func (fc *failoverChecker) runtimeStore() *state.Store {
 			return
 		}
 		fc.mu.Lock()
+		if fc.closed {
+			fc.mu.Unlock()
+			_ = store.Close()
+			return
+		}
 		fc.store = store
 		fc.mu.Unlock()
 	})

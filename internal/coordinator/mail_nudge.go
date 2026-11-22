@@ -124,6 +124,7 @@ type mailNudgeChecker struct {
 
 	storeOnce sync.Once
 	store     *state.Store
+	closed    bool
 }
 
 // newMailNudgeChecker builds a production checker, or nil when the feature is
@@ -216,6 +217,7 @@ func (mc *mailNudgeChecker) Close() error {
 		return nil
 	}
 	mc.mu.Lock()
+	mc.closed = true
 	store := mc.store
 	mc.store = nil
 	mc.mu.Unlock()
@@ -229,6 +231,12 @@ func (mc *mailNudgeChecker) Close() error {
 // unavailable; the in-memory cooldown map still bounds this process.
 func (mc *mailNudgeChecker) runtimeStore() *state.Store {
 	mc.storeOnce.Do(func() {
+		mc.mu.Lock()
+		closed := mc.closed
+		mc.mu.Unlock()
+		if closed {
+			return
+		}
 		store, err := state.Open("")
 		if err != nil {
 			slog.Debug("mail nudge: runtime store unavailable; cooldown is process-local",
@@ -242,6 +250,11 @@ func (mc *mailNudgeChecker) runtimeStore() *state.Store {
 			return
 		}
 		mc.mu.Lock()
+		if mc.closed {
+			mc.mu.Unlock()
+			_ = store.Close()
+			return
+		}
 		mc.store = store
 		mc.mu.Unlock()
 	})
