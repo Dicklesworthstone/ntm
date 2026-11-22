@@ -62,6 +62,7 @@ type InterruptError struct {
 
 // InterruptOptions configures the PrintInterrupt operation
 type InterruptOptions struct {
+	Context        context.Context `json:"-"` // Optional cancellation context (defaults to context.Background())
 	Session        string   // Target session name
 	Message        string   // Message to send after interrupt (optional)
 	Panes          []string // Specific pane indices to interrupt (empty = all agents)
@@ -90,6 +91,10 @@ type InterruptOptions struct {
 // GetInterrupt sends Ctrl+C to panes and optionally a follow-up message, returning the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if opts.TimeoutMs <= 0 {
 		opts.TimeoutMs = 10000 // Default 10s timeout
 	}
@@ -140,7 +145,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	}
 
 	observer := newRobotSessionObserver(20)
-	observation, err := observer.Observe(context.Background(), opts.Session)
+	observation, err := observer.Observe(ctx, opts.Session)
 	if err != nil {
 		output.Failed = append(output.Failed, InterruptError{
 			Pane:   "panes",
@@ -207,11 +212,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			guardPanes[i].Type = interruptPaneTMUXAgentType(pane)
 		}
 		if opts.MessageGuard != nil {
-			if err := opts.MessageGuard(context.Background(), opts.Message, append([]tmux.Pane(nil), guardPanes...)); err != nil {
+			if err := opts.MessageGuard(ctx, opts.Message, append([]tmux.Pane(nil), guardPanes...)); err != nil {
 				return nil, fmt.Errorf("message policy check: %w", err)
 			}
 		}
-		if resp, _, err := checkSendCommandGuard(context.Background(), opts.Message, opts.Session, guardPanes); err != nil {
+		if resp, _, err := checkSendCommandGuard(ctx, opts.Message, opts.Session, guardPanes); err != nil {
 			output.RobotResponse = resp
 			output.Failed = append(output.Failed, InterruptError{Pane: "guard", Reason: err.Error()})
 			output.CompletedAt = time.Now().UTC()
@@ -326,7 +331,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		pollInterval := time.Duration(opts.PollMs) * time.Millisecond
 
 		// Small initial delay for interrupt to take effect
-		time.Sleep(200 * time.Millisecond)
+		if !waitForPollOrCancellation(ctx, 200*time.Millisecond) {
+			output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt wait was canceled by caller")
+			output.CompletedAt = time.Now().UTC()
+			return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
+		}
 
 		pending := make(map[string]bool)
 		for _, paneKey := range output.Interrupted {
@@ -334,6 +343,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		}
 
 		for time.Now().Before(deadline) && len(pending) > 0 {
+			if err := ctx.Err(); err != nil {
+				output.RobotResponse = NewErrorResponse(err, "CANCELED", "Interrupt wait was canceled by caller")
+				output.CompletedAt = time.Now().UTC()
+				return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
+			}
 			for paneKey := range pending {
 				// Find the pane
 				var targetPane *tmux.Pane
@@ -367,7 +381,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			}
 
 			if len(pending) > 0 {
-				time.Sleep(pollInterval)
+				if !waitForPollOrCancellation(ctx, pollInterval) {
+					output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt wait was canceled by caller")
+					output.CompletedAt = time.Now().UTC()
+					return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
+				}
 			}
 		}
 
@@ -393,7 +411,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	// Send follow-up message if provided
 	if opts.Message != "" && len(output.ReadyForInput) > 0 {
 		// Small delay to ensure interrupt settled
-		time.Sleep(100 * time.Millisecond)
+		if !waitForPollOrCancellation(ctx, 100*time.Millisecond) {
+			output.RobotResponse = NewErrorResponse(ctx.Err(), "CANCELED", "Interrupt follow-up canceled by caller")
+			output.CompletedAt = time.Now().UTC()
+			return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
+		}
 
 		messageTargets := make([]tmux.Pane, 0, len(output.ReadyForInput))
 		for _, paneKey := range output.ReadyForInput {
@@ -430,14 +452,14 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 				// replacement markers again and change the frozen payload.
 				sendOpts := SendOptions{Session: opts.Session, Message: inputMessage}
 				prepared, prepareErr := service.Prepare(
-					context.Background(),
+					ctx,
 					robotPreparedDispatchRequest(dispatchPanes, messageTargets, sendOpts, inputMessage, true),
 				)
 				if prepareErr != nil {
 					output.RobotResponse = robotDispatchPrepareErrorResponse(prepareErr)
 					output.Failed = append(output.Failed, InterruptError{Pane: "dispatch", Reason: fmt.Sprintf("failed to prepare follow-up message: %v", prepareErr)})
 				} else {
-					result, _ := service.Dispatch(context.Background(), prepared)
+					result, _ := service.Dispatch(ctx, prepared)
 					for _, receipt := range result.Receipts {
 						if receipt.Status == dispatchsvc.ReceiptDelivered {
 							output.MessageSent = true

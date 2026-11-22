@@ -662,6 +662,7 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 
 	var policyRefusal error
 	opts := robot.InterruptOptions{
+		Context:        r.Context(),
 		Session:        sessionID,
 		Panes:          req.Panes,
 		AgentTypes:     req.AgentTypes,
@@ -734,7 +735,12 @@ type AgentWaitRequest struct {
 // maxAgentWaitTimeout caps the client-supplied wait so one request cannot pin
 // a server goroutine indefinitely. Long orchestration waits belong in the
 // caller's own polling loop, not in a single HTTP request.
-const maxAgentWaitTimeout = 30 * time.Minute
+// minAgentWaitPollInterval prevents clients from supplying poll_ms=1 and
+// turning an HTTP wait into a tight tmux subprocess fork loop.
+const (
+	maxAgentWaitTimeout      = 30 * time.Minute
+	minAgentWaitPollInterval = 100 * time.Millisecond
+)
 
 func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -769,6 +775,9 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 	pollInterval := 500 * time.Millisecond
 	if req.PollMs > 0 {
 		pollInterval = time.Duration(req.PollMs) * time.Millisecond
+	}
+	if pollInterval < minAgentWaitPollInterval {
+		pollInterval = minAgentWaitPollInterval
 	}
 	if pollInterval > timeout {
 		pollInterval = timeout
