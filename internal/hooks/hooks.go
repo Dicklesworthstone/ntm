@@ -113,29 +113,34 @@ func (m *Manager) Install(hookType HookType, force bool) error {
 	hookPath := filepath.Join(m.hooksDir, string(hookType))
 	backupPath := hookPath + ".backup"
 
-	// Check if hook already exists
+	// Check if hook already exists before generating/writing.
+	needsBackup := false
 	if _, err := os.Stat(hookPath); err == nil {
 		content, readErr := os.ReadFile(hookPath)
 		if readErr != nil {
 			return fmt.Errorf("reading existing hook %s: %w", hookPath, readErr)
 		}
 		if isNTMHook(string(content)) {
-			// Already an NTM hook, just overwrite
+			// Already an NTM hook, overwrite in place.
 			force = true
 		} else if !force {
 			return ErrHookExists
 		} else {
-			// Backup existing hook
-			if err := os.Rename(hookPath, backupPath); err != nil {
-				return fmt.Errorf("backing up existing hook: %w", err)
-			}
+			needsBackup = true
 		}
 	}
 
-	// Generate hook script
+	// Generate hook script BEFORE displacing any existing user hook so a
+	// generation failure (e.g., ErrNTMNotFound) leaves the repo untouched.
 	script, err := generateHookScript(hookType, m.repoRoot)
 	if err != nil {
 		return fmt.Errorf("generating hook script: %w", err)
+	}
+
+	if needsBackup {
+		if err := os.Rename(hookPath, backupPath); err != nil {
+			return fmt.Errorf("backing up existing hook: %w", err)
+		}
 	}
 
 	// Write hook file
@@ -444,19 +449,31 @@ set -e
 # Repo root for hooks that need project context
 REPO_ROOT=%s
 
-# Check active Agent Mail reservations (respects NTM_GUARD_STRICT)
+# Buffer git pre-push ref lines from stdin once so guard, hooks, and backup can all read them
+PUSH_STDIN=""
+if [ ! -t 0 ]; then
+    PUSH_STDIN="$(cat)"
+fi
+
+feed_push_stdin() {
+    if [ -n "$PUSH_STDIN" ]; then
+        printf '%%s\n' "$PUSH_STDIN"
+    fi
+}
+
+# Check active Agent Mail reservations for pushed commits (respects NTM_GUARD_STRICT)
 GUARD_EXIT=0
-%[3]s guards check --staged || GUARD_EXIT=$?
+feed_push_stdin | %[3]s guards check --push || GUARD_EXIT=$?
 
 # Run NTM pre-push checks
 HOOK_EXIT=0
-%[3]s hooks run pre-push "$@" || HOOK_EXIT=$?
+feed_push_stdin | %[3]s hooks run pre-push "$@" || HOOK_EXIT=$?
 
 # Chain to backup hook if it exists
 BACKUP_EXIT=0
 BACKUP_HOOK="$(dirname "$0")/pre-push.backup"
 if [ -x "$BACKUP_HOOK" ]; then
-    "$BACKUP_HOOK" "$@" || BACKUP_EXIT=$?
+    feed_push_stdin | "$BACKUP_HOOK" "$@" || BACKUP_EXIT=$?
 fi
 
 if [ $GUARD_EXIT -ne 0 ] || [ $HOOK_EXIT -ne 0 ] || [ $BACKUP_EXIT -ne 0 ]; then

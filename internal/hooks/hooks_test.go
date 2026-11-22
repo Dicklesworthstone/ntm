@@ -434,7 +434,8 @@ func TestGeneratePrePushScriptRunsGuardHookAndBackup(t *testing.T) {
 	dir := t.TempDir()
 	fakeNTM := filepath.Join(dir, "ntm")
 	if err := os.WriteFile(fakeNTM, []byte(`#!/bin/sh
-echo "ntm:$*" >> "$CALLS"
+stdin_line="$(cat)"
+echo "ntm:$*|stdin:$stdin_line" >> "$CALLS"
 if [ "$1 $2" = "guards check" ] && [ -n "$FAIL_GUARD" ]; then
   exit 1
 fi
@@ -453,7 +454,8 @@ exit 0
 	}
 	backupPath := filepath.Join(dir, "pre-push.backup")
 	if err := os.WriteFile(backupPath, []byte(`#!/bin/sh
-echo "backup:$*" >> "$CALLS"
+stdin_line="$(cat)"
+echo "backup:$*|stdin:$stdin_line" >> "$CALLS"
 if [ -n "$FAIL_BACKUP" ]; then
   exit 1
 fi
@@ -462,9 +464,11 @@ exit 0
 		t.Fatal(err)
 	}
 
+	const samplePushRef = "refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000\n"
 	run := func(tag string, extraEnv ...string) (int, string) {
 		calls := filepath.Join(dir, "calls-"+tag)
 		cmd := exec.Command("bash", hookPath, "origin", "https://example.com/repo.git")
+		cmd.Stdin = strings.NewReader(samplePushRef)
 		cmd.Env = append(append(os.Environ(), "CALLS="+calls, "PATH=/usr/bin:/bin"), extraEnv...)
 		out, err := cmd.CombinedOutput()
 		recorded, _ := os.ReadFile(calls)
@@ -478,9 +482,9 @@ exit 0
 	}
 
 	if code, out := run("clean"); code != 0 ||
-		!strings.Contains(out, "ntm:guards check --staged") ||
-		!strings.Contains(out, "ntm:hooks run pre-push origin") ||
-		!strings.Contains(out, "backup:origin") {
+		!strings.Contains(out, "ntm:guards check --push|stdin:refs/heads/main 1111111111111111111111111111111111111111") ||
+		!strings.Contains(out, "ntm:hooks run pre-push origin https://example.com/repo.git|stdin:refs/heads/main 1111111111111111111111111111111111111111") ||
+		!strings.Contains(out, "backup:origin https://example.com/repo.git|stdin:refs/heads/main 1111111111111111111111111111111111111111") {
 		t.Fatalf("clean pre-push: code=%d out=%q", code, out)
 	}
 	if code, _ := run("guard-fail", "FAIL_GUARD=1"); code == 0 {
