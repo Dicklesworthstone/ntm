@@ -515,14 +515,14 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 }
 
 // maybeCheckContextRotation runs the transcript-usage rotation trigger for
-// this cycle (bd-rpmg8). DEFAULT-OFF GUARANTEE: with no [rotation] threshold
-// configured (usage_percent_threshold, restart_if_tokens_above, and
-// restart_if_session_hours all <= 0), this returns before constructing the
-// checker — zero new subprocess calls and zero behavior change.
+// this cycle (bd-rpmg8). DEFAULT-OFF GUARANTEE: with rotation usage threshold
+// unset and [rotation] enabled=false (the default), this returns before
+// constructing the checker — zero new subprocess calls and zero behavior change.
 func (c *SessionCoordinator) maybeCheckContextRotation(ctx context.Context) {
 	c.mu.Lock()
-	enabled := c.config.RotationUsageThreshold > 0 ||
-		(c.ntmConfig != nil && (c.ntmConfig.Rotation.Thresholds.RestartIfTokensAbove > 0 || c.ntmConfig.Rotation.Thresholds.RestartIfSessionHours > 0))
+	thresholdsEnabled := c.ntmConfig != nil && c.ntmConfig.Rotation.Enabled &&
+		(c.ntmConfig.Rotation.Thresholds.RestartIfTokensAbove > 0 || c.ntmConfig.Rotation.Thresholds.RestartIfSessionHours > 0)
+	enabled := c.config.RotationUsageThreshold > 0 || thresholdsEnabled
 	if !enabled {
 		c.mu.Unlock()
 		return

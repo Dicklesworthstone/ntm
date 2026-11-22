@@ -44,15 +44,16 @@ const rotationCaptureLines = 100
 
 // rotationDecision records one trigger decision for logging and tests.
 type rotationDecision struct {
-	PaneID     string  // tmux pane ID (%N)
-	AgentID    string  // canonical agent ID (pane title, e.g. sess__cc_1)
-	Action     string  // "enqueued", "auto_confirmed", "auto_confirm_failed", "skipped"
-	SkipReason string  // populated when Action == "skipped"
-	UsagePct   float64 // transcript-sourced usage percentage
-	Tokens     int     // evidence: transcript context occupancy tokens
-	Limit      int     // evidence: context window (transcript-reported or models registry)
-	Source     string  // evidence: transcript file path
-	Confidence string  // evidence: transcript freshness confidence ("high"/"medium")
+	PaneID        string  // tmux pane ID (%N)
+	AgentID       string  // canonical agent ID (pane title, e.g. sess__cc_1)
+	Action        string  // "enqueued", "auto_confirmed", "auto_confirm_failed", "skipped"
+	TriggerReason string  // "usage_percent", "tokens_above", "session_age"
+	SkipReason    string  // populated when Action == "skipped"
+	UsagePct      float64 // transcript-sourced usage percentage
+	Tokens        int     // evidence: transcript context occupancy tokens
+	Limit         int     // evidence: context window (transcript-reported or models registry)
+	Source        string  // evidence: transcript file path
+	Confidence    string  // evidence: transcript freshness confidence ("high"/"medium")
 }
 
 // rotationChecker performs the per-tick transcript-usage rotation check. All
@@ -97,16 +98,21 @@ type rotationChecker struct {
 	now             func() time.Time
 }
 
-// newRotationChecker builds a production checker, or nil when all rotation
-// triggers are disabled (threshold, restart_if_tokens_above, and
-// restart_if_session_hours all <= 0). ntmCfg may be nil; it is only used for
-// the replacement-agent launch commands and context rotation tunables.
+// newRotationChecker builds a production checker, or nil when rotation is
+// disabled (RotationUsageThreshold <= 0 and [rotation] enabled=false or all
+// thresholds <= 0). ntmCfg may be nil; it is only used for the replacement-
+// agent launch commands and context rotation tunables.
 func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntmCfg *config.Config) *rotationChecker {
 	rotCfg := config.DefaultContextRotationConfig()
 	var thresholds config.RotationThresholds
 	if ntmCfg != nil {
 		rotCfg = ntmCfg.ContextRotation
-		thresholds = ntmCfg.Rotation.Thresholds
+		// DefaultRotationConfig ships non-zero RestartIfTokensAbove (100000) and
+		// RestartIfSessionHours (8) with Enabled=false. Gate threshold-only
+		// activation on Rotation.Enabled so default configs stay strictly off.
+		if ntmCfg.Rotation.Enabled || coordCfg.RotationUsageThreshold > 0 {
+			thresholds = ntmCfg.Rotation.Thresholds
+		}
 	}
 	if coordCfg.RotationUsageThreshold <= 0 &&
 		thresholds.RestartIfTokensAbove <= 0 &&
@@ -289,13 +295,14 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 	}
 
 	decision := rotationDecision{
-		PaneID:     pane.ID,
-		AgentID:    pane.Title,
-		UsagePct:   pct,
-		Tokens:     usage.Tokens,
-		Limit:      limit,
-		Source:     rotationUsageSource(usage),
-		Confidence: ntmctx.TranscriptConfidence(usage.UpdatedAt, now),
+		PaneID:        pane.ID,
+		AgentID:       pane.Title,
+		TriggerReason: triggerReason,
+		UsagePct:      pct,
+		Tokens:        usage.Tokens,
+		Limit:         limit,
+		Source:        rotationUsageSource(usage),
+		Confidence:    ntmctx.TranscriptConfidence(usage.UpdatedAt, now),
 	}
 	if pane.Type.Canonical() == agent.AgentTypeGemini &&
 		(usage.UpdatedAt.IsZero() || usage.UpdatedAt.After(now) || decision.Confidence != "high") {
@@ -378,7 +385,7 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 	rc.publishDecision(robot.ActuationRecord{
 		Stage:          robot.ActuationStageRequest,
 		Targets:        []string{decision.AgentID},
-		Summary:        fmt.Sprintf("context rotation enqueued for %s: transcript usage %.1f%% > threshold %.1f%%", decision.AgentID, pct, rc.threshold),
+		Summary:        fmt.Sprintf("context rotation enqueued for %s: %s", decision.AgentID, rc.triggerSummary(decision)),
 		ReasonCode:     "context_rotation_enqueued",
 		MessagePreview: rotationEvidence(decision),
 		Severity:       robot.SeverityInfo,
@@ -441,12 +448,23 @@ func (rc *rotationChecker) reportSkip(decision rotationDecision) {
 	rc.publishDecision(robot.ActuationRecord{
 		Stage:          robot.ActuationStageOutcome,
 		Targets:        []string{target},
-		Summary:        fmt.Sprintf("context rotation for %s skipped: %s (usage %.1f%% > threshold %.1f%%)", target, decision.SkipReason, decision.UsagePct, rc.threshold),
+		Summary:        fmt.Sprintf("context rotation for %s skipped: %s (%s)", target, decision.SkipReason, rc.triggerSummary(decision)),
 		ReasonCode:     "context_rotation_safety_skip",
 		MessagePreview: rotationEvidence(decision),
 		Blocked:        true,
 		Severity:       robot.SeverityInfo,
 	})
+}
+
+func (rc *rotationChecker) triggerSummary(decision rotationDecision) string {
+	switch decision.TriggerReason {
+	case "tokens_above":
+		return fmt.Sprintf("transcript tokens %d > threshold %.0f", decision.Tokens, rc.restartTokensAbove)
+	case "session_age":
+		return fmt.Sprintf("session age > threshold %s", rc.restartSessionAge)
+	default:
+		return fmt.Sprintf("transcript usage %.1f%% > threshold %.1f%%", decision.UsagePct, rc.threshold)
+	}
 }
 
 // publishDecision fills the shared actuation-record fields and publishes to
