@@ -3677,7 +3677,9 @@ func GetReadyPreviewContext(ctx context.Context, dir string, limit int) ([]BeadP
 	return previews, nil
 }
 
-// GetInProgressList returns in-progress beads with assignees.
+// GetInProgressListContext returns in-progress beads with assignees without
+// erasing command, parse, or cancellation failures. A limit of zero requests
+// the full list.
 //
 // br walks the filesystem upward to find a workspace root, so this can
 // return rows from a parent repo when the caller's directory has no local
@@ -3685,13 +3687,6 @@ func GetReadyPreviewContext(ctx context.Context, dir string, limit int) ([]BeadP
 // (recovery context, anywhere parent-row bleed would be incorrect) should
 // gate via [`HasLocalBeadsDB`] before calling this and refuse to surface
 // the result if it returns false. See #130.
-func GetInProgressList(dir string, limit int) []BeadInProgress {
-	items, _ := GetInProgressListContext(context.Background(), dir, limit)
-	return items
-}
-
-// GetInProgressListContext returns in-progress beads without erasing command,
-// parse, or cancellation failures. A limit of zero requests the full list.
 func GetInProgressListContext(ctx context.Context, dir string, limit int) ([]BeadInProgress, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("in-progress limit must not be negative: %d", limit)
