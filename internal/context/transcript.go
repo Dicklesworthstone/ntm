@@ -71,6 +71,213 @@ const (
 	transcriptScanLimit  = 8 * 1024 * 1024
 )
 
+// rotationTranscript pins an exact process-bound conversation before the
+// summary request is sent. Only new, complete assistant records can supply a
+// handoff when terminal scrollback has wrapped or lost its response markers.
+// A workspace's newest transcript is never evidence for retiring a pane.
+type rotationTranscript struct {
+	file         *os.File
+	identity     os.FileInfo
+	binding      agentsession.Info
+	pane         tmux.Pane
+	offset       int64
+	lineBoundary bool
+	discover     func(stdcontext.Context, string, int) *agentsession.Info
+}
+
+func openRotationTranscript(ctx stdcontext.Context, pane tmux.Pane, local bool,
+	discover func(stdcontext.Context, string, int) *agentsession.Info) *rotationTranscript {
+	if ctx == nil || ctx.Err() != nil || !local || pane.PID <= 0 || discover == nil {
+		return nil
+	}
+	switch pane.Type.Canonical() {
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeOmp, agent.AgentTypePi:
+	default:
+		return nil
+	}
+	probeCtx, cancel := stdcontext.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	binding := discover(probeCtx, string(pane.Type.Canonical()), pane.PID)
+	if probeCtx.Err() != nil || binding == nil || binding.Source != agentsession.DiscoverySourceProcessTree ||
+		binding.SessionID == "" || !filepath.IsAbs(binding.SourcePath) ||
+		binding.Provider != agentsession.ResumeProvider(string(pane.Type.Canonical())) {
+		return nil
+	}
+	// Check before opening too: a replaced path must not block the observer on
+	// a FIFO or device. Symlink replacements cannot borrow the pinned inode.
+	before, err := os.Lstat(binding.SourcePath)
+	if err != nil || !before.Mode().IsRegular() {
+		return nil
+	}
+	file, err := os.Open(binding.SourcePath)
+	if err != nil {
+		return nil
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) || probeCtx.Err() != nil {
+		_ = file.Close()
+		return nil
+	}
+	boundary := info.Size() == 0
+	if info.Size() > 0 {
+		var last [1]byte
+		if _, err := file.ReadAt(last[:], info.Size()-1); err != nil {
+			_ = file.Close()
+			return nil
+		}
+		boundary = last[0] == '\n'
+	}
+	return &rotationTranscript{file: file, identity: info, binding: *binding,
+		pane: pane, offset: info.Size(), lineBoundary: boundary, discover: discover}
+}
+
+func (r *rotationTranscript) bound(ctx stdcontext.Context) bool {
+	if r == nil || ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	probeCtx, cancel := stdcontext.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	current := r.discover(probeCtx, string(r.pane.Type.Canonical()), r.pane.PID)
+	if probeCtx.Err() != nil || current == nil || current.Source != agentsession.DiscoverySourceProcessTree ||
+		current.SessionID != r.binding.SessionID || current.Provider != r.binding.Provider ||
+		current.SourcePath != r.binding.SourcePath {
+		return false
+	}
+	info, err := os.Lstat(r.binding.SourcePath)
+	return err == nil && info.Mode().IsRegular() && os.SameFile(r.identity, info) && info.Size() >= r.offset
+}
+
+func (r *rotationTranscript) summary(ctx stdcontext.Context, startMarker, endMarker string) string {
+	if r == nil || ctx == nil || ctx.Err() != nil {
+		return ""
+	}
+	info, err := r.file.Stat()
+	if err != nil || info.Size() <= r.offset {
+		return ""
+	}
+	// Bound the snapshot independently of transcript size and never read any
+	// pre-request record. Incomplete records at either boundary are discarded.
+	offset := max(r.offset, info.Size()-transcriptScanLimit)
+	data := make([]byte, int(info.Size()-offset))
+	if _, err := io.ReadFull(io.NewSectionReader(r.file, offset, int64(len(data))), data); err != nil {
+		return ""
+	}
+	if offset != r.offset || !r.lineBoundary {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			return ""
+		}
+		data = data[newline+1:]
+	}
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	if lastNewline < 0 || len(bytes.TrimSpace(data[lastNewline+1:])) != 0 {
+		return ""
+	}
+	data = data[:lastNewline]
+	var body string
+	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
+		if ctx.Err() != nil {
+			return ""
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		text, assistant, valid := rotationTranscriptMessage(line, r.binding.Provider)
+		if !valid {
+			return "" // Corruption cannot make an older response authoritative.
+		}
+		if assistant {
+			// Never assemble markers across messages, user prompts, or tool
+			// output. A later assistant response supersedes the earlier one.
+			body = completedRotationSummary(text, startMarker, endMarker)
+		}
+	}
+	after, err := r.file.Stat()
+	if err != nil || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) || body == "" || !r.bound(ctx) {
+		return ""
+	}
+	return body
+}
+
+// rotationTranscriptMessage accepts only native assistant message records.
+// In particular, echoed user requests, tool results, and reasoning blocks must
+// never authorize a context handoff even when they contain both marker tokens.
+func rotationTranscriptMessage(line []byte, provider string) (string, bool, bool) {
+	var entry struct {
+		Type        string          `json:"type"`
+		IsSidechain bool            `json:"isSidechain"`
+		Message     json.RawMessage `json:"message"`
+		Payload     json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return "", false, false
+	}
+	var message struct {
+		Type    string          `json:"type"`
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+		Message json.RawMessage `json:"message"`
+	}
+	textType := "text"
+	switch provider {
+	case "claude":
+		if entry.Type != "assistant" || entry.IsSidechain {
+			return "", false, true
+		}
+		if json.Unmarshal(entry.Message, &message) != nil {
+			return "", true, false
+		}
+	case "omp", "pi":
+		if entry.Type != "message" {
+			return "", false, true
+		}
+		if json.Unmarshal(entry.Message, &message) != nil {
+			return "", true, false
+		}
+	case "codex":
+		if entry.Type != "response_item" && entry.Type != "event_msg" {
+			return "", false, true
+		}
+		if json.Unmarshal(entry.Payload, &message) != nil {
+			return "", false, false
+		}
+		if entry.Type == "event_msg" && message.Type == "agent_message" {
+			var text string
+			if json.Unmarshal(message.Message, &text) != nil {
+				return "", true, false
+			}
+			return text, true, true
+		}
+		if entry.Type != "response_item" || message.Type != "message" {
+			return "", false, true
+		}
+		textType = "output_text"
+	default:
+		return "", false, true
+	}
+	if message.Role != "assistant" {
+		return "", false, true
+	}
+	var plain string
+	if json.Unmarshal(message.Content, &plain) == nil {
+		return plain, true, true
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(message.Content, &blocks); err != nil {
+		return "", true, false
+	}
+	var parts []string
+	for _, block := range blocks {
+		if block.Type == textType {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n"), true, true
+}
+
 // TranscriptFreshness is the maximum age of a transcript for its usage to be
 // considered current (confidence "high").
 const TranscriptFreshness = 10 * time.Minute
