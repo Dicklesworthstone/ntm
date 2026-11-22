@@ -343,13 +343,18 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use policy.ResolveEffectivePath so installing default wrappers never
-	// creates a home policy that silently shadows a project-local .ntm/policy.yaml.
-	policyPath := filepath.Join(ntmDir, "policy.yaml")
-	policyExists := safetyFileExists(policyPath)
-	if effectivePath, exists, pathErr := policy.ResolveEffectivePath(); pathErr == nil && effectivePath != "" {
-		policyPath = effectivePath
-		policyExists = exists
+	// Resolve effective policy path against the server's configured project dir
+	// so installing default wrappers never creates a home policy that silently
+	// shadows a project-local .ntm/policy.yaml or inspects an unrelated CWD.
+	policyPath, policyExists, pathErr := policy.ResolveEffectivePathForProject(s.projectDirSnapshot())
+	if pathErr != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			fmt.Sprintf("failed to resolve policy path: %v", pathErr), nil, reqID)
+		return
+	}
+	if policyPath == "" {
+		policyPath = filepath.Join(ntmDir, "policy.yaml")
+		policyExists = safetyFileExists(policyPath)
 	}
 	if !policyExists || req.Force {
 		if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
