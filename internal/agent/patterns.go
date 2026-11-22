@@ -759,9 +759,9 @@ func OpencodeIdlePromptShowing(output string) bool {
 		if matchAnyRegex(trimmed, ocIdlePatterns) {
 			return true
 		}
-		// A historical placeholder followed by newer output is not a live
-		// input box. Only the old boxed composer's closing rule and native
-		// shortcut row may sit below its placeholder/interrupt acknowledgment.
+		// A historical composer prompt hint followed by newer output is not a
+		// live input box. Only the old boxed composer's closing rule and native
+		// shortcut row may sit below its prompt hint or interrupt acknowledgment.
 		if !opencodeFooterLineRe.MatchString(trimmed) &&
 			strings.Trim(trimmed, "╰╯└┘─━═ ") != "" {
 			return false
