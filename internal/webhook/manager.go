@@ -253,6 +253,7 @@ func NewManager(cfg ManagerConfig) *WebhookManager {
 		httpClient: &http.Client{
 			Timeout: cfg.DefaultTimeout,
 			Transport: &http.Transport{
+				DialContext:         safeWebhookDialContext(true),
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
 				IdleConnTimeout:     90 * time.Second,
@@ -277,6 +278,9 @@ func NewManagerWithRedaction(cfg ManagerConfig, redactionCfg redaction.Config) *
 func (m *WebhookManager) Register(cfg WebhookConfig) error {
 	if cfg.URL == "" {
 		return errors.New("webhook URL is required")
+	}
+	if err := ValidateWebhookTargetURL(cfg.URL, true); err != nil {
+		return err
 	}
 	if cfg.ID == "" {
 		cfg.ID = fmt.Sprintf("webhook_%d", time.Now().UnixNano())
@@ -773,6 +777,9 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 
 // send performs the actual HTTP request
 func (m *WebhookManager) send(d *Delivery) (int, error) {
+	if err := ValidateWebhookTargetURL(d.Webhook.URL, true); err != nil {
+		return 0, err
+	}
 	// Build payload from template
 	payload, err := m.buildPayload(d)
 	if err != nil {

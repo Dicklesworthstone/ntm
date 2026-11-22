@@ -497,6 +497,13 @@ func (m *WebhookManager) settleOutbox(c *outboxClaim, d *Delivery, last AttemptL
 		slog.Error("webhook result could not be checkpointed; receipt retained", "delivery", d.ID, "error", err)
 		return
 	}
+	// Release the shard lock immediately after persisting the updated state so
+	// operators observing the terminal receipt via ListOutbox do not hit
+	// errOutboxBusy while we append dead-letter metrics or emit warning logs.
+	if c.lock != nil {
+		_ = c.lock.Close()
+		c.lock = nil
+	}
 	if !retry {
 		m.addToDeadLetter(*d, last)
 		m.failures.Add(1)

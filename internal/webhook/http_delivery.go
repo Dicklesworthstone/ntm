@@ -145,6 +145,29 @@ func validateWebhookIP(ip net.IP, allowLoopback bool) error {
 	return nil
 }
 
+func safeWebhookDialContext(allowLoopback bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	return func(dctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(dctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses resolved for webhook host %q", host)
+		}
+		for _, ipAddr := range ips {
+			if err := validateWebhookIP(ipAddr.IP, allowLoopback); err != nil {
+				return nil, err
+			}
+		}
+		return dialer.DialContext(dctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+}
+
 // DeliverJSON delivers a JSON webhook payload through internal/webhook's
 // redirect-blocking, SSRF-validated HTTP transport with optional HMAC-SHA256
 // signing (X-NTM-Signature: sha256=...) and bounded response reading.
@@ -164,23 +187,8 @@ func DeliverJSON(ctx context.Context, client *http.Client, targetURL, secret str
 	safeClient := *client
 	if tr, ok := baseTransport.(*http.Transport); ok {
 		trCopy := tr.Clone()
-		dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-		trCopy.DialContext = func(dctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			ips, err := net.DefaultResolver.LookupIPAddr(dctx, host)
-			if err != nil {
-				return nil, err
-			}
-			for _, ipAddr := range ips {
-				if err := validateWebhookIP(ipAddr.IP, true); err != nil {
-					return nil, err
-				}
-			}
-			return dialer.DialContext(dctx, network, net.JoinHostPort(ips[0].IP.String(), port))
-		}
+		defer trCopy.CloseIdleConnections()
+		trCopy.DialContext = safeWebhookDialContext(true)
 		safeClient.Transport = trCopy
 	}
 

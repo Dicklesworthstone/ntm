@@ -185,6 +185,18 @@ func (m *WebhookManager) ListOutbox() (OutboxSnapshot, error) {
 	return result, o.checkRoot()
 }
 
+const outboxAdminLockGrace = 150 * time.Millisecond
+
+func lockOutboxWithGrace(acquire func() (*os.File, error), grace time.Duration) (*os.File, error) {
+	deadline := time.Now().Add(grace)
+	lock, err := acquire()
+	for errors.Is(err, errOutboxBusy) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		lock, err = acquire()
+	}
+	return lock, err
+}
+
 // RetryOutbox authorizes one new configured retry cycle for exactly the failed
 // record inspected by ListOutbox. It does not start workers or send HTTP. A live
 // or later manager for this project will deliver after the retained cooldown.
@@ -201,7 +213,9 @@ func (m *WebhookManager) RetryOutbox(key, revision string) (OutboxEntry, error) 
 	if err != nil {
 		return result, err
 	}
-	lock, err := o.lockKey(key)
+	lock, err := lockOutboxWithGrace(func() (*os.File, error) {
+		return o.lockKey(key)
+	}, outboxAdminLockGrace)
 	if err != nil {
 		return result, fmt.Errorf("claim webhook outbox recovery: %w", err)
 	}
@@ -278,12 +292,16 @@ func (m *WebhookManager) ArchiveOutbox(key, revision string) (OutboxArchive, err
 	if err != nil {
 		return result, err
 	}
-	admission, err := openOutboxLock(filepath.Join(o.dir, "admission.lock"))
+	admission, err := lockOutboxWithGrace(func() (*os.File, error) {
+		return openOutboxLock(filepath.Join(o.dir, "admission.lock"))
+	}, outboxAdminLockGrace)
 	if err != nil {
 		return result, err
 	}
 	defer admission.Close()
-	lock, err := o.lockKey(key)
+	lock, err := lockOutboxWithGrace(func() (*os.File, error) {
+		return o.lockKey(key)
+	}, outboxAdminLockGrace)
 	if err != nil {
 		return result, err
 	}
