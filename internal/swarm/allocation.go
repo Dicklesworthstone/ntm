@@ -22,9 +22,17 @@ func NewAllocationCalculator(cfg *config.SwarmConfig) *AllocationCalculator {
 	}
 }
 
+func (ac *AllocationCalculator) effectiveConfig() *config.SwarmConfig {
+	if ac != nil && ac.Config != nil {
+		return ac.Config
+	}
+	defaults := config.DefaultSwarmConfig()
+	return &defaults
+}
+
 // CalculateTier returns the tier number (1, 2, or 3) for a given bead count.
 func (ac *AllocationCalculator) CalculateTier(beadCount int) int {
-	if ac.Config == nil {
+	if ac == nil || ac.Config == nil {
 		return 3 // Conservative default tier when config is missing
 	}
 	if beadCount >= ac.Config.Tier1Threshold {
@@ -38,8 +46,14 @@ func (ac *AllocationCalculator) CalculateTier(beadCount int) int {
 
 // CalculateProjectAllocation computes the allocation for a single project.
 func (ac *AllocationCalculator) CalculateProjectAllocation(project ProjectBeadCount) ProjectAllocation {
+	cfg := ac.effectiveConfig()
 	tier := ac.CalculateTier(project.OpenBeads)
-	alloc := ac.Config.GetAllocationForBeadCount(project.OpenBeads)
+	var alloc config.AllocationSpec
+	if ac == nil || ac.Config == nil {
+		alloc = cfg.Tier3Allocation
+	} else {
+		alloc = cfg.GetAllocationForBeadCount(project.OpenBeads)
+	}
 
 	// Update the project's tier if not already set
 	project.Tier = tier
@@ -49,6 +63,7 @@ func (ac *AllocationCalculator) CalculateProjectAllocation(project ProjectBeadCo
 		CCAgents:    alloc.CC,
 		CodAgents:   alloc.Cod,
 		GmiAgents:   alloc.Gmi,
+		AgyAgents:   alloc.Agy,
 		TotalAgents: alloc.Total(),
 	}
 }
@@ -128,13 +143,14 @@ func (ac *AllocationCalculator) Calculate(projects []ProjectBeadCount) Allocatio
 // GenerateSwarmPlan creates a complete SwarmPlan from projects.
 // This includes allocations, totals, and session specifications.
 func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []ProjectBeadCount) *SwarmPlan {
+	cfg := ac.effectiveConfig()
 	result := ac.Calculate(projects)
 
 	// Calculate panes per session
 	// If PanesPerSession is set (> 0), use it as manual override
 	// Otherwise, auto-calculate: ceil(maxAgentsOfAnyType / sessionsPerType)
-	sessionsPerType := ac.Config.SessionsPerType
-	panesPerSession := ac.Config.PanesPerSession
+	sessionsPerType := cfg.SessionsPerType
+	panesPerSession := cfg.PanesPerSession
 	if panesPerSession == 0 {
 		maxAgentsPerType := max(result.Totals.TotalCC, result.Totals.TotalCod, result.Totals.TotalGmi, result.Totals.TotalAgy)
 		if sessionsPerType > 0 && maxAgentsPerType > 0 {
@@ -160,7 +176,7 @@ func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []Pro
 		TotalAgy:           result.Totals.TotalAgy,
 		TotalAgents:        result.Totals.TotalAgents,
 		PlannedAgents:      plannedAgents,
-		AutoRotateAccounts: ac.Config.AutoRotateAccounts,
+		AutoRotateAccounts: cfg.AutoRotateAccounts,
 		SessionsPerType:    sessionsPerType,
 		PanesPerSession:    panesPerSession,
 		Sessions:           sessions,
