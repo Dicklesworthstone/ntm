@@ -21,6 +21,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -910,7 +911,29 @@ func completedRotationSummary(captured, startMarker, endMarker string) string {
 			start = i + 1
 		case endMarker:
 			if start >= 0 && start < i {
-				return strings.TrimSpace(strings.Join(lines[start:i], "\n"))
+				body := lines[start:i]
+				// Agent chrome indents every line after its response bullet.
+				// Remove only that shared margin so section boundaries survive
+				// parsing while nested lists and code retain their indentation.
+				margin := ""
+				first := true
+				for _, line := range body {
+					if strings.TrimSpace(line) == "" {
+						continue
+					}
+					prefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+					if first {
+						margin, first = prefix, false
+					} else {
+						for !strings.HasPrefix(prefix, margin) {
+							margin = margin[:len(margin)-1]
+						}
+					}
+				}
+				for j := range body {
+					body[j] = strings.TrimPrefix(body[j], margin)
+				}
+				return strings.TrimSpace(strings.Join(body, "\n"))
 			}
 		}
 	}
@@ -920,7 +943,7 @@ func completedRotationSummary(captured, startMarker, endMarker string) string {
 // waitForRotationSummary accepts only a fresh, complete response to this
 // rotation's request. The old five-second capture could parse the echoed
 // template's own questions as the answer and retire the only real context.
-func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, expected tmux.Pane, summary *SummaryGenerator, startMarker, endMarker string, poll time.Duration, list rotationPaneLister, capture rotationOutputCapture, visible rotationPaneCapture) (*HandoffSummary, error) {
+func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, expected tmux.Pane, summary *SummaryGenerator, startMarker, endMarker string, poll time.Duration, list rotationPaneLister, capture rotationOutputCapture, visible rotationPaneCapture, transcript *rotationTranscript) (*HandoffSummary, error) {
 	if summary == nil || ctx == nil || list == nil || capture == nil || visible == nil {
 		return nil, errors.New("handoff summary requires a context and observation dependencies")
 	}
@@ -931,6 +954,18 @@ func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, exp
 	}
 	waitCtx, cancel := stdcontext.WithTimeout(ctx, timeout)
 	defer cancel()
+	started := time.Now()
+	parse := func(body string) *HandoffSummary {
+		if body == "" || strings.Contains(body, "What task are you currently working on?") ||
+			strings.Contains(body, "What have you accomplished so far?") || strings.Contains(body, "HANDOFF SUMMARY REQUIRED") {
+			return nil
+		}
+		parsed := summary.ParseAgentResponse(agentID, agentTypeLong(string(expected.Type)), session, body)
+		if strings.TrimSpace(parsed.CurrentTask) == "" || strings.TrimSpace(parsed.Progress) == "" {
+			return nil
+		}
+		return parsed
+	}
 	for {
 		if err := waitCtx.Err(); err != nil {
 			return nil, fmt.Errorf("original agent did not return a complete handoff summary: %w", err)
@@ -946,22 +981,32 @@ func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, exp
 		if err != nil {
 			return nil, fmt.Errorf("capture original agent handoff response: %w", err)
 		}
-		body := completedRotationSummary(captured, startMarker, endMarker)
-		if body != "" {
-			parsed := summary.ParseAgentResponse(agentID, agentTypeLong(string(expected.Type)), session, body)
-			// Independently reject the template even if a narrow terminal wrapped
-			// request marker tokens onto their own lines. Actual task/progress
-			// sections are required; a fallback cannot authorize retirement.
-			valid := strings.TrimSpace(parsed.CurrentTask) != "" && strings.TrimSpace(parsed.Progress) != "" &&
-				!strings.Contains(body, "What task are you currently working on?") &&
-				!strings.Contains(body, "What have you accomplished so far?") &&
-				!strings.Contains(body, "HANDOFF SUMMARY REQUIRED")
-			if valid {
-				if _, err := waitForRotationReady(waitCtx, session, expected, timeout, poll, list, visible); err != nil {
-					return nil, fmt.Errorf("original agent has not finished its handoff response: %w", err)
-				}
-				return parsed, nil
+		// Independently reject the echoed template even when a narrow terminal
+		// wraps request markers onto their own lines. Both channels require the
+		// actual task and progress, followed by stable live input readiness.
+		parsed := parse(completedRotationSummary(captured, startMarker, endMarker))
+		channel := "screen"
+		if parsed == nil && transcript != nil {
+			parsed = parse(transcript.summary(waitCtx, startMarker, endMarker))
+			channel = "transcript"
+		}
+		if parsed != nil {
+			if _, err := waitForRotationReady(waitCtx, session, expected, timeout, poll, list, visible); err != nil {
+				return nil, fmt.Errorf("original agent has not finished its handoff response: %w", err)
 			}
+			if channel == "transcript" {
+				// Readiness can wait across more streamed output. Require the
+				// latest complete response, not a summary superseded during that
+				// wait. summary also revalidates the exact process/file binding.
+				parsed = parse(transcript.summary(waitCtx, startMarker, endMarker))
+				if parsed == nil {
+					return nil, errors.New("original agent transcript response or binding changed while completing its handoff")
+				}
+			}
+			slog.Debug("rotation handoff summary observed", "session", session, "pane_id", expected.ID,
+				"declared_type", expected.Type, "pane_command", pane.Command, "marker_channel", channel,
+				"elapsed_ms", time.Since(started).Milliseconds())
+			return parsed, nil
 		}
 		if err := waitForRotationDelay(waitCtx, poll); err != nil {
 			return nil, fmt.Errorf("original agent did not return a complete handoff summary: %w", err)
@@ -2354,10 +2399,21 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	summaryPrompt := r.summary.GeneratePrompt()
 	transport, observeSource := r.spawner.(rotationContextTransport)
 	startMarker, endMarker := "", ""
+	var transcript *rotationTranscript
 	if observeSource {
 		summaryPrompt, startMarker, endMarker = rotationSummaryRequest(r.summary)
 		_, err = waitForRotationReady(ctx, session, *oldPane, rotationReadyTimeout, rotationReadyPoll,
 			transport.GetPanesContext, tmux.CapturePaneVisibleContext)
+		if err == nil {
+			transcript = openRotationTranscript(ctx, *oldPane, tmux.DefaultClient.Remote == "", agentsession.DiscoverProcessSession)
+			if transcript != nil {
+				defer transcript.file.Close()
+			}
+			// Process discovery can take time. Recheck the physical source and
+			// its live composer immediately before submitting the request.
+			_, err = waitForRotationReady(ctx, session, *oldPane, rotationReadyTimeout, rotationReadyPoll,
+				transport.GetPanesContext, tmux.CapturePaneVisibleContext)
+		}
 	}
 	if err == nil {
 		err = sendRotationPromptContext(ctx, r.spawner, oldPane.ID, summaryPrompt)
@@ -2379,7 +2435,7 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	var handoffSummary *HandoffSummary
 	if observeSource {
 		handoffSummary, err = waitForRotationSummary(ctx, session, agentID, *oldPane, r.summary, startMarker, endMarker, rotationReadyPoll,
-			transport.GetPanesContext, tmux.CapturePaneOutputContext, tmux.CapturePaneVisibleContext)
+			transport.GetPanesContext, tmux.CapturePaneOutputContext, tmux.CapturePaneVisibleContext, transcript)
 		if err != nil {
 			result.State = RotationStateFailed
 			result.Error = fmt.Sprintf("waiting for handoff summary; original agent preserved: %v", err)

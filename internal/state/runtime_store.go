@@ -558,13 +558,22 @@ func (s *Store) CreateRobotWaitHandle(handle *RobotWaitHandle) error {
 	return nil
 }
 
-// CancelRobotWaitHandle marks one active wait as canceled. It returns false
-// when the handle is unknown or has already completed.
-func (s *Store) CancelRobotWaitHandle(id string, canceledAt time.Time) (bool, error) {
-	if id == "" {
-		return false, fmt.Errorf("robot wait handle id is required")
+// ErrRobotWaitHandleChanged refuses cancellation of a different lifetime that
+// reused an observed wait ID after the original handle was removed.
+var ErrRobotWaitHandleChanged = errors.New("robot wait handle identity changed")
+
+// CancelRobotWaitHandle marks exactly the observed active wait as canceled.
+// It returns false when that handle is unknown or has already completed.
+func (s *Store) CancelRobotWaitHandle(expected *RobotWaitHandle, canceledAt time.Time) (bool, error) {
+	if expected == nil {
+		return false, nil
 	}
-	result, err := s.db.Exec(`UPDATE robot_wait_handles SET canceled_at = ? WHERE id = ? AND completed_at IS NULL AND canceled_at IS NULL`, canceledAt.UTC(), id)
+	if expected.ID == "" || expected.SessionName == "" || expected.CreatedAt.IsZero() {
+		return false, fmt.Errorf("robot wait handle id, session, and creation time are required")
+	}
+	result, err := s.db.Exec(`UPDATE robot_wait_handles SET canceled_at = ?
+		WHERE id = ? AND session_name = ? AND created_at = ? AND completed_at IS NULL AND canceled_at IS NULL`,
+		canceledAt.UTC(), expected.ID, expected.SessionName, expected.CreatedAt.UTC())
 	if err != nil {
 		return false, fmt.Errorf("cancel robot wait handle: %w", err)
 	}
@@ -572,7 +581,17 @@ func (s *Store) CancelRobotWaitHandle(id string, canceledAt time.Time) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("count canceled robot wait handle: %w", err)
 	}
-	return affected == 1, nil
+	if affected == 1 {
+		return true, nil
+	}
+	current, err := s.GetRobotWaitHandle(expected.ID)
+	if err != nil {
+		return false, err
+	}
+	if current != nil && (current.SessionName != expected.SessionName || !current.CreatedAt.Equal(expected.CreatedAt)) {
+		return false, ErrRobotWaitHandleChanged
+	}
+	return false, nil
 }
 
 // IsRobotWaitHandleCanceled reports whether an active wait has been canceled.
@@ -602,15 +621,18 @@ func (s *Store) GetRobotWaitHandle(id string) (*RobotWaitHandle, error) {
 	if id == "" {
 		return nil, nil
 	}
+	return scanRobotWaitHandle(s.db.QueryRow(
+		`SELECT id, session_name, created_at, canceled_at, completed_at FROM robot_wait_handles WHERE id = ?`, id,
+	))
+}
+
+func scanRobotWaitHandle(row interface{ Scan(...any) error }) (*RobotWaitHandle, error) {
 	var (
 		h           RobotWaitHandle
 		canceledAt  sql.NullTime
 		completedAt sql.NullTime
 	)
-	err := s.db.QueryRow(
-		`SELECT id, session_name, created_at, canceled_at, completed_at FROM robot_wait_handles WHERE id = ?`,
-		id,
-	).Scan(&h.ID, &h.SessionName, &h.CreatedAt, &canceledAt, &completedAt)
+	err := row.Scan(&h.ID, &h.SessionName, &h.CreatedAt, &canceledAt, &completedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -626,6 +648,51 @@ func (s *Store) GetRobotWaitHandle(id string) (*RobotWaitHandle, error) {
 		h.CompletedAt = &t
 	}
 	return &h, nil
+}
+
+// GetRobotRequestRecords resolves the two durable request namespaces in one
+// SQLite snapshot. Session-scoped operation IDs can collide with each other or
+// with a wait ID; callers must not silently prefer the newest row or one kind.
+// An empty session includes every session. Nonempty sessions never fall back.
+func (s *Store) GetRobotRequestRecords(id, session string) ([]SendOperation, *RobotWaitHandle, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("read robot request: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT `+sendOperationSelectColumns+`
+		FROM send_operations WHERE operation_id = ? AND (? = '' OR session_name = ?)
+		ORDER BY session_name`, id, session, session)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read robot request operations: %w", err)
+	}
+	var ops []SendOperation
+	for rows.Next() {
+		op, err := scanSendOperation(rows)
+		if err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		ops = append(ops, *op)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	wait, err := scanRobotWaitHandle(tx.QueryRow(`SELECT id, session_name, created_at, canceled_at, completed_at
+		FROM robot_wait_handles WHERE id = ? AND (? = '' OR session_name = ?)`, id, session, session))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("finish robot request snapshot: %w", err)
+	}
+	return ops, wait, nil
 }
 
 // UpsertRuntimeAgent inserts or updates a runtime agent projection in an existing transaction.
@@ -3410,14 +3477,15 @@ func (s *Store) GetSendOperationsByID(operationID string) ([]SendOperation, erro
 // without risking lying about input already delivered to a pane.
 var ErrSendOperationDispatched = errors.New("send operation already started dispatch and cannot be canceled")
 
-// CancelSendOperationByID cancels the newest matching pre-dispatch operation
-// claim (status == in_progress && dispatch_started_at IS NULL), fencing out any
-// concurrent claimant via the status transition to SendOperationCanceled.
+// CancelSendOperation cancels the exact observed pre-dispatch claim, fencing
+// out its owner via the status transition to SendOperationCanceled. The caller
+// must first resolve the request's session; a bare operation ID is not unique.
+// The claim token prevents a stale cancellation from canceling a replacement.
 // Returns (nil, false, nil) if unknown, (op, false, nil) if already terminal,
 // or (op, false, ErrSendOperationDispatched) if dispatch already started.
-func (s *Store) CancelSendOperationByID(operationID string, canceledAt time.Time) (*SendOperation, bool, error) {
-	if operationID == "" {
-		return nil, false, fmt.Errorf("cancel send operation: operation ID is required")
+func (s *Store) CancelSendOperation(expected *SendOperation, canceledAt time.Time) (*SendOperation, bool, error) {
+	if expected == nil || expected.OperationID == "" || expected.SessionName == "" || expected.ClaimToken == "" {
+		return nil, false, fmt.Errorf("cancel send operation: operation ID, session, and observed claim token are required")
 	}
 	if canceledAt.IsZero() {
 		canceledAt = time.Now().UTC()
@@ -3428,38 +3496,21 @@ func (s *Store) CancelSendOperationByID(operationID string, canceledAt time.Time
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.Query(`SELECT `+sendOperationSelectColumns+`
-		FROM send_operations WHERE operation_id = ?
-		ORDER BY created_at DESC`,
-		operationID,
-	)
+	target, err := s.getSendOperationLocked(expected.OperationID, expected.SessionName)
 	if err != nil {
-		return nil, false, fmt.Errorf("query send operation for cancel: %w", err)
-	}
-	var ops []SendOperation
-	for rows.Next() {
-		op, scanErr := scanSendOperation(rows)
-		if scanErr != nil {
-			rows.Close()
-			return nil, false, fmt.Errorf("scan send operation for cancel: %w", scanErr)
-		}
-		ops = append(ops, *op)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, false, err
 	}
-	rows.Close()
-	if len(ops) == 0 {
+	if target == nil {
 		return nil, false, nil
 	}
-
-	target := ops[0]
+	if target.ClaimToken != expected.ClaimToken {
+		return target, false, fmt.Errorf("cancel send operation: %w", ErrSendOperationClaimLost)
+	}
 	if target.Status != SendOperationInProgress {
-		return &target, false, nil
+		return target, false, nil
 	}
 	if target.DispatchStartedAt != nil {
-		return &target, false, ErrSendOperationDispatched
+		return target, false, ErrSendOperationDispatched
 	}
 
 	affected, err := execRowsAffected(s.db, `
@@ -3478,12 +3529,15 @@ func (s *Store) CancelSendOperationByID(operationID string, canceledAt time.Time
 	if affected == 1 {
 		target.Status = SendOperationCanceled
 		target.CompletedAt = &canceledAt
-		return &target, true, nil
+		return target, true, nil
 	}
 
 	updated, err := s.getSendOperationLocked(target.OperationID, target.SessionName)
 	if err != nil || updated == nil {
 		return nil, false, err
+	}
+	if updated.ClaimToken != expected.ClaimToken {
+		return updated, false, fmt.Errorf("cancel send operation: %w", ErrSendOperationClaimLost)
 	}
 	if updated.Status == SendOperationInProgress && updated.DispatchStartedAt != nil {
 		return updated, false, ErrSendOperationDispatched

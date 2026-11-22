@@ -24787,7 +24787,10 @@ export interface operations {
     };
     get_api_v1_requests_id: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Original session. Required when an ID exists in multiple sessions; ambiguous unscoped IDs return AMBIGUOUS_REQUEST. */
+                session?: string;
+            };
             header?: never;
             path: {
                 /** @description The id identifier */
@@ -24855,7 +24858,10 @@ export interface operations {
     };
     post_api_v1_requests_id_cancel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Original session. An ambiguous ID is refused before cancellation; an unknown explicit session never falls back. */
+                session?: string;
+            };
             header?: never;
             path: {
                 /** @description The id identifier */
@@ -24930,6 +24936,8 @@ export interface operations {
     post_api_v1_requests_id_wait: {
         parameters: {
             query?: {
+                /** @description Original session. Once resolved, the wait remains bound to that session and request kind. */
+                session?: string;
                 /** @description Maximum wait duration (e.g. 30s). */
                 timeout?: string;
                 /** @description Polling interval duration (e.g. 100ms). */

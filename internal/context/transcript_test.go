@@ -2,6 +2,7 @@ package context
 
 import (
 	stdcontext "context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,8 +12,217 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestRotationTranscriptRequiresFreshAssistantResponse(t *testing.T) {
+	t.Parallel()
+	const start, end = "NTM_START_request", "NTM_END_request"
+	const body = "## CURRENT TASK\nFinish recovery.\n## PROGRESS\nThe receipt is durable."
+	response := start + "\n" + body + "\n" + end
+	for _, provider := range []string{"claude", "codex", "omp", "pi"} {
+		t.Run(provider, func(t *testing.T) {
+			r, _ := rotationTranscriptFixture(t, provider, rotationTranscriptRecord(t, provider, "assistant", response))
+			if got := r.summary(t.Context(), start, end); got != "" {
+				t.Fatalf("accepted a pre-request response: %q", got)
+			}
+			appendRotationTranscript(t, r, rotationTranscriptRecord(t, provider, "user", response))
+			if got := r.summary(t.Context(), start, end); got != "" {
+				t.Fatalf("accepted a user message as handoff: %q", got)
+			}
+			appendRotationTranscript(t, r, rotationTranscriptRecord(t, provider, "assistant", response))
+			if got := r.summary(t.Context(), start, end); got != body {
+				t.Fatalf("fresh assistant summary = %q, want %q", got, body)
+			}
+		})
+	}
+}
+
+func TestRotationTranscriptRejectsUncertainEvidence(t *testing.T) {
+	t.Parallel()
+	const start, end = "NTM_START_request", "NTM_END_request"
+	const body = "## CURRENT TASK\nFinish recovery.\n## PROGRESS\nThe receipt is durable."
+	response := start + "\n" + body + "\n" + end
+	for _, scenario := range []string{
+		"tool_output", "reasoning", "sidechain", "split_messages", "unfinished_record", "old_partial_record",
+		"changed_session", "weaker_binding", "replaced_inode", "truncated", "corrupt_record", "superseded", "unfinished_later_record", "canceled", "outside_read_bound",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			record := rotationTranscriptRecord(t, "claude", "assistant", response)
+			initial := "{}\n"
+			if scenario == "old_partial_record" {
+				initial = record[:len(record)/2]
+			}
+			r, binding := rotationTranscriptFixture(t, "claude", initial)
+			ctx := t.Context()
+			switch scenario {
+			case "tool_output":
+				record = rotationTranscriptRecord(t, "claude", "tool", response)
+			case "reasoning":
+				record = strings.Replace(record, `"type":"text"`, `"type":"thinking"`, 1)
+			case "sidechain":
+				record = `{"isSidechain":true,` + record[1:]
+			case "split_messages":
+				record = rotationTranscriptRecord(t, "claude", "assistant", start+"\n"+body) + rotationTranscriptRecord(t, "claude", "assistant", end)
+			case "unfinished_record":
+				record = strings.TrimSuffix(record, "\n")
+			case "old_partial_record":
+				record = record[len(record)/2:]
+			case "changed_session":
+				binding.SessionID = "another-conversation"
+			case "weaker_binding":
+				binding.Source = agentsession.DiscoverySourceNativeStore
+			case "replaced_inode":
+				if err := os.Rename(binding.SourcePath, binding.SourcePath+".previous"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(binding.SourcePath, []byte(initial), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "truncated":
+				if err := os.Truncate(binding.SourcePath, 0); err != nil {
+					t.Fatal(err)
+				}
+				record = ""
+			case "corrupt_record":
+				record += "{broken JSON}\n"
+			case "superseded":
+				record += rotationTranscriptRecord(t, "claude", "assistant", "A later response has no handoff markers.")
+			case "unfinished_later_record":
+				record += `{"type":"assistant","message":`
+			case "canceled":
+				var cancel stdcontext.CancelFunc
+				ctx, cancel = stdcontext.WithCancel(ctx)
+				cancel()
+			case "outside_read_bound":
+				record += `{"type":"tool_result","text":"` + strings.Repeat("x", transcriptScanLimit) + "\"}\n"
+			}
+			appendRotationTranscript(t, r, record)
+			if got := r.summary(ctx, start, end); got != "" {
+				t.Fatalf("accepted %s as retirement evidence: %q", scenario, got)
+			}
+		})
+	}
+}
+
+func TestRotationTranscriptDiscoveryFailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"remote", "unbound", "workspace_guess", "missing_id", "wrong_provider", "no_path", "missing_file", "nonregular"} {
+		t.Run(scenario, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "conversation.jsonl")
+			if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			binding := &agentsession.Info{SessionID: "exact-session", Provider: "claude", SourcePath: path, Source: agentsession.DiscoverySourceProcessTree}
+			local := true
+			calls := 0
+			switch scenario {
+			case "remote":
+				local = false
+			case "unbound":
+				binding = nil
+			case "workspace_guess":
+				binding.Source = agentsession.DiscoverySourceNativeStore
+			case "missing_id":
+				binding.SessionID = ""
+			case "wrong_provider":
+				binding.Provider = "codex"
+			case "no_path":
+				binding.SourcePath = ""
+			case "missing_file":
+				binding.SourcePath = path + ".missing"
+			case "nonregular":
+				binding.SourcePath = filepath.Dir(path)
+			}
+			reader := openRotationTranscript(t.Context(), tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude}, local,
+				func(stdcontext.Context, string, int) *agentsession.Info { calls++; return binding })
+			if reader != nil {
+				_ = reader.file.Close()
+				t.Fatal("uncertain discovery enabled transcript fallback")
+			}
+			if scenario == "remote" && calls != 0 {
+				t.Fatal("a remote pane inspected a local PID")
+			}
+		})
+	}
+}
+
+func TestRotationTranscriptCodexEventAndTextBlocks(t *testing.T) {
+	t.Parallel()
+	const start, end = "NTM_START_request", "NTM_END_request"
+	const body = "## CURRENT TASK\nFinish recovery.\n## PROGRESS\nThe receipt is durable."
+	r, _ := rotationTranscriptFixture(t, "codex", "{}\n")
+	event, err := json.Marshal(map[string]any{"type": "event_msg", "payload": map[string]any{"type": "agent_message", "message": start + "\n" + body + "\n" + end}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRotationTranscript(t, r, string(event)+"\n")
+	appendRotationTranscript(t, r, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"diagnostic\",\"message\":{\"details\":\"not an assistant reply\"}}}\n")
+	if got := r.summary(t.Context(), start, end); got != body {
+		t.Fatalf("Codex assistant event = %q", got)
+	}
+	// A request or a tool result that quotes the same event is not an event.
+	user := rotationTranscriptRecord(t, "codex", "user", string(event))
+	if text, assistant, valid := rotationTranscriptMessage([]byte(user), "codex"); !valid || assistant || text != "" {
+		t.Fatalf("nested event escaped its user-message boundary: %q %v %v", text, assistant, valid)
+	}
+}
+
+func rotationTranscriptFixture(t *testing.T, provider, initial string) (*rotationTranscript, *agentsession.Info) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "conversation.jsonl")
+	if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binding := &agentsession.Info{SessionID: "exact-session", Provider: provider, SourcePath: path, Source: agentsession.DiscoverySourceProcessTree}
+	typ := map[string]tmux.AgentType{"claude": tmux.AgentClaude, "codex": tmux.AgentCodex, "omp": tmux.AgentOmp, "pi": tmux.AgentPi}[provider]
+	r := openRotationTranscript(t.Context(), tmux.Pane{ID: "%1", PID: 123, Type: typ, Command: provider}, true,
+		func(ctx stdcontext.Context, agentType string, pid int) *agentsession.Info {
+			if agentType != string(typ) || pid != 123 {
+				t.Fatalf("transcript lookup changed its physical pane: %s %d", agentType, pid)
+			}
+			return binding
+		})
+	if r == nil {
+		t.Fatal("could not pin test transcript")
+	}
+	t.Cleanup(func() { _ = r.file.Close() })
+	return r, binding
+}
+
+func rotationTranscriptRecord(t *testing.T, provider, role, text string) string {
+	t.Helper()
+	message := map[string]any{"role": role, "content": []map[string]string{{"type": "text", "text": text}}}
+	entry := map[string]any{"type": "message", "message": message}
+	if provider == "claude" {
+		entry["type"] = role
+	} else if provider == "codex" {
+		message["type"] = "message"
+		message["content"] = []map[string]string{{"type": "output_text", "text": text}}
+		entry = map[string]any{"type": "response_item", "payload": message}
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data) + "\n"
+}
+
+func appendRotationTranscript(t *testing.T, r *rotationTranscript, data string) {
+	t.Helper()
+	file, err := os.OpenFile(r.binding.SourcePath, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(data); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestMaxPaneContextUsageNativeEvidence(t *testing.T) {
 	const ompGauge = "╭── 󰵗   Union Alpha   omp-probe   69.9%/262K 󰁨 ──────────────────󰁨──────╮\n╰─                                  ─╯"

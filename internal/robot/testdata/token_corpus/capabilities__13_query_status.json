@@ -286,6 +286,13 @@
           "type": "string",
           "required": false,
           "description": "Explicit request/operation ID selector"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Original session; ambiguous IDs are refused instead of selecting a newer request"
         }
       ],
       "examples": [

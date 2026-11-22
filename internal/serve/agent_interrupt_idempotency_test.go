@@ -331,4 +331,49 @@ func TestRequestIdentityLifecycleEndpointsV1(t *testing.T) {
 	if waitDoneRec.Code != http.StatusOK || waitDoneBody["terminal"] != true || waitDoneBody["status"] != state.SendOperationCompleted || waitDoneBody["request_id"] != "op-rest-wait-2" {
 		t.Fatalf("POST /wait settled status=%d body=%v", waitDoneRec.Code, waitDoneBody)
 	}
+
+	// A request ID is session-scoped. Unscoped status/wait/cancel must not
+	// select the newer session or let cancellation reach the wrong claimant.
+	const collisionID = "shared-rest-id"
+	for _, session := range []string{"alpha", "beta"} {
+		if _, claimed, err := srv.stateStore.ClaimSendOperation(&state.SendOperation{
+			OperationID: collisionID, SessionName: session, BindingHash: "binding-" + session,
+		}); err != nil || !claimed {
+			t.Fatalf("claim %s: claimed=%v err=%v", session, claimed, err)
+		}
+	}
+	for _, call := range []struct{ method, suffix string }{
+		{http.MethodGet, ""}, {http.MethodPost, "/wait"}, {http.MethodPost, "/cancel"},
+	} {
+		rec, body := doReq(call.method, "/api/v1/requests/"+collisionID+call.suffix, "")
+		if rec.Code != http.StatusConflict || body["error_code"] != robot.ErrCodeAmbiguousRequest {
+			t.Fatalf("ambiguous %s: status=%d body=%v", call.suffix, rec.Code, body)
+		}
+	}
+	for _, session := range []string{"alpha", "beta"} {
+		op, err := srv.stateStore.GetSendOperation(collisionID, session)
+		if err != nil || op.Status != state.SendOperationInProgress {
+			t.Fatalf("ambiguous request changed %s: %+v, %v", session, op, err)
+		}
+	}
+	scopedRec, scopedBody := doReq(http.MethodGet, "/api/v1/requests/"+collisionID+"?session=alpha", "")
+	if scopedRec.Code != http.StatusOK || scopedBody["session"] != "alpha" || scopedBody["cancellable"] != true {
+		t.Fatalf("scoped status=%d body=%v", scopedRec.Code, scopedBody)
+	}
+	scopedRec, scopedBody = doReq(http.MethodPost, "/api/v1/requests/"+collisionID+"/cancel?session=alpha", "")
+	if scopedRec.Code != http.StatusOK || scopedBody["session"] != "alpha" || scopedBody["canceled"] != true {
+		t.Fatalf("scoped cancel status=%d body=%v", scopedRec.Code, scopedBody)
+	}
+	scopedRec, scopedBody = doReq(http.MethodPost, "/api/v1/requests/"+collisionID+"/wait?session=alpha", "")
+	if scopedRec.Code != http.StatusOK || scopedBody["session"] != "alpha" || scopedBody["status"] != state.SendOperationCanceled {
+		t.Fatalf("scoped wait status=%d body=%v", scopedRec.Code, scopedBody)
+	}
+	other, err := srv.stateStore.GetSendOperation(collisionID, "beta")
+	if err != nil || other.Status != state.SendOperationInProgress {
+		t.Fatalf("scoped cancel changed beta: %+v, %v", other, err)
+	}
+	wrongRec, wrongBody := doReq(http.MethodPost, "/api/v1/requests/"+collisionID+"/cancel?session=absent", "")
+	if wrongRec.Code != http.StatusNotFound || wrongBody["error_code"] != robot.ErrCodeNotFound {
+		t.Fatalf("wrong session fell back: status=%d body=%v", wrongRec.Code, wrongBody)
+	}
 }

@@ -220,7 +220,7 @@ func TestGetSendIdempotency_FreshClaimRecordsCompletedOutcome(t *testing.T) {
 		t.Fatalf("stored outcome = %+v, want successful delivery to %s", outcome, targetKey)
 	}
 
-	receipt, err := GetSendReceiptForStore(store, opID)
+	receipt, err := GetSendReceiptForStore(store, opID, "")
 	if err != nil {
 		t.Fatalf("GetSendReceipt returned error: %v", err)
 	}

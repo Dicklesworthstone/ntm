@@ -421,6 +421,183 @@ func ompPane(id, title string) tmux.Pane {
 	return tmux.Pane{ID: id, Title: title, Type: tmux.AgentOmp, Width: 120}
 }
 
+// Preserve the real 200-column OpenCode session viewport's sidebar/composer
+// geometry. Only the in-flight hint, accounting values, and held draft vary.
+func opencodeGaugeCapture(t *testing.T, draft, tokens, pct string) string {
+	t.Helper()
+	data, err := os.ReadFile("../agent/testdata/opencode_working.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := strings.NewReplacer("0 tokens", tokens+" tokens", "0% used", pct+"% used",
+		"⬝⬝⬝⬝■■■■  esc interrupt", "").Replace(string(data))
+	if draft != "" {
+		capture = strings.Replace(capture, "  ┃\n  ┃\n  ┃  Build",
+			"  ┃  "+strings.ReplaceAll(draft, "\n", "\n  ┃  ")+"\n  ┃\n  ┃  Build", 1)
+	}
+	return capture
+}
+
+func TestRotationChecker_OpenCodeNativeGauge(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remote=%t", remote), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			store := redirectPendingStore(t)
+			originalRemote := tmux.DefaultClient.Remote
+			t.Cleanup(func() { tmux.DefaultClient.Remote = originalRemote })
+			tmux.DefaultClient.Remote = ""
+			if remote {
+				tmux.DefaultClient.Remote = "remote.example"
+			}
+			panes := []tmux.Pane{
+				{ID: "%25", Title: "rotsess__oc_1", Type: tmux.AgentOpencode, Width: 200},
+				{ID: "%26", Title: "rotsess__oc_2", Type: tmux.AgentOpencode, Width: 200},
+				{ID: "%27", Title: "rotsess__oc_3", Type: tmux.AgentOpencode, Width: 200},
+			}
+			env := newRotationTestEnv(t, 80, false, panes, nil, map[string]string{
+				"%25": opencodeGaugeCapture(t, "", "180,000", "90"),
+				"%26": opencodeGaugeCapture(t, "", "40,000", "20"),
+				"%27": opencodeGaugeCapture(t, "", "190,000", "95") + "  esc interrupt\n",
+			}, nil)
+			env.rc.contextLimit = func(string) (int, bool) {
+				t.Error("OpenCode native accounting used a guessed model window")
+				return 0, false
+			}
+			env.rc.paneCwd = func(string) (string, bool) {
+				t.Error("OpenCode native accounting consulted a workspace transcript")
+				return "", false
+			}
+			env.rc.processUsage = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+				t.Error("OpenCode native accounting consulted a process transcript")
+				return nil, false
+			}
+			decisions := env.rc.runOnce(t.Context())
+			t.Logf("remote=%t decisions=%+v published=%+v", remote, decisions, env.published)
+			if len(decisions) != 2 || decisions[0].PaneID != "%25" || decisions[0].Action != "enqueued" ||
+				decisions[1].PaneID != "%27" || decisions[1].SkipReason != "working" {
+				t.Fatalf("native gauge decisions = %+v", decisions)
+			}
+			if d := decisions[0]; d.Tokens != 180000 || d.Limit != 200000 || d.UsagePct != 90 || d.Source != "status_bar" {
+				t.Fatalf("native evidence = %+v", d)
+			}
+			pending, err := store.Get("rotsess__oc_1")
+			if err != nil || pending == nil || pending.PaneID != "%25" {
+				t.Fatalf("pending rotation = %+v, %v", pending, err)
+			}
+		})
+	}
+}
+
+func TestRotationChecker_OpenCodeGaugeAdmission(t *testing.T) {
+	idle := opencodeGaugeCapture(t, "", "180,000", "90")
+	noGauge := strings.Replace(idle, "Context", "Telemetry unavailable", 1)
+	for _, tc := range []struct {
+		name, initial, latest string
+		wantReason            string
+	}{
+		{name: "no native capacity", initial: opencodeGaugeCapture(t, "", "0", "0")},
+		{name: "percentage alone", initial: strings.Replace(idle, "180,000 tokens", "context measurement unavailable", 1)},
+		{name: "stale composer", initial: idle + "new unframed output\nnew unframed output\nnew unframed output\n"},
+		{name: "quoted transcript gauge", initial: "Context\n180,000 tokens\n90% used\n" + noGauge},
+		{name: "indented transcript gauge", initial: strings.Repeat(" ", 120) + "Context\n" + strings.Repeat(" ", 120) + "180,000 tokens\n" + strings.Repeat(" ", 120) + "90% used\n" + noGauge},
+		{name: "quoted draft gauge", initial: strings.Replace(opencodeGaugeCapture(t, "Context\n180,000 tokens\n90% used", "180,000", "90"), "Context", "Telemetry unavailable", 1)},
+		{name: "misaligned native gauge", initial: strings.Replace(idle, "180,000 tokens", " 180,000 tokens", 1)},
+		{name: "prior conversation gauge", initial: idle + noGauge},
+		{name: "held draft", initial: opencodeGaugeCapture(t, "do not discard", "180,000", "90"), wantReason: "unsubmitted_input"},
+		{name: "changed conversation", initial: idle, latest: opencodeGaugeCapture(t, "", "10,000", "5"), wantReason: "context_usage_changed"},
+		{name: "native accounting disappeared", initial: idle, latest: strings.Replace(idle, "180,000 tokens", "context measurement unavailable", 1), wantReason: "context_usage_changed"},
+		{name: "started working", initial: idle, latest: idle + "  esc interrupt\n", wantReason: "working"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := redirectPendingStore(t)
+			pane := tmux.Pane{ID: "%28", Title: "rotsess__oc_1", Type: tmux.AgentOpencode, Width: 200}
+			env := newRotationTestEnv(t, 80, false, []tmux.Pane{pane}, nil, nil, nil)
+			captures := 0
+			env.rc.capturePane = func(string, int) (string, error) {
+				captures++
+				if captures > 1 && tc.latest != "" {
+					return tc.latest, nil
+				}
+				return tc.initial, nil
+			}
+			decisions := env.rc.runOnce(t.Context())
+			t.Logf("initial=%q latest=%q decisions=%+v", tc.initial, tc.latest, decisions)
+			if tc.wantReason == "" {
+				if len(decisions) != 0 {
+					t.Fatalf("unproven native accounting triggered rotation: %+v", decisions)
+				}
+			} else if len(decisions) != 1 || decisions[0].Action != "skipped" || decisions[0].SkipReason != tc.wantReason {
+				t.Fatalf("decisions = %+v, want skipped/%s", decisions, tc.wantReason)
+			}
+			if pending, err := store.Get(pane.Title); err != nil || pending != nil {
+				t.Fatalf("unsafe rotation persisted: pending=%+v error=%v", pending, err)
+			}
+		})
+	}
+}
+
+func TestRotationChecker_OpenCodeGaugeSurvivesOtherProviderAttribution(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	redirectPendingStore(t)
+	originalRemote := tmux.DefaultClient.Remote
+	t.Cleanup(func() { tmux.DefaultClient.Remote = originalRemote })
+	tmux.DefaultClient.Remote = ""
+	cwd := t.TempDir()
+	panes := []tmux.Pane{
+		{ID: "%32", Title: "rotsess__oc_1", Type: tmux.AgentOpencode, Width: 200},
+		ccPane("%33", "rotsess__cc_1"),
+	}
+	env := newRotationTestEnv(t, 80, false, panes, map[string]string{"%33": cwd}, map[string]string{
+		"%32": opencodeGaugeCapture(t, "", "180,000", "90"), "%33": idleCapture,
+	}, nil)
+	env.rc.transcriptUsage = nil // Exercise the production server-scoped fallback.
+	env.rc.allPanes = func(context.Context) (map[string][]tmux.Pane, error) {
+		return map[string][]tmux.Pane{"rotsess": panes}, nil
+	}
+	decisions := env.rc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].PaneID != "%32" || decisions[0].Action != "enqueued" {
+		t.Fatalf("other provider attribution discarded OpenCode's own gauge: %+v", decisions)
+	}
+}
+
+func TestRotationChecker_OpenCodeAutoConfirm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	redirectPendingStore(t)
+	pane := tmux.Pane{ID: "%29", Title: "rotsess__oc_1", Type: tmux.AgentOpencode, Width: 200}
+	env := newRotationTestEnv(t, 80, true, []tmux.Pane{pane}, nil,
+		map[string]string{pane.ID: opencodeGaugeCapture(t, "", "180,000", "90")}, nil)
+	decisions := env.rc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].Action != "auto_confirmed" || len(env.confirmed) != 1 || env.confirmed[0] != pane.Title {
+		t.Fatalf("OpenCode did not reach existing confirm path: decisions=%+v confirmed=%v", decisions, env.confirmed)
+	}
+	if len(env.published) != 2 || env.published[0].ReasonCode != "context_rotation_enqueued" || env.published[1].ReasonCode != "context_rotation_auto_confirm" {
+		t.Fatalf("rotation request/outcome evidence = %+v", env.published)
+	}
+	if state := env.rc.ctxMonitor.GetState(pane.Title); state == nil {
+		t.Fatal("OpenCode was not registered with the rotator monitor")
+	}
+}
+
+func TestRotationChecker_NoInventedPiOrAntigravityUsage(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%30", Title: "rotsess__pi_1", Type: tmux.AgentPi, PID: 101, Width: 120},
+		{ID: "%31", Title: "rotsess__agy_1", Type: tmux.AgentAntigravity, PID: 102, Width: 120},
+	}
+	env := newRotationTestEnv(t, 80, true, panes, nil, map[string]string{
+		"%30": piNudgeCapture("", false),
+		"%31": antigravityNudgeCapture("", false),
+	}, nil)
+	env.rc.processUsage = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+		t.Fatal("harness without native context accounting consulted another source")
+		return nil, false
+	}
+	if decisions := env.rc.runOnce(t.Context()); len(decisions) != 0 || len(env.confirmed) != 0 || len(env.published) != 0 {
+		t.Fatalf("unknown native usage triggered rotation: decisions=%+v confirmed=%v published=%+v", decisions, env.confirmed, env.published)
+	}
+}
+
 // TestRotationChecker_OmpStatusBarGauge verifies omp panes are triggered from
 // their own composer-border context gauge: the reading is pane-attributed, so
 // two omp panes sharing one cwd (the swarm layout that leaves transcripts

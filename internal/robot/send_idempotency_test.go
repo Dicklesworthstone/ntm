@@ -436,7 +436,7 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 				stored.DispatchStartedAt == nil || !stored.DispatchStartedAt.Equal(*original.DispatchStartedAt) || stored.OutcomeJSON != "" {
 				t.Fatalf("retry changed the original crash evidence: got %+v, original %+v", stored, original)
 			}
-			receipt, err := GetSendReceiptForStore(store, operationID)
+			receipt, err := GetSendReceiptForStore(store, operationID, "")
 			if err != nil || receipt == nil || !receipt.Success || receipt.Outcome != nil || receipt.InterruptOutcome != nil {
 				t.Fatalf("unknown receipt = (%+v, %v), want pending evidence without invented outcome", receipt, err)
 			}
@@ -594,7 +594,7 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 	}
 
 	// 1. Unknown ID -> NOT_FOUND across status/wait/cancel.
-	missing, err := GetActionStatusWithStore("req_unknown", store, true)
+	missing, err := GetActionStatusWithStore("req_unknown", store, true, "")
 	if err != nil || missing.Success || missing.ErrorCode != ErrCodeNotFound {
 		t.Fatalf("GetActionStatus(missing) = (%+v, %v), want NOT_FOUND", missing, err)
 	}
@@ -614,12 +614,12 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 		t.Fatalf("claimRobotOperation = %+v, want execute", claimRes)
 	}
 
-	st, err := GetActionStatusWithStore("req_predispatch_1", store, true)
+	st, err := GetActionStatusWithStore("req_predispatch_1", store, true, "")
 	if err != nil || !st.Success || st.Status != state.SendOperationInProgress || st.Terminal || !st.Cancellable {
 		t.Fatalf("GetActionStatus(predispatch) = (%+v, %v), want in_progress+cancellable", st, err)
 	}
 
-	canceled, err := GetCancelRequestWithStore("req_predispatch_1", store, true)
+	canceled, err := GetCancelRequestWithStore("req_predispatch_1", store, true, "")
 	if err != nil || !canceled.Success || !canceled.Canceled || canceled.Status != state.SendOperationCanceled {
 		t.Fatalf("GetCancelRequest(predispatch) = (%+v, %v), want canceled", canceled, err)
 	}
@@ -659,7 +659,7 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 		t.Fatalf("dispatched start: %v", err)
 	}
 
-	refusedCancel, err := GetCancelRequestWithStore("req_dispatched_2", store, true)
+	refusedCancel, err := GetCancelRequestWithStore("req_dispatched_2", store, true, "")
 	if err != nil || refusedCancel.Success || refusedCancel.ErrorCode != "REQUEST_ALREADY_DISPATCHED" {
 		t.Fatalf("GetCancelRequest(dispatched) = (%+v, %v), want REQUEST_ALREADY_DISPATCHED", refusedCancel, err)
 	}
@@ -702,12 +702,192 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 	if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "wait_req_3", SessionName: "proj"}); err != nil {
 		t.Fatalf("CreateRobotWaitHandle: %v", err)
 	}
-	waitSt, err := GetActionStatusWithStore("wait_req_3", store, true)
+	waitSt, err := GetActionStatusWithStore("wait_req_3", store, true, "")
 	if err != nil || !waitSt.Success || waitSt.Source != "wait_handle" || !waitSt.Cancellable {
 		t.Fatalf("GetActionStatus(wait_handle) = (%+v, %v)", waitSt, err)
 	}
-	waitCancel, err := GetCancelRequestWithStore("wait_req_3", store, true)
+	waitCancel, err := GetCancelRequestWithStore("wait_req_3", store, true, "")
 	if err != nil || !waitCancel.Success || !waitCancel.Canceled || waitCancel.Status != state.SendOperationCanceled {
 		t.Fatalf("GetCancelRequest(wait_handle) = (%+v, %v)", waitCancel, err)
+	}
+}
+
+func newRequestIdentityScopeStore(t *testing.T) *state.Store {
+	t.Helper()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func claimRequestIdentityScope(t *testing.T, store *state.Store, id, session string) *state.SendOperation {
+	t.Helper()
+	op, claimed, err := store.ClaimSendOperation(&state.SendOperation{
+		OperationID: id, SessionName: session, Kind: state.OperationKindSend,
+		BindingHash: "binding-" + session, Targets: []string{"1"},
+	})
+	if err != nil || !claimed {
+		t.Fatalf("claim %s/%s: claimed=%v err=%v", session, id, claimed, err)
+	}
+	return op
+}
+
+func TestRequestIdentitySessionScopeRejectsAmbiguity(t *testing.T) {
+	t.Parallel()
+	store := newRequestIdentityScopeStore(t)
+	const id = "step-1"
+	claimRequestIdentityScope(t, store, id, "alpha")
+	claimRequestIdentityScope(t, store, id, "beta")
+
+	status, err := GetActionStatusWithStore(id, store, true, "")
+	if err != nil || status.Success || status.ErrorCode != ErrCodeAmbiguousRequest || status.Session != "" {
+		t.Fatalf("ambiguous status = %+v, %v", status, err)
+	}
+	receipt, err := GetSendReceiptForStore(store, id, "")
+	if err != nil || receipt.Success || receipt.ErrorCode != ErrCodeAmbiguousRequest || receipt.Operation != nil {
+		t.Fatalf("ambiguous receipt = %+v, %v", receipt, err)
+	}
+	wait, err := GetWaitRequest(context.Background(), WaitRequestOptions{RequestID: id, Store: store})
+	if err != nil || wait.Success || wait.ErrorCode != ErrCodeAmbiguousRequest {
+		t.Fatalf("ambiguous wait = %+v, %v", wait, err)
+	}
+	cancel, err := GetCancelRequestWithStore(id, store, true, "")
+	if err != nil || cancel.Success || cancel.Canceled || cancel.ErrorCode != ErrCodeAmbiguousRequest {
+		t.Fatalf("ambiguous cancellation = %+v, %v", cancel, err)
+	}
+	for _, session := range []string{"alpha", "beta"} {
+		op, err := store.GetSendOperation(id, session)
+		if err != nil || op == nil || op.Status != state.SendOperationInProgress {
+			t.Fatalf("refusal changed %s: %+v, %v", session, op, err)
+		}
+	}
+
+	for _, session := range []string{"alpha", "beta"} {
+		status, err := GetActionStatusWithStore(id, store, true, session)
+		if err != nil || !status.Success || status.Session != session || !status.Cancellable {
+			t.Fatalf("scoped status %s = %+v, %v", session, status, err)
+		}
+		receipt, err := GetSendReceiptForStore(store, id, session)
+		if err != nil || !receipt.Success || receipt.Session != session || receipt.Operation == nil {
+			t.Fatalf("scoped receipt %s = %+v, %v", session, receipt, err)
+		}
+	}
+	missing, err := GetCancelRequestWithStore(id, store, true, "absent")
+	if err != nil || missing.Success || missing.ErrorCode != ErrCodeNotFound {
+		t.Fatalf("wrong session fell back: %+v, %v", missing, err)
+	}
+	canceled, err := GetCancelRequestWithStore(id, store, true, "alpha")
+	if err != nil || !canceled.Success || !canceled.Canceled || canceled.Session != "alpha" {
+		t.Fatalf("scoped cancellation = %+v, %v", canceled, err)
+	}
+	other, err := store.GetSendOperation(id, "beta")
+	if err != nil || other.Status != state.SendOperationInProgress {
+		t.Fatalf("scoped cancellation changed beta: %+v, %v", other, err)
+	}
+	terminal, err := GetWaitRequest(context.Background(), WaitRequestOptions{RequestID: id, Session: "alpha", Store: store})
+	if err != nil || !terminal.Success || !terminal.Terminal || terminal.Status != state.SendOperationCanceled || terminal.Session != "alpha" {
+		t.Fatalf("scoped wait = %+v, %v", terminal, err)
+	}
+}
+
+func TestRequestIdentityWaitHandleCollisions(t *testing.T) {
+	t.Parallel()
+	for _, waitSession := range []string{"alpha", "beta"} {
+		t.Run(waitSession, func(t *testing.T) {
+			store := newRequestIdentityScopeStore(t)
+			const id = "shared-request"
+			claimRequestIdentityScope(t, store, id, "alpha")
+			if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: id, SessionName: waitSession}); err != nil {
+				t.Fatal(err)
+			}
+			for _, session := range []string{"", "absent"} {
+				wantCode := ErrCodeAmbiguousRequest
+				if session == "absent" {
+					wantCode = ErrCodeNotFound
+				}
+				status, err := GetActionStatusWithStore(id, store, true, session)
+				if err != nil || status.Success || status.ErrorCode != wantCode {
+					t.Fatalf("collision status %q = %+v, %v", session, status, err)
+				}
+				canceled, err := GetCancelRequestWithStore(id, store, true, session)
+				if err != nil || canceled.Success || canceled.Canceled || canceled.ErrorCode != wantCode {
+					t.Fatalf("collision cancellation %q = %+v, %v", session, canceled, err)
+				}
+			}
+			result, err := GetCancelRequestWithStore(id, store, true, waitSession)
+			if waitSession == "alpha" {
+				if err != nil || result.Success || result.ErrorCode != ErrCodeAmbiguousRequest {
+					t.Fatalf("same-session namespace collision = %+v, %v", result, err)
+				}
+			} else if err != nil || !result.Success || !result.Canceled || result.Source != "wait_handle" || result.Session != "beta" {
+				t.Fatalf("scoped wait cancellation = %+v, %v", result, err)
+			}
+			op, err := store.GetSendOperation(id, "alpha")
+			if err != nil || op.Status != state.SendOperationInProgress {
+				t.Fatalf("wait cancellation changed send operation: %+v, %v", op, err)
+			}
+		})
+	}
+}
+
+func TestRequestIdentityPinnedStatusDoesNotSwitchRecords(t *testing.T) {
+	t.Parallel()
+	store := newRequestIdentityScopeStore(t)
+	const id = "pinned"
+	original := claimRequestIdentityScope(t, store, id, "alpha")
+	first, err := GetActionStatusWithStore(id, store, true, "")
+	if err != nil || !first.Success || first.identity == nil {
+		t.Fatalf("initial status = %+v, %v", first, err)
+	}
+	newer := claimRequestIdentityScope(t, store, id, "beta")
+	if err := store.CompleteSendOperation(id, "beta", newer.ClaimToken, `{"success":true}`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: id, SessionName: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := getActionStatusWithStore(id, store, true, "", first.identity)
+	if err != nil || !pinned.Success || pinned.Session != "alpha" || pinned.Source != "send_operation" || pinned.Terminal {
+		t.Fatalf("pinned status switched records: %+v, %v", pinned, err)
+	}
+	if err := store.ReleaseSendOperation(id, "alpha", original.ClaimToken); err != nil {
+		t.Fatal(err)
+	}
+	_, claimed, err := store.ClaimSendOperation(&state.SendOperation{OperationID: id, SessionName: "alpha", BindingHash: "different-command"})
+	if err != nil || !claimed {
+		t.Fatalf("replacement: claimed=%v err=%v", claimed, err)
+	}
+	replaced, err := getActionStatusWithStore(id, store, true, "", first.identity)
+	if err != nil || replaced.Success || replaced.ErrorCode != "REQUEST_IDENTITY_CHANGED" {
+		t.Fatalf("pinned status accepted replacement: %+v, %v", replaced, err)
+	}
+}
+
+func TestRequestIdentityWaitKeepsOriginalSession(t *testing.T) {
+	store := newRequestIdentityScopeStore(t)
+	const id = "wait-scoped"
+	original := claimRequestIdentityScope(t, store, id, "alpha")
+	newer := claimRequestIdentityScope(t, store, id, "beta")
+	if err := store.CompleteSendOperation(id, "beta", newer.ClaimToken, `{"success":true}`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	completion := make(chan error, 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		completion <- store.CompleteSendOperation(id, "alpha", original.ClaimToken, `{"success":true,"targets":["1"],"successful":["1"]}`, time.Now().UTC())
+	}()
+	result, err := GetWaitRequest(context.Background(), WaitRequestOptions{
+		RequestID: id, Session: "alpha", Store: store, Timeout: 2 * time.Second, PollInterval: 5 * time.Millisecond,
+	})
+	if completeErr := <-completion; completeErr != nil {
+		t.Fatal(completeErr)
+	}
+	if err != nil || !result.Success || result.Session != "alpha" || !result.Terminal || result.Outcome == nil || len(result.Outcome.Successful) != 1 {
+		t.Fatalf("wait switched to newer completed request: %+v, %v", result, err)
 	}
 }

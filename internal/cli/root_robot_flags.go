@@ -1495,7 +1495,7 @@ func registerRobotFlags() {
 	// prefixed session flags. The deprecation hints below point at
 	// --session, so it must actually be registered on this command surface
 	// (ntm#214: the hint previously suggested a flag that didn't exist).
-	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, and --robot-palette (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
+	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name for request/receipt lookup, --robot-pipeline-run, --robot-tokens, --robot-alerts, and --robot-palette; required for request IDs shared across sessions (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")

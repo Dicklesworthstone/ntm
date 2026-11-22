@@ -220,3 +220,30 @@ func TestInspectComposerAndVisibleForDelivery_AntigravityAndOpencode(t *testing.
 		t.Fatalf("InspectComposer(ocDraft) = %+v, want MarkerVisible=true HoldsText=true", st)
 	}
 }
+
+func TestInspectComposerRejectsStaleNativeFooters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		harness AgentType
+		capture string
+	}{
+		{"opencode", AgentOpencode, ompFixture(t, "opencode_idle.txt")},
+		{"antigravity", AgentAntigravity, "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if st := InspectComposer(tc.capture+strings.Repeat("\n", 40), tc.harness); !st.MarkerVisible || st.HoldsText {
+				t.Fatalf("live composer with blank viewport padding = %+v", st)
+			}
+			for _, suffix := range []string{"new unframed output\n", "Press Enter to continue\n", strings.Repeat("output line\n", 40)} {
+				capture := tc.capture + suffix
+				if st := InspectComposer(capture, tc.harness); st.MarkerVisible || st.HoldsText {
+					t.Fatalf("stale composer with suffix %q = %+v", suffix, st)
+				}
+				if ComposerVisibleForDelivery(capture, tc.harness) {
+					t.Fatalf("stale composer is still visible for delivery with suffix %q", suffix)
+				}
+			}
+		})
+	}
+}

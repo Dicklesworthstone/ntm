@@ -268,6 +268,376 @@ sleep 30`,
 	}
 }
 
+func TestSubreaperWrapperFailureDoesNotSettle(t *testing.T) {
+	for _, failure := range []string{"killed_wrapper", "stopped_wrapper_cancellation"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
+			root := t.TempDir()
+			cfg := DefaultExecutorConfig("subreaper-failure")
+			cfg.ProjectDir, cfg.RunID = root, "run-subreaper-failure"
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion,
+				Name:          "subreaper-failure",
+				Settings:      DefaultWorkflowSettings(),
+				Steps: []Step{
+					{
+						ID: "produce",
+						// Close the capture streams so EOF cannot accidentally
+						// conceal a false settlement after the wrapper dies.
+						Command: `exec >/dev/null 2>&1
+printf 'once\n' >> launches
+if [ -f payload.pid ]; then exit 0; fi
+printf '%s\n' "$$" > payload.pid
+sleep 30 &
+printf '%s\n' "$!" > descendant.pid
+wait`,
+						OnError: ErrorActionRetry, RetryCount: 2,
+						RetryDelay: Duration{Duration: time.Millisecond},
+					},
+					{ID: "consume", DependsOn: []string{"produce"}, Command: "printf unsafe > downstream"},
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			started := make(chan int, 1)
+			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) {
+				select {
+				case started <- pid:
+				default:
+				}
+			})
+			var state *ExecutionState
+			var runErr error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				state, runErr = NewExecutor(cfg).Run(ctx, workflow, nil, nil)
+			}()
+			var wrapper *os.Process
+			var payloads []*os.Process
+			t.Cleanup(func() {
+				cancel()
+				if wrapper != nil {
+					_ = wrapper.Signal(syscall.SIGCONT)
+				}
+				for _, process := range payloads {
+					_ = process.Kill()
+					_ = process.Release()
+				}
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					if wrapper != nil {
+						_ = wrapper.Kill()
+					}
+					select {
+					case <-done:
+					case <-time.After(3 * time.Second):
+						t.Error("wrapper failure left executor supervision running")
+					}
+				}
+				if wrapper != nil {
+					_ = wrapper.Release()
+				}
+			})
+			select {
+			case pid := <-started:
+				var err error
+				wrapper, err = os.FindProcess(pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-done:
+				t.Fatalf("executor ended before command launch: %+v %v", state, runErr)
+			case <-ctx.Done():
+				t.Fatal("command did not start")
+			}
+			for _, name := range []string{"payload.pid", "descendant.pid"} {
+				pid := waitForPIDFile(t, filepath.Join(root, name))
+				process, err := os.FindProcess(pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				payloads = append(payloads, process)
+			}
+			if failure == "killed_wrapper" {
+				if err := wrapper.Kill(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := wrapper.Signal(syscall.SIGSTOP); err != nil {
+					t.Fatal(err)
+				}
+				waitUntil(t, time.Second, func() bool {
+					_, state, err := readProcessStartTimeTicks(wrapper.Pid)
+					return err == nil && (state == "T" || state == "t")
+				}, "wrapper did not stop before cancellation")
+				cancel()
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("wrapper failure did not end supervision within its cleanup bound")
+			}
+			if runErr == nil || state == nil || state.Status == StatusCompleted {
+				t.Fatalf("wrapper death became successful execution: %+v %v", state, runErr)
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.CommandExecutions["produce"]
+			if receipt.Status != commandExecutionUnresolved || !receipt.SettledAt.IsZero() || receipt.Result.RerunOnResume ||
+				receipt.Result.Error == nil || !strings.Contains(receipt.Result.Error.Details, "without verified descendant settlement") {
+				t.Fatalf("wrapper death granted settlement or lost its recovery evidence: %+v", receipt)
+			}
+			for _, process := range payloads {
+				_, state, err := readProcessStartTimeTicks(process.Pid)
+				if err != nil || state == "Z" || state == "X" {
+					t.Fatalf("test requires surviving payload %d, state=%q error=%v", process.Pid, state, err)
+				}
+			}
+			before := commandOperatorRecoveryBytes(t, cfg)
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+				t.Fatalf("resume allowed work whose wrapper died without settlement: %v", err)
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("rejected resume rewrote unresolved command evidence")
+			}
+			if launches, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(launches) != "once\n" {
+				t.Fatalf("wrapper failure retried an unsettled command: launches=%q error=%v", launches, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "downstream")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("wrapper failure released downstream work: %v", err)
+			}
+		})
+	}
+}
+
+func TestSubreaperSettlementPreservesTerminalOutcomes(t *testing.T) {
+	t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
+	for _, tc := range []struct {
+		name     string
+		script   string
+		exitCode int
+		signal   syscall.Signal
+		missing  bool
+	}{
+		{name: "success", script: "printf ok"},
+		{name: "failed_command", script: "exit 7", exitCode: 7},
+		{name: "child_sigterm", script: "kill -TERM $$", signal: syscall.SIGTERM},
+		{name: "child_sigkill", script: "kill -KILL $$", signal: syscall.SIGKILL},
+		{name: "child_sigusr1", script: "trap - USR1; kill -USR1 $$", signal: syscall.SIGUSR1},
+		{name: "child_sigpipe", script: "trap - PIPE; kill -PIPE $$", signal: syscall.SIGPIPE},
+		{name: "child_sigquit", script: "ulimit -c 0; trap - QUIT; kill -QUIT $$", signal: syscall.SIGQUIT},
+		{name: "child_sigabrt", script: "ulimit -c 0; trap - ABRT; kill -ABRT $$", signal: syscall.SIGABRT},
+		{name: "missing_executable", missing: true, exitCode: 127},
+		{name: "proof_descriptor_not_inherited", script: "test ! -e /proc/$$/fd/4 && printf private"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.Command("/bin/sh", "-c", tc.script)
+			if tc.missing {
+				cmd = exec.Command(filepath.Join(t.TempDir(), "missing-executable"))
+			}
+			cmd.Dir = t.TempDir()
+			var output bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &output, &output
+			null, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer null.Close()
+			// Exercise the private proof fd after an existing ExtraFiles fd.
+			cmd.ExtraFiles = []*os.File{null}
+			opts := commandStartOptions{ExitCodeFile: filepath.Join(t.TempDir(), "exit.json")}
+			if _, err := startCommandWithContainment(ctx, cmd, opts); err != nil {
+				t.Fatal(err)
+			}
+			if len(cmd.ExtraFiles) != 1 || cmd.ExtraFiles[0] != null {
+				t.Fatal("containment changed the caller's extra file configuration")
+			}
+			cleanup := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if !cleanup.Settled || cmd.ProcessState == nil {
+				t.Fatalf("known child outcome was left unresolved: %+v output=%q", cleanup, output.String())
+			}
+			status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+			if !ok {
+				t.Fatal("missing native child wait status")
+			}
+			if tc.signal != 0 {
+				if !status.Signaled() || status.Signal() != tc.signal {
+					t.Fatalf("child signal changed: status=%v want=%v", status, tc.signal)
+				}
+			} else if !status.Exited() || status.ExitStatus() != tc.exitCode {
+				t.Fatalf("child exit changed: status=%v want=%d output=%q", status, tc.exitCode, output.String())
+			}
+			if tc.exitCode == 0 && tc.signal == 0 {
+				if cleanup.Err != nil {
+					t.Fatalf("successful child returned cleanup error: %v", cleanup.Err)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(cleanup.Err, &exitErr) {
+					t.Fatalf("failed child lost its exit error: %v", cleanup.Err)
+				}
+			}
+		})
+	}
+}
+
+func TestSubreaperSettlementRejectsMismatchedOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		exitCode   int
+		signal     syscall.Signal
+		wrapperEnd string
+	}{
+		{name: "success_before_wrapper_kill", wrapperEnd: "kill -KILL $$"},
+		{name: "changed_exit_code", exitCode: 7, wrapperEnd: "exit 0"},
+		{name: "changed_signal", exitCode: 128 + int(syscall.SIGTERM), signal: syscall.SIGTERM, wrapperEnd: "kill -KILL $$"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Model a wrapper that has finished its payload and published a
+			// valid proof, then dies with a different status before returning
+			// that payload's outcome. The proof alone cannot authorize retry.
+			read, write, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer read.Close()
+			defer write.Close()
+			proof := fmt.Sprintf("%s %d %d\n", stepReaperSettlementMarker, tc.exitCode, tc.signal)
+			cmd := exec.Command("/bin/sh", "-c", "printf %s "+shellSingleQuote(proof)+" >&3; "+tc.wrapperEnd)
+			cmd.ExtraFiles = []*os.File{write}
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			_ = write.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cleanup := waitCommandWithSubreaperPIDFD(ctx, cmd, &linuxContainmentHandle{
+				tier: ContainmentTierSubreaperPIDFD, pidfd: -1, settlement: read,
+			})
+			if cleanup.Settled || cleanup.Err == nil || !strings.Contains(cleanup.Err.Error(), "terminal status does not match completed payload outcome") {
+				t.Fatalf("mismatched wrapper outcome was admitted as settlement: %+v", cleanup)
+			}
+		})
+	}
+}
+
+func TestSubreaperChildOwnershipCannotOutliveReaping(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	if !ownsUnreapedSubreaperChild(pid) {
+		t.Fatal("native wait did not recognize its running child")
+	}
+	if ownsUnreapedSubreaperChild(os.Getpid()) {
+		t.Fatal("native wait accepted an unrelated process as its child")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	waited = true
+	if ownsUnreapedSubreaperChild(pid) {
+		t.Fatal("native wait retained signaling ownership after reaping")
+	}
+}
+
+func TestSubreaperStatusFallbackOnlySelectsOwnedChildren(t *testing.T) {
+	root := t.TempDir()
+	for name, status := range map[string]string{
+		"101": "Name:\tchild\nPPid:\t42\n",
+		"102": "Name:\tunrelated\nPPid:\t420\n",
+		"103": "Name:\tunknown\nPPid:\tunavailable\n",
+		"104": "Name:\tmissing-parent\n",
+		"42":  "Name:\tself\nPPid:\t42\n",
+	} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "status"), []byte(status), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A disappearing process cannot be admitted as an owned child either.
+	if err := os.Mkdir(filepath.Join(root, "105"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := readSubreaperChildrenFromProcStatus(root, 42)
+	if len(got) != 1 || got[0] != 101 {
+		t.Fatalf("status fallback selected unproven child identities: %v", got)
+	}
+}
+
+func TestSubreaperCancellationAfterDirectChildReaped(t *testing.T) {
+	t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"default_term", "ignore_term"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			pidFile := filepath.Join(dir, "adopted.pid")
+			script := fmt.Sprintf(`printf '%%s\n' "$$" > direct.pid
+NTM_TEST_SETSID_HELPER_MODE=%s NTM_TEST_SETSID_PID_FILE=%s %s </dev/null >/dev/null 2>&1 &
+while [ ! -s %s ]; do sleep 0.01; done`,
+				shellSingleQuote(mode), shellSingleQuote(pidFile), shellSingleQuote(selfExe), shellSingleQuote(pidFile))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.Command("/bin/sh", "-c", script)
+			cmd.Dir = dir
+			if _, err := startCommandWithContainment(ctx, cmd, commandStartOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			t.Cleanup(func() {
+				cancel()
+				if !waited {
+					_ = waitCommandWithProcessGroupCleanup(ctx, cmd)
+				}
+			})
+			directPID := waitForPIDFile(t, filepath.Join(dir, "direct.pid"))
+			adoptedPID := waitForPIDFile(t, pidFile)
+			adopted, err := os.FindProcess(adoptedPID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = adopted.Kill()
+				_ = adopted.Release()
+			})
+			waitUntil(t, 2*time.Second, func() bool {
+				_, err := os.Stat(fmt.Sprintf("/proc/%d", directPID))
+				return errors.Is(err, os.ErrNotExist)
+			}, "subreaper did not reap its direct child before cancellation")
+			cancel()
+			cleanup := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			waited = true
+			if !cleanup.Cancelled || !cleanup.Settled {
+				t.Fatalf("adopted descendant did not settle after direct child reap: %+v", cleanup)
+			}
+			if !waitForPIDGone(adoptedPID, time.Second) {
+				t.Fatal("adopted setsid descendant survived cancellation")
+			}
+		})
+	}
+}
+
 func TestCrashOnlyReceiptReconciliationRequiresContainmentProof(t *testing.T) {
 	// A shell's EXIT trap proves only its own exit. Its background child can
 	// still be running after the orchestrator dies and the leader is reaped.
@@ -418,7 +788,13 @@ exit %d`, exitCode),
 					if err != nil {
 						t.Fatal(err)
 					}
-					final, err := NewExecutor(cfg).Resume(context.Background(), frozen, resolved, nil)
+					// This is new downstream work, independent of the old
+					// fallback receipt. Use containment that does not require
+					// globally complete procfs visibility in restricted hosts.
+					t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
+					resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer resumeCancel()
+					final, err := NewExecutor(cfg).Resume(resumeCtx, frozen, resolved, nil)
 					if err != nil || final == nil || final.Status != StatusCompleted {
 						t.Fatalf("resume after explicit recovery failed: %+v %v", final, err)
 					}

@@ -817,6 +817,15 @@ func TestCompletedRotationSummary_CodexBulletPrefix_GH380(t *testing.T) {
 	if !strings.Contains(body, "## CURRENT TASK") || !strings.Contains(body, "## PROGRESS") {
 		t.Fatalf("extracted body missing expected sections:\n%s", body)
 	}
+	parsed := NewSummaryGenerator(SummaryGeneratorConfig{}).ParseAgentResponse("lane3__cod_1", "codex", "lane3", body)
+	if parsed.CurrentTask != "Provide this handoff summary. There is no unfinished task." || parsed.Progress != "Completed audit of rotation markers." ||
+		len(parsed.Blockers) != 1 || parsed.Blockers[0] != "None." {
+		t.Fatalf("Codex indentation merged distinct handoff sections: %+v", parsed)
+	}
+	nested := "  • " + start + "\n    ## CURRENT TASK\n    Continue review.\n    ## PROGRESS\n    - Parent\n      - Nested\n    " + end + "\n"
+	if got := completedRotationSummary(nested, start, end); !strings.Contains(got, "\n- Parent\n  - Nested") {
+		t.Fatalf("removing terminal indentation changed nested content: %q", got)
+	}
 
 	// ANSI-colored & alternative bullet prefixes (● , ⏺ , ▸ ) also parse cleanly.
 	ansiCapture := "\x1b[1m  ⏺ " + start + "\x1b[0m\n## CURRENT TASK\nShip fix\n## PROGRESS\nDone\n\x1b[2m  • " + end + "\x1b[0m\n"

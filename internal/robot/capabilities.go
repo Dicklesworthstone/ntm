@@ -1180,6 +1180,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID: operation kind, payload digest, byte count, per-target admission states, and the recorded outcome (outcome for sends, interrupt_outcome for interrupts). Receipts survive caller timeouts and crashes.",
 			Parameters: []RobotParameter{
 				{Name: "operation-id", Flag: "--robot-send-receipt", Type: "string", Required: true, Description: "Operation ID supplied via --op-id to --robot-send or --robot-interrupt (or a REST Idempotency-Key)"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Original session; required when the operation ID exists in multiple sessions"},
 			},
 			Examples: []string{
 				"ntm --robot-send-receipt=deploy-42",
@@ -1194,6 +1195,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "request-id", Flag: "--robot-action-status", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
 				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Original session; ambiguous IDs are refused instead of selecting a newer request"},
 			},
 			Examples: []string{
 				"ntm --robot-action-status=deploy-42",
@@ -1209,6 +1211,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "request-id", Flag: "--robot-wait-request", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
 				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Original session; a running wait stays bound to its initially resolved request"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Maximum wait time before returning TIMEOUT"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "100ms", Description: "Poll interval while waiting"},
 			},
@@ -1225,6 +1228,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "request-id", Flag: "--robot-cancel-request", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
 				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Original session; ambiguous IDs are refused before any cancellation"},
 			},
 			Examples: []string{
 				"ntm --robot-cancel-request=deploy-42",

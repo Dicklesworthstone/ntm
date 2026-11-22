@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Claude Code (cc) patterns for state detection.
@@ -607,21 +608,73 @@ const (
 	opencodeIdleTrailingMaxRows = 12
 )
 
+var (
+	// These are whole native footer rows, not substrings in transcript prose.
+	// The working animation contains only symbols before its interrupt hint.
+	opencodeFooterLineRe    = regexp.MustCompile(`^(?:[^\p{L}\p{N}]*esc\s+(?:again\s+to\s+)?interrupt(?:\s+|$))?(?:tab\s+agents(?:\s+ctrl\+p\s+commands)?|ctrl\+p\s+commands|/commands\s+@context)?(?:\s*•\s+OpenCode\s+\d+\.\d+\.\d+(?:[-+][\w.-]+)?)?$`)
+	opencodeWelcomeStatusRe = regexp.MustCompile(`^(?:/.*|~(?:/.*)?|[A-Za-z]:[\\/].*)\s{2,}\d+\.\d+\.\d+(?:[-+][\w.-]+)?$`)
+	opencodePlaceholderRe   = regexp.MustCompile(`^` + opencodePlaceholderPrefix + `(?:(?:…|\.\.\.)(?:\s+(?:"[^"]*"|“[^”]*”))?)?$`)
+)
+
+// opencodeComposerFooterLive accepts only the chrome below the last composer.
+// The welcome screen centers its input box well above the bottom of a tall
+// pane, so a fixed row distance would reject real captures. Instead, blank
+// padding is harmless and every nonblank row must belong to its native footer.
+func opencodeComposerFooterLive(lines []string, rule int) bool {
+	tipSeen, statusSeen, rows := false, false, 0
+	for _, line := range lines[rule+1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rows++
+		if statusSeen || rows > opencodeIdleTrailingMaxRows {
+			return false
+		}
+		switch {
+		case !tipSeen && opencodeFooterLineRe.MatchString(line):
+		case !tipSeen && strings.HasPrefix(line, "● Tip "):
+			tipSeen = true
+		case opencodeWelcomeStatusRe.MatchString(line):
+			statusSeen = true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ParseOpencodeComposer extracts the text currently in an OpenCode (sst/opencode
 // 1.18+) composer from a visible-pane capture. found is false when no live
 // composer is on screen or when an interactive gate or shell-exit prompt owns
 // input. The returned draft joins input rows with newlines and is empty for an
 // empty composer (including one showing only the default prompt hint).
 func ParseOpencodeComposer(output string) (draft string, found bool) {
+	frame, found := parseOpencodeComposer(output)
+	return frame.draft, found
+}
+
+// opencodeComposerFrame keeps the live frame's geometry alongside its draft.
+// The sidebar reader must use the same composer and freshness evidence as
+// input delivery, rather than finding unrelated accounting-shaped prose.
+type opencodeComposerFrame struct {
+	draft    string
+	lines    []string
+	firstRow int
+	ruleRow  int
+	rightCol int // terminal cells, exclusive
+}
+
+func parseOpencodeComposer(output string) (opencodeComposerFrame, bool) {
 	clean := strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n")
 	if strings.TrimSpace(clean) == "" {
-		return "", false
+		return opencodeComposerFrame{}, false
 	}
 	if TrustDialogVisible(clean) || HasTrailingShellExitPrompt(clean) {
-		return "", false
+		return opencodeComposerFrame{}, false
 	}
 	if _, gated := DetectInteractiveGate(clean, 0); gated {
-		return "", false
+		return opencodeComposerFrame{}, false
 	}
 	lines := strings.Split(clean, "\n")
 	rule, ruleCol, ruleEnd := -1, -1, 0
@@ -641,16 +694,10 @@ func ParseOpencodeComposer(output string) (draft string, found bool) {
 		}
 	}
 	if rule < 1 {
-		return "", false
+		return opencodeComposerFrame{}, false
 	}
-	for j := rule + 1; j < len(lines); j++ {
-		below := strings.TrimSpace(lines[j])
-		if below == "" {
-			continue
-		}
-		if strings.Contains(strings.ToLower(below), "press enter to continue") {
-			return "", false
-		}
+	if !opencodeComposerFooterLive(lines, rule) {
+		return opencodeComposerFrame{}, false
 	}
 	var rows []string // bottom-up
 	for i := rule - 1; i >= 0; i-- {
@@ -662,7 +709,7 @@ func ParseOpencodeComposer(output string) (draft string, found bool) {
 		rows = append(rows, strings.TrimSpace(string(runes[ruleCol+1:end])))
 	}
 	if len(rows) == 0 {
-		return "", false
+		return opencodeComposerFrame{}, false
 	}
 	// rows[0] is the agent/model line; the rest, reversed, is the input box.
 	input := make([]string, 0, len(rows)-1)
@@ -671,12 +718,16 @@ func ParseOpencodeComposer(output string) (draft string, found bool) {
 			input = append(input, rows[i])
 		}
 	}
-	if len(input) > 0 && (strings.HasPrefix(input[0], "Ask anything…") ||
-		strings.HasPrefix(input[0], "Ask anything...") ||
-		(len(input) == 1 && strings.HasPrefix(input[0], opencodePlaceholderPrefix))) {
-		return "", true
+	frame := opencodeComposerFrame{
+		lines:    lines,
+		firstRow: rule - len(rows),
+		ruleRow:  rule,
+		rightCol: ansi.StringWidth(strings.TrimRight(lines[rule], " \t")),
 	}
-	return strings.Join(input, "\n"), true
+	if len(input) != 1 || !opencodePlaceholderRe.MatchString(input[0]) {
+		frame.draft = strings.Join(input, "\n")
+	}
+	return frame, true
 }
 
 // OpencodeIdlePromptShowing reports whether an OpenCode pane is displaying an
@@ -708,50 +759,99 @@ func OpencodeIdlePromptShowing(output string) bool {
 		if matchAnyRegex(trimmed, ocIdlePatterns) {
 			return true
 		}
+		// A historical placeholder followed by newer output is not a live
+		// input box. Only the old boxed composer's closing rule and native
+		// shortcut row may sit below its placeholder/interrupt acknowledgment.
+		if !opencodeFooterLineRe.MatchString(trimmed) &&
+			strings.Trim(trimmed, "╰╯└┘─━═ ") != "" {
+			return false
+		}
 	}
 	return false
 }
 
 var (
-	ocSidebarHeaderRe = regexp.MustCompile(`(?:^|\s{2,})Context\s*$`)
+	ocSidebarHeaderRe = regexp.MustCompile(`(?:^|\s{2,})(Context)\s*$`)
 	ocSidebarTokensRe = regexp.MustCompile(`(?:^|\s{2,})([\d,]+(?:\.\d+)?)\s*([kKmM])?\s+tokens\s*$`)
 	ocSidebarPctRe    = regexp.MustCompile(`(?:^|\s{2,})(\d+(?:\.\d+)?)%\s+used\s*$`)
 )
 
 // OpencodeContextUsage extracts OpenCode's live right-hand session sidebar
-// context block ("Context" / "<N> tokens" / "<P>% used"). Requiring all three
-// consecutive right-aligned sidebar rows prevents false matches on ordinary
-// transcript prose.
+// context block ("Context" / "<N> tokens" / "<P>% used") from a visible-pane
+// capture. Its three rows must align outside the live composer's right edge,
+// as in the native 1.18 capture in testdata/opencode_working.txt. Standalone
+// text, transcript examples, drafts, and old frames are not usage evidence.
 func OpencodeContextUsage(output string) (usedPct float64, tokensUsed int64, ok bool) {
-	clean := strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n")
-	lines := strings.Split(clean, "\n")
-	for i := len(lines) - 3; i >= 0; i-- {
-		if !ocSidebarHeaderRe.MatchString(lines[i]) {
+	frame, found := parseOpencodeComposer(output)
+	if !found {
+		return 0, 0, false
+	}
+	// Require continuous rule fill after the composer corner, not a line of
+	// prose beginning with the same glyph.
+	rule := strings.TrimSpace(frame.lines[frame.ruleRow])
+	fill := strings.TrimPrefix(rule, opencodeComposerRule)
+	if fill == "" || strings.Trim(fill, "▀━") != "" {
+		return 0, 0, false
+	}
+	firstRow := 0
+	for i := frame.firstRow - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(frame.lines[i]), opencodeComposerRule) {
+			// A prior frame cannot lend its sidebar to a newer composer.
+			firstRow = i + 1
+			break
+		}
+	}
+	for i := firstRow; i+2 < frame.firstRow; i++ {
+		header := ocSidebarHeaderRe.FindStringSubmatchIndex(frame.lines[i])
+		tokens := ocSidebarTokensRe.FindStringSubmatchIndex(frame.lines[i+1])
+		pct := ocSidebarPctRe.FindStringSubmatchIndex(frame.lines[i+2])
+		if header == nil || tokens == nil || pct == nil {
 			continue
 		}
-		tokMatch := ocSidebarTokensRe.FindStringSubmatch(lines[i+1])
-		pctMatch := ocSidebarPctRe.FindStringSubmatch(lines[i+2])
-		if tokMatch == nil || pctMatch == nil {
+		column := -1
+		aligned := true
+		for offset, match := range [][]int{header, tokens, pct} {
+			prefix := frame.lines[i+offset][:match[2]]
+			col := ansi.StringWidth(prefix)
+			// tmux's native visible capture pads with spaces. Tabs do not
+			// provide a stable column, and transcript text may not extend
+			// into the gap between the composer and the session sidebar.
+			if strings.Contains(prefix, "\t") || col < frame.rightCol+2 ||
+				ansi.StringWidth(strings.TrimRight(prefix, " ")) > frame.rightCol ||
+				(column >= 0 && column != col) {
+				aligned = false
+				break
+			}
+			column = col
+		}
+		if !aligned {
 			continue
 		}
-		rawTok := strings.ReplaceAll(tokMatch[1], ",", "")
+		rawTok := strings.ReplaceAll(frame.lines[i+1][tokens[2]:tokens[3]], ",", "")
 		tokVal, err := strconv.ParseFloat(rawTok, 64)
 		if err != nil || tokVal < 0 {
 			continue
 		}
-		switch strings.ToLower(tokMatch[2]) {
-		case "k":
-			tokVal *= 1000
-		case "m":
-			tokVal *= 1000000
+		if tokens[4] >= 0 {
+			switch strings.ToLower(frame.lines[i+1][tokens[4]:tokens[5]]) {
+			case "k":
+				tokVal *= 1000
+			case "m":
+				tokVal *= 1000000
+			}
 		}
-		pctVal, err := strconv.ParseFloat(pctMatch[1], 64)
+		pctVal, err := strconv.ParseFloat(frame.lines[i+2][pct[2]:pct[3]], 64)
 		if err != nil || pctVal < 0 || pctVal > 100 {
 			continue
 		}
-		return pctVal, int64(tokVal + 0.5), true
+		if ok {
+			// Multiple apparent native gauges leave the active reading
+			// ambiguous; do not choose whichever happened to be last.
+			return 0, 0, false
+		}
+		usedPct, tokensUsed, ok = pctVal, int64(tokVal+0.5), true
 	}
-	return 0, 0, false
+	return usedPct, tokensUsed, ok
 }
 
 // Oh My Pi (omp, https://omp.sh) patterns for state detection.

@@ -138,7 +138,7 @@ func TestGetInterruptIdempotency_IdenticalRetryReplaysWithoutSecondInterrupt(t *
 		t.Fatalf("durable outcome persisted pane output: %s", row.OutcomeJSON)
 	}
 
-	receipt, err := GetSendReceiptForStore(store, opID)
+	receipt, err := GetSendReceiptForStore(store, opID, "")
 	if err != nil {
 		t.Fatalf("GetSendReceipt error: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claim = (claimed=%v, err=%v)", claimed, err)
 	}
-	pending, err := GetSendReceiptForStore(store, "op-int-receipt")
+	pending, err := GetSendReceiptForStore(store, "op-int-receipt", "")
 	if err != nil || !pending.Success || pending.Operation == nil ||
 		pending.Operation.Kind != state.OperationKindInterrupt || pending.Operation.Status != state.SendOperationInProgress ||
 		pending.InterruptOutcome != nil {
@@ -476,7 +476,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 	if err := store.CompleteSendOperation("op-int-receipt", "proj", claim.ClaimToken, string(data), time.Now().UTC()); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	receipt, err := GetSendReceiptForStore(store, "op-int-receipt")
+	receipt, err := GetSendReceiptForStore(store, "op-int-receipt", "")
 	if err != nil || !receipt.Success {
 		t.Fatalf("receipt = (%+v, %v), want success", receipt, err)
 	}
@@ -488,7 +488,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 		t.Fatalf("receipt = outcome %+v operation %+v, want the recorded interrupt", receipt.InterruptOutcome, receipt.Operation)
 	}
 
-	missing, err := GetSendReceiptForStore(store, "op-never-claimed")
+	missing, err := GetSendReceiptForStore(store, "op-never-claimed", "")
 	if err != nil || missing.Success || missing.ErrorCode != ErrCodeNotFound || !strings.Contains(missing.Hint, "--robot-interrupt") {
 		t.Fatalf("unknown receipt = (%+v, %v), want NOT_FOUND hinting at both actuations", missing, err)
 	}

@@ -3110,17 +3110,33 @@ func antigravityComposerDraft(capture string) (draft string, found bool) {
 	if _, gated := agent.DetectInteractiveGate(clean, 0); gated {
 		return "", false
 	}
-	lines := strings.Split(clean, "\n")
+	lines := strings.Split(strings.TrimRight(clean, "\n \t"), "\n")
 	footerIdx := -1
 	start := max(0, len(lines)-antigravityComposerScanLines)
 	for i := len(lines) - 1; i >= start; i-- {
-		if strings.Contains(strings.ToLower(lines[i]), "? for shortcuts") {
+		if strings.EqualFold(strings.TrimSpace(lines[i]), "? for shortcuts") {
 			footerIdx = i
 			break
 		}
 	}
 	if footerIdx < 1 {
 		return "", false
+	}
+	// The shortcut footer is followed only by the optional model row. A
+	// previously rendered composer must not regain input authority after new
+	// transcript output, a shell, or another screen takes its place.
+	modelSeen := false
+	for _, line := range lines[footerIdx+1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if modelSeen || !(strings.HasPrefix(lower, "gemini ") || lower == "auto" ||
+			strings.HasPrefix(lower, "auto (") || strings.HasPrefix(lower, "model: ")) {
+			return "", false
+		}
+		modelSeen = true
 	}
 	promptFloor := max(0, footerIdx-antigravityPromptAboveScanRows)
 	for i := footerIdx - 1; i >= promptFloor; i-- {

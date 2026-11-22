@@ -2335,7 +2335,7 @@ func TestRobotWaitHandleCancellationLifecycle(t *testing.T) {
 	if err != nil || canceled {
 		t.Fatalf("IsRobotWaitHandleCanceled before cancellation = %v, %v; want false, nil", canceled, err)
 	}
-	if canceled, err = store.CancelRobotWaitHandle(handle.ID, now.Add(time.Second)); err != nil || !canceled {
+	if canceled, err = store.CancelRobotWaitHandle(handle, now.Add(time.Second)); err != nil || !canceled {
 		t.Fatalf("CancelRobotWaitHandle = %v, %v; want true, nil", canceled, err)
 	}
 	if canceled, err = store.IsRobotWaitHandleCanceled(handle.ID); err != nil || !canceled {
@@ -2344,10 +2344,10 @@ func TestRobotWaitHandleCancellationLifecycle(t *testing.T) {
 	if err := store.CompleteRobotWaitHandle(handle.ID, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("CompleteRobotWaitHandle: %v", err)
 	}
-	if canceled, err = store.CancelRobotWaitHandle(handle.ID, now.Add(3*time.Second)); err != nil || canceled {
+	if canceled, err = store.CancelRobotWaitHandle(handle, now.Add(3*time.Second)); err != nil || canceled {
 		t.Fatalf("CancelRobotWaitHandle completed handle = %v, %v; want false, nil", canceled, err)
 	}
-	if canceled, err = store.CancelRobotWaitHandle("missing", now); err != nil || canceled {
+	if canceled, err = store.CancelRobotWaitHandle(&RobotWaitHandle{ID: "missing", SessionName: handle.SessionName, CreatedAt: now}, now); err != nil || canceled {
 		t.Fatalf("CancelRobotWaitHandle missing handle = %v, %v; want false, nil", canceled, err)
 	}
 }

@@ -12047,6 +12047,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Original session. Required when an ID exists in multiple sessions; ambiguous unscoped IDs return AMBIGUOUS_REQUEST.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -12127,6 +12135,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Original session. An ambiguous ID is refused before cancellation; an unknown explicit session never falls back.",
             "schema": {
               "type": "string"
             }
@@ -12220,6 +12236,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Original session. Once resolved, the wait remains bound to that session and request kind.",
             "schema": {
               "type": "string"
             }

@@ -598,7 +598,11 @@ func GetWaitCancel(waitID string) (*WaitCancelResponse, int) {
 	if err := store.Migrate(); err != nil {
 		return &WaitCancelResponse{RobotResponse: NewErrorResponse(fmt.Errorf("migrate wait storage: %w", err), ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
 	}
-	canceled, err := store.CancelRobotWaitHandle(waitID, time.Now().UTC())
+	handle, err := store.GetRobotWaitHandle(waitID)
+	if err != nil {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
+	}
+	canceled, err := store.CancelRobotWaitHandle(handle, time.Now().UTC())
 	if err != nil {
 		return &WaitCancelResponse{RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
 	}

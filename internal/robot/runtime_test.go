@@ -94,7 +94,7 @@ func TestRobotRuntimeIsolationParallel(t *testing.T) {
 				return
 			}
 
-			receipt, err := GetSendReceiptForStore(rt.ProjectionStore(), opID)
+			receipt, err := GetSendReceiptForStore(rt.ProjectionStore(), opID, "")
 			if err != nil || !receipt.Success || receipt.Session != sessName {
 				errs <- fmt.Errorf("worker %d receipt = (%+v, %v)", workerID, receipt, err)
 				return

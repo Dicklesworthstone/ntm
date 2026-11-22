@@ -313,12 +313,59 @@ func TestRotationSummaryWaitsForFreshCompletedResponse(t *testing.T) {
 		}
 		return rotationReadyClaudeScreen, nil
 	}
-	summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible)
+	summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible, nil)
 	if err != nil || summary == nil || summary.CurrentTask != "Implement durable scheduling." || summary.Progress != "Queue admission is complete; recovery remains." {
 		t.Fatalf("completed summary = %+v, %v", summary, err)
 	}
 	if captures < 3 || visibleCaptures < 3 || strings.Contains(summary.RawSummary, "What task") {
 		t.Fatalf("accepted request/partial/busy response: captures=%d visible=%d summary=%+v", captures, visibleCaptures, summary)
+	}
+}
+
+func TestRotationSummaryUsesBoundTranscriptAndStillRequiresReadiness(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"ready", "binding_changed", "pane_changed", "superseded_while_busy", "busy"} {
+		t.Run(scenario, func(t *testing.T) {
+			generator := NewSummaryGenerator(SummaryGeneratorConfig{PromptTimeout: 100 * time.Millisecond})
+			_, start, end := rotationSummaryRequest(generator)
+			r, binding := rotationTranscriptFixture(t, "claude", "{}\n")
+			appendRotationTranscript(t, r, rotationTranscriptRecord(t, "claude", "assistant",
+				start+"\n## CURRENT TASK\nContinue durable scheduling.\n## PROGRESS\nRecovery is implemented.\n"+end))
+			expected := r.pane
+			expected.Command = "claude"
+			captures := 0
+			list := func(stdcontext.Context, string) ([]tmux.Pane, error) {
+				pane := expected
+				if scenario == "pane_changed" && captures > 0 {
+					pane.PID++
+				}
+				return []tmux.Pane{pane}, nil
+			}
+			capture := func(stdcontext.Context, string, int) (string, error) {
+				return "The terminal has redrawn; the summary is outside scrollback.", nil
+			}
+			visible := func(stdcontext.Context, string) (string, error) {
+				captures++
+				if captures == 1 && scenario == "superseded_while_busy" {
+					appendRotationTranscript(t, r, rotationTranscriptRecord(t, "claude", "assistant", "The later response has no complete handoff."))
+				}
+				if scenario == "binding_changed" {
+					binding.SessionID = "another-session"
+				}
+				if captures == 1 || scenario == "busy" {
+					return "✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n" + rotationReadyClaudeScreen, nil
+				}
+				return rotationReadyClaudeScreen, nil
+			}
+			summary, err := waitForRotationSummary(t.Context(), "test", "test__cc_1", expected, generator, start, end, time.Millisecond, list, capture, visible, r)
+			if scenario == "ready" {
+				if err != nil || summary == nil || summary.CurrentTask != "Continue durable scheduling." || summary.Progress != "Recovery is implemented." || captures < 3 {
+					t.Fatalf("transcript handoff did not wait for stable readiness: %+v, %v, captures=%d", summary, err, captures)
+				}
+			} else if err == nil || summary != nil {
+				t.Fatalf("accepted %s transcript despite failed source readiness: %+v, %v", scenario, summary, err)
+			}
+		})
 	}
 }
 
@@ -340,7 +387,7 @@ func TestRotationSummaryRejectsEchoPartialAndUnrelatedResponses(t *testing.T) {
 			list := func(stdcontext.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{expected}, nil }
 			capture := func(stdcontext.Context, string, int) (string, error) { return captured, nil }
 			visible := func(stdcontext.Context, string) (string, error) { return rotationReadyClaudeScreen, nil }
-			summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible)
+			summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible, nil)
 			if summary != nil || !errors.Is(err, stdcontext.DeadlineExceeded) {
 				t.Fatalf("invalid summary accepted: %+v, %v", summary, err)
 			}

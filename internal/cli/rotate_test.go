@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/auth"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -526,6 +530,172 @@ func exerciseContextRotationRecovery(t *testing.T, mode, root string, pending *c
 	return accepted
 }
 
+// A narrow terminal can omit every handoff marker even though the agent has
+// completed its reply. Exercise the public confirmation command with a real
+// process/session binding and the production transcript reader. A transcript
+// in the right directory, or markers in a user/tool record, cannot retire the
+// only agent that still owns the original context.
+func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Claude session records require Linux process start-time verification")
+	}
+	for _, tc := range []struct {
+		name  string
+		bound bool
+		kind  string
+	}{
+		{name: "assistant_reply", bound: true, kind: "assistant"},
+		{name: "unbound_transcript", kind: "assistant"},
+		{name: "user_message", bound: true, kind: "user"},
+		{name: "tool_payload", bound: true, kind: "tool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := filepath.Join(root, "project")
+			if err := os.MkdirAll(workDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", root)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+			t.Setenv("NTM_CONFIRM_ROOT", root)
+			t.Setenv("NTM_CONFIRM_WORKDIR", workDir)
+			t.Setenv("NTM_CONFIRM_MODE", "transcript")
+			t.Setenv("NTM_CONFIRM_TRANSCRIPT_KIND", tc.kind)
+			stub := filepath.Join(root, "tmux")
+			if err := os.WriteFile(stub, []byte(contextConfirmTmuxFixture), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", stub)
+
+			const sessionID = "11111111-1111-4111-8111-111111111111"
+			transcript := filepath.Join(root, ".claude", "projects", ctxmon.MungeProjectPath(workDir), sessionID+".jsonl")
+			if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(transcript, []byte("{}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_CONFIRM_TRANSCRIPT", transcript)
+			t.Setenv("NTM_CONFIRM_SESSION_ID", sessionID)
+			process := exec.Command(os.Args[0], "-test.run=^TestContextConfirmTranscriptAgentProcess$")
+			process.Args[0] = "claude"
+			process.Env = append(os.Environ(), "NTM_CONFIRM_AGENT_HELPER=1")
+			if err := process.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = process.Process.Kill()
+				_ = process.Wait()
+			})
+			pid := process.Process.Pid
+			t.Setenv("NTM_CONFIRM_SOURCE_PID", strconv.Itoa(pid))
+			if tc.bound {
+				stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+				if err != nil {
+					t.Fatal(err)
+				}
+				end := bytes.LastIndexByte(stat, ')')
+				if end < 0 {
+					t.Fatalf("missing process command in stat: %q", stat)
+				}
+				fields := strings.Fields(string(stat[end+1:]))
+				if len(fields) < 20 {
+					t.Fatalf("missing process start time in stat: %q", stat)
+				}
+				record, err := json.Marshal(map[string]any{"pid": pid, "sessionId": sessionID, "cwd": workDir, "procStart": fields[19]})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sessions := filepath.Join(root, ".claude", "sessions")
+				if err := os.MkdirAll(sessions, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(sessions, strconv.Itoa(pid)+".json"), record, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			binding := agentsession.DiscoverProcessSession(t.Context(), "cc", pid)
+			if tc.bound && (binding == nil || binding.Source != agentsession.DiscoverySourceProcessTree || binding.SessionID != sessionID || binding.SourcePath != transcript) {
+				t.Fatalf("fixture has no exact live transcript binding: %+v", binding)
+			}
+			if !tc.bound && binding != nil {
+				t.Fatalf("unbound fixture unexpectedly discovered a session: %+v", binding)
+			}
+
+			oldCfg, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
+			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
+			oldDelay := ctxmon.MaxRotationDelay
+			fastClient := tmux.NewClient("")
+			fastClient.MaxSendDelay = 2 * time.Millisecond
+			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
+			ctxmon.MaxRotationDelay = 5 * time.Millisecond
+			ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
+			ctxmon.DefaultRotationHistoryStore = ctxmon.NewRotationHistoryStore()
+			t.Cleanup(func() {
+				cfg, jsonOutput, tmux.DefaultClient = oldCfg, oldJSON, oldClient
+				ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore = oldStore, oldHistory
+				ctxmon.MaxRotationDelay = oldDelay
+			})
+			pending := &ctxmon.PendingRotation{AgentID: "demo__cc_1", SessionName: "demo", PaneID: "%1", PanePID: pid, PaneType: "cc", WorkDir: workDir, ContextPercent: 75, CreatedAt: time.Now(), TimeoutAt: time.Now().Add(time.Hour)}
+			if err := ctxmon.AddPendingRotation(pending); err != nil {
+				t.Fatal(err)
+			}
+			command := newRotateContextConfirmCmd()
+			command.SilenceUsage, command.SilenceErrors = true, true
+			var out bytes.Buffer
+			command.SetOut(&out)
+			command.SetErr(new(bytes.Buffer))
+			command.SetArgs([]string{pending.AgentID, "--action=rotate"})
+			timeout := 3 * time.Second
+			if tc.bound && tc.kind == "assistant" {
+				timeout = 15 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), timeout)
+			defer cancel()
+			err := command.ExecuteContext(ctx)
+			var result ConfirmRotationResult
+			if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &result); decodeErr != nil {
+				t.Fatalf("invalid command outcome: %v, error=%v, output=%q", decodeErr, err, out.String())
+			}
+			commands, _ := os.ReadFile(filepath.Join(root, "commands"))
+			log := string(commands)
+			if !strings.Contains(log, "TRANSCRIPT_SUMMARY_WRITTEN") {
+				t.Fatalf("command never requested a fresh transcript-only summary: %+v, %v\n%s", result, err, log)
+			}
+			stored, getErr := ctxmon.GetPendingRotationByID(pending.AgentID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			wantSuccess := tc.bound && tc.kind == "assistant"
+			if wantSuccess {
+				if err != nil || !result.Success || result.Rotation == nil || result.Rotation.NewPaneID != "%99" || stored != nil {
+					t.Fatalf("exact assistant reply did not complete rotation: %+v, %v; pending=%+v\n%s", result, err, stored, log)
+				}
+				payload, readErr := os.ReadFile(filepath.Join(root, "delivered"))
+				if readErr != nil || !strings.Contains(string(payload), "Continue transcript-bound recovery") || !strings.Contains(string(payload), "Original context is preserved in the transcript.") {
+					t.Fatalf("replacement did not receive exact source transcript: %q, %v", payload, readErr)
+				}
+				deliveredAt, retiredAt := strings.Index(log, "HANDOFF_DELIVERED"), strings.Index(log, "kill-pane -t %1")
+				if deliveredAt < 0 || retiredAt < 0 || deliveredAt > retiredAt {
+					t.Fatalf("original was retired before the transcript handoff: %s", log)
+				}
+			} else if err == nil || result.Success || stored == nil || !strings.Contains(result.Message, "waiting for handoff summary") || strings.Contains(log, "split-window") || strings.Contains(log, "kill-pane") || strings.Contains(log, "HANDOFF_DELIVERED") {
+				t.Fatalf("untrusted transcript affected original or replacement: %+v, %v; pending=%+v\n%s", result, err, stored, log)
+			}
+		})
+	}
+}
+
+func TestContextConfirmTranscriptAgentProcess(t *testing.T) {
+	if os.Getenv("NTM_CONFIRM_AGENT_HELPER") != "1" {
+		return
+	}
+	// The parent owns this subprocess and stops it after the public CLI check.
+	// Its argv and live /proc start time provide the real provider binding.
+	time.Sleep(time.Minute)
+}
+
 const contextConfirmTmuxFixture = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_CONFIRM_ROOT/commands"
 target=
@@ -556,7 +726,7 @@ case "$1" in
     prefix=
     case "$*" in *' -a '*) prefix=demo_NTM_SEP_ ;; esac
     if [ ! -f "$NTM_CONFIRM_ROOT/retired" ]; then
-      pid=123
+      pid=${NTM_CONFIRM_SOURCE_PID:-123}
       if [ "$NTM_CONFIRM_MODE" = changed-pid ]; then pid=456; fi
       index=1
       if [ -f "$NTM_CONFIRM_ROOT/created" ] && [ ! -f "$NTM_CONFIRM_ROOT/replacement-retired" ]; then index=2; fi
@@ -590,9 +760,19 @@ case "$1" in
     if [ "$target" = '%1' ]; then
       start_marker=$(sed -n 's/.*\(NTM_START_[A-Za-z0-9]*\).*/\1/p' "$NTM_CONFIRM_ROOT/buffer")
       end_marker=$(sed -n 's/.*\(NTM_END_[A-Za-z0-9]*\).*/\1/p' "$NTM_CONFIRM_ROOT/buffer")
-      printf '%s\n' "$start_marker" > "$NTM_CONFIRM_ROOT/summary"
-      printf '## Current Task\nContinue durable scheduler implementation\n## Progress\nScheduling state is persisted.\n## Next Steps\nAdd recovery tests.\n' >> "$NTM_CONFIRM_ROOT/summary"
-      printf '%s\n' "$end_marker" >> "$NTM_CONFIRM_ROOT/summary"
+      if [ "$NTM_CONFIRM_MODE" = transcript ]; then
+        text="$start_marker\n## Current Task\nContinue transcript-bound recovery\n## Progress\nOriginal context is preserved in the transcript.\n## Next Steps\nVerify the continuation.\n$end_marker"
+        case "$NTM_CONFIRM_TRANSCRIPT_KIND" in
+          user) printf '{"type":"user","sessionId":"%s","message":{"role":"user","content":[{"type":"text","text":"%s"}]}}\n' "$NTM_CONFIRM_SESSION_ID" "$text" >> "$NTM_CONFIRM_TRANSCRIPT" ;;
+          tool) printf '{"type":"assistant","sessionId":"%s","message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture","name":"Read","input":{"text":"%s"}}]}}\n' "$NTM_CONFIRM_SESSION_ID" "$text" >> "$NTM_CONFIRM_TRANSCRIPT" ;;
+          *) printf '{"type":"assistant","sessionId":"%s","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\n' "$NTM_CONFIRM_SESSION_ID" "$text" >> "$NTM_CONFIRM_TRANSCRIPT" ;;
+        esac
+        printf 'TRANSCRIPT_SUMMARY_WRITTEN\n' >> "$NTM_CONFIRM_ROOT/commands"
+      else
+        printf '%s\n' "$start_marker" > "$NTM_CONFIRM_ROOT/summary"
+        printf '## Current Task\nContinue durable scheduler implementation\n## Progress\nScheduling state is persisted.\n## Next Steps\nAdd recovery tests.\n' >> "$NTM_CONFIRM_ROOT/summary"
+        printf '%s\n' "$end_marker" >> "$NTM_CONFIRM_ROOT/summary"
+      fi
     else
       cat "$NTM_CONFIRM_ROOT/buffer" > "$NTM_CONFIRM_ROOT/delivered"
       printf 'HANDOFF_DELIVERED\n' >> "$NTM_CONFIRM_ROOT/commands"
