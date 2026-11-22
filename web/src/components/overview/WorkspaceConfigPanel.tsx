@@ -8,7 +8,7 @@
  *   - PATCH /api/v1/config (switch active project_dir or reset to startup_project_dir)
  */
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiFetch,
@@ -50,11 +50,13 @@ export function WorkspaceConfigPanel() {
     retry: false,
   });
 
+  const initializedDirRef = useRef(false);
   useEffect(() => {
-    if (configQuery.data && !draftProjectDir) {
+    if (configQuery.data && !initializedDirRef.current) {
+      initializedDirRef.current = true;
       setDraftProjectDir(configQuery.data.project_dir || "");
     }
-  }, [configQuery.data, draftProjectDir]);
+  }, [configQuery.data]);
 
   const patchConfigMutation = useMutation({
     mutationFn: (projectDir: string | null) =>
