@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -115,6 +116,14 @@ func SetRedactionConfig(cfg *redaction.Config) {
 
 // Export creates a portable archive of a checkpoint.
 func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts ExportOptions) (*ExportManifest, error) {
+	if err := privacy.GetDefaultManager().CanPersist(sessionName, privacy.OpExport); err != nil {
+		return nil, err
+	}
+	if opts.IncludeScrollback {
+		if err := privacy.GetDefaultManager().CanPersist(sessionName, privacy.OpScrollback); err != nil {
+			return nil, err
+		}
+	}
 	if opts.Format == "" {
 		opts.Format = FormatTarGz
 	}

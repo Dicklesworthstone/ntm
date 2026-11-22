@@ -352,9 +352,12 @@ func collectSessionDataWithPrivacy(gen *bundle.Generator, session string, lines 
 		return false, nil // Session doesn't exist, skip silently
 	}
 
-	// Check privacy mode for this session
+	// Check privacy mode for this session. Use CanPersist(OpScrollback) so
+	// granular privacy config (disable_scrollback_capture=false) and explicit
+	// per-session --allow-persist overrides are honored consistently.
 	privacyMgr := privacy.GetDefaultManager()
 	privacyEnabled := privacyMgr.IsPrivacyEnabled(session)
+	scrollbackBlocked := privacyMgr.CanPersist(session, privacy.OpScrollback) != nil
 	contentSuppressed := false
 
 	// Get panes
@@ -380,8 +383,8 @@ func collectSessionDataWithPrivacy(gen *bundle.Generator, session string, lines 
 		return false, err
 	}
 
-	// If privacy mode is enabled and no override, skip scrollback capture
-	if privacyEnabled && !allowPersist {
+	// If scrollback persistence is blocked by privacy mode and no override, skip capture
+	if scrollbackBlocked && !allowPersist {
 		contentSuppressed = true
 		suppressedMsg := fmt.Sprintf(`Scrollback content suppressed due to privacy mode.
 
