@@ -830,6 +830,33 @@ func TestMaybeCheckContextRotation_DefaultOffBuildsNothing(t *testing.T) {
 	if c.rotation != nil {
 		t.Fatal("rotation checker constructed despite threshold 0")
 	}
+
+	// Even with config.Default() attached (which ships non-zero
+	// RestartIfTokensAbove=100000 and RestartIfSessionHours=8 with Enabled=false),
+	// rotation must remain strictly off.
+	cDefault := New("rot-default-off", t.TempDir(), nil, "Coordinator")
+	cDefault.WithNTMConfig(config.Default())
+	cDefault.maybeCheckContextRotation(t.Context())
+	if cDefault.rotation != nil {
+		t.Fatal("rotation checker constructed for config.Default() with Rotation.Enabled=false")
+	}
+
+	// Explicitly enabling [rotation] with threshold-only triggers (UsagePercentThreshold=0)
+	// must construct the checker and render accurate trigger summaries.
+	enabledCfg := config.Default()
+	enabledCfg.Rotation.Enabled = true
+	cEnabled := New("rot-enabled-thresholds", t.TempDir(), nil, "Coordinator")
+	cEnabled.WithNTMConfig(enabledCfg)
+	checker := newRotationChecker(cEnabled.session, cEnabled.projectKey, cEnabled.config, cEnabled.ntmConfig)
+	if checker == nil {
+		t.Fatal("expected rotation checker when Rotation.Enabled=true with threshold triggers")
+	}
+	if got := checker.triggerSummary(rotationDecision{TriggerReason: "tokens_above", Tokens: 120000}); !strings.Contains(got, "120000") || strings.Contains(got, "0.0%") {
+		t.Fatalf("unexpected tokens_above summary: %q", got)
+	}
+	if got := checker.triggerSummary(rotationDecision{TriggerReason: "session_age"}); !strings.Contains(got, "session age") || strings.Contains(got, "0.0%") {
+		t.Fatalf("unexpected session_age summary: %q", got)
+	}
 }
 
 func TestRotationCheckerProductionCapacityEvidence(t *testing.T) {
