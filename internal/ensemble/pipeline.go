@@ -52,11 +52,23 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 		ctx = context.Background()
 	}
 
+	now := time.Now().UTC()
+	if cfg == nil {
+		err := ValidatePipelineConfig(nil)
+		return &EnsembleResult{
+			Stage:       StageFailed,
+			Error:       err.Error(),
+			StartedAt:   now,
+			CompletedAt: now,
+			Metrics:     &PipelineMetrics{},
+		}, err
+	}
+
 	result := &EnsembleResult{
 		SessionName: cfg.SessionName,
 		Question:    cfg.Question,
 		Stage:       StageIntake,
-		StartedAt:   time.Now().UTC(),
+		StartedAt:   now,
 		Metrics:     &PipelineMetrics{},
 	}
 
