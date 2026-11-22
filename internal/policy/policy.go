@@ -110,6 +110,27 @@ func ResolveEffectivePath() (path string, exists bool, err error) {
 	return resolveEffectivePath(DefaultPolicyPath)
 }
 
+// ResolveEffectivePathForProject reports which policy file LoadForProject would
+// read for projectDir, and whether such a file exists. When projectDir is empty,
+// it falls back to ResolveEffectivePath.
+func ResolveEffectivePathForProject(projectDir string) (path string, exists bool, err error) {
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" {
+		return ResolveEffectivePath()
+	}
+	if !filepath.IsAbs(projectDir) {
+		return "", false, fmt.Errorf("policy project directory must be absolute")
+	}
+	info, err := os.Stat(projectDir)
+	if err != nil {
+		return "", false, fmt.Errorf("inspect policy project directory %q: %w", projectDir, err)
+	}
+	if !info.IsDir() {
+		return "", false, fmt.Errorf("policy project path %q is not a directory", projectDir)
+	}
+	return resolveEffectivePath(filepath.Join(projectDir, DefaultPolicyPath))
+}
+
 func resolveEffectivePath(projectPolicyPath string) (path string, exists bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -172,7 +193,7 @@ func loadOrDefaultAt(projectPolicyPath string) (*Policy, error) {
 // DefaultPolicy returns a sensible default policy for destructive command protection.
 func DefaultPolicy() *Policy {
 	const gitOpts = `(?:\s+(?:-[Cc]\s+\S+|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)|--no-pager|-p|--paginate|--bare|--no-replace-objects))*`
-	const rmRF = `rm\s+(?:-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*|(?:-[rR]|--recursive)\s+(?:-f|--force)|(?:-f|--force)\s+(?:-[rR]|--recursive))`
+	const rmRF = `rm\s+(?:-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[a-zA-Z]*|(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*f[a-zA-Z]*|--force)|(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive))`
 	p := &Policy{
 		Version: 1,
 		// Automation defaults
@@ -193,8 +214,8 @@ func DefaultPolicy() *Policy {
 			{Pattern: `git` + gitOpts + `\s+clean(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|['")]|$)`, Reason: "Removes untracked files permanently"},
 			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|['")]|$)`, Reason: "Force push can overwrite remote history"},
 			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(\+|:\+)`, Reason: "Force push via +refspec can overwrite remote history"},
-			{Pattern: rmRF + `\s+(/|~|\*|\.|\.\.)(/|\s|['")]|$)`, Reason: "Critical recursive deletion"},
-			{Pattern: `git` + gitOpts + `\s+branch(\s+.*?)?\s(-D|--delete\s+.*(-f|--force)|(-f|--force)\s+.*(--delete|-d))(\s|['")]|$)`, Reason: "Force delete branch loses unmerged work"},
+			{Pattern: rmRF + `(?:\s+-[^\s]*)*\s+(/|~|\*|\.|\.\.)(/|\s|['")]|$)`, Reason: "Critical recursive deletion"},
+			{Pattern: `git` + gitOpts + `\s+branch(\s+.*?)?\s(-D|-[a-zA-Z]*(?:d[a-zA-Z]*f|f[a-zA-Z]*d)[a-zA-Z]*|(--delete|-d)\s+.*(-f|--force)|(-f|--force)\s+.*(--delete|-d))(\s|['")]|$)`, Reason: "Force delete branch loses unmerged work"},
 			{Pattern: `git` + gitOpts + `\s+stash\s+(drop|clear)(\s|['")]|$)`, Reason: "Losing stashed work"},
 		},
 		// Approval required - potentially dangerous commands
@@ -260,13 +281,20 @@ func (p *Policy) compile() error {
 var gitPushUnconditionalForceRE = regexp.MustCompile(`\s(-[a-zA-Z]*f[a-zA-Z]*|--force)(\s|['")]|$)`)
 
 // splitShellSubcommands splits a compound shell command on unquoted command
-// separators (&&, ||, ;, |, newline) and strips unquoted shell comments (# ...)
-// so an allowed prefix or trailing comment cannot smuggle a destructive command
-// past policy enforcement.
+// separators (&&, ||, ;, |, &, newline), strips unquoted shell comments (# ...),
+// handles ANSI-C quoting ($'...'), and extracts nested command substitutions
+// ($(...) and `...`) so an allowed prefix or wrapper cannot smuggle a
+// destructive command past policy enforcement.
 func splitShellSubcommands(command string) []string {
+	return splitShellSubcommandsDepth(command, 0)
+}
+
+func splitShellSubcommandsDepth(command string, depth int) []string {
 	var parts []string
+	var nested []string
 	var cur strings.Builder
 	inSingle := false
+	inANSIC := false
 	inDouble := false
 	escaped := false
 
@@ -292,16 +320,61 @@ func splitShellSubcommands(command string) []string {
 			cur.WriteByte(ch)
 			continue
 		}
+		if inANSIC {
+			if ch == '\\' && i+1 < n {
+				cur.WriteByte(ch)
+				cur.WriteByte(command[i+1])
+				i++
+				continue
+			}
+			if ch == '\'' {
+				inANSIC = false
+			}
+			cur.WriteByte(ch)
+			continue
+		}
 		if ch == '\\' {
 			escaped = true
 			cur.WriteByte(ch)
 			continue
+		}
+		// Command substitutions $(...) and `...` are evaluated both unquoted
+		// and inside double quotes.
+		if ch == '$' && i+1 < n && command[i+1] == '(' {
+			end := findMatchingParen(command, i+1)
+			if end > i+1 {
+				inner := command[i+2 : end]
+				if depth < 8 {
+					nested = append(nested, splitShellSubcommandsDepth(inner, depth+1)...)
+				}
+				cur.WriteString(command[i : end+1])
+				i = end
+				continue
+			}
+		}
+		if ch == '`' {
+			end := findMatchingBacktick(command, i)
+			if end > i {
+				inner := command[i+1 : end]
+				if depth < 8 {
+					nested = append(nested, splitShellSubcommandsDepth(inner, depth+1)...)
+				}
+				cur.WriteString(command[i : end+1])
+				i = end
+				continue
+			}
 		}
 		if inDouble {
 			if ch == '"' {
 				inDouble = false
 			}
 			cur.WriteByte(ch)
+			continue
+		}
+		if ch == '$' && i+1 < n && command[i+1] == '\'' {
+			inANSIC = true
+			cur.WriteString("$'")
+			i++
 			continue
 		}
 		switch ch {
@@ -334,13 +407,108 @@ func splitShellSubcommands(command string) []string {
 				flush()
 				continue
 			}
+			// Split standalone async '&' unless it is part of a redirection (>&, <&, &>).
+			prev := byte(0)
+			if i > 0 {
+				prev = command[i-1]
+			}
+			next := byte(0)
+			if i+1 < n {
+				next = command[i+1]
+			}
+			if prev != '>' && prev != '<' && next != '>' {
+				flush()
+				continue
+			}
 			cur.WriteByte(ch)
 		default:
 			cur.WriteByte(ch)
 		}
 	}
 	flush()
+	if len(nested) > 0 {
+		parts = append(parts, nested...)
+	}
 	return parts
+}
+
+func findMatchingParen(s string, openIdx int) int {
+	depth := 0
+	inSingle := false
+	inANSIC := false
+	inDouble := false
+	escaped := false
+	for i := openIdx; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		if inANSIC {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == '\'' {
+				inANSIC = false
+			}
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		if ch == '$' && i+1 < len(s) && s[i+1] == '\'' {
+			inANSIC = true
+			i++
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func findMatchingBacktick(s string, openIdx int) int {
+	escaped := false
+	for i := openIdx + 1; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '`' {
+			return i
+		}
+	}
+	return -1
 }
 
 func (p *Policy) checkSingle(cmd, fullCmd string) *Match {
@@ -401,12 +569,11 @@ func (p *Policy) Check(command string) *Match {
 	}
 
 	subcommands := splitShellSubcommands(cmd)
-	if len(subcommands) <= 1 {
-		target := cmd
-		if len(subcommands) == 1 {
-			target = subcommands[0]
-		}
-		return p.checkSingle(target, cmd)
+	if len(subcommands) == 0 {
+		return nil
+	}
+	if len(subcommands) == 1 {
+		return p.checkSingle(subcommands[0], cmd)
 	}
 
 	var firstApprove *Match
