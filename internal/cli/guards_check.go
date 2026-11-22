@@ -18,6 +18,8 @@ package cli
 // can never hang a commit.
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -79,31 +81,44 @@ func guardTransportError(err error) bool {
 
 func newGuardsCheckCmd() *cobra.Command {
 	var staged bool
+	var push bool
 	var projectKey string
 
 	cmd := &cobra.Command{
 		Use:    "check",
-		Short:  "Check staged files against Agent Mail file reservations",
-		Hidden: true, // plumbing for the installed pre-commit hook
+		Short:  "Check staged or pushed files against Agent Mail file reservations",
+		Hidden: true, // plumbing for the installed pre-commit / pre-push hooks
 		Long: `Check files against active Agent Mail file reservations.
 
-This is the command the NTM pre-commit guard hook runs. With --staged it
-lists the files staged in the current git repository and fails when any of
-them is covered by an active exclusive reservation held by another agent.
+This is the command the NTM pre-commit and pre-push guard hooks run:
+  - With --staged, it lists the files staged in the current git repository.
+  - With --push, it reads git pre-push ref lines from stdin and checks files
+    touched by commits being pushed (falling back to unpushed commits on HEAD
+    when stdin is empty).
 
-If Agent Mail is unreachable the check fails open (commit allowed) with a
-visible WARN and a degraded-event row surfaced by 'ntm doctor'. Set
-NTM_GUARD_STRICT=1 to fail closed instead.`,
+If any checked file is covered by an active exclusive reservation held by
+another agent, the check exits non-zero.
+
+If Agent Mail is unreachable the check fails open with a visible WARN and a
+degraded-event row surfaced by 'ntm doctor'. Set NTM_GUARD_STRICT=1 to fail
+closed instead.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !staged {
-				return fmt.Errorf("guards check currently requires --staged")
+			if staged && push {
+				return fmt.Errorf("guards check accepts only one of --staged or --push")
+			}
+			if !staged && !push {
+				return fmt.Errorf("guards check requires --staged or --push")
+			}
+			if push {
+				return runGuardsCheckPush(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), projectKey)
 			}
 			return runGuardsCheckStaged(cmd.OutOrStdout(), cmd.ErrOrStderr(), projectKey)
 		},
 	}
 
 	cmd.Flags().BoolVar(&staged, "staged", false, "Check the files staged for commit")
+	cmd.Flags().BoolVar(&push, "push", false, "Check files modified by commits being pushed")
 	cmd.Flags().StringVarP(&projectKey, "project-key", "p", "", "Agent Mail project key (defaults to the repository root)")
 
 	return cmd
@@ -126,8 +141,32 @@ func runGuardsCheckStaged(stdout, stderr io.Writer, projectKey string) error {
 	if err != nil {
 		return fmt.Errorf("listing staged files: %w", err)
 	}
-	if len(stagedPaths) == 0 {
-		fmt.Fprintln(stdout, "[ntm-guard] Pre-commit check passed (no staged files)")
+	return checkReservedPaths(stdout, stderr, repoPath, projectKey, "Pre-commit", "commit", "staged", stagedPaths)
+}
+
+func runGuardsCheckPush(stdout, stderr io.Writer, stdin io.Reader, projectKey string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+	repoPath, err := findGitRoot(cwd)
+	if err != nil {
+		return fmt.Errorf("not in a git repository: %w", err)
+	}
+	if projectKey == "" {
+		projectKey = repoPath
+	}
+
+	paths, err := pushedFiles(repoPath, stdin)
+	if err != nil {
+		return fmt.Errorf("listing pushed files: %w", err)
+	}
+	return checkReservedPaths(stdout, stderr, repoPath, projectKey, "Pre-push", "push", "pushed", paths)
+}
+
+func checkReservedPaths(stdout, stderr io.Writer, repoPath, projectKey, phaseLabel, actionVerb, scopeAdj string, paths []string) error {
+	if len(paths) == 0 {
+		fmt.Fprintf(stdout, "[ntm-guard] %s check passed (no %s files)\n", phaseLabel, scopeAdj)
 		return nil
 	}
 
@@ -135,11 +174,11 @@ func runGuardsCheckStaged(stdout, stderr io.Writer, projectKey string) error {
 	defer cancel()
 
 	client := agentmail.NewClient()
-	conflicts, checkErr := client.CheckStagedReservations(ctx, projectKey, os.Getenv(guardSelfAgentEnv), stagedPaths)
+	conflicts, checkErr := client.CheckStagedReservations(ctx, projectKey, os.Getenv(guardSelfAgentEnv), paths)
 	if checkErr != nil {
 		if guardStrictMode() {
 			fmt.Fprintf(stderr, "[ntm-guard] BLOCKED: Agent Mail reservation check failed and %s=1 (fail-closed): %v\n", guardStrictEnv, checkErr)
-			return fmt.Errorf("commit blocked: Agent Mail unreachable and %s=1 requires a completed reservation check", guardStrictEnv)
+			return fmt.Errorf("%s blocked: Agent Mail unreachable and %s=1 requires a completed reservation check", actionVerb, guardStrictEnv)
 		}
 		// Fail open, but VISIBLY: WARN now, and a degraded-event row that
 		// `ntm doctor` / the dashboard surface later. Transport failures and
@@ -149,9 +188,9 @@ func runGuardsCheckStaged(stdout, stderr io.Writer, projectKey string) error {
 		reason := guardReasonAppError
 		if guardTransportError(checkErr) {
 			reason = guardReasonUnreachable
-			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail unreachable (%v) — allowing commit WITHOUT reservation check (degraded mode)\n", checkErr)
+			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail unreachable (%v) — allowing %s WITHOUT reservation check (degraded mode)\n", checkErr, actionVerb)
 		} else {
-			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail answered with an error (%v) — allowing commit WITHOUT reservation check (degraded mode)\n", checkErr)
+			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail answered with an error (%v) — allowing %s WITHOUT reservation check (degraded mode)\n", checkErr, actionVerb)
 		}
 		fmt.Fprintf(stderr, "[ntm-guard] WARN: degraded runs are recorded; see 'ntm doctor'. Set %s=1 to fail closed.\n", guardStrictEnv)
 		recordGuardDegradedEvent(stderr, repoPath, projectKey, reason, checkErr)
@@ -163,11 +202,11 @@ func runGuardsCheckStaged(stdout, stderr io.Writer, projectKey string) error {
 			fmt.Fprintf(stderr, "[ntm-guard] CONFLICT: %s is reserved by %s (reservation #%d, pattern %q, expires %s)\n",
 				c.Path, c.Holder, c.ReservationID, c.PathPattern, c.ExpiresTS.Format(time.RFC3339))
 		}
-		fmt.Fprintf(stderr, "[ntm-guard] Resolve with the holder or release the reservation (ntm mail), then retry the commit.\n")
-		return fmt.Errorf("commit blocked: %d staged file(s) conflict with active Agent Mail file reservations", len(conflicts))
+		fmt.Fprintf(stderr, "[ntm-guard] Resolve with the holder or release the reservation (ntm mail), then retry the %s.\n", actionVerb)
+		return fmt.Errorf("%s blocked: %d %s file(s) conflict with active Agent Mail file reservations", actionVerb, len(conflicts), scopeAdj)
 	}
 
-	fmt.Fprintf(stdout, "[ntm-guard] Pre-commit check passed (%d staged file(s), no reservation conflicts)\n", len(stagedPaths))
+	fmt.Fprintf(stdout, "[ntm-guard] %s check passed (%d %s file(s), no reservation conflicts)\n", phaseLabel, len(paths), scopeAdj)
 	return nil
 }
 
@@ -201,6 +240,129 @@ func stagedFiles(repoPath string) ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+func isZeroGitOID(oid string) bool {
+	if oid == "" {
+		return true
+	}
+	for i := 0; i < len(oid); i++ {
+		if oid[i] != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+// pushedFiles collects the unique repo-relative paths modified by commits being
+// pushed, reading git's standard pre-push stdin format:
+//
+//	<local ref> <local oid> <remote ref> <remote oid>
+//
+// If stdin is nil or contains no ref lines, it falls back to commits reachable
+// from HEAD that are not yet on any remote-tracking ref.
+func pushedFiles(repoPath string, stdin io.Reader) ([]string, error) {
+	seen := make(map[string]struct{})
+	var paths []string
+	addPaths := func(items []string) {
+		for _, p := range items {
+			if p == "" {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			paths = append(paths, p)
+		}
+	}
+
+	sawRefLine := false
+	if stdin != nil {
+		scanner := bufio.NewScanner(stdin)
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 4 {
+				continue
+			}
+			sawRefLine = true
+			localOID := fields[1]
+			remoteOID := fields[3]
+			if isZeroGitOID(localOID) {
+				// Remote branch/tag deletion: no local commit contents pushed.
+				continue
+			}
+			if !isZeroGitOID(remoteOID) {
+				diffPaths, err := gitDiffRangePaths(repoPath, remoteOID, localOID)
+				if err == nil {
+					addPaths(diffPaths)
+					continue
+				}
+			}
+			unpushedPaths, err := pushedFilesForUnpushedCommits(repoPath, localOID)
+			if err != nil {
+				return nil, err
+			}
+			addPaths(unpushedPaths)
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("reading pre-push stdin: %w", err)
+		}
+	}
+
+	if !sawRefLine {
+		// Fallback when invoked directly without pre-push stdin: check commits
+		// ahead of remotes on HEAD, if HEAD exists.
+		if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+			return nil, nil
+		}
+		unpushedPaths, err := pushedFilesForUnpushedCommits(repoPath, "HEAD")
+		if err != nil {
+			return nil, err
+		}
+		addPaths(unpushedPaths)
+	}
+
+	return paths, nil
+}
+
+func gitDiffRangePaths(repoPath, baseOID, headOID string) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--no-renames", "--diff-filter=ACDM", "-z", baseOID+".."+headOID)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s..%s: %w", baseOID, headOID, err)
+	}
+	return parseNulSeparatedPaths(out), nil
+}
+
+func pushedFilesForUnpushedCommits(repoPath, localRef string) ([]string, error) {
+	revCmd := exec.Command("git", "-C", repoPath, "rev-list", "--max-count=500", localRef, "--not", "--remotes")
+	revOut, err := revCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-list %s --not --remotes: %w", localRef, err)
+	}
+	commits := strings.TrimSpace(string(revOut))
+	if commits == "" {
+		return nil, nil
+	}
+
+	diffCmd := exec.Command("git", "-C", repoPath, "diff-tree", "--stdin", "--no-commit-id", "--name-only", "-r", "--root", "--no-renames", "--diff-filter=ACDM", "-z")
+	diffCmd.Stdin = bytes.NewBufferString(commits + "\n")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff-tree for unpushed commits: %w", err)
+	}
+	return parseNulSeparatedPaths(diffOut), nil
+}
+
+func parseNulSeparatedPaths(out []byte) []string {
+	var paths []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // recordGuardDegradedEvent appends a fail-open row to the state DB. Best

@@ -555,3 +555,66 @@ func TestGuardHookPathCheck_WarnsWhenNTMOffPath(t *testing.T) {
 		t.Fatalf("hook installed + ntm on PATH must be ok, got %+v", check)
 	}
 }
+
+func TestGuardsCheckPush_ConflictBlocksAndCleanPasses(t *testing.T) {
+	isolateGuardState(t)
+	repo := guardTestRepo(t)
+
+	// Commit 1 (base)
+	guardStageFile(t, repo, "base.txt", "base\n")
+	if out, err := exec.Command("git", "-C", repo, "commit", "-q", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit base: %v (%s)", err, out)
+	}
+	baseOIDBytes, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse base: %v", err)
+	}
+	baseOID := strings.TrimSpace(string(baseOIDBytes))
+
+	// Commit 2 touches reserved file internal/secret.go
+	guardStageFile(t, repo, "internal/secret.go", "package internal\n")
+	if out, err := exec.Command("git", "-C", repo, "commit", "-q", "-m", "touch reserved").CombinedOutput(); err != nil {
+		t.Fatalf("git commit head: %v (%s)", err, out)
+	}
+	headOIDBytes, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse head: %v", err)
+	}
+	headOID := strings.TrimSpace(string(headOIDBytes))
+
+	srv := startFakeAgentMail(t, []map[string]any{
+		exclusiveReservation(7, "BlueLake", "internal/secret.go"),
+	})
+	t.Setenv("AGENT_MAIL_URL", srv.URL)
+
+	// Update range baseOID..headOID must detect reserved committed file and block push.
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("refs/heads/main " + headOID + " refs/heads/main " + baseOID + "\n")
+	if err := runGuardsCheckPush(&stdout, &stderr, stdin, repo); err == nil {
+		t.Fatalf("expected push conflict error, got nil (stdout=%q stderr=%q)", stdout.String(), stderr.String())
+	} else if !strings.Contains(stderr.String(), "CONFLICT: internal/secret.go") {
+		t.Fatalf("stderr missing conflict detail: %q", stderr.String())
+	}
+
+	// Self-owned reservation allows the push.
+	t.Setenv(guardSelfAgentEnv, "BlueLake")
+	stdout.Reset()
+	stderr.Reset()
+	stdin = strings.NewReader("refs/heads/main " + headOID + " refs/heads/main " + baseOID + "\n")
+	if err := runGuardsCheckPush(&stdout, &stderr, stdin, repo); err != nil {
+		t.Fatalf("expected self-owned push to pass, got %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Pre-push check passed") {
+		t.Fatalf("unexpected stdout: %q", stdout.String())
+	}
+
+	// Branch deletion (zero local OID) has no pushed files and passes even with another holder.
+	t.Setenv(guardSelfAgentEnv, "")
+	stdout.Reset()
+	stderr.Reset()
+	zeroOID := strings.Repeat("0", len(headOID))
+	stdin = strings.NewReader("(delete) " + zeroOID + " refs/heads/old " + headOID + "\n")
+	if err := runGuardsCheckPush(&stdout, &stderr, stdin, repo); err != nil {
+		t.Fatalf("expected branch deletion push to pass, got %v", err)
+	}
+}
