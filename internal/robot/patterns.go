@@ -439,7 +439,7 @@ func isGenericShellIdlePattern(name string) bool {
 
 func isKnownAgentPatternType(agentType string) bool {
 	switch normalizeAgentType(agentType) {
-	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
+	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "pi", "ollama":
 		return true
 	default:
 		return false

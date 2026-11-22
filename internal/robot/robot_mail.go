@@ -367,20 +367,32 @@ func groupAgentsByType(agents []agentmail.Agent) map[string][]agentmail.Agent {
 }
 
 func agentTypeFromProgram(program string) string {
-	p := strings.ToLower(program)
+	p := strings.ToLower(strings.TrimSpace(program))
 	switch {
 	case strings.Contains(p, "claude"):
 		return "cc"
 	case strings.Contains(p, "codex"):
 		return "cod"
+	case strings.Contains(p, "antigravity") || p == "agy":
+		return "agy"
 	case strings.Contains(p, "gemini"):
 		return "gmi"
+	case strings.Contains(p, "grok"):
+		return "grok"
+	case strings.Contains(p, "opencode") || p == "oc":
+		return "oc"
+	case strings.Contains(p, "oh-my-pi") || p == "omp":
+		return "omp"
+	case p == "pi" || strings.HasPrefix(p, "pi-") || strings.HasPrefix(p, "pi "):
+		return "pi"
 	case strings.Contains(p, "cursor"):
 		return "cursor"
 	case strings.Contains(p, "windsurf"):
 		return "windsurf"
 	case strings.Contains(p, "aider"):
 		return "aider"
+	case strings.Contains(p, "ollama"):
+		return "ollama"
 	default:
 		return p
 	}
@@ -394,6 +406,16 @@ func normalizedProgramType(program string) string {
 		return "codex"
 	case "gmi":
 		return "gemini"
+	case "agy":
+		return "antigravity"
+	case "grok":
+		return "grok"
+	case "oc":
+		return "oc"
+	case "omp":
+		return "omp"
+	case "pi":
+		return "pi"
 	case "cursor":
 		return "cursor"
 	case "windsurf":

@@ -28,11 +28,11 @@ import (
 // multi-window / window-per-agent layouts rather than always window 1.
 func exitAgent(ctx context.Context, session string, win, pane int, agentType string, seq *RestartSequence) error {
 	switch restartCanonicalAgentType(agentType) {
-	case "cc":
+	case "cc", "grok", "oc", "pi":
 		return exitClaudeCode(ctx, session, win, pane, seq)
 	case "cod":
 		return exitCodex(ctx, session, win, pane, seq)
-	case "gmi":
+	case "gmi", "agy":
 		return exitGemini(ctx, session, win, pane, seq)
 	case "omp":
 		return exitOmp(ctx, session, win, pane, seq)

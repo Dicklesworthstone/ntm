@@ -3014,6 +3014,8 @@ func bulkAssignTMUXAgentType(agentType string) tmux.AgentType {
 		return tmux.AgentOpencode
 	case "omp":
 		return tmux.AgentOmp
+	case "pi":
+		return tmux.AgentPi
 	case "ollama":
 		return tmux.AgentOllama
 	case "user":

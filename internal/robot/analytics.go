@@ -382,7 +382,7 @@ func IsAnalyticsAgentType(agentType string) bool {
 
 func isAnalyticsAgentType(agentType string) bool {
 	switch agentType {
-	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
+	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "pi", "ollama":
 		return true
 	default:
 		return false
