@@ -596,7 +596,7 @@ func TestArchiver_RunRetriesFailedRotationWithoutLosingCapture(t *testing.T) {
 		}
 		if observations == 3 {
 			a.mu.RLock()
-			state := a.paneStates[2]
+			state := a.paneStates["%2"]
 			preservedAfterFailure = state != nil && state.Sequence == 1 && state.LastContent == "first line" && a.totalRecords == 1 && a.file == first && callbacks == 1
 			a.mu.RUnlock()
 			if err := os.Rename(movedDir, archiveDir); err != nil {

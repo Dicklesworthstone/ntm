@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -85,7 +86,7 @@ type Archiver struct {
 	outputDir       string
 	interval        time.Duration
 	linesPerCapture int
-	paneStates      map[int]*PaneState // Keyed by pane index
+	paneStates      map[string]*PaneState // Keyed by stable pane ID (fallback window.index)
 	mu              sync.RWMutex
 	file            *os.File
 	fileDate        string
@@ -147,6 +148,14 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		opts.MaxFileBytes = DefaultMaxFileBytes
 	}
 
+	// Enforce privacy mode before creating archive files on disk.
+	if err := privacy.GetDefaultManager().CanPersist(opts.SessionName, privacy.OpArchive); err != nil {
+		return nil, err
+	}
+	if err := privacy.GetDefaultManager().CanPersist(opts.SessionName, privacy.OpScrollback); err != nil {
+		return nil, err
+	}
+
 	// Ensure output directory exists
 	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating archive directory: %w", err)
@@ -157,7 +166,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		outputDir:       opts.OutputDir,
 		interval:        opts.Interval,
 		linesPerCapture: opts.LinesPerCapture,
-		paneStates:      make(map[int]*PaneState),
+		paneStates:      make(map[string]*PaneState),
 		maxFileBytes:    opts.MaxFileBytes,
 		started:         time.Now(),
 		onRecord:        opts.OnRecord,
@@ -209,6 +218,14 @@ func (a *Archiver) archiveNewContent(ctx context.Context) error {
 	if err := tmux.ValidateSessionName(a.sessionName); err != nil {
 		return fmt.Errorf("validating session name: %w", err)
 	}
+	// Re-check privacy mode on every cycle so enabling privacy on a live
+	// session immediately suppresses further scrollback archiving.
+	if err := privacy.GetDefaultManager().CanPersist(a.sessionName, privacy.OpArchive); err != nil {
+		return nil
+	}
+	if err := privacy.GetDefaultManager().CanPersist(a.sessionName, privacy.OpScrollback); err != nil {
+		return nil
+	}
 
 	panes, err := a.getPanes(ctx, a.sessionName)
 	if err != nil {
@@ -220,28 +237,34 @@ func (a *Archiver) archiveNewContent(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		// Skip control pane (pane 1)
-		if pane.Index == 1 {
-			continue
-		}
-
-		// Skip user panes (no agent output)
-		if pane.Type == tmux.AgentUser {
+		// Skip user and service panes; never hardcode pane index 1 because
+		// base-index 0/1 and window-per-agent layouts can place real agents at index 1.
+		if pane.Type == tmux.AgentUser || pane.IsServicePane() {
 			continue
 		}
 
 		if err := a.capturePane(ctx, pane); err != nil {
 			// Log but continue with other panes
-			slog.Warn("archive pane capture error", "pane", pane.Index, "error", err)
+			slog.Warn("archive pane capture error", "pane", pane.Index, "pane_id", pane.ID, "error", err)
 		}
 	}
 
 	return nil
 }
 
+func archivePaneStateKey(pane tmux.Pane) string {
+	if id := strings.TrimSpace(pane.ID); id != "" {
+		return id
+	}
+	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+}
+
 // capturePane captures new content from a single pane.
 func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
-	target := fmt.Sprintf("%s:%d.%d", a.sessionName, pane.WindowIndex, pane.Index)
+	target := strings.TrimSpace(pane.ID)
+	if target == "" {
+		target = fmt.Sprintf("%s:%d.%d", a.sessionName, pane.WindowIndex, pane.Index)
+	}
 
 	// Capture content
 	content, err := tmux.DefaultClient.CapturePaneOutputContext(ctx, target, a.linesPerCapture)
@@ -252,11 +275,13 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Get or create pane state
-	state, ok := a.paneStates[pane.Index]
+	// Get or create pane state keyed by stable pane ID so multi-window
+	// sessions with identical per-window pane indices do not collide.
+	paneKey := archivePaneStateKey(pane)
+	state, ok := a.paneStates[paneKey]
 	if !ok {
 		state = &PaneState{}
-		a.paneStates[pane.Index] = state
+		a.paneStates[paneKey] = state
 	}
 
 	// Check for new content using simple hash
