@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,74 @@ func TestOpencodeActivelyWorking(t *testing.T) {
 	stale := ocWorkingScreen + strings.Repeat("output line\n", 40) + ocIdleScreen
 	if OpencodeActivelyWorking(stale, 0) {
 		t.Fatal("footer outside the live tail must not read as working")
+	}
+}
+
+func TestOpencodeComposerRequiresLiveFooter(t *testing.T) {
+	t.Parallel()
+	composer := "┃ Ask anything… \"fix the failing test\"\n┃ Build · GPT\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  tab agents  ctrl+p commands\n"
+	for _, suffix := range []string{
+		"new unframed transcript output\n",
+		strings.Repeat("output line\n", 40),
+		"Press Enter to continue\n",
+		"a log line mentioning tab agents and ctrl+p commands\n",
+	} {
+		t.Run(strings.TrimSpace(strings.SplitN(suffix, "\n", 2)[0]), func(t *testing.T) {
+			capture := composer + suffix
+			if draft, found := ParseOpencodeComposer(capture); found {
+				t.Fatalf("stale composer accepted with draft %q", draft)
+			}
+			if OpencodeIdlePromptShowing(capture) {
+				t.Fatal("legacy idle fallback resurrected the stale composer")
+			}
+		})
+	}
+	if draft, found := ParseOpencodeComposer(composer + "output from previous turn\n" + composer); !found || draft != "" {
+		t.Fatalf("latest live composer = (%q, %v), want empty and found", draft, found)
+	}
+	if OpencodeIdlePromptShowing(ocIdleScreen + "new output after old boxed composer\n") {
+		t.Fatal("legacy boxed composer followed by output must not count as live")
+	}
+}
+
+func TestOpencodeComposerPreservesNativeWelcomeAndSessionChrome(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"opencode_idle.txt", "opencode_draft.txt", "opencode_paste_token.txt", "opencode_working.txt"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile("testdata/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, found := ParseOpencodeComposer(string(data)); !found {
+				t.Fatal("native welcome/session composer not recognized")
+			}
+			if _, found := ParseOpencodeComposer(string(data) + "new transcript output\n"); found {
+				t.Fatal("stale native composer survived a later transcript row")
+			}
+		})
+	}
+}
+
+func TestOpencodeComposerPreservesMultilineDraftBeginningWithPlaceholder(t *testing.T) {
+	t.Parallel()
+	for _, want := range []string{
+		"Ask anything…\nand then explain the result",
+		"Ask anything about the deployment",
+		"Ask anything... but keep this draft",
+		"Ask anything… about the failing tests",
+	} {
+		capture := "┃ " + strings.ReplaceAll(want, "\n", "\n┃ ") + "\n┃ Build · GPT\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  tab agents  ctrl+p commands\n"
+		if draft, found := ParseOpencodeComposer(capture); !found || draft != want {
+			t.Fatalf("draft = (%q, %v), want (%q, true)", draft, found, want)
+		}
+	}
+}
+
+func TestOpencodeComposerWelcomeHomeDirectory(t *testing.T) {
+	t.Parallel()
+	capture := "┃ Ask anything…\n┃ Build · GPT\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  tab agents  ctrl+p commands\n\n  ● Tip Run /connect to add an AI provider\n\n  ~                       1.18.32\n"
+	if draft, found := ParseOpencodeComposer(capture); !found || draft != "" {
+		t.Fatalf("home welcome composer = (%q, %v), want empty and found", draft, found)
 	}
 }
 
@@ -216,12 +285,7 @@ func TestParser_OmpBuiltinClassifiesEarlierV18Chrome(t *testing.T) {
 }
 
 func TestOpencodeContextUsageAndGrokStatusLineModel(t *testing.T) {
-	sidebar := strings.Join([]string{
-		"  ┃  step 073: check module                Context",
-		"  ┃  step 074: check module                14,200 tokens",
-		"  ┃  step 075: check module                11% used",
-		"  ┃  step 076: check module                $0.04 spent",
-	}, "\n")
+	sidebar := strings.NewReplacer("0 tokens", "14,200 tokens", "0% used", "11% used").Replace(loadTestData(t, "opencode_working.txt"))
 	pct, tok, ok := OpencodeContextUsage(sidebar)
 	if !ok || pct != 11 || tok != 14200 {
 		t.Fatalf("OpencodeContextUsage = (pct=%v, tok=%d, ok=%v), want (11, 14200, true)", pct, tok, ok)
@@ -237,5 +301,74 @@ func TestOpencodeContextUsageAndGrokStatusLineModel(t *testing.T) {
 	grokFrame := "│ ❯                                      │\n╰─ Grok 4.6 (high) · always-approve ─╯\n"
 	if got := GrokStatusLineModel(grokFrame); got != "grok-4.6" {
 		t.Fatalf("GrokStatusLineModel = %q, want grok-4.6", got)
+	}
+}
+
+func TestOpencodeContextUsageRequiresNativeSidebarGeometry(t *testing.T) {
+	t.Parallel()
+	native := loadTestData(t, "opencode_working.txt")
+	idle := strings.Replace(native, "⬝⬝⬝⬝■■■■  esc interrupt", "", 1)
+	accounted := strings.NewReplacer("0 tokens", "14,200 tokens", "0% used", "11% used").Replace(idle)
+	for _, tc := range []struct {
+		name    string
+		capture string
+		pct     float64
+		tokens  int64
+	}{
+		{name: "verbatim native working viewport", capture: native},
+		{name: "completed turn", capture: accounted, pct: 11, tokens: 14200},
+		{name: "ANSI colors", capture: "\x1b[36m" + accounted + "\x1b[0m", pct: 11, tokens: 14200},
+		{name: "wide transcript characters", capture: strings.Replace(accounted, "step 073", "审查 073", 1), pct: 11, tokens: 14200},
+		{name: "abbreviated thousands", capture: strings.Replace(accounted, "14,200 tokens", "14.2k tokens", 1), pct: 11, tokens: 14200},
+		{name: "abbreviated millions", capture: strings.Replace(accounted, "14,200 tokens", "1.4M tokens", 1), pct: 11, tokens: 1400000},
+		{name: "display metrics while holding a draft", capture: strings.Replace(accounted, "  ┃\n  ┃\n  ┃  Build", "  ┃  keep this draft\n  ┃\n  ┃  Build", 1), pct: 11, tokens: 14200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pct, tokens, ok := OpencodeContextUsage(tc.capture)
+			if !ok || pct != tc.pct || tokens != tc.tokens {
+				t.Fatalf("native context usage = (%v, %d, %t), want (%v, %d, true)", pct, tokens, ok, tc.pct, tc.tokens)
+			}
+		})
+	}
+
+	// Keep the actual composer and viewport geometry, but remove the native
+	// accounting. Any remaining count must come from the counterfeit text.
+	noGauge := strings.Replace(idle, "Context", "Telemetry unavailable", 1)
+	plainGauge := "Context\n180,000 tokens\n90% used\n"
+	nativeRows := strings.Split(idle, "\n")
+	var nativeGauge string
+	for i, row := range nativeRows {
+		if strings.HasSuffix(row, "Context") {
+			nativeGauge = strings.Join(nativeRows[i:i+3], "\n") + "\n"
+			break
+		}
+	}
+	if nativeGauge == "" {
+		t.Fatal("native capture does not contain its expected sidebar")
+	}
+	for _, tc := range []struct {
+		name    string
+		capture string
+	}{
+		{name: "standalone accounting prose", capture: plainGauge},
+		{name: "unindented transcript with live composer", capture: plainGauge + noGauge},
+		{name: "indented transcript with live composer", capture: strings.ReplaceAll("  "+plainGauge, "\n", "\n  ") + noGauge},
+		{name: "right aligned inside transcript", capture: strings.Repeat(" ", 120) + strings.ReplaceAll(plainGauge, "\n", "\n"+strings.Repeat(" ", 120)) + noGauge},
+		{name: "draft quoting usage", capture: strings.Replace(noGauge, "  ┃\n  ┃\n  ┃  Build", "  ┃  Context\n  ┃  180,000 tokens\n  ┃  90% used\n  ┃\n  ┃  Build", 1)},
+		{name: "draft extending into sidebar", capture: strings.Replace(noGauge, "  ┃\n  ┃\n  ┃  Build", "  ┃"+strings.Repeat(" ", 157)+"Context\n  ┃"+strings.Repeat(" ", 157)+"180,000 tokens\n  ┃"+strings.Repeat(" ", 157)+"90% used\n  ┃\n  ┃  Build", 1)},
+		{name: "token row at wrong column", capture: strings.Replace(idle, "0 tokens", " 0 tokens", 1)},
+		{name: "percentage row at wrong column", capture: strings.Replace(idle, "0% used", " 0% used", 1)},
+		{name: "text intruding into sidebar gap", capture: strings.Replace(idle, "    Context", " x  Context", 1)},
+		{name: "stale frame followed by output", capture: idle + "new output after the old composer\n"},
+		{name: "previous frame cannot lend its gauge", capture: idle + noGauge},
+		{name: "missing current composer", capture: nativeGauge},
+		{name: "ambiguous native gauges", capture: nativeGauge + idle},
+		{name: "prose in place of composer rule", capture: strings.Replace(idle, "╹▀", "╹text", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if pct, tokens, ok := OpencodeContextUsage(tc.capture); ok {
+				t.Fatalf("unproven accounting accepted: percentage=%v tokens=%d", pct, tokens)
+			}
+		})
 	}
 }

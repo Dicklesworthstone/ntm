@@ -3,8 +3,8 @@
 //
 // When [rotation] usage_percent_threshold is > 0, every coordinator cycle
 // compares each agent pane's TRANSCRIPT-SOURCED context usage — ground truth
-// read from the agent CLI's own session transcript (or, for Oh My Pi, the
-// context gauge the agent itself renders in its composer border), never
+// read from the agent CLI's own session transcript (or the native context
+// gauges rendered by Oh My Pi and OpenCode), never
 // scrollback estimates (that minimum-confidence gate is fixed by design, not
 // configurable) — against the threshold. Panes above it get a pending
 // rotation enqueued through internal/context's existing pending/confirm
@@ -153,7 +153,11 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			cwd = strings.TrimSpace(cwd)
 			return cwd, err == nil && cwd != ""
 		},
-		capturePane:   tmux.CapturePaneOutput,
+		capturePane: func(paneID string, _ int) (string, error) {
+			// A historical composer or sidebar in scrollback is not a live
+			// readiness signal or a current native context measurement.
+			return tmux.CapturePaneVisible(paneID)
+		},
 		contextLimit:  models.LookupContextLimit,
 		storedPending: ntmctx.GetPendingRotationByID,
 		publish: func(record robot.ActuationRecord) {
@@ -348,6 +352,18 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 		rc.reportSkip(decision)
 		return decision, true
 	}
+	if pane.Type.Canonical() == agent.AgentTypeOpencode && usage.Path == "" {
+		// The sidebar can change between measurement and actuation after a
+		// compaction or conversation switch. Require the freshly observed
+		// native accounting to agree before replacing this conversation.
+		fresh, ok := ntmctx.OpencodeStatusBarUsage(captured, 0, rc.now())
+		if !ok || fresh.Tokens != usage.Tokens || fresh.ContextWindow != usage.ContextWindow {
+			decision.Action = "skipped"
+			decision.SkipReason = "context_usage_changed"
+			rc.reportSkip(decision)
+			return decision, true
+		}
+	}
 
 	pending := rc.enqueue(decision.AgentID, pane.ID, pct)
 	decision.Action = "enqueued"
@@ -475,11 +491,10 @@ func rotationEvidence(d rotationDecision) string {
 // This gate admits only agent types with an authoritative live working
 // detector; every other type is refused outright rather than typed into while
 // its state is unknown. Context rotation itself reaches this gate for Claude
-// Code, Codex, Gemini, and Oh My Pi panes (the types that can produce a ground-truth
-// usage trigger: transcripts, or omp's own context gauge), and the mail nudge
-// loop shares the gate and can reach it for Grok Build too: its TUI working
-// detector and composer inspection are capture-based and independent of
-// transcript discovery.
+// Code, Codex, Gemini, Oh My Pi, and OpenCode panes (the types that can produce
+// a native usage trigger). The mail nudge loop also uses the capture-based
+// working detectors and composer inspection for Grok Build, Pi, and
+// Antigravity; accepting their idle frames does not invent context accounting.
 func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	canonical := pane.Type.Canonical()
 	switch canonical {
@@ -514,6 +529,18 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 		if agent.OmpActivelyWorking(captured, pane.Width) {
 			return "working"
 		}
+	case agent.AgentTypeOpencode:
+		if agent.OpencodeActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
+	case agent.AgentTypeAntigravity:
+		if agent.AntigravityActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
+	case agent.AgentTypePi:
+		if agent.ParsePiComposer(captured).Working {
+			return "working"
+		}
 	default:
 		return "unsupported_agent_type"
 	}
@@ -527,8 +554,20 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	}
 
 	composer := tmux.InspectComposer(captured, canonical)
+	switch canonical {
+	case agent.AgentTypeOpencode, agent.AgentTypeAntigravity, agent.AgentTypePi:
+		// Absence of a working marker is not readiness evidence. These
+		// harnesses must positively expose their current composer, including
+		// its native footer, before an unattended action can type into it.
+		if !composer.MarkerVisible {
+			return "unknown_agent_state"
+		}
+	}
 	if composer.HoldsText {
 		return "unsubmitted_input"
+	}
+	if canonical == agent.AgentTypePi && agent.ParsePiComposer(captured).CompletionRows > 0 {
+		return "interactive_gate:completion_menu"
 	}
 	if composer.QueuedMessages {
 		return "queued_messages"
@@ -552,6 +591,9 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 // (ntmctx.OmpStatusBarUsage, the same reading robot's snapshot and context
 // views prefer): it is the agent's own live accounting and belongs to the
 // captured pane by construction.
+// OpenCode uses its visible context sidebar with a recognizable current
+// composer. Missing/unknown native capacity never falls back to a guessed
+// model window, another pane's transcript, or the scrollback estimator.
 func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
 	refs := make([]ntmctx.PaneTranscriptRef, 0, len(panes))
 	gauges := make(map[string]*ntmctx.TranscriptUsage)
@@ -581,6 +623,21 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 				}
 			}
 			agentType = "omp"
+		case agent.AgentTypeOpencode:
+			if rc.capturePane != nil {
+				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil &&
+					tmux.InspectComposer(captured, agent.AgentTypeOpencode).MarkerVisible {
+					if usage, ok := ntmctx.OpencodeStatusBarUsage(captured, 0, rc.now()); ok {
+						gauges[pane.ID] = usage
+						// Keep the target identity through server-scoped fallback
+						// for other harnesses, without a PID/cwd to correlate.
+						refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: pane.ID, AgentType: "opencode"})
+					}
+				}
+			}
+			// OpenCode has no supported transcript source here. Never add its
+			// workspace/process to correlation or borrow another harness's files.
+			continue
 		default:
 			// Other agent CLIs have no known transcript locations; the fixed
 			// transcript-only confidence gate excludes them.

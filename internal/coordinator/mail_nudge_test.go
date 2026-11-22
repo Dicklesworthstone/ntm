@@ -438,3 +438,190 @@ func TestMailNudgeGrokSafetyVetoes(t *testing.T) {
 		})
 	}
 }
+
+func piNudgeCapture(draft string, working bool) string {
+	top := strings.Repeat("─", 40)
+	if working {
+		top = "─⠋" + strings.Repeat("─", 38)
+	}
+	return "Completed the previous task.\n" + top + "\n" + draft + "\n" +
+		strings.Repeat("─", 40) + "\n/work/project\n↑1.2k ↓200 90%/200k\n"
+}
+
+func antigravityNudgeCapture(draft string, working bool) string {
+	activity := "Completed the previous task.\n"
+	if working {
+		activity = "⠋ Working\nEsc to cancel\n"
+	}
+	return "Antigravity\n" + activity + "> " + draft + "\n? for shortcuts\n"
+}
+
+// An idle native harness must be woken through the same mail checker that the
+// coordinator tick uses. Merely registering a type is not behavioral support:
+// unknown/stale frames, live turns, drafts and menus must still refuse input.
+func TestMailNudgeNativeHarnessSafety(t *testing.T) {
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"BlueLake": {unreadMessage(1)},
+	})
+	defer server.Close()
+
+	for _, harness := range []struct {
+		name     string
+		typeName tmux.AgentType
+		idle     string
+		working  string
+		draft    string
+	}{
+		{
+			name: "pi", typeName: tmux.AgentPi,
+			idle: piNudgeCapture("", false), working: piNudgeCapture("", true),
+			draft: piNudgeCapture("keep my unfinished request", false),
+		},
+		{
+			name: "opencode", typeName: tmux.AgentOpencode,
+			idle:    opencodeGaugeCapture(t, "", "180,000", "90"),
+			working: opencodeGaugeCapture(t, "", "180,000", "90") + "  esc interrupt\n",
+			draft:   opencodeGaugeCapture(t, "keep my unfinished request", "180,000", "90"),
+		},
+		{
+			name: "antigravity", typeName: tmux.AgentAntigravity,
+			idle: antigravityNudgeCapture("", false), working: antigravityNudgeCapture("", true),
+			draft: antigravityNudgeCapture("keep my unfinished request", false),
+		},
+	} {
+		t.Run(harness.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name       string
+				capture    string
+				captureErr error
+				wantReason string
+			}{
+				{name: "idle", capture: harness.idle},
+				{name: "working", capture: harness.working, wantReason: "working"},
+				{name: "unsubmitted draft", capture: harness.draft, wantReason: "unsubmitted_input"},
+				{name: "empty capture", wantReason: "unknown_agent_state"},
+				{name: "initializing", capture: "Initializing agent...\n", wantReason: "unknown_agent_state"},
+				{name: "stale composer", capture: harness.idle + strings.Repeat("new unframed output\n", 3), wantReason: "unknown_agent_state"},
+				{name: "missing capture", captureErr: errors.New("capture unavailable"), wantReason: "capture_failed"},
+				{name: "rate limited", capture: harness.idle + "Error: rate limit exceeded\n", wantReason: "rate_limited"},
+				{name: "interactive gate", capture: harness.idle + "Browser didn't open? Use the URL below:\nhttps://auth.example.com/device\n", wantReason: "interactive_gate:"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					pane := tmux.Pane{ID: "%90", Title: "mailsess__" + string(harness.typeName) + "_1", Type: harness.typeName, Width: 120}
+					if harness.typeName == tmux.AgentOpencode {
+						pane.Width = 200
+					}
+					env := newMailNudgeTestEnv(t, server.URL, []tmux.Pane{pane},
+						map[string]string{pane.Title: "BlueLake"},
+						func(string) (string, error) { return tc.capture, tc.captureErr })
+					decisions := env.mc.runOnce(t.Context())
+					t.Logf("harness=%s capture=%q decisions=%+v dispatch=%v", harness.name, tc.capture, decisions, env.dispatch)
+					if len(decisions) != 1 {
+						t.Fatalf("decisions = %+v, want one", decisions)
+					}
+					if tc.wantReason != "" {
+						if decisions[0].Action != "skipped" || !strings.HasPrefix(decisions[0].SkipReason, tc.wantReason) || len(env.dispatch) != 0 {
+							t.Fatalf("unsafe nudge: decisions=%+v dispatch=%v, want %s", decisions, env.dispatch, tc.wantReason)
+						}
+						return
+					}
+					if decisions[0].Action != "nudged" || len(env.dispatch) != 1 || env.dispatch[0] != pane.ID {
+						t.Fatalf("idle native harness was not nudged: decisions=%+v dispatch=%v", decisions, env.dispatch)
+					}
+					if again := env.mc.runOnce(t.Context()); len(again) != 0 || len(env.dispatch) != 1 {
+						t.Fatalf("repeat tick ignored cooldown: decisions=%+v dispatch=%v", again, env.dispatch)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMailNudgePiCompletionMenuRefused(t *testing.T) {
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"BlueLake": {unreadMessage(1)},
+	})
+	defer server.Close()
+	capture := strings.Replace(piNudgeCapture("", false), "/work/project", "→ /help\n  /settings\n/work/project", 1)
+	pane := tmux.Pane{ID: "%91", Title: "mailsess__pi_1", Type: tmux.AgentPi, Width: 120}
+	env := newMailNudgeTestEnv(t, server.URL, []tmux.Pane{pane}, map[string]string{pane.Title: "BlueLake"},
+		func(string) (string, error) { return capture, nil })
+	decisions := env.mc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].SkipReason != "interactive_gate:completion_menu" || len(env.dispatch) != 0 {
+		t.Fatalf("completion menu received input: decisions=%+v dispatch=%v capture=%q", decisions, env.dispatch, capture)
+	}
+}
+
+func TestMailNudgeDeadAndServicePanesIgnored(t *testing.T) {
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"BlueLake": {unreadMessage(1)},
+	})
+	defer server.Close()
+	panes := []tmux.Pane{
+		{ID: "%92", Title: "mailsess__pi_1", Type: tmux.AgentPi, Dead: true},
+		{ID: "%93", Title: "mailsess__oc_1", Type: tmux.AgentOpencode, Service: "cm"},
+	}
+	env := newMailNudgeTestEnv(t, server.URL, panes,
+		map[string]string{panes[0].Title: "BlueLake", panes[1].Title: "BlueLake"},
+		func(string) (string, error) { t.Error("ineligible pane captured"); return "", nil })
+	env.mc.fetchInbox = func(context.Context, agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error) {
+		t.Error("ineligible pane probed its inbox")
+		return nil, nil
+	}
+	if decisions := env.mc.runOnce(t.Context()); len(decisions) != 0 || len(env.dispatch) != 0 {
+		t.Fatalf("ineligible panes acted upon: decisions=%+v dispatch=%v", decisions, env.dispatch)
+	}
+}
+
+func TestRunCycleNativeHarnessNudgesAndOpenCodeRotation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	redirectPendingStore(t)
+	panes := []tmux.Pane{
+		{ID: "%94", Title: "mailsess__pi_1", Type: tmux.AgentPi, Width: 120},
+		{ID: "%95", Title: "mailsess__oc_1", Type: tmux.AgentOpencode, Width: 200},
+		{ID: "%96", Title: "mailsess__agy_1", Type: tmux.AgentAntigravity, Width: 120},
+	}
+	captures := map[string]string{
+		"%94": piNudgeCapture("", false),
+		"%95": opencodeGaugeCapture(t, "", "180,000", "90"),
+		"%96": antigravityNudgeCapture("", false),
+	}
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"BlueLake": {unreadMessage(1)}, "GreenHill": {unreadMessage(2)}, "RedRock": {unreadMessage(3)},
+	})
+	defer server.Close()
+	env := newMailNudgeTestEnv(t, server.URL, panes, map[string]string{
+		panes[0].Title: "BlueLake", panes[1].Title: "GreenHill", panes[2].Title: "RedRock",
+	}, func(id string) (string, error) { return captures[id], nil })
+	rot := newRotationTestEnv(t, 80, false, panes, nil, captures, nil)
+
+	originalList, originalCapture := getPanesWithActivity, captureForHealthCheckWithCtx
+	t.Cleanup(func() {
+		getPanesWithActivity, captureForHealthCheckWithCtx = originalList, originalCapture
+	})
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
+		activity := make([]tmux.PaneActivity, len(panes))
+		for i, pane := range panes {
+			activity[i] = tmux.PaneActivity{Pane: pane, LastActivity: time.Now().UTC()}
+		}
+		return activity, nil
+	}
+	captureForHealthCheckWithCtx = func(_ context.Context, id string) (string, error) { return captures[id], nil }
+	c := New("mailsess", t.TempDir(), nil, "Coordinator")
+	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
+	c.mailClient = agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
+	c.config.MailNudge = true
+	c.config.RotationUsageThreshold = 80
+	c.mailNudge, c.rotation = env.mc, rot.rc
+	if _, err := c.RunCycle(t.Context()); err != nil {
+		t.Fatalf("native-harness coordinator tick: %v", err)
+	}
+	t.Logf("nudged=%v rotation_events=%+v", env.dispatch, rot.published)
+	if len(env.dispatch) != len(panes) {
+		t.Fatalf("native harnesses not nudged by tick: %v", env.dispatch)
+	}
+	if len(rot.published) != 1 || rot.published[0].ReasonCode != "context_rotation_enqueued" ||
+		len(rot.published[0].Targets) != 1 || rot.published[0].Targets[0] != panes[1].Title {
+		t.Fatalf("tick did not enqueue measured OpenCode rotation: %+v", rot.published)
+	}
+}

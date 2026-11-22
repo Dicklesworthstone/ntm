@@ -19,7 +19,7 @@
 //     a failing dispatch is never hammered every tick
 //  2. unread mail exists     — the same fetch_inbox surface `ntm mail inbox`
 //     reads; header-only probe, no bodies
-//  3. not working            — the agent working detectors (Claude/Codex);
+//  3. not working            — native working detectors and live composers;
 //     agent types without a working detector are refused outright (fail
 //     closed, rotation.go's rotationSafetySkipReason is reused verbatim, so
 //     rate-limit banners, interactive gates, unsubmitted composer input and
@@ -156,8 +156,10 @@ func newMailNudgeChecker(session, projectKey string, coordCfg CoordinatorConfig,
 			}
 			return registry.GetAgent
 		},
-		fetchInbox:  mailClient.FetchInbox,
-		capturePane: tmux.CapturePaneOutput,
+		fetchInbox: mailClient.FetchInbox,
+		capturePane: func(paneID string, _ int) (string, error) {
+			return tmux.CapturePaneVisible(paneID)
+		},
 		dispatch: func(ctx context.Context, panes []tmux.Pane, target tmux.Pane, message string) error {
 			return dispatchMailNudge(ctx, session, panes, target, message)
 		},
@@ -302,6 +304,9 @@ func (mc *mailNudgeChecker) runOnce(ctx context.Context) []mailNudgeDecision {
 	for _, pane := range ordered {
 		if ctx != nil && ctx.Err() != nil {
 			break
+		}
+		if pane.Dead || pane.IsServicePane() {
+			continue
 		}
 		if decision, acted := mc.checkPane(ctx, panes, pane, lookup); acted {
 			decisions = append(decisions, decision)
