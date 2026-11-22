@@ -224,6 +224,8 @@ func TestWebhookSSRFPolicyRejectsMetadataAndUnspecified(t *testing.T) {
 		"http://metadata.goog/",
 		"http://metadata.goog./",
 		"http://[fd00:ec2::254]/latest/meta-data/",
+		"http://[fd00:ec2::254%25eth0]/latest/meta-data/",
+		"http://[fe80::1%25eth0]/hook",
 		"http://100.100.100.200/latest/meta-data/",
 		"http://0.0.0.0:8080/hook",
 		"http://[::]:8080/hook",
