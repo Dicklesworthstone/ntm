@@ -643,10 +643,11 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 	// Consult DCG custom rules and binary when policy marks the command as
 	// dangerous (or when custom DCG blocklist rules are configured).
 	var dcgCfg config.DCGConfig
-	if loadedCfg, cfgErr := config.LoadMerged("", ""); cfgErr == nil && loadedCfg != nil {
+	if loadedCfg, cfgErr := config.LoadMerged("", selectedConfigPath()); cfgErr == nil && loadedCfg != nil {
 		dcgCfg = loadedCfg.Integrations.DCG
 	}
-	if match != nil && match.Action != policy.ActionAllow {
+	policyFlagged := match != nil && match.Action != policy.ActionAllow
+	if policyFlagged || len(dcgCfg.CustomBlocklist) > 0 {
 		dcgVerdict := &CheckDCGVerdict{}
 		customVerdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
 		if customVerdict.Blocked {
@@ -656,12 +657,12 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 			if customVerdict.OverrideDenied {
 				dcgVerdict.Reason += " (custom_whitelist override denied because integrations.dcg.allow_override=false)"
 			}
-			if match.Action != policy.ActionBlock {
+			if match == nil || match.Action != policy.ActionBlock {
 				resp.Action = string(policy.ActionBlock)
 				resp.Pattern = "dcg"
 				resp.Reason = dcgVerdict.Reason
 			}
-		} else if !customVerdict.Whitelisted {
+		} else if policyFlagged && !customVerdict.Whitelisted {
 			adapter := tools.NewDCGAdapterWithBinary(dcgCfg.BinaryPath)
 			if _, installed := adapter.Detect(); installed {
 				dcgVerdict.Available = true
@@ -678,7 +679,7 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 					dcgVerdict.Reason = blocked.Reason
 
 					// If DCG blocks, enforce that decision even if policy only required approval.
-					if match.Action != policy.ActionBlock {
+					if match == nil || match.Action != policy.ActionBlock {
 						resp.Action = string(policy.ActionBlock)
 						resp.Pattern = "dcg"
 						if dcgVerdict.Reason != "" {
@@ -690,7 +691,9 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 				}
 			}
 		}
-		resp.DCG = dcgVerdict
+		if policyFlagged || dcgVerdict.Checked {
+			resp.DCG = dcgVerdict
+		}
 	}
 
 	// Exit code 1 for Block or Approve (to block execution in wrapper scripts)
