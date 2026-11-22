@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,8 @@ import (
 )
 
 const stepReaperMaxCapturedStdout = 1 << 20 // 1 MiB bounded stdout mirror for crash-only receipts
+const stepReaperSettlementMarker = "ntm-step-settled-v1"
+const stepReaperMaxSettlementBytes = 64
 
 var (
 	cgroupLeafSequence    atomic.Uint64
@@ -35,6 +38,7 @@ type linuxContainmentHandle struct {
 	leafDir     string
 	pidfd       int
 	reaperChild bool
+	settlement  *os.File
 }
 
 // StepReaperOutcome carries the terminal status of `ntm internal-step-reaper`.
@@ -47,8 +51,21 @@ type StepReaperOutcome struct {
 // exit code or fatal signal of its direct child once all descendants are reaped.
 func ExitFromStepReaper(outcome StepReaperOutcome) {
 	if outcome.Signal != 0 {
-		signal.Reset(outcome.Signal)
-		_ = unix.Kill(os.Getpid(), outcome.Signal)
+		// Go retains special handlers even after signal.Reset (including
+		// ignoring SIGPIPE). Exec resets caught dispositions to native defaults
+		// while preserving this wrapper's PID, pidfd, and start identity.
+		// Catch an inherited Ignore disposition first, then let a native shell
+		// restore its own defaults and deliver the exact fatal signal.
+		runtime.LockOSThread()
+		signal.Notify(make(chan os.Signal, 1), outcome.Signal)
+		if err := unix.PthreadSigmask(unix.SIG_SETMASK, &unix.Sigset_t{}, nil); err == nil {
+			number := strconv.Itoa(int(outcome.Signal))
+			exitCode := strconv.Itoa(128 + int(outcome.Signal))
+			command := "ulimit -c 0 || exit " + exitCode + "; trap - " + number + "; kill -" + number + " \"$$\"; exit " + exitCode
+			_ = syscall.Exec("/bin/sh", []string{"sh", "-c", command}, nil)
+		}
+		// If native mirroring fails, the parent rejects this ordinary exit as
+		// inconsistent with the proof instead of silently changing the outcome.
 		os.Exit(128 + int(outcome.Signal))
 	}
 	os.Exit(outcome.ExitCode)
@@ -320,13 +337,24 @@ func tryStartCommandSubreaperPIDFD(cmd *exec.Cmd, opts commandStartOptions, stri
 		return commandContainmentMetadata{}, false, nil
 	}
 
+	settlementRead, settlementWrite, err := os.Pipe()
+	if err != nil {
+		if strict {
+			return commandContainmentMetadata{}, false, fmt.Errorf("create subreaper settlement pipe: %w", err)
+		}
+		return commandContainmentMetadata{}, false, nil
+	}
+	originalExtraFiles := cmd.ExtraFiles
+	settlementFD := 3 + len(originalExtraFiles)
+	cmd.ExtraFiles = append(append([]*os.File(nil), originalExtraFiles...), settlementWrite)
+
 	targetPath := cmd.Path
 	targetArgs := append([]string(nil), cmd.Args...)
 	if len(targetArgs) == 0 {
 		targetArgs = []string{targetPath}
 	}
 
-	reaperArgs := []string{reaperBin, StepReaperSubcommand}
+	reaperArgs := []string{reaperBin, StepReaperSubcommand, "--settlement-fd=" + strconv.Itoa(settlementFD)}
 	if opts.ExitCodeFile != "" {
 		reaperArgs = append(reaperArgs, "--exit-code-file="+opts.ExitCodeFile)
 	}
@@ -346,10 +374,14 @@ func tryStartCommandSubreaperPIDFD(cmd *exec.Cmd, opts commandStartOptions, stri
 
 	cmd.Path = reaperBin
 	cmd.Args = reaperArgs
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	cmd.ExtraFiles = originalExtraFiles
+	_ = settlementWrite.Close()
+	if startErr != nil {
+		_ = settlementRead.Close()
 		cmd.Path = targetPath
 		cmd.Args = targetArgs
-		return commandContainmentMetadata{}, false, err
+		return commandContainmentMetadata{}, false, startErr
 	}
 
 	pidfd, err := unix.PidfdOpen(cmd.Process.Pid, 0)
@@ -371,6 +403,7 @@ func tryStartCommandSubreaperPIDFD(cmd *exec.Cmd, opts commandStartOptions, stri
 		tier:        ContainmentTierSubreaperPIDFD,
 		pidfd:       pidfd,
 		reaperChild: true,
+		settlement:  settlementRead,
 	})
 	return meta, true, nil
 }
@@ -823,27 +856,36 @@ func waitPIDFDOrLeaderExit(ctx context.Context, pidfd int, process *os.Process) 
 }
 
 func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *linuxContainmentHandle) (result commandCleanupResult) {
-	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
+	settleStart := time.Now()
+	defer func() {
+		verifySubreaperSettlement(cmd, handle, &result)
+		verifyCommandOutputSettlement(cmd, &result)
+		message := "command containment unresolved"
+		if result.Settled {
+			message = "command containment settled"
+		}
+		slog.Debug(message,
+			"containment_tier", ContainmentTierSubreaperPIDFD,
+			"settlement_latency_us", time.Since(settleStart).Microseconds(),
+			"reaped_descendants", 0,
+		)
+		if handle.settlement != nil {
+			_ = handle.settlement.Close()
+		}
+	}()
 	defer closeContainmentPIDFD(handle)
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = commandPipeDrainTimeout
 	}
 
 	leaderExitedBeforeSignal := leaderExitedFast(handle.pidfd, cmd.Process.Pid)
-	waitStart := time.Now()
 	waitErr := waitPIDFDOrLeaderExit(ctx, handle.pidfd, cmd.Process)
 	if waitErr == nil && ctx.Err() == nil {
-		settleLatencyUS := time.Since(waitStart).Microseconds()
 		result = reapContainedLeader(cmd, true, commandCleanupResult{Settled: true})
-		slog.Debug("command containment settled",
-			"containment_tier", ContainmentTierSubreaperPIDFD,
-			"settlement_latency_us", settleLatencyUS,
-			"reaped_descendants", 0,
-		)
 		return result
 	}
 
-	settleStart := time.Now()
+	settleStart = time.Now()
 	if ctx.Err() == nil {
 		closeContainmentPIDFD(handle)
 		return reapContainedLeader(cmd, leaderExitedBeforeSignal, cleanupCommandAfterObservationFailure(ctx, cmd, waitErr))
@@ -921,12 +963,55 @@ func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *l
 	result.Settled = killErr == nil && quietErr == nil
 
 	result = reapContainedLeader(cmd, leaderExitedBeforeSignal, result)
-	slog.Debug("command containment settled",
-		"containment_tier", ContainmentTierSubreaperPIDFD,
-		"settlement_latency_us", time.Since(settleStart).Microseconds(),
-		"reaped_descendants", 0,
-	)
 	return result
+}
+
+// A ready pidfd proves only that the wrapper exited. The private pipe proves
+// that this particular wrapper reaped all descendants and finished its output
+// copies before exiting, including when the payload's true outcome is a fatal
+// signal. The payload never inherits the write descriptor. Missing, malformed,
+// or unbounded evidence must not turn a killed wrapper into replay permission.
+// The recorded outcome must also match the wrapper's actual wait status: a
+// wrapper killed after publishing proof must not turn payload success into a
+// failed command that can be retried automatically.
+func verifySubreaperSettlement(cmd *exec.Cmd, handle *linuxContainmentHandle, result *commandCleanupResult) {
+	if !result.Settled {
+		return
+	}
+	reject := func(err error) {
+		result.Settled = false
+		result.Err = errors.Join(result.Err, errors.New("subreaper exited without verified descendant settlement; inspect surviving command work before replay"), err)
+	}
+	if handle.settlement == nil {
+		reject(nil)
+		return
+	}
+	if err := handle.settlement.SetReadDeadline(time.Now().Add(commandPipeDrainTimeout)); err != nil {
+		reject(err)
+		return
+	}
+	proof, err := io.ReadAll(io.LimitReader(handle.settlement, stepReaperMaxSettlementBytes+1))
+	if err != nil {
+		reject(err)
+		return
+	}
+	var exitCode, outcomeSignal int
+	_, err = fmt.Sscanf(string(proof), stepReaperSettlementMarker+" %d %d\n", &exitCode, &outcomeSignal)
+	if err != nil || exitCode < 0 || exitCode > 255 || outcomeSignal < 0 ||
+		(outcomeSignal != 0 && exitCode != 128+outcomeSignal) ||
+		string(proof) != fmt.Sprintf("%s %d %d\n", stepReaperSettlementMarker, exitCode, outcomeSignal) {
+		reject(errors.New("invalid subreaper settlement record"))
+		return
+	}
+	if cmd.ProcessState == nil {
+		reject(errors.New("subreaper terminal status unavailable"))
+		return
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || (outcomeSignal == 0 && (!status.Exited() || status.ExitStatus() != exitCode)) ||
+		(outcomeSignal != 0 && (!status.Signaled() || int(status.Signal()) != outcomeSignal)) {
+		reject(fmt.Errorf("subreaper terminal status does not match completed payload outcome: status=%v exit_code=%d signal=%d", status, exitCode, outcomeSignal))
+	}
 }
 
 type resilientStdoutTee struct {
@@ -961,21 +1046,27 @@ func (t *resilientStdoutTee) String() string {
 // readSubreaperDirectChildren reads `/proc/self/task/*/children` to discover
 // every process currently parented to this subreaper (including reparented
 // double-forked / setsid() grandchildren) with zero `/proc/<pid>/stat` opens.
+// Kernels without task/children support use PPid from /proc/<pid>/status.
+// The caller keeps reaping locked throughout discovery and signaling, so any
+// selected child remains waitable and its PID cannot be reused in between.
 func readSubreaperDirectChildren() []int {
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {
-		return nil
+		return readSubreaperChildrenFromProcStatus("/proc", os.Getpid())
 	}
 	seen := make(map[int]struct{})
 	var pids []int
+	incomplete := len(tasks) == 0
 	for _, task := range tasks {
 		data, err := os.ReadFile(filepath.Join("/proc/self/task", task.Name(), "children"))
 		if err != nil {
+			incomplete = true
 			continue
 		}
 		for _, field := range strings.Fields(string(data)) {
 			pid, err := strconv.Atoi(field)
 			if err != nil || pid <= 1 || pid == os.Getpid() {
+				incomplete = true
 				continue
 			}
 			if _, dup := seen[pid]; !dup {
@@ -984,17 +1075,84 @@ func readSubreaperDirectChildren() []int {
 			}
 		}
 	}
+	if incomplete {
+		for _, pid := range readSubreaperChildrenFromProcStatus("/proc", os.Getpid()) {
+			if _, ok := seen[pid]; !ok {
+				seen[pid] = struct{}{}
+				pids = append(pids, pid)
+			}
+		}
+	}
 	return pids
 }
 
-func signalSubreaperTree(directChildPID int, sig syscall.Signal) {
-	if directChildPID > 1 {
-		_ = unix.Kill(-directChildPID, sig)
-		_ = signalPIDViaPIDFD(directChildPID, unix.Signal(sig))
+func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		slog.Debug("subreaper child observation failed", "source", "proc_status_fallback", "error", err)
+		return nil
 	}
+	var pids []int
+	statusReads := 0
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 1 || pid == parentPID {
+			continue
+		}
+		statusReads++
+		data, err := os.ReadFile(filepath.Join(procRoot, entry.Name(), "status"))
+		if err != nil {
+			continue // Exited or inaccessible processes cannot prove ownership.
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			value, ok := strings.CutPrefix(line, "PPid:")
+			if !ok {
+				continue
+			}
+			ppid, err := strconv.Atoi(strings.TrimSpace(value))
+			if err == nil && ppid == parentPID {
+				pids = append(pids, pid)
+			}
+			break
+		}
+	}
+	slog.Debug("subreaper child observation",
+		"source", "proc_status_fallback",
+		"status_files_read", statusReads,
+		"children", len(pids),
+	)
+	return pids
+}
+
+// The caller holds the reaper's state lock, which also guards nonblocking
+// wait4. Every enumerated PID remains our unreaped child throughout signaling;
+// a saved direct-child PID must never be used after that child has been reaped.
+func signalSubreaperTree(sig syscall.Signal) {
 	for _, pid := range readSubreaperDirectChildren() {
+		// procfs can describe an ancestor PID namespace. Only a native wait
+		// can prove that this numeric PID belongs to our own unreaped child.
+		// The shared reaping lock keeps that identity pinned until signaling.
+		if !ownsUnreapedSubreaperChild(pid) {
+			continue
+		}
 		_ = unix.Kill(-pid, sig)
 		_ = signalPIDViaPIDFD(pid, unix.Signal(sig))
+	}
+}
+
+func ownsUnreapedSubreaperChild(pid int) bool {
+	if pid <= 1 {
+		return false
+	}
+	for {
+		var info unix.Siginfo
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		// A running owned child returns nil with empty siginfo. ECHILD or
+		// another observation error must never authorize signaling its PID.
+		return err == nil
 	}
 }
 
@@ -1008,12 +1166,13 @@ func signalSubreaperTree(directChildPID int, sig syscall.Signal) {
 //     subreaper exits only after every descendant has terminated.
 //  4. Optionally writes an atomic StepExitReceipt before returning the direct
 //     child's exact exit status or fatal signal.
-func RunStepReaper(args []string) StepReaperOutcome {
+func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 	var (
 		exitCodeFile string
 		stepID       string
 		stepHash     string
 		customArgv0  string
+		settlementFD = -1
 		target       []string
 	)
 	for i := 0; i < len(args); i++ {
@@ -1023,6 +1182,13 @@ func RunStepReaper(args []string) StepReaperOutcome {
 			break
 		}
 		switch {
+		case strings.HasPrefix(arg, "--settlement-fd="):
+			fd, err := strconv.Atoi(strings.TrimPrefix(arg, "--settlement-fd="))
+			if err != nil || fd < 3 || settlementFD >= 0 {
+				_, _ = fmt.Fprintln(os.Stderr, "ntm internal-step-reaper: invalid settlement descriptor")
+				return StepReaperOutcome{ExitCode: 2}
+			}
+			settlementFD = fd
 		case strings.HasPrefix(arg, "--exit-code-file="):
 			exitCodeFile = strings.TrimPrefix(arg, "--exit-code-file=")
 		case strings.HasPrefix(arg, "--step-id="):
@@ -1036,16 +1202,43 @@ func RunStepReaper(args []string) StepReaperOutcome {
 			i = len(args)
 		}
 	}
+	var settlement *os.File
+	settlementProven := false
+	if settlementFD >= 3 {
+		// ExtraFiles deliberately clears CLOEXEC when starting this wrapper.
+		// Restore it BEFORE launching the payload so no child or grandchild
+		// can publish a false marker or keep the proof pipe alive after us.
+		unix.CloseOnExec(settlementFD)
+		settlement = os.NewFile(uintptr(settlementFD), "ntm-step-settlement")
+		if settlement == nil {
+			return StepReaperOutcome{ExitCode: 125}
+		}
+		defer func() {
+			if settlementProven {
+				if _, err := fmt.Fprintf(settlement, "%s %d %d\n", stepReaperSettlementMarker, outcome.ExitCode, outcome.Signal); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: publish settlement: %v\n", err)
+				}
+			}
+			_ = settlement.Close()
+		}()
+	}
+
 	if len(target) == 0 {
+		settlementProven = true // No payload has been started.
 		return StepReaperOutcome{ExitCode: 2}
 	}
 
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: PR_SET_CHILD_SUBREAPER failed: %v\n", err)
+		settlementProven = true // Containment setup failed before payload launch.
 		return StepReaperOutcome{ExitCode: 125}
 	}
 
-	signal.Ignore(syscall.SIGPIPE)
+	// Catch broken forwarding pipes without making the payload inherit an
+	// ignored SIGPIPE disposition. Exec restores caught signals to default.
+	pipeSignals := make(chan os.Signal, 1)
+	signal.Notify(pipeSignals, syscall.SIGPIPE)
+	defer signal.Stop(pipeSignals)
 	sigCh := make(chan os.Signal, 16)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1)
 	defer signal.Stop(sigCh)
@@ -1077,6 +1270,7 @@ func RunStepReaper(args []string) StepReaperOutcome {
 		stdoutPipeW *os.File
 		stdoutTee   *resilientStdoutTee
 		stdoutDone  chan struct{}
+		stdoutErr   error
 	)
 	if exitCodeFile != "" {
 		pr, pw, err := os.Pipe()
@@ -1090,7 +1284,7 @@ func RunStepReaper(args []string) StepReaperOutcome {
 			child.Stdout = pw
 			go func() {
 				defer close(stdoutDone)
-				_, _ = io.Copy(stdoutTee, pr)
+				_, stdoutErr = io.Copy(stdoutTee, pr)
 				_ = pr.Close()
 			}()
 		} else {
@@ -1107,7 +1301,11 @@ func RunStepReaper(args []string) StepReaperOutcome {
 		if stdoutPipeR != nil {
 			_ = stdoutPipeR.Close()
 		}
+		if stdoutDone != nil {
+			<-stdoutDone
+		}
 		_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: start %q: %v\n", target[0], err)
+		settlementProven = true // exec.Start failed without a running payload.
 		return StepReaperOutcome{ExitCode: 127}
 	}
 	if stdoutPipeW != nil {
@@ -1122,9 +1320,11 @@ func RunStepReaper(args []string) StepReaperOutcome {
 		cancelRequested bool
 		forceKillActive bool
 		reapDone        = make(chan struct{})
+		signalDone      = make(chan struct{})
 	)
 
 	go func() {
+		defer close(signalDone)
 		for {
 			select {
 			case <-reapDone:
@@ -1137,13 +1337,13 @@ func RunStepReaper(args []string) StepReaperOutcome {
 				stateMu.Lock()
 				if sysSig == syscall.SIGUSR1 {
 					forceKillActive = true
-					signalSubreaperTree(directPID, syscall.SIGKILL)
+					signalSubreaperTree(syscall.SIGKILL)
 				} else {
 					cancelRequested = true
 					if forceKillActive {
-						signalSubreaperTree(directPID, syscall.SIGKILL)
+						signalSubreaperTree(syscall.SIGKILL)
 					} else {
-						signalSubreaperTree(directPID, sysSig)
+						signalSubreaperTree(sysSig)
 					}
 				}
 				stateMu.Unlock()
@@ -1152,25 +1352,42 @@ func RunStepReaper(args []string) StepReaperOutcome {
 	}()
 
 	var (
-		directObserved  bool
-		directExitCode  int
-		directSignal    syscall.Signal
-		reapedProcesses int
+		directObserved    bool
+		directExitCode    int
+		directSignal      syscall.Signal
+		reapedProcesses   int
+		descendantsReaped bool
 	)
 
 	for {
-		var ws unix.WaitStatus
-		wpid, err := unix.Wait4(-1, &ws, 0, nil)
-		if err != nil {
+		// Wait for an exited child without releasing its PID. Reaping and
+		// signaling are then serialized under stateMu, while this blocking
+		// observation leaves the cancellation goroutine free to send signals.
+		var info unix.Siginfo
+		if err := unix.Waitid(unix.P_ALL, 0, &info, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			if errors.Is(err, syscall.ECHILD) {
-				break
+				descendantsReaped = true
+			} else {
+				_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: observe children: %v\n", err)
 			}
 			break
 		}
+		stateMu.Lock()
+		var ws unix.WaitStatus
+		wpid, err := unix.Wait4(-1, &ws, unix.WNOHANG, nil)
+		if err != nil {
+			stateMu.Unlock()
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: reap children: %v\n", err)
+			break
+		}
 		if wpid <= 0 {
+			stateMu.Unlock()
 			continue
 		}
 		if wpid == directPID && !directObserved {
@@ -1188,20 +1405,37 @@ func RunStepReaper(args []string) StepReaperOutcome {
 		// Whenever a child exits while cancellation is active, any grandchild it
 		// spawned (including setsid() escapees) has now been reparented to us.
 		// Signal the newly reparented children immediately.
-		stateMu.Lock()
 		killing := forceKillActive
 		cancelling := cancelRequested
-		stateMu.Unlock()
 		if killing {
-			signalSubreaperTree(directPID, syscall.SIGKILL)
+			signalSubreaperTree(syscall.SIGKILL)
 		} else if cancelling {
-			signalSubreaperTree(directPID, syscall.SIGTERM)
+			signalSubreaperTree(syscall.SIGTERM)
 		}
+		stateMu.Unlock()
 	}
 	close(reapDone)
+	<-signalDone
+
+	if !descendantsReaped || !directObserved {
+		// An unexpected wait failure leaves descendant lifetime unknown.
+		// Stop the output copy without waiting for those unknown writers,
+		// and return without a receipt or settlement acknowledgement.
+		if stdoutPipeR != nil {
+			_ = stdoutPipeR.Close()
+		}
+		if stdoutDone != nil {
+			<-stdoutDone
+		}
+		return StepReaperOutcome{ExitCode: 125}
+	}
 
 	if stdoutDone != nil {
 		<-stdoutDone
+		if stdoutErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "ntm internal-step-reaper: capture stdout: %v\n", stdoutErr)
+			return StepReaperOutcome{ExitCode: 125}
+		}
 	}
 
 	if exitCodeFile != "" && directObserved && directSignal == 0 {
@@ -1222,14 +1456,13 @@ func RunStepReaper(args []string) StepReaperOutcome {
 		})
 	}
 
+	settlementProven = true
+
 	slog.Debug("step subreaper finished",
 		"containment_tier", ContainmentTierSubreaperPIDFD,
 		"reaped_descendants", reapedProcesses,
 		"exit_code", directExitCode,
 	)
-	if !directObserved {
-		return StepReaperOutcome{ExitCode: 1}
-	}
 	return StepReaperOutcome{
 		ExitCode: directExitCode,
 		Signal:   directSignal,
