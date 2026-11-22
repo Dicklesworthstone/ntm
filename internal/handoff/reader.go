@@ -79,12 +79,27 @@ func NewReader(projectDir string) *Reader {
 	}
 }
 
+func (r *Reader) safeSessionDir(sessionName string) (string, string, error) {
+	normalized, err := normalizeWriterSessionName(sessionName)
+	if err != nil {
+		return "", "", err
+	}
+	dir := filepath.Join(r.baseDir, normalized)
+	if err := ensureNoSymlinkComponents(dir); err != nil {
+		return "", "", err
+	}
+	return dir, normalized, nil
+}
+
 // FindLatest returns the most recent handoff for a session.
 // Returns (nil, "", nil) if no handoffs exist (not an error).
 func (r *Reader) FindLatest(sessionName string) (*Handoff, string, error) {
 	r.logger.Debug("finding latest handoff", "session", sessionName)
 
-	dir := filepath.Join(r.baseDir, sessionName)
+	dir, sessionName, err := r.safeSessionDir(sessionName)
+	if err != nil {
+		return nil, "", err
+	}
 
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -228,7 +243,10 @@ func (r *Reader) Read(path string) (*Handoff, error) {
 // For status line use - uses regex and caching for speed.
 func (r *Reader) ExtractGoalNow(sessionName string) (goal, now string, err error) {
 	// Find latest file path first
-	dir := filepath.Join(r.baseDir, sessionName)
+	dir, _, err := r.safeSessionDir(sessionName)
+	if err != nil {
+		return "", "", err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -314,7 +332,10 @@ func (r *Reader) InvalidateCache() {
 func (r *Reader) ListHandoffs(sessionName string) ([]HandoffMeta, error) {
 	r.logger.Debug("listing handoffs", "session", sessionName)
 
-	dir := filepath.Join(r.baseDir, sessionName)
+	dir, sessionName, err := r.safeSessionDir(sessionName)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
