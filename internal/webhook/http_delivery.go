@@ -128,13 +128,14 @@ func ValidateWebhookTargetURL(rawURL string, allowLoopback bool) error {
 	if !allowLoopback && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost")) {
 		return fmt.Errorf("webhook loopback target %q blocked by SSRF policy", host)
 	}
-	// Use netip.ParseAddr so IPv6 literals carrying zone IDs (e.g.
-	// [fe80::1%25eth0] or [fd00:ec2::254%25eth0]) cannot bypass IP validation.
-	if addr, err := netip.ParseAddr(host); err == nil {
+	// Use netip.ParseAddr on lowerHost (after stripping trailing dots) so
+	// trailing-dot IP literals (169.254.169.254.) and IPv6 literals carrying
+	// zone IDs ([fe80::1%25eth0] / [fd00:ec2::254%25eth0]) cannot bypass checks.
+	if addr, err := netip.ParseAddr(lowerHost); err == nil {
 		if err := validateWebhookIP(net.IP(addr.AsSlice()), allowLoopback); err != nil {
 			return err
 		}
-	} else if ip := net.ParseIP(host); ip != nil {
+	} else if ip := net.ParseIP(lowerHost); ip != nil {
 		if err := validateWebhookIP(ip, allowLoopback); err != nil {
 			return err
 		}

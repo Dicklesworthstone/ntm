@@ -783,7 +783,7 @@ func TestWebhookSSRFAndRedirectProtection(t *testing.T) {
 		cfg.Primary = ""
 		cfg.Fallback = ""
 		cfg.Webhook.Enabled = true
-		cfg.Webhook.URL = ts.URL
+		cfg.Webhook.URL = "  " + ts.URL + "  "
 
 		n := New(cfg)
 		if err := n.Notify(Event{Type: EventAgentError, Message: "ts", Timestamp: wantTime}); err != nil {
@@ -791,6 +791,18 @@ func TestWebhookSSRFAndRedirectProtection(t *testing.T) {
 		}
 		if gotTimestamp != wantTime.Format(time.RFC3339) {
 			t.Fatalf("timestamp = %q, want %q", gotTimestamp, wantTime.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("trailing-dot IP literals blocked", func(t *testing.T) {
+		for _, rawURL := range []string{
+			"http://169.254.169.254./latest/meta-data/",
+			"http://100.100.100.200./latest/meta-data/",
+			"http://0.0.0.0./hook",
+		} {
+			if err := validateNotifyWebhookURL(rawURL, true); err == nil {
+				t.Errorf("validateNotifyWebhookURL(%q) unexpectedly succeeded", rawURL)
+			}
 		}
 	})
 }

@@ -536,11 +536,11 @@ func validateNotifyWebhookURL(rawURL string, allowLoopback bool) error {
 	if !allowLoopback && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost")) {
 		return fmt.Errorf("webhook loopback target %q blocked by SSRF policy", host)
 	}
-	if addr, err := netip.ParseAddr(host); err == nil {
+	if addr, err := netip.ParseAddr(lowerHost); err == nil {
 		if err := validateNotifyWebhookIP(net.IP(addr.AsSlice()), allowLoopback); err != nil {
 			return err
 		}
-	} else if ip := net.ParseIP(host); ip != nil {
+	} else if ip := net.ParseIP(lowerHost); ip != nil {
 		if err := validateNotifyWebhookIP(ip, allowLoopback); err != nil {
 			return err
 		}
@@ -596,7 +596,8 @@ func safeNotifyDialContext(allowLoopback bool) func(ctx context.Context, network
 
 // sendWebhook sends a webhook notification
 func (n *Notifier) sendWebhook(event Event) error {
-	if err := validateNotifyWebhookURL(n.config.Webhook.URL, true); err != nil {
+	webhookURL := strings.TrimSpace(n.config.Webhook.URL)
+	if err := validateNotifyWebhookURL(webhookURL, true); err != nil {
 		return err
 	}
 
@@ -635,7 +636,7 @@ func (n *Notifier) sendWebhook(event Event) error {
 		method = "POST"
 	}
 
-	req, err := http.NewRequest(method, n.config.Webhook.URL, &body)
+	req, err := http.NewRequest(method, webhookURL, &body)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

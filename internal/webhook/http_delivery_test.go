@@ -219,6 +219,7 @@ func TestWebhookSSRFPolicyRejectsMetadataAndUnspecified(t *testing.T) {
 	t.Parallel()
 	blocked := []string{
 		"http://169.254.169.254/latest/meta-data/",
+		"http://169.254.169.254./latest/meta-data/",
 		"https://metadata.google.internal/computeMetadata/v1/",
 		"https://metadata.google.internal./computeMetadata/v1/",
 		"http://metadata.goog/",
@@ -227,7 +228,9 @@ func TestWebhookSSRFPolicyRejectsMetadataAndUnspecified(t *testing.T) {
 		"http://[fd00:ec2::254%25eth0]/latest/meta-data/",
 		"http://[fe80::1%25eth0]/hook",
 		"http://100.100.100.200/latest/meta-data/",
+		"http://100.100.100.200./latest/meta-data/",
 		"http://0.0.0.0:8080/hook",
+		"http://0.0.0.0./hook",
 		"http://[::]:8080/hook",
 		"file:///etc/passwd",
 	}
