@@ -359,7 +359,16 @@ func (c *SessionCoordinator) Stop() {
 	c.mu.Lock()
 	c.stopCh = nil
 	c.stopping = false
+	mailNudge := c.mailNudge
+	caamFailover := c.caamFailover
 	c.mu.Unlock()
+
+	if mailNudge != nil {
+		_ = mailNudge.Close()
+	}
+	if caamFailover != nil {
+		_ = caamFailover.Close()
+	}
 }
 
 // GetAgents returns the current state of all tracked agents.

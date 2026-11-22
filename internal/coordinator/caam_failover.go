@@ -149,10 +149,10 @@ func (m *AccountFailoverMonitor) RunOnce(ctx context.Context) []AccountFailoverD
 // Close releases runtime-store resources after the caller cancels and joins
 // its monitor loop. It does not stop a loop owned by another process.
 func (m *AccountFailoverMonitor) Close() error {
-	if m == nil || m.checker == nil || m.checker.store == nil {
+	if m == nil || m.checker == nil {
 		return nil
 	}
-	return m.checker.store.Close()
+	return m.checker.Close()
 }
 
 // PreflightAccountRotation rejects unavailable account infrastructure before a
@@ -320,6 +320,21 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 	return fc
 }
 
+// Close releases the lazily-opened runtime store if one was opened.
+func (fc *failoverChecker) Close() error {
+	if fc == nil {
+		return nil
+	}
+	fc.mu.Lock()
+	store := fc.store
+	fc.store = nil
+	fc.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	return store.Close()
+}
+
 // runtimeStore lazily opens the shared runtime store. nil means the store is
 // unavailable; the in-memory cooldown map still bounds this process.
 func (fc *failoverChecker) runtimeStore() *state.Store {
@@ -342,9 +357,14 @@ func (fc *failoverChecker) runtimeStore() *state.Store {
 			_ = store.Close()
 			return
 		}
+		fc.mu.Lock()
 		fc.store = store
+		fc.mu.Unlock()
 	})
-	return fc.store
+	fc.mu.Lock()
+	store := fc.store
+	fc.mu.Unlock()
+	return store
 }
 
 // storedLastSwitch reads the per-pane switch watermark, falling back to the
@@ -1229,7 +1249,7 @@ func providerForAgentType(t agent.AgentType) string {
 		return "claude"
 	case agent.AgentTypeCodex:
 		return "openai"
-	case agent.AgentTypeGemini:
+	case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
 		return "gemini"
 	default:
 		return ""
@@ -1244,7 +1264,7 @@ func canonicalFailoverProvider(p string) string {
 		return "claude"
 	case "openai", "codex", "cod", "gpt":
 		return "openai"
-	case "gemini", "gmi", "google":
+	case "gemini", "gmi", "google", "antigravity", "agy":
 		return "gemini"
 	default:
 		return ""
@@ -1252,10 +1272,14 @@ func canonicalFailoverProvider(p string) string {
 }
 
 // hasWorkingDetector reports whether the "never while working" gate can be
-// verified for this agent type. Only Claude Code and Codex have working
-// detectors today; every other type fails closed.
+// verified for this agent type. Every other type fails closed.
 func hasWorkingDetector(t agent.AgentType) bool {
-	return t == agent.AgentTypeClaudeCode || t == agent.AgentTypeCodex
+	switch t {
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeAntigravity:
+		return true
+	default:
+		return false
+	}
 }
 
 // agentWorking applies the per-type agent working detector.
@@ -1265,6 +1289,11 @@ func agentWorking(t agent.AgentType, captured string, paneWidth int) bool {
 		return agent.ClaudeActivelyWorking(captured, paneWidth)
 	case agent.AgentTypeCodex:
 		return agent.CodexActivelyWorking(captured, paneWidth)
+	case agent.AgentTypeGemini:
+		turn := agent.DetectGeminiTurn(captured)
+		return turn != agent.GeminiTurnIdle && turn != agent.GeminiTurnRateLimited
+	case agent.AgentTypeAntigravity:
+		return agent.AntigravityActivelyWorking(captured, paneWidth)
 	default:
 		// Unreachable behind hasWorkingDetector; refuse anyway.
 		return true

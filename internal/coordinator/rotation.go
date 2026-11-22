@@ -514,6 +514,14 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 		if agent.OmpActivelyWorking(captured, pane.Width) {
 			return "working"
 		}
+	case agent.AgentTypeAntigravity:
+		if agent.AntigravityActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
+	case agent.AgentTypeOpencode:
+		if agent.OpencodeActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
 	default:
 		return "unsupported_agent_type"
 	}
@@ -581,6 +589,17 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 				}
 			}
 			agentType = "omp"
+		case agent.AgentTypeOpencode:
+			// OpenCode renders live context usage in its sidebar/status bar.
+			if rc.capturePane != nil {
+				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
+					fallbackWindow := ntmctx.GetContextLimit(pane.Variant)
+					if usage, ok := ntmctx.OpencodeStatusBarUsage(captured, int(fallbackWindow), rc.now()); ok {
+						gauges[pane.ID] = usage
+					}
+				}
+			}
+			agentType = "opencode"
 		default:
 			// Other agent CLIs have no known transcript locations; the fixed
 			// transcript-only confidence gate excludes them.

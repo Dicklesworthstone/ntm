@@ -208,6 +208,21 @@ func dispatchMailNudge(ctx context.Context, session string, panes []tmux.Pane, t
 	return nil
 }
 
+// Close releases the lazily-opened runtime store if one was opened.
+func (mc *mailNudgeChecker) Close() error {
+	if mc == nil {
+		return nil
+	}
+	mc.mu.Lock()
+	store := mc.store
+	mc.store = nil
+	mc.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	return store.Close()
+}
+
 // runtimeStore lazily opens the shared runtime store. nil means the store is
 // unavailable; the in-memory cooldown map still bounds this process.
 func (mc *mailNudgeChecker) runtimeStore() *state.Store {
@@ -224,9 +239,14 @@ func (mc *mailNudgeChecker) runtimeStore() *state.Store {
 			_ = store.Close()
 			return
 		}
+		mc.mu.Lock()
 		mc.store = store
+		mc.mu.Unlock()
 	})
-	return mc.store
+	mc.mu.Lock()
+	store := mc.store
+	mc.mu.Unlock()
+	return store
 }
 
 // storedLastNudge reads the per-pane nudge watermark, falling back to the
