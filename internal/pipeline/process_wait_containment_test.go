@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -813,6 +815,167 @@ exit %d`, exitCode),
 }
 
 func TestCrashOnlyReceiptReconciliationOnResume(t *testing.T) {
+	t.Run("preserves_live_output_contract", func(t *testing.T) {
+		t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
+		for _, tc := range []struct {
+			name            string
+			command         string
+			parse           OutputParse
+			limit           int64
+			want            string
+			legacy          bool
+			unrepresentable bool
+		}{
+			{name: "stderr_only", command: `printf 'diagnostic\n' >&2`, want: "diagnostic"},
+			{name: "merged_stream_order", command: `printf first; printf second >&2; printf third`, want: "firstsecondthird"},
+			{name: "explicit_none_merges_stderr", command: `printf stdout; printf stderr >&2`, parse: OutputParse{Type: "none"}, want: "stdoutstderr"},
+			{name: "beyond_legacy_one_MiB_cap", command: `head -c 1048640 /dev/zero | tr '\000' x`, want: strings.Repeat("x", (1<<20)+64)},
+			{name: "configured_byte_cap", command: `printf abcdefgh; printf ijklmnop >&2`, limit: 10, want: "abcdefghij\n[TRUNCATED at 10 bytes]"},
+			{name: "whitespace_at_byte_cap", command: `printf '      payload'`, limit: 4, want: "\n[TRUNCATED at 4 bytes]"},
+			{name: "valid_unicode", command: `printf '\303\251clair'`, want: "éclair"},
+			{name: "refuses_split_utf8_codepoint", command: `printf '\303\251'`, limit: 1, want: "\xc3\n[TRUNCATED at 1 bytes]", unrepresentable: true},
+			{name: "refuses_binary_json_replacement", command: `printf '\377'`, want: "\xff", unrepresentable: true},
+			{name: "parsed_stdout_excludes_stderr", command: `printf 'diagnostic\n' >&2; printf '{"answer":42}'`, parse: OutputParse{Type: "json"}, want: `{"answer":42}`},
+			{name: "rejects_legacy_incomplete_capture_contract", command: "printf captured", want: "captured", legacy: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				cfg := DefaultExecutorConfig("receipt-output")
+				cfg.ProjectDir, cfg.RunID = root, "run-receipt-output"
+				workflow := &Workflow{
+					SchemaVersion: SchemaVersion,
+					Name:          "receipt-output",
+					Settings:      DefaultWorkflowSettings(),
+					Steps: []Step{
+						{
+							ID: "produce",
+							Command: "printf 'once\\n' >> launches\n" +
+								"while [ ! -f release ]; do sleep 0.01; done\n" + tc.command,
+							OutputVar:   "produced",
+							OutputParse: tc.parse,
+						},
+						{ID: "consume", DependsOn: []string{"produce"}, Command: "cat > consumed.txt", Stdin: "${steps.produce.output}"},
+					},
+				}
+				workflow.Settings.Limits.MaxCommandStdoutBytes = tc.limit
+				if size := int64(len(tc.want)); size > DefaultMaxCommandStdinBytes {
+					workflow.Settings.Limits.MaxCommandStdinBytes = size
+				}
+				wantConsumed := tc.want
+				if tc.parse.Type == "json" {
+					workflow.Steps[1].Stdin = "${steps.produce.data.answer}"
+					wantConsumed = "42"
+				}
+				e := NewExecutor(cfg)
+				e.limits = workflow.Settings.Limits.EffectiveLimits()
+				e.state = &ExecutionState{
+					RunID: cfg.RunID, WorkflowID: workflow.Name, Session: cfg.Session,
+					Status: StatusRunning, StartedAt: time.Now(),
+					Steps: map[string]StepResult{}, Variables: map[string]interface{}{},
+					InFlightSteps: map[string]InFlightStepState{
+						"produce": {StepID: "produce", Kind: StepKindCommand, StartedAt: time.Now()},
+					},
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				liveDone := make(chan StepResult, 1)
+				go func() { liveDone <- e.executeCommand(ctx, &workflow.Steps[0], workflow) }()
+				joined := false
+				defer func() {
+					cancel()
+					if !joined {
+						<-liveDone
+					}
+				}()
+				// Hold the real child at a file barrier until its durable running
+				// checkpoint is captured. No scheduling-dependent sleep window.
+				var crashedSnapshot *ExecutionState
+				poll := time.NewTicker(10 * time.Millisecond)
+				defer poll.Stop()
+				for crashedSnapshot == nil {
+					loaded, err := LoadState(root, cfg.RunID)
+					if err == nil {
+						rec := loaded.CommandExecutions["produce"]
+						if rec.Status == commandExecutionRunning && rec.LeaderPID > 0 && rec.LeaderStartTimeTicks > 0 {
+							crashedSnapshot = loaded
+							break
+						}
+					}
+					select {
+					case result := <-liveDone:
+						joined = true
+						t.Fatalf("producer exited before running checkpoint: %+v", result)
+					case <-ctx.Done():
+						t.Fatal("producer never saved a running checkpoint")
+					case <-poll.C:
+					}
+				}
+				if err := os.WriteFile(filepath.Join(root, "release"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				liveResult := <-liveDone
+				joined = true
+				if liveResult.Status != StatusCompleted || liveResult.Output != tc.want {
+					t.Fatalf("unexpected live capture: status=%s bytes=%d want_bytes=%d error=%v", liveResult.Status, len(liveResult.Output), len(tc.want), liveResult.Error)
+				}
+				receipt, err := readStepExitReceipt(crashedSnapshot.CommandExecutions["produce"].ExitCodeFile)
+				if err != nil || receipt.Version != stepExitReceiptVersion || receipt.OutputCaptured == tc.unrepresentable {
+					t.Fatalf("receipt differs from live capture: version=%d captured=%t bytes=%d live_bytes=%d err=%v", receipt.Version, receipt.OutputCaptured, len(receipt.Output), len(liveResult.Output), err)
+				}
+				if tc.unrepresentable {
+					if receipt.Output != "" {
+						t.Fatal("receipt retained a JSON-mangled version of binary or split UTF-8 output")
+					}
+				} else if receipt.Output != liveResult.Output {
+					t.Fatalf("receipt differs from live output: receipt_bytes=%d live_bytes=%d", len(receipt.Output), len(liveResult.Output))
+				}
+				if tc.legacy {
+					// A v1 producer could assert OutputCaptured despite silently
+					// dropping bytes or stderr. Never trust that older contract.
+					receipt.Version = 1
+					if err := writeStepExitReceiptAtomic(crashedSnapshot.CommandExecutions["produce"].ExitCodeFile, receipt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := SaveState(root, crashedSnapshot); err != nil {
+					t.Fatal(err)
+				}
+				prior, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := NewExecutor(cfg).Resume(ctx, workflow, prior, nil)
+				if tc.legacy || tc.unrepresentable {
+					if err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+						t.Fatalf("untrusted capture was accepted as complete: err=%v", err)
+					}
+					if launches, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(launches) != "once\n" {
+						t.Fatalf("untrusted receipt caused producer replay: launches=%q err=%v", launches, err)
+					}
+					if _, err := os.Stat(filepath.Join(root, "consumed.txt")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("downstream consumer ran with untrusted capture: %v", err)
+					}
+					return
+				}
+				if err != nil || resumed.Status != StatusCompleted {
+					t.Fatalf("resume failed: err=%v", err)
+				}
+				if resumed.Steps["produce"].Output != liveResult.Output || resumed.Variables["produced"] != liveResult.Output {
+					t.Fatal("resume changed captured output or the named output variable")
+				}
+				if rec := resumed.CommandExecutions["produce"]; rec.Status != commandExecutionSettled || !rec.Reconciled {
+					t.Fatalf("producer was not reconciled from its receipt: %+v", rec)
+				}
+				if launches, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(launches) != "once\n" {
+					t.Fatalf("producer was replayed: launches=%q err=%v", launches, err)
+				}
+				if consumed, err := os.ReadFile(filepath.Join(root, "consumed.txt")); err != nil || string(consumed) != wantConsumed {
+					t.Fatalf("downstream output differs: got_bytes=%d want_bytes=%d err=%v", len(consumed), len(wantConsumed), err)
+				}
+			})
+		}
+	})
+
 	t.Run("reconciles_completed_step_after_orchestrator_crash", func(t *testing.T) {
 		t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)
 
@@ -1209,6 +1372,92 @@ func TestCrashOnlyReceiptReconciliationOnResume(t *testing.T) {
 	})
 }
 
+func TestStepRequiresCapturedStdoutScopedReferences(t *testing.T) {
+	body := func(producerID, reference string) []Step {
+		return []Step{
+			{ID: producerID, Command: "printf result"},
+			{ID: "consume", Command: "cat", Stdin: reference},
+		}
+	}
+	foreach := func(steps []Step) []Step {
+		return []Step{{ID: "batch", Foreach: &ForeachConfig{Items: `["a"]`, Steps: steps}}}
+	}
+	loop := func(steps []Step) []Step {
+		return []Step{{ID: "batch", Loop: &LoopConfig{Items: `["a"]`, Steps: steps}}}
+	}
+	tests := []struct {
+		name   string
+		steps  []Step
+		stepID string
+		want   bool
+	}{
+		{
+			name:   "top_level_output",
+			steps:  body("produce", "${steps.produce.output}"),
+			stepID: "produce",
+			want:   true,
+		},
+		{
+			name:   "foreach_authored_output",
+			steps:  foreach(body("produce", "${steps.produce.output}")),
+			stepID: "batch_iter0_produce",
+			want:   true,
+		},
+		{
+			name:   "foreach_authored_data",
+			steps:  foreach(body("produce", "${steps.produce.data}")),
+			stepID: "batch_iter0_produce",
+			want:   true,
+		},
+		{
+			name:   "foreach_runtime_output",
+			steps:  foreach(body("produce", "${steps.batch_iter0_produce.output}")),
+			stepID: "batch_iter0_produce",
+			want:   true,
+		},
+		{
+			name:   "loop_authored_output",
+			steps:  loop(body("produce", "${steps.produce.output}")),
+			stepID: "batch_iter0_produce",
+			want:   true,
+		},
+		{
+			name: "nested_loop_authored_output",
+			steps: foreach([]Step{{ID: "nested", Loop: &LoopConfig{
+				Items: `["b"]`, Steps: body("produce", "${steps.produce.output}"),
+			}}}),
+			stepID: "batch_iter0_nested_iter0_produce",
+			want:   true,
+		},
+		{
+			name:   "unused_scoped_output",
+			steps:  foreach(body("produce", "")),
+			stepID: "batch_iter0_produce",
+			want:   false,
+		},
+		{
+			name:   "different_child_output",
+			steps:  foreach(body("produce", "${steps.other.output}")),
+			stepID: "batch_iter0_produce",
+			want:   false,
+		},
+		{
+			name:   "anonymous_child_output",
+			steps:  foreach(body("", "${steps.step0.output}")),
+			stepID: "batch_iter0_step0",
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow := &Workflow{Steps: tt.steps}
+			if got := stepRequiresCapturedStdout(workflow, tt.stepID, 0); got != tt.want {
+				t.Fatalf("stepRequiresCapturedStdout(%q) = %v, want %v", tt.stepID, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContainmentStructuredDiagnostics(t *testing.T) {
 	var logBuf bytes.Buffer
 	origLogger := slog.Default()
@@ -1232,6 +1481,76 @@ func TestContainmentStructuredDiagnostics(t *testing.T) {
 			t.Fatalf("expected structured slog.Debug diagnostic %s in %s", field, logged)
 		}
 	}
+}
+
+func TestResilientStdoutTeePreservesOutputContract(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		limit     int64
+		input     string
+		want      string
+		truncated bool
+	}{
+		{name: "trimmed complete output", limit: 8, input: "  abc  \n", want: "abc"},
+		{name: "exact byte limit", limit: 4, input: "data", want: "data"},
+		{name: "explicit truncation", limit: 4, input: "abcdef", want: "abcd\n[TRUNCATED at 4 bytes]", truncated: true},
+		{name: "whitespace at limit", limit: 4, input: "    payload", want: "\n[TRUNCATED at 4 bytes]", truncated: true},
+		{name: "beyond former one MiB cap", limit: DefaultMaxCommandStdoutBytes, input: strings.Repeat("x", (1<<20)+64), want: strings.Repeat("x", (1<<20)+64)},
+		{name: "explicit unbounded capture", input: strings.Repeat("y", 128), want: strings.Repeat("y", 128)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var forwarded bytes.Buffer
+			capture := newCappedWriter(tc.limit)
+			tee := &resilientStdoutTee{capture: capture, forward: &forwarded}
+			n, err := tee.ReadFrom(strings.NewReader(tc.input))
+			if err != nil || n != int64(len(tc.input)) || forwarded.String() != tc.input {
+				t.Fatalf("receipt capture altered live forwarding: read=%d forwarded=%d want=%d err=%v", n, forwarded.Len(), len(tc.input), err)
+			}
+			if got := capturedCommandText(capture); got != tc.want {
+				t.Fatalf("receipt output did not preserve the configured contract: bytes=%d want_bytes=%d truncated=%t", len(got), len(tc.want), capture.Truncated())
+			}
+			if !capture.outputCaptureComplete() || capture.Truncated() != tc.truncated || capture.Total() != int64(len(tc.input)) {
+				t.Fatalf("receipt capture lost EOF or byte accounting: complete=%t truncated=%t total=%d", capture.outputCaptureComplete(), capture.Truncated(), capture.Total())
+			}
+		})
+	}
+}
+
+func TestResilientStdoutTeeDistinguishesParentLossFromIncompleteOutput(t *testing.T) {
+	t.Parallel()
+	t.Run("parent pipe closed", func(t *testing.T) {
+		capture := newCappedWriter(128)
+		tee := &resilientStdoutTee{capture: capture, forward: commandInputFailureWriter{err: syscall.EPIPE}}
+		if _, err := tee.ReadFrom(strings.NewReader("recoverable")); err != nil {
+			t.Fatalf("dead parent's forwarding pipe prevented receipt capture: %v", err)
+		}
+		if !capture.outputCaptureComplete() || capturedCommandText(capture) != "recoverable" {
+			t.Fatalf("parent crash lost recoverable output: complete=%t output=%q", capture.outputCaptureComplete(), capturedCommandText(capture))
+		}
+	})
+	t.Run("capture source failed", func(t *testing.T) {
+		capture := newCappedWriter(128)
+		tee := &resilientStdoutTee{capture: capture, forward: io.Discard}
+		source := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(io.ErrUnexpectedEOF))
+		if _, err := tee.ReadFrom(source); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("capture source failure was hidden: %v", err)
+		}
+		if capture.outputCaptureComplete() || capture.String() != "partial" {
+			t.Fatalf("partial output was certified as complete: complete=%t output=%q", capture.outputCaptureComplete(), capture.String())
+		}
+	})
+	t.Run("writing bytes is not EOF", func(t *testing.T) {
+		capture := newCappedWriter(128)
+		tee := &resilientStdoutTee{capture: capture}
+		if _, err := tee.Write([]byte("partial")); err != nil {
+			t.Fatal(err)
+		}
+		if capture.outputCaptureComplete() {
+			t.Fatal("receipt advertised complete output without observing EOF")
+		}
+	})
 }
 
 func TestCgroupObservationRetriesAndPreservesFailure(t *testing.T) {

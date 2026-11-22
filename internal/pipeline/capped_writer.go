@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -137,6 +139,17 @@ func (w *cappedWriter) Truncated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.truncated
+}
+
+// capturedCommandText is shared by live execution and durable crash receipts.
+// Formatting after capture reaches EOF keeps byte limits, whitespace handling,
+// and explicit truncation markers identical for downstream step consumers.
+func capturedCommandText(capture *cappedWriter) string {
+	output := strings.TrimSpace(capture.String())
+	if capture.Truncated() {
+		output += fmt.Sprintf("\n[TRUNCATED at %d bytes]", capture.cap)
+	}
+	return output
 }
 
 // ensureCappedWriterIsWriter is a compile-time assertion.

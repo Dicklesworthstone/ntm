@@ -20,11 +20,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
 
-const stepReaperMaxCapturedStdout = 1 << 20 // 1 MiB bounded stdout mirror for crash-only receipts
 const stepReaperSettlementMarker = "ntm-step-settled-v1"
 const stepReaperMaxSettlementBytes = 64
 
@@ -357,6 +357,12 @@ func tryStartCommandSubreaperPIDFD(cmd *exec.Cmd, opts commandStartOptions, stri
 	reaperArgs := []string{reaperBin, StepReaperSubcommand, "--settlement-fd=" + strconv.Itoa(settlementFD)}
 	if opts.ExitCodeFile != "" {
 		reaperArgs = append(reaperArgs, "--exit-code-file="+opts.ExitCodeFile)
+		if opts.OutputLimit != 0 {
+			reaperArgs = append(reaperArgs, "--output-limit="+strconv.FormatInt(opts.OutputLimit, 10))
+		}
+	}
+	if opts.MergeStderr {
+		reaperArgs = append(reaperArgs, "--merge-stderr")
 	}
 	if opts.StepID != "" {
 		reaperArgs = append(reaperArgs, "--step-id="+opts.StepID)
@@ -1140,9 +1146,7 @@ func verifySubreaperSettlement(cmd *exec.Cmd, handle *linuxContainmentHandle, re
 }
 
 type resilientStdoutTee struct {
-	mu      sync.Mutex
-	buf     bytes.Buffer
-	limit   int
+	capture *cappedWriter
 	forward io.Writer
 }
 
@@ -1150,22 +1154,14 @@ func (t *resilientStdoutTee) Write(p []byte) (int, error) {
 	if t.forward != nil {
 		_, _ = t.forward.Write(p)
 	}
-	t.mu.Lock()
-	if remaining := t.limit - t.buf.Len(); remaining > 0 {
-		if len(p) <= remaining {
-			_, _ = t.buf.Write(p)
-		} else {
-			_, _ = t.buf.Write(p[:remaining])
-		}
-	}
-	t.mu.Unlock()
-	return len(p), nil
+	return t.capture.Write(p)
 }
 
-func (t *resilientStdoutTee) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.buf.String()
+// Keep EOF evidence on the same bounded capture used by live execution. A
+// broken parent forwarding pipe must not lose the recoverable mirror, while
+// a failed source read must never advertise complete output in its receipt.
+func (t *resilientStdoutTee) ReadFrom(source io.Reader) (int64, error) {
+	return t.capture.readFrom(source, t)
 }
 
 // readSubreaperDirectChildren reads `/proc/self/task/*/children` to discover
@@ -1344,6 +1340,8 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 		stepHash     string
 		customArgv0  string
 		settlementFD = -1
+		outputLimit  = int64(DefaultMaxCommandStdoutBytes)
+		mergeStderr  bool
 		target       []string
 	)
 	for i := 0; i < len(args); i++ {
@@ -1362,6 +1360,15 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 			settlementFD = fd
 		case strings.HasPrefix(arg, "--exit-code-file="):
 			exitCodeFile = strings.TrimPrefix(arg, "--exit-code-file=")
+		case strings.HasPrefix(arg, "--output-limit="):
+			limit, err := strconv.ParseInt(strings.TrimPrefix(arg, "--output-limit="), 10, 64)
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "ntm internal-step-reaper: invalid output limit")
+				return StepReaperOutcome{ExitCode: 2}
+			}
+			outputLimit = limit
+		case arg == "--merge-stderr":
+			mergeStderr = true
 		case strings.HasPrefix(arg, "--step-id="):
 			stepID = strings.TrimPrefix(arg, "--step-id=")
 		case strings.HasPrefix(arg, "--step-hash="):
@@ -1430,6 +1437,9 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 			Setpgid: true,
 		},
 	}
+	if mergeStderr {
+		child.Stderr = os.Stdout
+	}
 	if !strings.Contains(child.Path, "/") {
 		if resolved, err := exec.LookPath(child.Path); err == nil {
 			child.Path = resolved
@@ -1448,14 +1458,19 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 		if err == nil {
 			stdoutPipeR, stdoutPipeW = pr, pw
 			stdoutTee = &resilientStdoutTee{
-				limit:   stepReaperMaxCapturedStdout,
+				capture: newCappedWriter(outputLimit),
 				forward: os.Stdout,
 			}
 			stdoutDone = make(chan struct{})
 			child.Stdout = pw
+			if mergeStderr {
+				// Use one pipe, as os/exec does for identical stdout/stderr
+				// writers, so recovery preserves the original stream order.
+				child.Stderr = pw
+			}
 			go func() {
 				defer close(stdoutDone)
-				_, stdoutErr = io.Copy(stdoutTee, pr)
+				_, stdoutErr = stdoutTee.ReadFrom(pr)
 				_ = pr.Close()
 			}()
 		} else {
@@ -1611,8 +1626,17 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 
 	if exitCodeFile != "" && directObserved && directSignal == 0 {
 		captured := ""
+		captureComplete := false
 		if stdoutTee != nil {
-			captured = stdoutTee.String()
+			captured = capturedCommandText(stdoutTee.capture)
+			captureComplete = stdoutTee.capture.outputCaptureComplete()
+			if !utf8.ValidString(captured) {
+				// JSON strings cannot preserve binary bytes or a UTF-8 rune
+				// split by the byte cap. Keep terminal evidence, but require
+				// explicit recovery when downstream work needs this output.
+				captured = ""
+				captureComplete = false
+			}
 		}
 		_ = writeStepExitReceiptAtomic(exitCodeFile, StepExitReceipt{
 			Version:              stepExitReceiptVersion,
@@ -1622,7 +1646,7 @@ func RunStepReaper(args []string) (outcome StepReaperOutcome) {
 			LeaderStartTimeTicks: selfStartTicks,
 			ExitCode:             directExitCode,
 			Output:               captured,
-			OutputCaptured:       stdoutTee != nil,
+			OutputCaptured:       captureComplete,
 			FinishedAt:           time.Now().UTC(),
 		})
 	}

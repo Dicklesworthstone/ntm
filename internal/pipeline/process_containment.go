@@ -27,7 +27,10 @@ const (
 
 	StepReaperSubcommand = "internal-step-reaper"
 
-	stepExitReceiptVersion = 1
+	// Version 2 stores the same bounded, formatted output as live execution.
+	// Version 1 silently capped stdout at 1 MiB and omitted merged stderr, so
+	// it cannot prove that downstream consumers will receive complete data.
+	stepExitReceiptVersion = 2
 )
 
 // commandGroupProcStatOpens counts /proc/<pid>/stat reads performed by the
@@ -40,6 +43,8 @@ type commandStartOptions struct {
 	ExitCodeFile         string
 	StepID               string
 	StepHash             string
+	OutputLimit          int64
+	MergeStderr          bool
 }
 
 type commandContainmentMetadata struct {
@@ -146,8 +151,8 @@ func wrapShellCommandForExitReceipt(expandedCmd, exitFile, stepID, stepHash stri
 	quotedTmp := shellSingleQuote(tmpFile)
 	quotedFinal := shellSingleQuote(exitFile)
 	trapBody := fmt.Sprintf(
-		`__ntm_ec=$?; { printf '{"version":1,"step_id":%%s,"step_hash":%%s,"leader_pid":%%d,"exit_code":%%d}\n' %s %s "$$" "$__ntm_ec" > %s && mv -f %s %s; } 2>/dev/null || :; exit "$__ntm_ec"`,
-		quotedID, quotedHash, quotedTmp, quotedTmp, quotedFinal,
+		`__ntm_ec=$?; { printf '{"version":%d,"step_id":%%s,"step_hash":%%s,"leader_pid":%%d,"exit_code":%%d}\n' %s %s "$$" "$__ntm_ec" > %s && mv -f %s %s; } 2>/dev/null || :; exit "$__ntm_ec"`,
+		stepExitReceiptVersion, quotedID, quotedHash, quotedTmp, quotedTmp, quotedFinal,
 	)
 	return "trap " + shellSingleQuote(trapBody) + " EXIT\n" + expandedCmd
 }
@@ -187,6 +192,12 @@ func stepRequiresCapturedStdout(workflow *Workflow, stepID string, exitCode int)
 		target = scoped
 	}
 	if target != nil {
+		// Anonymous runtime children receive synthesized names that are not
+		// retained in their authored ID. Without that identity, require output
+		// evidence rather than risk settling a referenced child with no output.
+		if strings.TrimSpace(target.ID) == "" {
+			return true
+		}
 		if strings.TrimSpace(target.OutputVar) != "" {
 			return true
 		}
@@ -199,10 +210,17 @@ func stepRequiresCapturedStdout(workflow *Workflow, stepID string, exitCode int)
 	}
 	rawJSON, err := json.Marshal(workflow)
 	if err == nil {
-		needleOut := "steps." + stepID + ".output"
-		needleData := "steps." + stepID + ".data"
-		if strings.Contains(string(rawJSON), needleOut) || strings.Contains(string(rawJSON), needleData) {
-			return true
+		referenceIDs := []string{stepID}
+		if target != nil && target.ID != stepID {
+			// Loop and foreach siblings reference the authored child ID even
+			// though receipts identify its materialized iteration/round ID.
+			referenceIDs = append(referenceIDs, target.ID)
+		}
+		definition := string(rawJSON)
+		for _, id := range referenceIDs {
+			if strings.Contains(definition, "steps."+id+".output") || strings.Contains(definition, "steps."+id+".data") {
+				return true
+			}
 		}
 	}
 	return false
@@ -363,7 +381,7 @@ func reconcileInterruptedCommandExecution(workflow *Workflow, state *ExecutionSt
 		AgentType:  "command",
 		StartedAt:  record.StartedAt,
 		FinishedAt: finishedAt,
-		Output:     strings.TrimSpace(receipt.Output),
+		Output:     receipt.Output,
 	}
 	if receipt.ExitCode == 0 {
 		stepResult.Status = StatusCompleted
