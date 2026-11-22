@@ -80,8 +80,9 @@ type rotationChecker struct {
 	allPanes func(context.Context) (map[string][]tmux.Pane, error)
 	paneCwd  func(paneID string) (string, bool)
 	// Fleet probes share one deadline instead of multiplying command timeouts.
-	paneCwdContext func(context.Context, string) (string, bool)
-	processUsage   func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
+	paneCwdContext      func(context.Context, string) (string, bool)
+	processUsage        func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
+	processUsageContext func(context.Context, string, int) (*ntmctx.TranscriptUsage, bool)
 	// An injected reader owns workspace attribution in its observation domain.
 	// Production leaves this nil and checks the entire tmux server below.
 	transcriptUsage func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool)
@@ -96,19 +97,21 @@ type rotationChecker struct {
 	now             func() time.Time
 }
 
-// newRotationChecker builds a production checker, or nil when the trigger is
-// disabled (threshold <= 0). ntmCfg may be nil; it is only used for the
-// replacement-agent launch commands and context rotation tunables.
+// newRotationChecker builds a production checker, or nil when all rotation
+// triggers are disabled (threshold, restart_if_tokens_above, and
+// restart_if_session_hours all <= 0). ntmCfg may be nil; it is only used for
+// the replacement-agent launch commands and context rotation tunables.
 func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntmCfg *config.Config) *rotationChecker {
-	if coordCfg.RotationUsageThreshold <= 0 {
-		return nil
-	}
-
 	rotCfg := config.DefaultContextRotationConfig()
-	thresholds := config.DefaultRotationConfig().Thresholds
+	var thresholds config.RotationThresholds
 	if ntmCfg != nil {
 		rotCfg = ntmCfg.ContextRotation
 		thresholds = ntmCfg.Rotation.Thresholds
+	}
+	if coordCfg.RotationUsageThreshold <= 0 &&
+		thresholds.RestartIfTokensAbove <= 0 &&
+		thresholds.RestartIfSessionHours <= 0 {
+		return nil
 	}
 	// The checker decides eligibility itself and only uses the Rotator's
 	// pending/confirm machinery and rotation path.
@@ -145,9 +148,7 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			cwd = strings.TrimSpace(cwd)
 			return cwd, cwd != ""
 		},
-		processUsage: func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool) {
-			return ntmctx.ProcessTranscriptUsage(context.Background(), agentType, panePID)
-		},
+		processUsageContext: ntmctx.ProcessTranscriptUsage,
 		paneCwdContext: func(ctx context.Context, paneID string) (string, bool) {
 			cwd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 			cwd = strings.TrimSpace(cwd)
@@ -182,7 +183,7 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 // entirely (the fixed minimum-confidence gate). Below-threshold panes may
 // publish advisory forecasts, but forecasts never trigger rotation.
 func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
-	if rc == nil || rc.threshold <= 0 {
+	if rc == nil || (rc.threshold <= 0 && rc.restartTokensAbove <= 0 && rc.restartSessionAge <= 0) {
 		return nil
 	}
 	if ctx != nil && ctx.Err() != nil {
@@ -197,7 +198,7 @@ func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
 		return nil
 	}
 
-	usages := rc.resolvePaneTranscripts(panes)
+	usages := rc.resolvePaneTranscriptsContext(ctx, panes)
 	if ctx != nil && ctx.Err() != nil {
 		return nil
 	}
@@ -274,7 +275,7 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 	// restart_if_session_hours. Each individual trigger is disabled at zero.
 	triggerReason := ""
 	switch {
-	case pct > rc.threshold:
+	case rc.threshold > 0 && pct > rc.threshold:
 		triggerReason = "usage_percent"
 	case rc.restartTokensAbove > 0 && float64(usage.Tokens) > rc.restartTokensAbove:
 		triggerReason = "tokens_above"
@@ -595,10 +596,20 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 // composer. Missing/unknown native capacity never falls back to a guessed
 // model window, another pane's transcript, or the scrollback estimator.
 func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
+	return rc.resolvePaneTranscriptsContext(context.Background(), panes)
+}
+
+func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	refs := make([]ntmctx.PaneTranscriptRef, 0, len(panes))
 	gauges := make(map[string]*ntmctx.TranscriptUsage)
 	remote := tmux.DefaultClient != nil && tmux.DefaultClient.Remote != ""
 	for _, pane := range panes {
+		if ctx.Err() != nil {
+			break
+		}
 		if pane.Dead || pane.IsServicePane() {
 			continue
 		}
@@ -649,7 +660,15 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 		cwd, _ := rc.paneCwd(pane.ID)
 		refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: pane.ID, AgentType: agentType, PID: pane.PID, Cwd: cwd})
 	}
-	known := ntmctx.AttributePaneTranscripts(refs, gauges, rc.processUsage, nil)
+	var processLookup func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
+	if rc.processUsage != nil {
+		processLookup = rc.processUsage
+	} else if rc.processUsageContext != nil {
+		processLookup = func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool) {
+			return rc.processUsageContext(ctx, agentType, panePID)
+		}
+	}
+	known := ntmctx.AttributePaneTranscripts(refs, gauges, processLookup, nil)
 	if rc.transcriptUsage != nil {
 		return ntmctx.AttributePaneTranscripts(refs, known, nil, rc.transcriptUsage)
 	}

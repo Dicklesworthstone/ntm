@@ -401,9 +401,9 @@ func TestRotationChecker_SharedCwdPanesBindThroughTheirProcess(t *testing.T) {
 		t.Fatalf("decision = %+v, want %%1 enqueued from %s with 172841 tokens", d, boundPath)
 	}
 
-	// Production wiring binds through the process tree too.
+	// Production wiring binds through the process tree too (with caller context propagation).
 	prod := newRotationChecker("rotsess", t.TempDir(), CoordinatorConfig{RotationUsageThreshold: 50}, nil)
-	if prod == nil || prod.processUsage == nil {
+	if prod == nil || (prod.processUsage == nil && prod.processUsageContext == nil) {
 		t.Fatal("production rotation checker has no process-session binding")
 	}
 }
