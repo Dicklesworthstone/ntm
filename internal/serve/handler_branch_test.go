@@ -6417,7 +6417,7 @@ func TestStartMemoryDaemonAsync_KeepsDaemonAliveAfterStartup(t *testing.T) {
 		memoryStore = oldStore
 	}()
 
-	srv.startMemoryDaemonAsync(8234, "test-session")
+	srv.startMemoryDaemonAsync(8234, "test-session", 0)
 
 	info := memoryStore.GetDaemonInfo()
 	if info == nil {
@@ -6490,7 +6490,7 @@ func TestStartMemoryDaemonAsync_DoesNotAdoptDifferentDaemonPort(t *testing.T) {
 		memoryStore = oldStore
 	}()
 
-	srv.startMemoryDaemonAsync(8234, "test-session")
+	srv.startMemoryDaemonAsync(8234, "test-session", 0)
 
 	info := memoryStore.GetDaemonInfo()
 	if info == nil {

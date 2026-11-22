@@ -176,6 +176,15 @@ func TestMemoryStore_SetDaemonInfo_Overwrite(t *testing.T) {
 	}
 }
 
+// SetDaemonInfo is a test-only state setter for MemoryStore fixtures; live
+// daemon transitions use generation-guarded CAS methods on MemoryStore.
+func (s *MemoryStore) SetDaemonInfo(info *MemoryDaemonInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.daemonGen++
+	s.daemonInfo = cloneMemoryDaemonInfo(info)
+}
+
 // ---------------------------------------------------------------------------
 // WSClient.Topics
 // ---------------------------------------------------------------------------
