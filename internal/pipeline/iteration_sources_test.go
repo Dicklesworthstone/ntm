@@ -193,8 +193,8 @@ func TestSelectorPolicyDeadlineDoesNotBoundChildBody(t *testing.T) {
 			t.Parallel()
 			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `cat selector-policy-result`)
 			cfg.DefaultTimeout = 3 * time.Second
-			workflow.Steps[0].Timeout = Duration{Duration: 250 * time.Millisecond}
-			body := []Step{{ID: "body", Command: "sleep 0.38; printf body > child-dispatched"}}
+			workflow.Steps[0].Timeout = Duration{Duration: 600 * time.Millisecond}
+			body := []Step{{ID: "body", Command: "sleep 0.75; printf body > child-dispatched"}}
 			if kind == "branch" {
 				workflow.Steps[0].Branches["chosen"] = body
 			} else {

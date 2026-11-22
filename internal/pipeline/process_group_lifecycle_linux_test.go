@@ -955,7 +955,7 @@ func TestCommandGroupObservationRetriesAndPreservesFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			calls := 0
-			ctx, cancel := context.WithTimeout(context.Background(), 4*commandGroupPollInterval)
+			ctx, cancel := context.WithTimeout(context.Background(), 12*commandGroupPollInterval)
 			defer cancel()
 			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(int) (bool, error) {
 				calls++

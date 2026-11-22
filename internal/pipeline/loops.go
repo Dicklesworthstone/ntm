@@ -185,6 +185,13 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			le.executor.markForeachIterationCompleted(step.ID, i, total)
 		}
 
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
 		// Collect output if configured. bd-t3q8a: persist each iteration's
 		// collected entry on the foreach state so a subsequent resume can
 		// reconstruct outputs from iterations that completed before the
@@ -204,12 +211,6 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			}
 		}
 		le.executor.persistState()
-
-		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
-			result.Status = StatusCancelled
-			result.FinishedAt = time.Now()
-			return result
-		}
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
@@ -342,6 +343,13 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
 		}
 
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
@@ -357,12 +365,6 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			}
 		}
 		le.executor.persistState()
-
-		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
-			result.Status = StatusCancelled
-			result.FinishedAt = time.Now()
-			return result
-		}
 
 		if shouldBreak {
 			brokeEarly = true
@@ -485,6 +487,15 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
 
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
+			le.popLoopVars(scope)
+			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
 		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
@@ -498,15 +509,6 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 				le.executor.persistState()
 			}
-		}
-
-		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
-			le.popLoopVars(scope)
-			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
-			le.executor.persistState()
-			result.Status = StatusCancelled
-			result.FinishedAt = time.Now()
-			return result
 		}
 
 		if shouldBreak {
@@ -672,6 +674,13 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			le.executor.markForeachIterationCompleted(step.ID, i, times)
 		}
 
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
@@ -687,12 +696,6 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			}
 		}
 		le.executor.persistState()
-
-		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
-			result.Status = StatusCancelled
-			result.FinishedAt = time.Now()
-			return result
-		}
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {

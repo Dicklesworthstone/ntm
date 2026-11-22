@@ -1061,6 +1061,11 @@ func readSubreaperDirectChildren() []int {
 		data, err := os.ReadFile(filepath.Join("/proc/self/task", task.Name(), "children"))
 		if err != nil {
 			incomplete = true
+			if errors.Is(err, os.ErrNotExist) {
+				// Kernel was built without CONFIG_PROC_CHILDREN; avoid probing
+				// every remaining thread before falling back to /proc/*/status.
+				break
+			}
 			continue
 		}
 		for _, field := range strings.Fields(string(data)) {
@@ -1086,6 +1091,32 @@ func readSubreaperDirectChildren() []int {
 	return pids
 }
 
+func parsePPidFromProcStatus(data []byte) (int, bool) {
+	var rest []byte
+	if bytes.HasPrefix(data, []byte("PPid:")) {
+		rest = data[len("PPid:"):]
+	} else if idx := bytes.Index(data, []byte("\nPPid:")); idx >= 0 {
+		rest = data[idx+len("\nPPid:"):]
+	} else {
+		return 0, false
+	}
+	if nl := bytes.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	rest = bytes.TrimSpace(rest)
+	if len(rest) == 0 {
+		return 0, false
+	}
+	ppid := 0
+	for _, b := range rest {
+		if b < '0' || b > '9' {
+			return 0, false
+		}
+		ppid = ppid*10 + int(b-'0')
+	}
+	return ppid, true
+}
+
 func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -1093,6 +1124,7 @@ func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
 		return nil
 	}
 	var pids []int
+	var buf [1024]byte
 	statusReads := 0
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
@@ -1100,20 +1132,25 @@ func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
 			continue
 		}
 		statusReads++
-		data, err := os.ReadFile(filepath.Join(procRoot, entry.Name(), "status"))
+		statusPath := filepath.Join(procRoot, entry.Name(), "status")
+		fd, err := unix.Open(statusPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
 			continue // Exited or inaccessible processes cannot prove ownership.
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			value, ok := strings.CutPrefix(line, "PPid:")
-			if !ok {
-				continue
+		n, rErr := unix.Read(fd, buf[:])
+		_ = unix.Close(fd)
+		if rErr != nil || n <= 0 {
+			continue
+		}
+		ppid, ok := parsePPidFromProcStatus(buf[:n])
+		if !ok && n == len(buf) {
+			// Very long process names or unusual status layouts can push PPid past 1KB.
+			if full, fErr := os.ReadFile(statusPath); fErr == nil {
+				ppid, ok = parsePPidFromProcStatus(full)
 			}
-			ppid, err := strconv.Atoi(strings.TrimSpace(value))
-			if err == nil && ppid == parentPID {
-				pids = append(pids, pid)
-			}
-			break
+		}
+		if ok && ppid == parentPID {
+			pids = append(pids, pid)
 		}
 	}
 	slog.Debug("subreaper child observation",
@@ -1128,6 +1165,12 @@ func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
 // wait4. Every enumerated PID remains our unreaped child throughout signaling;
 // a saved direct-child PID must never be used after that child has been reaped.
 func signalSubreaperTree(sig syscall.Signal) {
+	// Fast path: if no unreaped children remain (ECHILD), skip scanning /proc
+	// entirely so cancellation after the final child exits settles immediately.
+	var probe unix.Siginfo
+	if err := unix.Waitid(unix.P_ALL, 0, &probe, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil); errors.Is(err, syscall.ECHILD) {
+		return
+	}
 	for _, pid := range readSubreaperDirectChildren() {
 		// procfs can describe an ancestor PID namespace. Only a native wait
 		// can prove that this numeric PID belongs to our own unreaped child.

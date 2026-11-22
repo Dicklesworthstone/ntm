@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,6 +46,18 @@ func TestMain(m *testing.M) {
 	}
 	if dir := os.Getenv(paneLockHelperEnv); dir != "" {
 		os.Exit(runPaneLockHelper(dir))
+	}
+	// Under `go test -race`, LLVM TSAN defaults to atexit_sleep_ms=1000, causing
+	// every re-exec'd `internal-step-reaper` helper to sleep 1s inside os.Exit
+	// after publishing its settlement record — exceeding the 250ms test grace and
+	// drain windows. Disable only the artificial teardown sleep for child helpers
+	// while keeping full race detection intact.
+	if gorace := os.Getenv("GORACE"); !strings.Contains(gorace, "atexit_sleep_ms=") {
+		if gorace == "" {
+			_ = os.Setenv("GORACE", "atexit_sleep_ms=0")
+		} else {
+			_ = os.Setenv("GORACE", gorace+" atexit_sleep_ms=0")
+		}
 	}
 	os.Exit(m.Run())
 }

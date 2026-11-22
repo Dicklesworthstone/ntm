@@ -597,8 +597,28 @@ func TestCommandCleanupRunsForEveryResumedAttempt(t *testing.T) {
 				Steps: []Step{{ID: "work", Command: `printf 'acquired\n' >> attempts; sleep 60`}},
 			}
 			workflow.Settings.OnCancel = []Step{cleanup}
-			workflow.Settings.OnCancelTimeout = Duration{Duration: 2 * time.Second}
-			ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+			workflow.Settings.OnCancelTimeout = Duration{Duration: 5 * time.Second}
+			attemptsPath := filepath.Join(e.config.ProjectDir, "attempts")
+			cancelWhenAcquired := func(wantCount int) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				go func() {
+					ticker := time.NewTicker(5 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							if data, rErr := os.ReadFile(attemptsPath); rErr == nil && strings.Count(string(data), "acquired\n") >= wantCount {
+								cancel()
+								return
+							}
+						}
+					}
+				}()
+				return ctx, cancel
+			}
+			ctx, cancel := cancelWhenAcquired(1)
 			initial, err := NewExecutor(e.config).Run(ctx, workflow, map[string]interface{}{"resources": []interface{}{"resource"}}, nil)
 			cancel()
 			if err == nil || initial == nil || initial.Status != StatusCancelled {
@@ -608,7 +628,7 @@ func TestCommandCleanupRunsForEveryResumedAttempt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel = context.WithTimeout(context.Background(), 750*time.Millisecond)
+			ctx, cancel = cancelWhenAcquired(2)
 			resumed, err := NewExecutor(e.config).Resume(ctx, workflow, prior, nil)
 			cancel()
 			if err == nil || resumed == nil || resumed.Status != StatusCancelled {

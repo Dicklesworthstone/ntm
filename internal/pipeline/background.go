@@ -640,7 +640,15 @@ func awaitBackgroundAuthorization(ctx context.Context, input io.ReadCloser, toke
 		}
 		return ctx.Err()
 	case <-ctx.Done():
+		if f, ok := input.(*os.File); ok {
+			_ = f.SetReadDeadline(time.Now())
+		}
 		closeInput()
+		// Wait for the reader goroutine to exit Read so Go's internal/poll
+		// drops the last FD reference and issues kernel close(fd) before
+		// returning (preventing a concurrent launcher write from succeeding
+		// on a still-open pipe after timeout).
+		<-result
 		return ctx.Err()
 	}
 }
