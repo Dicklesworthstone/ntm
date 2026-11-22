@@ -973,3 +973,41 @@ func (h *WSHub) getRedactionCfgForTest() *RedactionConfig {
 	defer h.redactionMu.RUnlock()
 	return h.redactionCfg
 }
+
+func TestRedactionMiddleware_AllowsRedactPreviewInBlockMode(t *testing.T) {
+	t.Parallel()
+	s := &Server{
+		redactionCfg: &RedactionConfig{
+			Enabled: true,
+			Config:  redaction.Config{Mode: redaction.ModeBlock},
+		},
+	}
+
+	called := false
+	handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true,"findings":1}`))
+	}))
+
+	secretBody := `{"text":"sk-proj-FAKEtestkey1234567890123456789012345678901234"}`
+
+	// /api/v1/redact/preview MUST bypass request blocking so operators can test secrets.
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/v1/redact/preview", strings.NewReader(secretBody))
+	previewReq.Header.Set("Content-Type", "application/json")
+	previewRR := httptest.NewRecorder()
+	handler.ServeHTTP(previewRR, previewReq)
+	if !called || previewRR.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/redact/preview blocked in ModeBlock: called=%v status=%d body=%s", called, previewRR.Code, previewRR.Body.String())
+	}
+
+	// Ordinary POST endpoints MUST still be blocked with 422 in ModeBlock.
+	called = false
+	otherReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/demo/send", strings.NewReader(secretBody))
+	otherReq.Header.Set("Content-Type", "application/json")
+	otherRR := httptest.NewRecorder()
+	handler.ServeHTTP(otherRR, otherReq)
+	if called || otherRR.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /api/v1/sessions/demo/send not blocked in ModeBlock: called=%v status=%d body=%s", called, otherRR.Code, otherRR.Body.String())
+	}
+}

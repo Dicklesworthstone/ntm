@@ -329,7 +329,12 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 
 		// Admit JSON input without changing any submitted values. Do not rely
 		// on ContentLength: chunked bodies have no known length.
-		if r.Body != nil && r.Body != http.NoBody {
+		// POST /api/v1/redact/preview exists solely to accept text that may
+		// contain secrets and preview redaction without persisting or echoing
+		// raw matches; skip request-body secret blocking for that route only
+		// (response redaction and URL admission still apply).
+		isRedactPreviewReq := r.Method == http.MethodPost && strings.TrimSuffix(r.URL.Path, "/") == "/api/v1/redact/preview"
+		if r.Body != nil && r.Body != http.NoBody && !isRedactPreviewReq {
 			contentType := r.Header.Get("Content-Type")
 			// Every v1 API body consumer decodes JSON, usually without checking
 			// Content-Type. A missing or mislabeled header must not bypass the
