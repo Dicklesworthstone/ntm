@@ -909,17 +909,48 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 		return len(items)
 	}
 
-	list, err := GetJFPList(JFPListOptions{})
+	type jfpListRes struct {
+		out *JFPListOutput
+		err error
+	}
+	type jfpSearchRes struct {
+		out *JFPSearchOutput
+		err error
+	}
+	type jfpSuggestRes struct {
+		out *JFPSuggestOutput
+		err error
+	}
+	listCh := make(chan jfpListRes, 1)
+	searchCh := make(chan jfpSearchRes, 1)
+	suggestCh := make(chan jfpSuggestRes, 1)
+	go func() {
+		out, err := GetJFPList(JFPListOptions{})
+		listCh <- jfpListRes{out, err}
+	}()
+	go func() {
+		out, err := GetJFPSearch("commit")
+		searchCh <- jfpSearchRes{out, err}
+	}()
+	go func() {
+		out, err := GetJFPSuggest("write documentation")
+		suggestCh <- jfpSuggestRes{out, err}
+	}()
+
+	listRes := <-listCh
+	list, err := listRes.out, listRes.err
 	if err != nil || !list.Success || list.Count == 0 || list.Count != arrayLen(list.Prompts) {
 		t.Fatalf("GetJFPList = success:%t count:%d err:%q (%v)", list.Success, list.Count, list.Error, err)
 	}
 
-	search, err := GetJFPSearch("commit")
+	searchRes := <-searchCh
+	search, err := searchRes.out, searchRes.err
 	if err != nil || !search.Success || search.Count == 0 || search.Count != arrayLen(search.Results) {
 		t.Fatalf("GetJFPSearch = success:%t count:%d err:%q (%v)", search.Success, search.Count, search.Error, err)
 	}
 
-	suggest, err := GetJFPSuggest("write documentation")
+	suggestRes := <-suggestCh
+	suggest, err := suggestRes.out, suggestRes.err
 	if err != nil || !suggest.Success {
 		t.Fatalf("GetJFPSuggest = success:%t err:%q (%v)", suggest.Success, suggest.Error, err)
 	}

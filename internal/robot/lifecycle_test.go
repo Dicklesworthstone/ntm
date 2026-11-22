@@ -1051,6 +1051,7 @@ func TestDirectExecMockAgentHelper(t *testing.T) {
 }
 
 func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("real tmux lifecycle test requires POSIX")
 	}
@@ -1087,6 +1088,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 	}
 
 	t.Run("default refuses direct-exec root agent and leaves pane untouched", func(t *testing.T) {
+		t.Parallel()
 		session := fmt.Sprintf("ntm-direct-refuse-%d", time.Now().UnixNano())
 		t.Cleanup(func() { _ = tmux.KillSession(session) })
 		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {
@@ -1110,6 +1112,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 	})
 
 	t.Run("respawn-shell replaces direct-exec single-pane agent with interactive shell in same cwd", func(t *testing.T) {
+		t.Parallel()
 		session := fmt.Sprintf("ntm-direct-respawn-%d", time.Now().UnixNano())
 		t.Cleanup(func() { _ = tmux.KillSession(session) })
 		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {
@@ -1141,6 +1144,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 	})
 
 	t.Run("allow-pane-close exits direct-exec pane cleanly without false verification_failed", func(t *testing.T) {
+		t.Parallel()
 		session := fmt.Sprintf("ntm-direct-close-%d", time.Now().UnixNano())
 		t.Cleanup(func() { _ = tmux.KillSession(session) })
 		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {

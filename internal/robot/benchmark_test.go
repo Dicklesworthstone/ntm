@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -945,15 +946,17 @@ func TestAllocRegression_BuildDigest(t *testing.T) {
 	// Warm up
 	_ = BuildAttentionDigest(fixture.events, 0, int64(len(fixture.events)), opts)
 
-	result := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_ = BuildAttentionDigest(fixture.events, 0, int64(len(fixture.events)), opts)
-		}
-	})
+	const runs = 5
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < runs; i++ {
+		_ = BuildAttentionDigest(fixture.events, 0, int64(len(fixture.events)), opts)
+	}
+	runtime.ReadMemStats(&after)
 
-	allocsPerOp := result.AllocsPerOp()
-	bytesPerOp := result.AllocedBytesPerOp()
+	allocsPerOp := int64((after.Mallocs - before.Mallocs) / runs)
+	bytesPerOp := int64((after.TotalAlloc - before.TotalAlloc) / runs)
 
 	t.Logf("BuildAttentionDigest: %d allocs/op, %d bytes/op", allocsPerOp, bytesPerOp)
 
