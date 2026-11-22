@@ -120,7 +120,7 @@ func ValidateWebhookTargetURL(rawURL string, allowLoopback bool) error {
 	if host == "" {
 		return errors.New("webhook URL missing host")
 	}
-	lowerHost := strings.ToLower(host)
+	lowerHost := strings.TrimRight(strings.ToLower(host), ".")
 	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
 		return fmt.Errorf("webhook target %q blocked by SSRF policy", host)
 	}
@@ -135,9 +135,19 @@ func ValidateWebhookTargetURL(rawURL string, allowLoopback bool) error {
 	return nil
 }
 
+var webhookBlockedMetadataIPs = []net.IP{
+	net.ParseIP("fd00:ec2::254"),   // AWS IMDSv2 IPv6 endpoint
+	net.ParseIP("100.100.100.200"), // Alibaba Cloud metadata endpoint
+}
+
 func validateWebhookIP(ip net.IP, allowLoopback bool) error {
 	if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
 		return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+	}
+	for _, blocked := range webhookBlockedMetadataIPs {
+		if blocked != nil && ip.Equal(blocked) {
+			return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+		}
 	}
 	if !allowLoopback && ip.IsLoopback() {
 		return fmt.Errorf("webhook loopback IP %s blocked by SSRF policy", ip.String())
@@ -159,12 +169,22 @@ func safeWebhookDialContext(allowLoopback bool) func(ctx context.Context, networ
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("no IP addresses resolved for webhook host %q", host)
 		}
+		// Validate every resolved IP up front so mixed-record responses cannot
+		// smuggle a metadata/link-local address past fallback dialing.
 		for _, ipAddr := range ips {
 			if err := validateWebhookIP(ipAddr.IP, allowLoopback); err != nil {
 				return nil, err
 			}
 		}
-		return dialer.DialContext(dctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		var lastErr error
+		for _, ipAddr := range ips {
+			conn, dialErr := dialer.DialContext(dctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
 	}
 }
 
@@ -188,6 +208,7 @@ func DeliverJSON(ctx context.Context, client *http.Client, targetURL, secret str
 	if tr, ok := baseTransport.(*http.Transport); ok {
 		trCopy := tr.Clone()
 		defer trCopy.CloseIdleConnections()
+		trCopy.Proxy = nil
 		trCopy.DialContext = safeWebhookDialContext(true)
 		safeClient.Transport = trCopy
 	}

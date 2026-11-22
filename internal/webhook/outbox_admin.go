@@ -219,7 +219,11 @@ func (m *WebhookManager) RetryOutbox(key, revision string) (OutboxEntry, error) 
 	if err != nil {
 		return result, fmt.Errorf("claim webhook outbox recovery: %w", err)
 	}
-	defer lock.Close()
+	defer func() {
+		if lock != nil {
+			_ = lock.Close()
+		}
+	}()
 	record, err := o.read(key)
 	if err != nil {
 		return result, err
@@ -251,6 +255,8 @@ func (m *WebhookManager) RetryOutbox(key, revision string) (OutboxEntry, error) 
 	if err != nil {
 		return result, fmt.Errorf("persist webhook recovery authorization: %w", err)
 	}
+	_ = lock.Close()
+	lock = nil
 	select {
 	case o.wake <- struct{}{}:
 	default:

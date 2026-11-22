@@ -708,7 +708,11 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 		if claim == nil {
 			return
 		}
-		defer claim.lock.Close()
+		defer func() {
+			if claim.lock != nil {
+				_ = claim.lock.Close()
+			}
+		}()
 	}
 	// Queue acceptance is not permanent permission to send. Registration may
 	// have changed while this delivery waited for a worker or retry deadline.
