@@ -54,7 +54,7 @@ func ComputePriorities(result *ScanResult, existingBeadIDs map[string]string) (*
 	var insights *bv.InsightsResponse
 	if !skipBVIntegration() && bv.IsInstalled() {
 		var err error
-		insights, err = bv.GetInsights("")
+		insights, err = bv.GetInsights(result.Project)
 		if err == nil {
 			report.GraphAvailable = true
 		}

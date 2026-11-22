@@ -170,7 +170,7 @@ func CreateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	}
 
 	// Load existing beads for deduplication
-	existing, err := loadExistingSignatures()
+	existing, err := loadExistingSignatures(result.Project)
 	if err != nil {
 		br.Messages = append(br.Messages, fmt.Sprintf("Warning: could not load existing beads for dedup: %v", err))
 		existing = make(map[string]bool)
@@ -201,7 +201,7 @@ func CreateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 			continue
 		}
 
-		beadID, err := createBead(spec)
+		beadID, err := createBead(result.Project, spec)
 		if err != nil {
 			br.Errors++
 			br.Messages = append(br.Messages, fmt.Sprintf("Error creating bead: %v", err))
@@ -220,8 +220,8 @@ func CreateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	return br, nil
 }
 
-// createBead calls br create with the given spec.
-func createBead(spec BeadSpec) (string, error) {
+// createBead calls br create with the given spec in projectDir (process CWD when empty).
+func createBead(projectDir string, spec BeadSpec) (string, error) {
 	args := []string{
 		"create",
 		"--json",
@@ -235,7 +235,7 @@ func createBead(spec BeadSpec) (string, error) {
 		args = append(args, "--labels", strings.Join(spec.Labels, ","))
 	}
 
-	output, err := bv.RunBd("", args...)
+	output, err := bv.RunBd(projectDir, args...)
 	if err != nil {
 		return "", fmt.Errorf("br create failed: %w", err)
 	}
@@ -279,9 +279,9 @@ func ubsScanBeadListArgs() []string {
 }
 
 // loadExistingSignatures loads signatures of existing UBS-created beads.
-func loadExistingSignatures() (map[string]bool, error) {
+func loadExistingSignatures(projectDir string) (map[string]bool, error) {
 	// Query beads with ubs-scan label that are open
-	output, err := bv.RunBd("", ubsScanBeadListArgs()...)
+	output, err := bv.RunBd(projectDir, ubsScanBeadListArgs()...)
 	if err != nil {
 		return nil, fmt.Errorf("listing beads: %w", err)
 	}
@@ -400,7 +400,7 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	}
 
 	// Get existing UBS beads
-	output, err := bv.RunBd("", ubsScanBeadListArgs()...)
+	output, err := bv.RunBd(result.Project, ubsScanBeadListArgs()...)
 	if err != nil {
 		return nil, fmt.Errorf("listing beads: %w", err)
 	}
@@ -434,7 +434,7 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 				continue
 			}
 
-			if err := closeBead(b.ID); err != nil {
+			if err := closeBead(result.Project, b.ID); err != nil {
 				br.Errors++
 				br.Messages = append(br.Messages, fmt.Sprintf("Error closing %s: %v", b.ID, err))
 				continue
@@ -450,9 +450,9 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	return br, nil
 }
 
-// closeBead closes a bead by ID.
-func closeBead(id string) error {
-	_, err := bv.RunBd("", "close", id)
+// closeBead closes a bead by ID in projectDir (process CWD when empty).
+func closeBead(projectDir, id string) error {
+	_, err := bv.RunBd(projectDir, "close", id)
 	if err != nil {
 		return fmt.Errorf("br close failed: %w", err)
 	}

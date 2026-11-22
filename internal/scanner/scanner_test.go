@@ -1056,3 +1056,19 @@ func TestBuildSummaryMessage(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildArgsSeparatesLeadingDashPath(t *testing.T) {
+	t.Parallel()
+	s := &Scanner{}
+	got := s.buildArgs("-weird-dir", ScanOptions{})
+	foundSep := false
+	for i, arg := range got {
+		if arg == "--" && i+1 < len(got) && got[i+1] == "-weird-dir" {
+			foundSep = true
+			break
+		}
+	}
+	if !foundSep {
+		t.Fatalf("buildArgs(-weird-dir) = %v, want '--' before leading-dash path", got)
+	}
+}

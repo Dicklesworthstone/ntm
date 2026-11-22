@@ -238,7 +238,11 @@ func (s *Scanner) buildArgs(path string, opts ScanOptions) []string {
 		args = append(args, "--diff")
 	}
 
-	args = append(args, path)
+	if strings.HasPrefix(path, "-") {
+		args = append(args, "--", path)
+	} else {
+		args = append(args, path)
+	}
 	return args
 }
 
