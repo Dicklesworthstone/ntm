@@ -1245,6 +1245,8 @@ func robotErrorHTTPStatus(code string) int {
 		return http.StatusConflict
 	case robot.ErrCodeTimeout:
 		return http.StatusGatewayTimeout
+	case "CANCELED":
+		return http.StatusRequestTimeout
 	case robot.ErrCodeNotImplemented:
 		return http.StatusNotImplemented
 	case robot.ErrCodeDependencyMissing:
