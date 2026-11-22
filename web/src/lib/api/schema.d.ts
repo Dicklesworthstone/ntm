@@ -13769,6 +13769,8 @@ export interface components {
             active_targets: string[];
             fallback_count: number;
             fifo_dir?: string;
+            /** Format: int64 */
+            flush_interval_ms?: number;
             pipe_pane_count: number;
             request_id?: string;
             success: boolean;

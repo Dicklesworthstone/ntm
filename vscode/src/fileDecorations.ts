@@ -52,6 +52,8 @@ export function matchesReservationPattern(rawPath: string, rawPattern: string): 
 export class NtmFileDecorationProvider implements vscode.FileDecorationProvider {
     private reservations: MailReservation[] = [];
     private workspaceRoot: string | undefined;
+    private disposed = false;
+    private refreshInFlight = false;
 
     private _onDidChangeFileDecorations = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
     readonly onDidChangeFileDecorations = this._onDidChangeFileDecorations.event;
@@ -62,15 +64,25 @@ export class NtmFileDecorationProvider implements vscode.FileDecorationProvider 
 
     /**
      * Update reservations from NTM and trigger decoration refresh.
+     * Transient poll failures retain the last known reservations instead of
+     * flashing all explorer lock badges off.
      */
     async refresh(): Promise<void> {
+        if (this.disposed || this.refreshInFlight) {
+            return;
+        }
+        this.refreshInFlight = true;
         try {
             const mail = await this.client.getMail();
+            if (this.disposed) {
+                return;
+            }
             this.reservations = mail.file_reservations || [];
             this._onDidChangeFileDecorations.fire(undefined);
         } catch {
-            this.reservations = [];
-            this._onDidChangeFileDecorations.fire(undefined);
+            // Preserve last known reservation decorations across transient errors.
+        } finally {
+            this.refreshInFlight = false;
         }
     }
 
@@ -78,6 +90,9 @@ export class NtmFileDecorationProvider implements vscode.FileDecorationProvider 
      * Set reservations directly (useful for testing and immediate state sync).
      */
     public setReservations(reservations: MailReservation[]): void {
+        if (this.disposed) {
+            return;
+        }
         this.reservations = reservations;
         this._onDidChangeFileDecorations.fire(undefined);
     }
@@ -118,6 +133,7 @@ export class NtmFileDecorationProvider implements vscode.FileDecorationProvider 
     }
 
     dispose(): void {
+        this.disposed = true;
         this._onDidChangeFileDecorations.dispose();
     }
 }

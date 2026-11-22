@@ -493,24 +493,32 @@ export class NtmDashboard {
                 const sessionArg = typeof message?.session === 'string' && message.session.length > 0
                     ? message.session
                     : undefined;
+                const runCommand = (cmd: string, ...args: unknown[]) => {
+                    void Promise.resolve(vscode.commands.executeCommand(cmd, ...args)).catch((err: unknown) => {
+                        if (!this.disposed) {
+                            const errMsg = err instanceof Error ? err.message : String(err);
+                            void vscode.window.showErrorMessage(`NTM command ${cmd} failed: ${errMsg}`);
+                        }
+                    });
+                };
                 switch (message?.command) {
                     case 'refresh':
-                        this.update();
+                        void this.update();
                         break;
                     case 'spawn':
-                        vscode.commands.executeCommand('ntm.spawn');
+                        runCommand('ntm.spawn');
                         break;
                     case 'openPalette':
-                        vscode.commands.executeCommand('ntm.openPalette', sessionArg);
+                        runCommand('ntm.openPalette', sessionArg);
                         break;
                     case 'attach':
-                        vscode.commands.executeCommand('ntm.openTerminal', sessionArg);
+                        runCommand('ntm.openTerminal', sessionArg);
                         break;
                     case 'dashboard':
-                        vscode.commands.executeCommand('ntm.terminalDashboard', sessionArg);
+                        runCommand('ntm.terminalDashboard', sessionArg);
                         break;
                     case 'send':
-                        vscode.commands.executeCommand('ntm.sendPrompt', sessionArg);
+                        runCommand('ntm.sendPrompt', sessionArg);
                         break;
                     default:
                         break;
@@ -520,14 +528,20 @@ export class NtmDashboard {
             this.disposables
         );
 
-        const interval = setInterval(() => this.update(), 10000);
+        const interval = setInterval(() => {
+            void this.update();
+        }, 10000);
         this.disposables.push({ dispose: () => clearInterval(interval) });
     }
 
     private disposed = false;
+    private updateInFlight = false;
+    private updateQueued = false;
+    private renderGeneration = 0;
 
     public dispose() {
         this.disposed = true;
+        this.renderGeneration++;
         NtmDashboard.currentPanel = undefined;
         this.panel.dispose();
         while (this.disposables.length) {
@@ -542,17 +556,23 @@ export class NtmDashboard {
         if (this.disposed) {
             return;
         }
+        if (this.updateInFlight) {
+            this.updateQueued = true;
+            return;
+        }
+        this.updateInFlight = true;
+        const generation = ++this.renderGeneration;
         try {
             const [status, mail] = await Promise.all([
                 this.client.getStatus(),
                 this.client.getMail().catch(() => undefined),
             ]);
-            if (this.disposed) {
+            if (this.disposed || generation !== this.renderGeneration) {
                 return;
             }
             this.panel.webview.html = this.getHtmlForWebview(status, mail);
         } catch (e) {
-            if (this.disposed) {
+            if (this.disposed || generation !== this.renderGeneration) {
                 return;
             }
             const emptyStatus: RobotStatus = {
@@ -563,6 +583,12 @@ export class NtmDashboard {
             };
             const errMsg = e instanceof Error ? e.message : String(e);
             this.panel.webview.html = this.getHtmlForWebview(emptyStatus, undefined, errMsg);
+        } finally {
+            this.updateInFlight = false;
+            if (this.updateQueued && !this.disposed) {
+                this.updateQueued = false;
+                void this.update();
+            }
         }
     }
 

@@ -217,6 +217,7 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
     event_type.startsWith("incident.")
   ) {
     queryClient.invalidateQueries({ queryKey: ["attention"] });
+    queryClient.invalidateQueries({ queryKey: ["overview", "attention-digest"] });
     queryClient.invalidateQueries({ queryKey: ["incidents"] });
     queryClient.invalidateQueries({ queryKey: ["alerts"] });
   }
@@ -225,6 +226,7 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
   if (topic === "global" || topic.startsWith("global:")) {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["attention"] });
+    queryClient.invalidateQueries({ queryKey: ["overview", "attention-digest"] });
   }
 
   // Memory / CASS Memory (cm) events

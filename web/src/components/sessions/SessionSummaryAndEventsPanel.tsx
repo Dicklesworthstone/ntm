@@ -71,10 +71,15 @@ export interface LatestHandoffResponse extends ApiEnvelope {
   latest_path?: string;
   latest?: LatestHandoffRecord;
   handoff?: LatestHandoffRecord;
+  quality?: {
+    score?: number;
+    grade?: string;
+  };
 }
 
 export interface SessionEventsResponse extends ApiEnvelope {
   session?: string;
+  session_id?: string;
   events?: Array<{
     id?: string | number;
     type?: string;
@@ -315,6 +320,13 @@ export function SessionSummaryAndEventsPanel({
             <div className="font-semibold text-gray-900 dark:text-white">
               Latest Handoff ({latestHandoffQuery.data.session})
               {latestHandoff?.status ? ` · ${latestHandoff.status}` : ""}
+              {latestHandoffQuery.data.quality?.grade
+                ? ` · Quality ${latestHandoffQuery.data.quality.grade}${
+                    typeof latestHandoffQuery.data.quality.score === "number"
+                      ? ` (${latestHandoffQuery.data.quality.score})`
+                      : ""
+                  }`
+                : ""}
             </div>
             {latestHandoff ? (
               <div className="space-y-1 text-gray-700 dark:text-gray-300">

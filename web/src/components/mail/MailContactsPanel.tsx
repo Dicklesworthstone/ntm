@@ -20,11 +20,14 @@ import {
 } from "@/lib/api/client";
 
 export interface MailContactEntry {
+  to?: string;
   to_agent?: string;
   agent_name?: string;
+  from?: string;
   from_agent?: string;
   status?: string;
   reason?: string;
+  approved?: boolean;
   expires_ts?: string;
 }
 
@@ -38,6 +41,7 @@ interface MailHealthResponse extends ApiEnvelope {
   healthy?: boolean;
   status?: string;
   server_url?: string;
+  error?: string;
 }
 
 interface MailProjectRecord {
@@ -336,6 +340,7 @@ export function MailContactsPanel({
             {healthQuery.data?.server_url
               ? ` (${healthQuery.data.server_url})`
               : ""}
+            {healthQuery.data?.error ? ` — ${healthQuery.data.error}` : ""}
           </span>
           <span>
             Registered Projects:{" "}
@@ -376,7 +381,12 @@ export function MailContactsPanel({
             <ul className="divide-y divide-gray-200 dark:divide-gray-700">
               {contacts.map((c, idx) => {
                 const peer =
-                  c.to_agent || c.agent_name || c.from_agent || `contact-${idx}`;
+                  c.to_agent ||
+                  c.to ||
+                  c.agent_name ||
+                  c.from_agent ||
+                  c.from ||
+                  `contact-${idx}`;
                 return (
                   <li
                     key={`${idx}-${peer}`}

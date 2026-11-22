@@ -1298,21 +1298,22 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
             return;
         }
         if (available) {
-            updateStatus(client, statusBarItem).then(name => {
-                if (!disposed) {
-                    currentSession = name ?? currentSession;
-                }
-            }).catch(() => undefined);
-            statusPollInterval = setInterval(() => {
-                if (disposed) {
+            let statusPollInFlight = false;
+            const pollStatus = () => {
+                if (disposed || statusPollInFlight) {
                     return;
                 }
+                statusPollInFlight = true;
                 updateStatus(client, statusBarItem).then(name => {
                     if (!disposed) {
                         currentSession = name ?? currentSession;
                     }
-                }).catch(() => undefined);
-            }, 5000);
+                }).catch(() => undefined).finally(() => {
+                    statusPollInFlight = false;
+                });
+            };
+            pollStatus();
+            statusPollInterval = setInterval(pollStatus, 5000);
         } else {
             statusBarItem.text = '$(error) NTM missing';
             statusBarItem.color = new vscode.ThemeColor('statusBarItem.errorForeground');

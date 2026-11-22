@@ -228,6 +228,11 @@ export function MetricsExportAndStreamingPanel({
                   </span>
                 )}
               </div>
+              {streamingQuery.data.fifo_dir && (
+                <div className="text-[11px] font-mono text-gray-400">
+                  FIFO Dir: {streamingQuery.data.fifo_dir}
+                </div>
+              )}
               {activeTargets.length > 0 && (
                 <div className="text-[11px] font-mono text-gray-400">
                   Targets: {activeTargets.join(", ")}

@@ -52,6 +52,7 @@ export interface WebhookOutboxEntry {
   attempt?: number;
   attempts?: number;
   recoveries?: number;
+  next_retry?: string;
   last_status?: number;
   last_error?: string;
   retry_allowed?: boolean;
@@ -60,6 +61,9 @@ export interface WebhookOutboxEntry {
 }
 
 export interface WebhookOutboxSnapshot {
+  enabled?: boolean;
+  directory?: string;
+  limit?: number;
   entries?: WebhookOutboxEntry[];
   count?: number;
   failed_count?: number;
@@ -390,9 +394,16 @@ export function RequestLifecycleAndOutboxPanel() {
                           {typeof attemptCount === "number"
                             ? ` · attempt ${attemptCount}`
                             : ""}
+                          {typeof entry.recoveries === "number" &&
+                          entry.recoveries > 0
+                            ? ` · recoveries ${entry.recoveries}`
+                            : ""}
                           {typeof entry.last_status === "number" &&
                           entry.last_status > 0
                             ? ` · HTTP ${entry.last_status}`
+                            : ""}
+                          {entry.next_retry
+                            ? ` · next retry ${entry.next_retry}`
                             : ""}
                           {entry.blocked_by
                             ? ` · blocked: ${entry.blocked_by}`

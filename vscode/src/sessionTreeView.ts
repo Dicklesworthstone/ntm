@@ -46,6 +46,8 @@ export class NtmTreeItem extends vscode.TreeItem {
  */
 export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeItem> {
     private sessions: SessionInfo[] = [];
+    private disposed = false;
+    private refreshInFlight = false;
 
     private _onDidChangeTreeData = new vscode.EventEmitter<NtmTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -54,15 +56,25 @@ export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeIt
 
     /**
      * Refresh the tree data.
+     * Transient poll failures keep the last known session tree intact.
      */
     async refresh(): Promise<void> {
+        if (this.disposed || this.refreshInFlight) {
+            return;
+        }
+        this.refreshInFlight = true;
         try {
             const status = await this.client.getStatus();
+            if (this.disposed) {
+                return;
+            }
             this.sessions = status.sessions || [];
+            this._onDidChangeTreeData.fire();
         } catch {
-            this.sessions = [];
+            // Retain cached sessions on transient CLI errors.
+        } finally {
+            this.refreshInFlight = false;
         }
-        this._onDidChangeTreeData.fire();
     }
 
     getTreeItem(element: NtmTreeItem): vscode.TreeItem {
@@ -99,6 +111,7 @@ export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeIt
     }
 
     dispose(): void {
+        this.disposed = true;
         this._onDidChangeTreeData.dispose();
     }
 }
@@ -124,7 +137,9 @@ export function registerSessionTreeView(
     const attachCmd = vscode.commands.registerCommand('ntm.attachSession', async (item?: NtmTreeItem) => {
         let sessionName: string | undefined;
         if (item?.itemType === 'session') {
-            sessionName = (item.data as SessionInfo).name;
+            sessionName = (item.data as SessionInfo | undefined)?.name ?? item.sessionName;
+        } else if (item?.itemType === 'agent' && item.sessionName) {
+            sessionName = item.sessionName;
         } else {
             try {
                 const status = await client.getStatus();
