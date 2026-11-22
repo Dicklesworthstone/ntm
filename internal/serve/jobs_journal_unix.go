@@ -23,7 +23,13 @@ func lockJobJournal(path string) (func() error, error) {
 	var once sync.Once
 	var closeErr error
 	return func() error {
-		once.Do(func() { closeErr = file.Close() })
+		once.Do(func() {
+			// Explicitly unlock before Close so a concurrent fork()+execve() in
+			// another goroutine cannot keep the flock held on the duplicated open
+			// file description until the child reaches execve().
+			_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+			closeErr = file.Close()
+		})
 		return closeErr
 	}, nil
 }
