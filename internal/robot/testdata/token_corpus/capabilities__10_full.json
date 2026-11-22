@@ -3110,6 +3110,13 @@
           "type": "string",
           "required": false,
           "description": "Explicit request/operation ID selector"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Original session; ambiguous IDs are refused instead of selecting a newer request"
         }
       ],
       "examples": [
@@ -3392,6 +3399,13 @@
           "type": "string",
           "required": false,
           "description": "Explicit request/operation ID selector"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Original session; ambiguous IDs are refused before any cancellation"
         }
       ],
       "examples": [
@@ -4357,6 +4371,13 @@
           "type": "string",
           "required": true,
           "description": "Operation ID supplied via --op-id to --robot-send or --robot-interrupt (or a REST Idempotency-Key)"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Original session; required when the operation ID exists in multiple sessions"
         }
       ],
       "examples": [
@@ -4663,6 +4684,13 @@
           "type": "string",
           "required": false,
           "description": "Explicit request/operation ID selector"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Original session; a running wait stays bound to its initially resolved request"
         },
         {
           "name": "timeout",

@@ -232,20 +232,22 @@ func TestDurableJournalFaultInjectionModelCheck(t *testing.T) {
 				}
 				trace = append(trace, journalStepTrace{Step: step, Action: "crash_postdispatch_fenced", OpKey: opID, Detail: "takeover_refused"})
 
-			case 5: // Cancel request directly on opID (fences pre-dispatch; refuses post-dispatch & terminal)
+			case 5: // Cancel the observed claim (fences pre-dispatch; refuses post-dispatch & terminal)
+				expected := &SendOperation{OperationID: opID, SessionName: session, ClaimToken: m.claimToken}
 				if m.phase == phaseUnclaimed {
-					canceledOp, ok, cancelErr := store.CancelSendOperationByID(opID, time.Now().UTC())
+					expected.ClaimToken = "unclaimed"
+					canceledOp, ok, cancelErr := store.CancelSendOperation(expected, time.Now().UTC())
 					if cancelErr != nil || ok || canceledOp != nil {
-						failInvariant("I4", fmt.Sprintf("CancelSendOperationByID(unclaimed) = (%+v, %v, %v)", canceledOp, ok, cancelErr))
+						failInvariant("I4", fmt.Sprintf("CancelSendOperation(unclaimed) = (%+v, %v, %v)", canceledOp, ok, cancelErr))
 					}
 					continue
 				}
 				switch m.phase {
 				case phaseClaimedUnstarted:
 					oldToken := m.claimToken
-					canceledOp, ok, cancelErr := store.CancelSendOperationByID(opID, time.Now().UTC())
+					canceledOp, ok, cancelErr := store.CancelSendOperation(expected, time.Now().UTC())
 					if cancelErr != nil || !ok || canceledOp == nil || canceledOp.Status != SendOperationCanceled {
-						failInvariant("I1", fmt.Sprintf("CancelSendOperationByID pre-dispatch = (%+v, %v, %v)", canceledOp, ok, cancelErr))
+						failInvariant("I1", fmt.Sprintf("CancelSendOperation pre-dispatch = (%+v, %v, %v)", canceledOp, ok, cancelErr))
 					}
 					if _, startErr := store.StartSendOperation(&SendOperation{OperationID: opID, SessionName: session, ClaimToken: oldToken}); !errors.Is(startErr, ErrSendOperationClaimLost) {
 						failInvariant("I1", fmt.Sprintf("canceled claim allowed StartSendOperation: %v", startErr))
@@ -253,12 +255,12 @@ func TestDurableJournalFaultInjectionModelCheck(t *testing.T) {
 					m.phase = phaseCanceled
 					trace = append(trace, journalStepTrace{Step: step, Action: "cancel_predispatch_fenced", OpKey: opID, Detail: "fenced"})
 				case phaseDispatchedInFlight:
-					if _, ok, cancelErr := store.CancelSendOperationByID(opID, time.Now().UTC()); ok || !errors.Is(cancelErr, ErrSendOperationDispatched) {
+					if _, ok, cancelErr := store.CancelSendOperation(expected, time.Now().UTC()); ok || !errors.Is(cancelErr, ErrSendOperationDispatched) {
 						failInvariant("I1", fmt.Sprintf("dispatched operation allowed cancel: ok=%v err=%v", ok, cancelErr))
 					}
 					trace = append(trace, journalStepTrace{Step: step, Action: "cancel_dispatched_refused", OpKey: opID, Detail: "refused"})
 				case phaseCompleted, phaseCanceled:
-					canceledOp, ok, cancelErr := store.CancelSendOperationByID(opID, time.Now().UTC())
+					canceledOp, ok, cancelErr := store.CancelSendOperation(expected, time.Now().UTC())
 					if cancelErr != nil || ok || canceledOp == nil {
 						failInvariant("I3", fmt.Sprintf("terminal operation cancel = (%+v, %v, %v)", canceledOp, ok, cancelErr))
 					}

@@ -16,6 +16,82 @@ import (
 
 // Tests for the durable idempotent operation records (send #245, interrupt).
 
+func TestCancelSendOperationUsesObservedSessionAndClaim(t *testing.T) {
+	store := testStore(t)
+	claim := func(session string) *SendOperation {
+		t.Helper()
+		op, claimed, err := store.ClaimSendOperation(&SendOperation{
+			OperationID: "step-1", SessionName: session, BindingHash: "binding-" + session,
+		})
+		if err != nil || !claimed {
+			t.Fatalf("claim %s: claimed=%v err=%v", session, claimed, err)
+		}
+		return op
+	}
+	alpha := claim("alpha")
+	beta := claim("beta")
+	canceled, ok, err := store.CancelSendOperation(alpha, time.Now().UTC())
+	if err != nil || !ok || canceled == nil || canceled.SessionName != "alpha" || canceled.Status != SendOperationCanceled {
+		t.Fatalf("cancel alpha: %+v, %v, %v", canceled, ok, err)
+	}
+	other, err := store.GetSendOperation("step-1", "beta")
+	if err != nil || other.Status != SendOperationInProgress {
+		t.Fatalf("cancel alpha changed beta: %+v, %v", other, err)
+	}
+	successor, err := store.TakeOverStaleSendOperation("step-1", "beta", beta.BindingHash, beta.ClaimToken, time.Now().Add(time.Hour))
+	if err != nil || successor == nil {
+		t.Fatalf("takeover beta: %+v, %v", successor, err)
+	}
+	if _, ok, err := store.CancelSendOperation(beta, time.Now().UTC()); ok || !errors.Is(err, ErrSendOperationClaimLost) {
+		t.Fatalf("stale claimant canceled successor: ok=%v err=%v", ok, err)
+	}
+	current, err := store.GetSendOperation("step-1", "beta")
+	if err != nil || current.Status != SendOperationInProgress || current.ClaimToken != successor.ClaimToken {
+		t.Fatalf("stale cancellation changed successor: %+v, %v", current, err)
+	}
+}
+
+func TestRobotRequestSnapshotAndWaitCancellationIdentity(t *testing.T) {
+	store := testStore(t)
+	const id = "same-id"
+	for _, session := range []string{"alpha", "beta"} {
+		if _, claimed, err := store.ClaimSendOperation(&SendOperation{OperationID: id, SessionName: session}); err != nil || !claimed {
+			t.Fatalf("claim %s: claimed=%v err=%v", session, claimed, err)
+		}
+	}
+	handle := &RobotWaitHandle{ID: id, SessionName: "beta", CreatedAt: time.Now().UTC()}
+	if err := store.CreateRobotWaitHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+	ops, wait, err := store.GetRobotRequestRecords(id, "")
+	if err != nil || len(ops) != 2 || wait == nil || wait.SessionName != "beta" {
+		t.Fatalf("request snapshot = %+v, %+v, %v", ops, wait, err)
+	}
+	ops, wait, err = store.GetRobotRequestRecords(id, "alpha")
+	if err != nil || len(ops) != 1 || ops[0].SessionName != "alpha" || wait != nil {
+		t.Fatalf("scoped request snapshot = %+v, %+v, %v", ops, wait, err)
+	}
+	ops, wait, err = store.GetRobotRequestRecords(id, "absent")
+	if err != nil || len(ops) != 0 || wait != nil {
+		t.Fatalf("missing session fell back: %+v, %+v, %v", ops, wait, err)
+	}
+	// Model an ID reused after the original handle was retired. Even the
+	// same session and ID must not authorize canceling a later lifetime.
+	if _, err := store.db.Exec(`UPDATE robot_wait_handles SET created_at = ? WHERE id = ?`, handle.CreatedAt.Add(time.Second), id); err != nil {
+		t.Fatal(err)
+	}
+	if canceled, err := store.CancelRobotWaitHandle(handle, time.Now().UTC()); canceled || !errors.Is(err, ErrRobotWaitHandleChanged) {
+		t.Fatalf("stale wait cancellation = %v, %v", canceled, err)
+	}
+	current, err := store.GetRobotWaitHandle(id)
+	if err != nil || current == nil || current.CanceledAt != nil {
+		t.Fatalf("stale cancellation changed current wait: %+v, %v", current, err)
+	}
+	if canceled, err := store.CancelRobotWaitHandle(current, time.Now().UTC()); err != nil || !canceled {
+		t.Fatalf("current wait cancellation = %v, %v", canceled, err)
+	}
+}
+
 func TestClaimSendOperationLifecycle(t *testing.T) {
 	store := testStore(t)
 

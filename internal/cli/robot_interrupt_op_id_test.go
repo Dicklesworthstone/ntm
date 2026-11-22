@@ -16,8 +16,107 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+// Durable lifecycle queries must remain usable without a live tmux server.
+// Seed the same real SQLite store the helper processes open, then prove Cobra
+// forwards --session instead of inspecting or canceling the newer sibling.
+func TestRobotRequestSessionAcrossProcesses(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	store, err := state.Open(filepath.Join(configHome, "ntm", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	const id = "shared-cli-request"
+	for _, session := range []string{"alpha", "beta"} {
+		op, claimed, err := store.ClaimSendOperation(&state.SendOperation{
+			OperationID: id, SessionName: session, Kind: state.OperationKindSend,
+			BindingHash: "binding-" + session, Targets: []string{session + ":1"},
+		})
+		if err != nil || !claimed {
+			t.Fatalf("claim %s: claimed=%v err=%v", session, claimed, err)
+		}
+		if session == "alpha" {
+			if _, err := store.StartSendOperation(op); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CompleteSendOperation(id, session, op.ClaimToken,
+				`{"success":true,"targets":["alpha:1"],"successful":["alpha:1"]}`, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run := newRobotProcessRunnerWithEnv(t,
+		"XDG_CONFIG_HOME="+configHome,
+		"XDG_DATA_HOME="+filepath.Join(root, "data"),
+		"NTM_TMUX_BINARY="+filepath.Join(root, "tmux-unavailable"),
+	)
+	assertStatus := func(session, want string) {
+		t.Helper()
+		op, err := store.GetSendOperation(id, session)
+		if err != nil || op == nil || op.Status != want {
+			t.Fatalf("stored %s request = %+v, %v; want %s", session, op, err, want)
+		}
+	}
+	for _, command := range []string{"--robot-send-receipt", "--robot-action-status", "--robot-wait-request", "--robot-cancel-request"} {
+		for _, scope := range []struct {
+			name, flag, code string
+		}{
+			{name: "ambiguous", code: robot.ErrCodeAmbiguousRequest},
+			{name: "wrong session", flag: "--session=absent", code: robot.ErrCodeNotFound},
+			{name: "empty session", flag: "--session=", code: robot.ErrCodeInvalidFlag},
+		} {
+			t.Run(command+"/"+scope.name, func(t *testing.T) {
+				args := []string{command + "=" + id}
+				if scope.flag != "" {
+					args = append(args, scope.flag)
+				}
+				result, exit := run(args...)
+				if exit != 1 || result["success"] != false || result["error_code"] != scope.code {
+					t.Fatalf("exit=%d payload=%v, want %s", exit, result, scope.code)
+				}
+				assertStatus("alpha", state.SendOperationCompleted)
+				assertStatus("beta", state.SendOperationInProgress)
+			})
+		}
+	}
+	for _, command := range []string{"--robot-send-receipt", "--robot-action-status", "--robot-wait-request"} {
+		result, exit := run(command+"="+id, "--session=alpha")
+		if exit != 0 || result["success"] != true || result["session"] != "alpha" {
+			t.Fatalf("scoped %s exit=%d payload=%v, want the original alpha request", command, exit, result)
+		}
+		if command == "--robot-send-receipt" {
+			outcome, ok := result["outcome"].(map[string]any)
+			if !ok || outcome["success"] != true {
+				t.Fatalf("scoped receipt lost recorded outcome: %v", result)
+			}
+		} else if result["terminal"] != true || result["status"] != state.SendOperationCompleted {
+			t.Fatalf("scoped %s switched to the pending beta request: %v", command, result)
+		}
+	}
+	completed, exit := run("--robot-cancel-request="+id, "--session=alpha")
+	if exit != 1 || completed["error_code"] != "REQUEST_NOT_CANCELLABLE" || completed["session"] != "alpha" {
+		t.Fatalf("completed scoped cancellation exit=%d payload=%v", exit, completed)
+	}
+	assertStatus("beta", state.SendOperationInProgress)
+	canceled, exit := run("--robot-cancel-request="+id, "--session=beta")
+	if exit != 0 || canceled["success"] != true || canceled["canceled"] != true || canceled["session"] != "beta" {
+		t.Fatalf("pending scoped cancellation exit=%d payload=%v", exit, canceled)
+	}
+	assertStatus("alpha", state.SendOperationCompleted)
+	assertStatus("beta", state.SendOperationCanceled)
+	waited, exit := run("--robot-wait-request="+id, "--session=beta")
+	if exit != 0 || waited["session"] != "beta" || waited["terminal"] != true || waited["status"] != state.SendOperationCanceled {
+		t.Fatalf("scoped canceled wait exit=%d payload=%v", exit, waited)
+	}
+}
 
 // TestRobotInterruptOpIDRetryAcrossProcessesReplays drives the user surface
 // end to end: every invocation is a separate `ntm` process (the
@@ -100,6 +199,31 @@ func TestRobotInterruptOpIDRetryAcrossProcessesReplays(t *testing.T) {
 	cancelDoc, code := run("--robot-cancel-request=" + opID)
 	if code != 1 || cancelDoc["error_code"] != "REQUEST_NOT_CANCELLABLE" {
 		t.Fatalf("cancel-request on completed op exit=%d payload=%v, want REQUEST_NOT_CANCELLABLE", code, cancelDoc)
+	}
+
+	// The shared --session flag must reach every lifecycle surface through
+	// real Cobra parsing. An explicit wrong session must never fall back to
+	// the otherwise unique operation in this fixture's session.
+	for _, command := range []string{"--robot-send-receipt", "--robot-action-status", "--robot-wait-request", "--robot-cancel-request"} {
+		scoped, code := run(command+"="+opID, "--session="+fx.Session)
+		wantCode := 0
+		if command == "--robot-cancel-request" {
+			wantCode = 1
+			if scoped["error_code"] != "REQUEST_NOT_CANCELLABLE" {
+				t.Fatalf("scoped %s payload=%v, want terminal cancellation refusal", command, scoped)
+			}
+		}
+		if code != wantCode || scoped["session"] != fx.Session {
+			t.Fatalf("scoped %s exit=%d payload=%v, want exit=%d session=%s", command, code, scoped, wantCode, fx.Session)
+		}
+		missing, code := run(command+"="+opID, "--session=absent-"+fx.Session)
+		if code != 1 || missing["error_code"] != robot.ErrCodeNotFound {
+			t.Fatalf("wrong-session %s exit=%d payload=%v, want NOT_FOUND", command, code, missing)
+		}
+	}
+	emptyScope, code := run("--robot-cancel-request="+opID, "--session=")
+	if code != 1 || emptyScope["error_code"] != robot.ErrCodeInvalidFlag {
+		t.Fatalf("empty session exit=%d payload=%v, want INVALID_FLAG", code, emptyScope)
 	}
 
 	conflict, code := run(interrupt("different task " + marker)...)

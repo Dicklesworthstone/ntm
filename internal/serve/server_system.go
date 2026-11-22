@@ -837,7 +837,7 @@ func (s *Server) handleGetRequestStatusV1(w http.ResponseWriter, r *http.Request
 	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
 	slog.Info("request lifecycle status", "http_request_id", httpReqID, "target_request_id", targetID)
 
-	out, err := robot.GetActionStatusWithStore(targetID, s.stateStore, true)
+	out, err := robot.GetActionStatusWithStore(targetID, s.stateStore, true, r.URL.Query().Get("session"))
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
 		return
@@ -897,6 +897,7 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 	slog.Info("request lifecycle wait", "http_request_id", httpReqID, "target_request_id", targetID, "timeout", timeout, "poll", poll)
 	out, err := robot.GetWaitRequest(r.Context(), robot.WaitRequestOptions{
 		RequestID:     targetID,
+		Session:       r.URL.Query().Get("session"),
 		Timeout:       timeout,
 		PollInterval:  poll,
 		Store:         s.stateStore,
@@ -915,7 +916,7 @@ func (s *Server) handleCancelRequestV1(w http.ResponseWriter, r *http.Request) {
 	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
 	slog.Info("request lifecycle cancel", "http_request_id", httpReqID, "target_request_id", targetID)
 
-	out, err := robot.GetCancelRequestWithStore(targetID, s.stateStore, true)
+	out, err := robot.GetCancelRequestWithStore(targetID, s.stateStore, true, r.URL.Query().Get("session"))
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
 		return

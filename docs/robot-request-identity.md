@@ -166,6 +166,9 @@ and interrupt endpoints take the same ID as the `Idempotency-Key` header.
 |----------|----------|
 | Claim point | The ID is claimed durably (runtime state DB, `send_operations`) before any pane is touched. After preparation, a second atomic write records `operation.dispatch_started_at`, the final redacted payload digest, and the selected targets before the first keystroke or interrupt key. Both writes must succeed. Dry runs never claim. |
 | Scope | One namespace per session, shared across actuation kinds: the same ID may be used in two sessions independently, but not for a send and an interrupt in one session. |
+| Scoped inspection and cancellation | `--session=NAME` selects the original session for `--robot-send-receipt`, `--robot-action-status`, `--robot-wait-request`, and `--robot-cancel-request`. REST lifecycle routes accept `?session=NAME`. A bare ID must identify exactly one request; ambiguity returns `AMBIGUOUS_REQUEST` (REST 409) without cancellation. An explicit session never falls back to another session. |
+| Wait identity | A running request wait stays bound to its initially resolved session, source, and command binding. A newer operation with the same ID in another session cannot finish that wait. Replacing the original command under the same ID/session returns `REQUEST_IDENTITY_CHANGED` (REST 409). |
+| Cancellation identity | Cancellation compares the observed operation claim token, or the wait handle's session and creation time, at the write boundary. A replaced claimant/handle is refused; a stale cancellation cannot stop its successor. Operations and wait handles sharing an ID in the same session remain ambiguous on generic lifecycle routes; use the send-receipt or wait-specific surface to inspect that namespace explicitly. |
 | Binding | The ID is bound to the actuation kind plus the caller's command spec. Send: session, `--pane/--panes/--type/--exclude/--all`, `--enter`, `--clear-input`, `--with-cass`/`--with-memory` toggles, input-message digest. Interrupt: session, `--panes`, `--type` (aliases canonicalized), `--all`, `--force`, input-message digest. Selector lists are order-insensitive; interrupt wait behavior (`--no-wait`, `--timeout`) is not bound, so a retry may lengthen the timeout. |
 | Identical retry of a completed operation | Replays the recorded outcome (`operation.replayed: true`) without sending or interrupting again. A replayed failure carries a hint to use a new ID. |
 | Conflicting reuse | `IDEMPOTENCY_CONFLICT` (REST 409); nothing is touched. |
@@ -184,6 +187,12 @@ ntm --robot-interrupt=myproject --msg="Stop and fix the build" --op-id="retask-4
 ntm --robot-interrupt=myproject --msg="Stop and fix the build" --op-id="retask-42"
 # Outcome by ID, from any process
 ntm --robot-send-receipt="retask-42"
+
+# If another session used the same operation ID, select the original session.
+ntm --robot-action-status="retask-42" --session=myproject
+ntm --robot-wait-request="retask-42" --session=myproject --timeout=30s
+# Only pre-dispatch operations can be canceled.
+ntm --robot-cancel-request="retask-42" --session=myproject
 ```
 
 ---

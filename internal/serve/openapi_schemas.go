@@ -1071,11 +1071,13 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleCancelJob":           {Response: JobEnvelopeResponse{}, Envelope: true},
 
 	// Request bodies for robot-joined mutation handlers
-	"handleAgentSpawnV1":     {Request: AgentSpawnRequest{}, RequestReq: true},
-	"handleAgentSendV1":      {Request: AgentSendRequest{}, RequestReq: true},
-	"handleAgentInterruptV1": {Request: AgentInterruptRequest{}},
-	"handleAgentWaitV1":      {Request: AgentWaitRequest{}},
-	"handleWaitRequestV1":    {Request: waitRequestBodyV1{}, QueryParams: []routeQueryParam{{Name: "timeout", Type: "string", Description: "Maximum wait duration (e.g. 30s)."}, {Name: "poll", Type: "string", Description: "Polling interval duration (e.g. 100ms)."}}},
+	"handleAgentSpawnV1":       {Request: AgentSpawnRequest{}, RequestReq: true},
+	"handleAgentSendV1":        {Request: AgentSendRequest{}, RequestReq: true},
+	"handleAgentInterruptV1":   {Request: AgentInterruptRequest{}},
+	"handleAgentWaitV1":        {Request: AgentWaitRequest{}},
+	"handleGetRequestStatusV1": {QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. Required when an ID exists in multiple sessions; ambiguous unscoped IDs return AMBIGUOUS_REQUEST."}}},
+	"handleCancelRequestV1":    {QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. An ambiguous ID is refused before cancellation; an unknown explicit session never falls back."}}},
+	"handleWaitRequestV1":      {Request: waitRequestBodyV1{}, QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. Once resolved, the wait remains bound to that session and request kind."}, {Name: "timeout", Type: "string", Description: "Maximum wait duration (e.g. 30s)."}, {Name: "poll", Type: "string", Description: "Polling interval duration (e.g. 100ms)."}}},
 
 	// Ensemble REST API
 	"handleEnsembleModesV1": {

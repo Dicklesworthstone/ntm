@@ -77,6 +77,54 @@ const ErrCodeOperationInProgress = "OPERATION_IN_PROGRESS"
 // operation must not repeat its possibly completed external side effects.
 const ErrCodeOperationOutcomeUnknown = "OPERATION_OUTCOME_UNKNOWN"
 
+// ErrCodeAmbiguousRequest refuses a bare ID that names more than one durable
+// request. Operation IDs are scoped per session, not globally unique.
+const ErrCodeAmbiguousRequest = "AMBIGUOUS_REQUEST"
+
+var errAmbiguousRequest = errors.New("request ID is ambiguous")
+
+type requestIdentity struct {
+	source      string
+	session     string
+	kind        string
+	bindingHash string
+	createdAt   time.Time
+}
+
+func resolveRequestRecord(store *state.Store, id, session, source string) (*state.SendOperation, *state.RobotWaitHandle, error) {
+	ops, wait, err := store.GetRobotRequestRecords(id, strings.TrimSpace(session))
+	if err != nil {
+		return nil, nil, err
+	}
+	if source == "send_operation" {
+		wait = nil
+	} else if source == "wait_handle" {
+		ops = nil
+	}
+	matches := make([]string, 0, len(ops)+1)
+	for _, op := range ops {
+		matches = append(matches, fmt.Sprintf("%s in session %q", operationRecordKind(&op), op.SessionName))
+	}
+	if wait != nil {
+		matches = append(matches, fmt.Sprintf("wait in session %q", wait.SessionName))
+	}
+	if len(matches) > 1 {
+		return nil, nil, fmt.Errorf("%w: %q matches %s", errAmbiguousRequest, id, strings.Join(matches, ", "))
+	}
+	if len(ops) == 1 {
+		return &ops[0], nil, nil
+	}
+	return nil, wait, nil
+}
+
+func requestLookupError(err error) RobotResponse {
+	if errors.Is(err, errAmbiguousRequest) {
+		return NewErrorResponse(err, ErrCodeAmbiguousRequest,
+			"Select the original session with --session=NAME (REST: ?session=NAME). No request was canceled. If an operation and wait share an ID in the same session, inspect the send receipt or use the wait-specific cancellation surface.")
+	}
+	return NewErrorResponse(err, ErrCodeInternalError, "Failed to read durable request identity")
+}
+
 // operationStaleClaimWindow is how long an in_progress claim is trusted
 // before a retry may recover an unstarted claim. Age alone never proves
 // that an actuation did not happen, nor that the original caller is dead:
@@ -461,7 +509,7 @@ type SendReceiptOutput struct {
 
 // GetSendReceiptForStore returns the durable receipt for an operation ID using
 // the explicitly injected projection store.
-func GetSendReceiptForStore(store *state.Store, operationID string) (*SendReceiptOutput, error) {
+func GetSendReceiptForStore(store *state.Store, operationID, session string) (*SendReceiptOutput, error) {
 	operationID = strings.TrimSpace(operationID)
 	output := &SendReceiptOutput{RobotResponse: NewRobotResponse(true)}
 	if operationID == "" {
@@ -482,12 +530,12 @@ func GetSendReceiptForStore(store *state.Store, operationID string) (*SendReceip
 		return output, nil
 	}
 
-	ops, err := store.GetSendOperationsByID(operationID)
+	op, _, err := resolveRequestRecord(store, operationID, session, "send_operation")
 	if err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read operation record")
+		output.RobotResponse = requestLookupError(err)
 		return output, nil
 	}
-	if len(ops) == 0 {
+	if op == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("operation '%s' not found", operationID),
 			ErrCodeNotFound,
@@ -495,20 +543,6 @@ func GetSendReceiptForStore(store *state.Store, operationID string) (*SendReceip
 		)
 		return output, nil
 	}
-	// Operation IDs are scoped per session; the same ID may exist in several
-	// sessions. Report the newest and surface the others so the caller can
-	// disambiguate.
-	op := &ops[0]
-	if len(ops) > 1 {
-		sessions := make([]string, 0, len(ops))
-		for _, other := range ops {
-			sessions = append(sessions, other.SessionName)
-		}
-		output.Warnings = append(output.Warnings, fmt.Sprintf(
-			"operation ID %q exists in %d sessions (%s); showing the most recent (%s)",
-			operationID, len(ops), strings.Join(sessions, ", "), op.SessionName))
-	}
-
 	output.Session = op.SessionName
 	output.Operation = operationInfoFromRecord(op, false)
 	if op.Status != state.SendOperationCompleted || op.OutcomeJSON == "" {
@@ -552,11 +586,13 @@ type ActionStatusOutput struct {
 	Operation         *OperationInfo           `json:"operation,omitempty"`
 	Outcome           *SendReceiptOutcome      `json:"outcome,omitempty"`
 	InterruptOutcome  *InterruptReceiptOutcome `json:"interrupt_outcome,omitempty"`
+	identity          *requestIdentity
 }
 
 // WaitRequestOptions configures --robot-wait-request polling.
 type WaitRequestOptions struct {
 	RequestID     string
+	Session       string
 	Timeout       time.Duration
 	PollInterval  time.Duration
 	Store         *state.Store
@@ -578,7 +614,11 @@ type CancelRequestOutput struct {
 
 // GetActionStatusWithStore inspects a durable robot operation or wait handle
 // using the explicitly injected state store.
-func GetActionStatusWithStore(requestID string, store *state.Store, explicitStore bool) (*ActionStatusOutput, error) {
+func GetActionStatusWithStore(requestID string, store *state.Store, explicitStore bool, session string) (*ActionStatusOutput, error) {
+	return getActionStatusWithStore(requestID, store, explicitStore, session, nil)
+}
+
+func getActionStatusWithStore(requestID string, store *state.Store, explicitStore bool, session string, pinned *requestIdentity) (*ActionStatusOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &ActionStatusOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -603,24 +643,23 @@ func GetActionStatusWithStore(requestID string, store *state.Store, explicitStor
 		return output, nil
 	}
 
-	ops, err := store.GetSendOperationsByID(requestID)
+	source := ""
+	if pinned != nil {
+		source, session = pinned.source, pinned.session
+	}
+	op, waitHandle, err := resolveRequestRecord(store, requestID, session, source)
 	if err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read operation record")
+		output.RobotResponse = requestLookupError(err)
 		return output, nil
 	}
-	if len(ops) > 0 {
-		op := &ops[0]
-		if len(ops) > 1 {
-			sessions := make([]string, 0, len(ops))
-			for _, other := range ops {
-				sessions = append(sessions, other.SessionName)
-			}
-			output.Warnings = append(output.Warnings, fmt.Sprintf(
-				"request ID %q exists in %d sessions (%s); showing the most recent (%s)",
-				requestID, len(ops), strings.Join(sessions, ", "), op.SessionName,
-			))
-		}
+	if op != nil {
 		kind := operationRecordKind(op)
+		if pinned != nil && (pinned.kind != kind || pinned.bindingHash != op.BindingHash) {
+			output.RobotResponse = NewErrorResponse(fmt.Errorf("request %q was replaced with a different operation", requestID),
+				"REQUEST_IDENTITY_CHANGED", "Inspect the original session before waiting on a replacement request")
+			return output, nil
+		}
+		output.identity = &requestIdentity{source: "send_operation", session: op.SessionName, kind: kind, bindingHash: op.BindingHash}
 		output.Source = "send_operation"
 		output.Kind = kind
 		output.Session = op.SessionName
@@ -653,12 +692,13 @@ func GetActionStatusWithStore(requestID string, store *state.Store, explicitStor
 		return output, nil
 	}
 
-	waitHandle, err := store.GetRobotWaitHandle(requestID)
-	if err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read wait handle")
-		return output, nil
-	}
 	if waitHandle != nil {
+		if pinned != nil && !pinned.createdAt.Equal(waitHandle.CreatedAt) {
+			output.RobotResponse = NewErrorResponse(fmt.Errorf("wait %q was replaced", requestID),
+				"REQUEST_IDENTITY_CHANGED", "Inspect the original session before waiting on a replacement request")
+			return output, nil
+		}
+		output.identity = &requestIdentity{source: "wait_handle", session: waitHandle.SessionName, createdAt: waitHandle.CreatedAt}
 		output.Source = "wait_handle"
 		output.Kind = "wait"
 		output.Session = waitHandle.SessionName
@@ -706,9 +746,10 @@ func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatus
 	started := time.Now()
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var pinned *requestIdentity
 
 	for {
-		status, err := GetActionStatusWithStore(opts.RequestID, opts.Store, opts.ExplicitStore)
+		status, err := getActionStatusWithStore(opts.RequestID, opts.Store, opts.ExplicitStore, opts.Session, pinned)
 		if err != nil {
 			return nil, err
 		}
@@ -716,6 +757,9 @@ func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatus
 		if !status.Success || status.Terminal {
 			return status, nil
 		}
+		// Once resolved, a later request in another session or namespace must
+		// not change what this waiter is observing.
+		pinned = status.identity
 
 		timer := time.NewTimer(poll)
 		select {
@@ -752,7 +796,7 @@ func PrintWaitRequest(ctx context.Context, opts WaitRequestOptions) error {
 
 // GetCancelRequestWithStore cancels a pre-dispatch durable operation claim or
 // an active wait handle using the explicitly injected state store.
-func GetCancelRequestWithStore(requestID string, store *state.Store, explicitStore bool) (*CancelRequestOutput, error) {
+func GetCancelRequestWithStore(requestID string, store *state.Store, explicitStore bool, session string) (*CancelRequestOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &CancelRequestOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -778,7 +822,20 @@ func GetCancelRequestWithStore(requestID string, store *state.Store, explicitSto
 	}
 
 	now := time.Now().UTC()
-	op, canceled, err := store.CancelSendOperationByID(requestID, now)
+	op, waitHandle, err := resolveRequestRecord(store, requestID, session, "")
+	if err != nil {
+		output.RobotResponse = requestLookupError(err)
+		return output, nil
+	}
+	var canceled bool
+	if op != nil {
+		op, canceled, err = store.CancelSendOperation(op, now)
+	}
+	if errors.Is(err, state.ErrSendOperationClaimLost) {
+		output.RobotResponse = NewErrorResponse(err, "REQUEST_IDENTITY_CHANGED",
+			"The operation owner changed before cancellation; inspect its current state before retrying")
+		return output, nil
+	}
 	if errors.Is(err, state.ErrSendOperationDispatched) && op != nil {
 		output.Source = "send_operation"
 		output.Kind = operationRecordKind(op)
@@ -817,23 +874,37 @@ func GetCancelRequestWithStore(requestID string, store *state.Store, explicitSto
 		return output, nil
 	}
 
-	waitHandle, err := store.GetRobotWaitHandle(requestID)
-	if err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read wait handle")
-		return output, nil
-	}
 	if waitHandle != nil {
 		output.Source = "wait_handle"
 		output.Kind = "wait"
 		output.Session = waitHandle.SessionName
-		waitCanceled, cancelErr := store.CancelRobotWaitHandle(requestID, now)
+		waitCanceled, cancelErr := store.CancelRobotWaitHandle(waitHandle, now)
+		if errors.Is(cancelErr, state.ErrRobotWaitHandleChanged) {
+			output.RobotResponse = NewErrorResponse(cancelErr, "REQUEST_IDENTITY_CHANGED",
+				"The wait handle changed before cancellation; inspect its current state before retrying")
+			return output, nil
+		}
 		if cancelErr != nil {
 			output.RobotResponse = NewErrorResponse(cancelErr, ErrCodeInternalError, "Failed to cancel wait handle")
 			return output, nil
 		}
 		if !waitCanceled {
+			current, readErr := store.GetRobotWaitHandle(requestID)
+			if readErr != nil {
+				output.RobotResponse = NewErrorResponse(readErr, ErrCodeInternalError, "Failed to read final wait state")
+				return output, nil
+			}
+			if current == nil {
+				output.RobotResponse = NewErrorResponse(fmt.Errorf("wait %q no longer exists", requestID), ErrCodeNotFound, "The original wait handle is no longer retained")
+				return output, nil
+			}
+			if current.SessionName != waitHandle.SessionName || !current.CreatedAt.Equal(waitHandle.CreatedAt) {
+				output.RobotResponse = NewErrorResponse(state.ErrRobotWaitHandleChanged, "REQUEST_IDENTITY_CHANGED",
+					"The wait handle changed before cancellation; inspect its current state before retrying")
+				return output, nil
+			}
 			status := state.SendOperationCompleted
-			if waitHandle.CanceledAt != nil {
+			if current.CanceledAt != nil {
 				status = state.SendOperationCanceled
 			}
 			output.Status = status

@@ -47,8 +47,8 @@ func (rt *Runtime) PaginationOptions(limit, offset int) PaginationOptions {
 }
 
 // PrintSendReceipt handles --robot-send-receipt using the injected projection store.
-func (rt *Runtime) PrintSendReceipt(operationID string) error {
-	output, err := GetSendReceiptForStore(rt.ProjectionStore(), operationID)
+func (rt *Runtime) PrintSendReceipt(operationID, session string) error {
+	output, err := GetSendReceiptForStore(rt.ProjectionStore(), operationID, session)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,8 @@ func (rt *Runtime) PrintSendReceipt(operationID string) error {
 }
 
 // PrintActionStatus handles --robot-action-status using the injected projection store.
-func (rt *Runtime) PrintActionStatus(requestID string) error {
-	output, err := GetActionStatusWithStore(requestID, rt.ProjectionStore(), true)
+func (rt *Runtime) PrintActionStatus(requestID, session string) error {
+	output, err := GetActionStatusWithStore(requestID, rt.ProjectionStore(), true, session)
 	if err != nil {
 		return err
 	}
@@ -65,8 +65,8 @@ func (rt *Runtime) PrintActionStatus(requestID string) error {
 }
 
 // PrintCancelRequest handles --robot-cancel-request using the injected projection store.
-func (rt *Runtime) PrintCancelRequest(requestID string) error {
-	output, err := GetCancelRequestWithStore(requestID, rt.ProjectionStore(), true)
+func (rt *Runtime) PrintCancelRequest(requestID, session string) error {
+	output, err := GetCancelRequestWithStore(requestID, rt.ProjectionStore(), true, session)
 	if err != nil {
 		return err
 	}

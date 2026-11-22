@@ -21,6 +21,11 @@ import (
 )
 
 func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool) bool {
+	requestSession := strings.TrimSpace(robotSharedSession)
+	if cmd.Flags().Changed("session") && requestSession == "" && (robotSendReceipt != "" || robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "") {
+		failRobotCommand(errors.New("--session requires a nonempty original session for request lookup"), robot.ErrCodeInvalidFlag, "Use --robot-action-status=ID --session=SESSION (or send-receipt, wait-request, cancel-request)", "session")
+		return true
+	}
 	if robotSendReceipt != "" {
 		if robotSend != "" || robotInterrupt != "" {
 			// The receipt branch would otherwise return before the send
@@ -29,7 +34,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("--robot-send-receipt cannot be combined with --robot-send or --robot-interrupt"), robot.ErrCodeInvalidFlag, "Run the send or interrupt first, then query the receipt in a separate invocation", "robot-send-receipt")
 			return true
 		}
-		if err := currentRobotRuntime().PrintSendReceipt(robotSendReceipt); err != nil {
+		if err := currentRobotRuntime().PrintSendReceipt(robotSendReceipt, requestSession); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -46,7 +51,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("conflicting request IDs supplied to --robot-action-status and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-action-status=ID or --robot-action-status --request-id=ID", "robot-action-status")
 			return true
 		}
-		if err := currentRobotRuntime().PrintActionStatus(reqID); err != nil {
+		if err := currentRobotRuntime().PrintActionStatus(reqID, requestSession); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -83,6 +88,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		}
 		if err := robot.PrintWaitRequest(cmd.Context(), robot.WaitRequestOptions{
 			RequestID:     reqID,
+			Session:       requestSession,
 			Timeout:       waitTimeout,
 			PollInterval:  waitPoll,
 			Store:         currentRobotRuntime().ProjectionStore(),
@@ -104,7 +110,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("conflicting request IDs supplied to --robot-cancel-request and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-cancel-request=ID or --robot-cancel-request --request-id=ID", "robot-cancel-request")
 			return true
 		}
-		if err := currentRobotRuntime().PrintCancelRequest(reqID); err != nil {
+		if err := currentRobotRuntime().PrintCancelRequest(reqID, requestSession); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true

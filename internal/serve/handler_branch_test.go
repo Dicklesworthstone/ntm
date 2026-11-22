@@ -1577,7 +1577,7 @@ func TestAgentMessagePolicyRechecksBeforeDeliveryAndPreservesReceipts(t *testing
 				} else {
 					f.assertNoInput(t)
 				}
-				receipt, err := robot.GetSendReceiptForStore(store, key)
+				receipt, err := robot.GetSendReceiptForStore(store, key, "")
 				if err != nil || receipt == nil || !receipt.Success || receipt.Operation == nil || receipt.Operation.Status != state.SendOperationCompleted {
 					t.Fatalf("late refusal was not durably queryable: %+v, %v", receipt, err)
 				}
