@@ -326,6 +326,9 @@ func NewAuditLogger(config *LoggerConfig) (*AuditLogger, error) {
 	if config == nil {
 		config = DefaultConfig("")
 	}
+	if strings.ContainsAny(config.SessionID, "/\\\x00") || strings.Contains(config.SessionID, "..") {
+		return nil, fmt.Errorf("invalid audit session ID %q: path separators and traversal sequences are not allowed", config.SessionID)
+	}
 
 	auditDir := Dir()
 	if err := os.MkdirAll(auditDir, 0755); err != nil {
@@ -518,12 +521,13 @@ func (al *AuditLogger) Log(entry AuditEntry) error {
 		return fmt.Errorf("audit logger is closed")
 	}
 
-	// Fill in missing fields
+	// Fill in missing fields without mutating al.sequenceNum until encoding
+	// and buffer writes succeed so a marshal error cannot corrupt the hash chain.
+	nextSeq := al.sequenceNum + 1
 	entry.Timestamp = time.Now().UTC()
 	entry.SessionID = al.sessionID
 	entry.PrevHash = al.lastHash
-	al.sequenceNum++
-	entry.SequenceNum = al.sequenceNum
+	entry.SequenceNum = nextSeq
 
 	// Calculate hash without the checksum field
 	entryForHash := entry
@@ -550,7 +554,8 @@ func (al *AuditLogger) Log(entry AuditEntry) error {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
 
-	// Update state
+	// Commit hash-chain state only after the record has been serialized and buffered.
+	al.sequenceNum = nextSeq
 	al.lastHash = entry.Checksum
 	al.entriesWritten++
 

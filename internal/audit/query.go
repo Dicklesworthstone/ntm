@@ -209,6 +209,36 @@ func (s *Searcher) SearchContext(ctx context.Context, query Query) (*QueryResult
 	return result, nil
 }
 
+// auditFilenameMatchesSession reports whether an audit JSONL filename belongs
+// to the exact session (matching both legacy "<session>-YYYY-MM-DD.jsonl" and
+// writer-discriminated "<session>-<pid>-YYYY-MM-DD.jsonl" forms without letting
+// "app" match "app-prod-YYYY-MM-DD.jsonl").
+func auditFilenameMatchesSession(name, session string) bool {
+	if session == "" || !strings.HasSuffix(name, ".jsonl") {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ".jsonl")
+	if datePart := extractDateFromFilename(name); datePart != "" && strings.HasSuffix(stem, "-"+datePart) {
+		stem = strings.TrimSuffix(stem, "-"+datePart)
+	}
+	if stem == session {
+		return true
+	}
+	if !strings.HasPrefix(stem, session+"-") {
+		return false
+	}
+	writerID := stem[len(session)+1:]
+	if writerID == "" {
+		return false
+	}
+	for i := 0; i < len(writerID); i++ {
+		if writerID[i] < '0' || writerID[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // getLogFiles returns audit log files that could contain matching entries
 func (s *Searcher) getLogFiles(query Query) ([]string, error) {
 	entries, err := os.ReadDir(s.auditDir)
@@ -234,7 +264,7 @@ func (s *Searcher) getLogFiles(query Query) ([]string, error) {
 		if len(query.Sessions) > 0 {
 			matched := false
 			for _, session := range query.Sessions {
-				if strings.HasPrefix(name, session+"-") {
+				if auditFilenameMatchesSession(name, session) {
 					matched = true
 					break
 				}
