@@ -74,6 +74,17 @@ type SafetyStatusResponse struct {
 	HookSettingsError string `json:"hook_settings_error,omitempty"`
 }
 
+func (s *Server) resolvePolicyPath() (string, bool, error) {
+	return policy.ResolveEffectivePathForProject(s.projectDirSnapshot())
+}
+
+func (s *Server) loadPolicy() (*policy.Policy, error) {
+	if projectDir := strings.TrimSpace(s.projectDirSnapshot()); projectDir != "" {
+		return policy.LoadForProject(projectDir)
+	}
+	return policy.LoadOrDefault()
+}
+
 func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
@@ -100,7 +111,7 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 	hookInstalled := hookScriptPresent && hookRegistered
 
 	// Load policy
-	p, err := policy.LoadOrDefault()
+	p, err := s.loadPolicy()
 	if err != nil {
 		// Safety status must not present a parse or read failure as an empty
 		// policy. Zero rule counts would tell an operator that no commands are
@@ -116,7 +127,7 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 	// ~/.ntm/policy.yaml reported "no policy file" for a project-local
 	// policy that was being enforced, while the stats beside it were
 	// computed from that very file.
-	if effective, exists, resolveErr := policy.ResolveEffectivePath(); resolveErr == nil && exists {
+	if effective, exists, resolveErr := s.resolvePolicyPath(); resolveErr == nil && exists {
 		policyPath = effective
 	}
 
@@ -235,7 +246,7 @@ func (s *Server) handleSafetyCheckV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := policy.LoadOrDefault()
+	p, err := s.loadPolicy()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to load policy", nil, reqID)
@@ -301,6 +312,20 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 	binDir := filepath.Join(ntmDir, "bin")
 	logsDir := filepath.Join(ntmDir, "logs")
 
+	// Resolve and validate the effective policy path BEFORE mutating wrappers
+	// or Claude settings so an invalid project directory never leaves a partial
+	// installation on disk.
+	policyPath, policyExists, pathErr := s.resolvePolicyPath()
+	if pathErr != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			fmt.Sprintf("failed to resolve policy path: %v", pathErr), nil, reqID)
+		return
+	}
+	if policyPath == "" {
+		policyPath = filepath.Join(ntmDir, "policy.yaml")
+		policyExists = safetyFileExists(policyPath)
+	}
+
 	// Create directories
 	for _, dir := range []string{ntmDir, binDir, logsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -343,19 +368,6 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve effective policy path against the server's configured project dir
-	// so installing default wrappers never creates a home policy that silently
-	// shadows a project-local .ntm/policy.yaml or inspects an unrelated CWD.
-	policyPath, policyExists, pathErr := policy.ResolveEffectivePathForProject(s.projectDirSnapshot())
-	if pathErr != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			fmt.Sprintf("failed to resolve policy path: %v", pathErr), nil, reqID)
-		return
-	}
-	if policyPath == "" {
-		policyPath = filepath.Join(ntmDir, "policy.yaml")
-		policyExists = safetyFileExists(policyPath)
-	}
 	if !policyExists || req.Force {
 		if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
@@ -497,14 +509,14 @@ func (s *Server) handlePolicyGetV1(w http.ResponseWriter, r *http.Request) {
 	// `ntm setup` creates. Hardcoding the home path made this endpoint report
 	// is_default:true for a project policy that was actively blocking
 	// commands — and report it alongside stats computed from that same file.
-	policyPath, policyExists, resolveErr := policy.ResolveEffectivePath()
+	policyPath, policyExists, resolveErr := s.resolvePolicyPath()
 	if resolveErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to resolve policy path", nil, reqID)
 		return
 	}
 
-	p, err := policy.LoadOrDefault()
+	p, err := s.loadPolicy()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to load policy", nil, reqID)
@@ -642,7 +654,7 @@ func (s *Server) handlePolicyUpdateV1(w http.ResponseWriter, r *http.Request) {
 	// Write the policy file that is actually enforced, not an unconditional
 	// home path that would shadow a project-local policy (bd-fresh-eyes-audit
 	// .30, same class as handlePolicyAutomationUpdateV1).
-	policyPath, _, resolveErr := policy.ResolveEffectivePath()
+	policyPath, _, resolveErr := s.resolvePolicyPath()
 	if resolveErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to resolve policy path", nil, reqID)
@@ -752,7 +764,7 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 
 	// Validate the policy that is actually enforced, not just the home one.
 	var policyExists bool
-	policyPath, policyExists, resolveErr := policy.ResolveEffectivePath()
+	policyPath, policyExists, resolveErr := s.resolvePolicyPath()
 	if resolveErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to resolve policy path", nil, reqID)
@@ -824,7 +836,7 @@ func (s *Server) handlePolicyResetV1(w http.ResponseWriter, r *http.Request) {
 	// unconditional home path would leave a project-local policy in place on
 	// disk while silently shadowing it, so a "reset" would neither reset the
 	// enforced rules nor leave them intact (bd-fresh-eyes-audit .30).
-	policyPath, _, resolveErr := policy.ResolveEffectivePath()
+	policyPath, _, resolveErr := s.resolvePolicyPath()
 	if resolveErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to resolve policy path", nil, reqID)
@@ -870,7 +882,7 @@ type AutomationGetResponse struct {
 func (s *Server) handlePolicyAutomationGetV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	p, err := policy.LoadOrDefault()
+	p, err := s.loadPolicy()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to load policy", nil, reqID)
@@ -927,7 +939,7 @@ func (s *Server) handlePolicyAutomationUpdateV1(w http.ResponseWriter, r *http.R
 	// which then took precedence — silently dropping the project's
 	// blocked/approval_required rules from the git/rm wrappers and the
 	// PreToolUse hook (bd-fresh-eyes-audit .30).
-	policyPath, policyExists, resolveErr := policy.ResolveEffectivePath()
+	policyPath, policyExists, resolveErr := s.resolvePolicyPath()
 	if resolveErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to resolve policy path", nil, reqID)
@@ -1447,7 +1459,7 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 	requestor := approvalIdentity(r)
 
 	// Check if this action requires SLB approval
-	p, policyErr := policy.LoadOrDefault()
+	p, policyErr := s.loadPolicy()
 	if policyErr != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to load safety policy", nil, reqID)
