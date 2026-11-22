@@ -78,14 +78,18 @@ func newResumeCmd() *cobra.Command {
 		spawn       bool
 		inject      bool
 		dryRun      bool
-		ccCount     int
-		codCount    int
-		gmiCount    int
-		agyCount    int
-		grokCount   int
-		ompCount    int
-		ocCount     int
-		pluginSpecs AgentSpecs
+		ccCount       int
+		codCount      int
+		gmiCount      int
+		agyCount      int
+		grokCount     int
+		ompCount      int
+		ocCount       int
+		cursorCount   int
+		windsurfCount int
+		aiderCount    int
+		ollamaCount   int
+		pluginSpecs   AgentSpecs
 	)
 	pluginMap := make(map[string]plugins.AgentPlugin)
 
@@ -112,7 +116,12 @@ Examples:
 			}
 			effectiveJSON := IsJSONOutput()
 			err := runResume(cmd, sessionName, fromPath, spawn, inject, dryRun,
-				resumeSpawnCounts{CC: ccCount, Cod: codCount, Gmi: gmiCount, Agy: agyCount, Grok: grokCount, Omp: ompCount, Oc: ocCount, Plugins: pluginSpecs, PluginMap: pluginMap}, effectiveJSON)
+				resumeSpawnCounts{
+					CC: ccCount, Cod: codCount, Gmi: gmiCount, Agy: agyCount,
+					Grok: grokCount, Omp: ompCount, Oc: ocCount,
+					Cursor: cursorCount, Windsurf: windsurfCount, Aider: aiderCount, Ollama: ollamaCount,
+					Plugins: pluginSpecs, PluginMap: pluginMap,
+				}, effectiveJSON)
 			return outputResumeCommandError(cmd, resumeAction(spawn, inject), effectiveJSON, err)
 		},
 	}
@@ -128,6 +137,10 @@ Examples:
 	cmd.Flags().IntVar(&grokCount, "grok", 0, "Number of Grok Build agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&ocCount, "oc", 0, "Number of OpenCode (oc) agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&cursorCount, "cursor", 0, "Number of Cursor agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&windsurfCount, "windsurf", 0, "Number of Windsurf agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&aiderCount, "aider", 0, "Number of Aider agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&ollamaCount, "ollama", 0, "Number of Ollama agents to spawn (requires --spawn)")
 	// Pin the same plugin configuration (including shipped Pi) used to register spawn selectors.
 	// Pi is a separate harness from the built-in omp agent.
 	for _, p := range registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
@@ -140,13 +153,14 @@ Examples:
 
 // resumeSpawnCounts carries the per-type agent counts for `resume --spawn`.
 type resumeSpawnCounts struct {
-	CC, Cod, Gmi, Agy, Grok, Omp, Oc int
-	Plugins                          AgentSpecs
-	PluginMap                        map[string]plugins.AgentPlugin
+	CC, Cod, Gmi, Agy, Grok, Omp, Oc     int
+	Cursor, Windsurf, Aider, Ollama      int
+	Plugins                              AgentSpecs
+	PluginMap                            map[string]plugins.AgentPlugin
 }
 
 func (c resumeSpawnCounts) total() int {
-	total := c.CC + c.Cod + c.Gmi + c.Agy + c.Grok + c.Omp + c.Oc
+	total := c.CC + c.Cod + c.Gmi + c.Agy + c.Grok + c.Omp + c.Oc + c.Cursor + c.Windsurf + c.Aider + c.Ollama
 	for _, spec := range c.Plugins {
 		total += spec.Count
 	}
@@ -164,6 +178,10 @@ func (c resumeSpawnCounts) spawnOptions(sessionName, projectDir string) SpawnOpt
 		GrokCount:          c.Grok,
 		OmpCount:           c.Omp,
 		OpencodeCount:      c.Oc,
+		CursorCount:        c.Cursor,
+		WindsurfCount:      c.Windsurf,
+		AiderCount:         c.Aider,
+		OllamaCount:        c.Ollama,
 		UserPane:           true,
 		NoHooks:            true,
 		PluginMap:          c.PluginMap,
@@ -179,6 +197,10 @@ func (c resumeSpawnCounts) spawnOptions(sessionName, projectDir string) SpawnOpt
 			{Type: AgentTypeGrok, Count: c.Grok},
 			{Type: AgentTypeOmp, Count: c.Omp},
 			{Type: AgentTypeOpencode, Count: c.Oc},
+			{Type: AgentTypeCursor, Count: c.Cursor},
+			{Type: AgentTypeWindsurf, Count: c.Windsurf},
+			{Type: AgentTypeAider, Count: c.Aider},
+			{Type: AgentTypeOllama, Count: c.Ollama},
 		}
 		opts.Agents = append(specs, c.Plugins...).Flatten()
 	}

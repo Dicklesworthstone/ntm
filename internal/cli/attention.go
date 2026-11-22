@@ -258,7 +258,8 @@ func runAttentionList(cmd *cobra.Command, sessionFilter string, limit int, inclu
 		scanLimit = 100
 	}
 
-	events, err := store.GetAttentionEventsSince(0, scanLimit)
+	sessionFilter = strings.TrimSpace(sessionFilter)
+	events, err := store.GetRecentAttentionEvents(scanLimit, sessionFilter)
 	if err != nil {
 		return writeAttentionError(cmd, fmt.Errorf("load attention events: %w", err), "INTERNAL_ERROR", emitJSON)
 	}
@@ -273,10 +274,10 @@ func runAttentionList(cmd *cobra.Command, sessionFilter string, limit int, inclu
 	}
 
 	now := time.Now().UTC()
-	sessionFilter = strings.TrimSpace(sessionFilter)
 	items := make([]AttentionCLIItem, 0, len(events))
-	// Iterate newest-first for operator triage, bounded to limit.
-	for i := len(events) - 1; i >= 0 && len(items) < limit; i-- {
+	// GetRecentAttentionEvents already returns newest-first (ORDER BY cursor DESC),
+	// bounded to limit after filtering dismissed/snoozed items.
+	for i := 0; i < len(events) && len(items) < limit; i++ {
 		ev := events[i]
 		if sessionFilter != "" && ev.SessionName != sessionFilter {
 			continue
@@ -405,20 +406,15 @@ func runAttentionMutate(cmd *cobra.Command, action, ref string, opts attentionMu
 	}
 	if storedEvent == nil && prior == nil {
 		// Check whether an attention event carries this dedup_key so cursor-less
-		// refs against real events attach their latest cursor & fingerprint.
-		if evs, evErr := store.GetAttentionEventsSince(0, 500); evErr == nil {
-			for i := len(evs) - 1; i >= 0; i-- {
-				if evs[i].DedupKey == ref {
-					ev := evs[i]
-					storedEvent = &ev
-					cursor = ev.Cursor
-					fingerprint = attentionFingerprintForCLI(ev)
-					if resolvedKey, _ := store.ResolveAttentionItemKey(cursor); resolvedKey != "" {
-						itemKey = resolvedKey
-						prior, _ = store.GetAttentionItemState(itemKey)
-					}
-					break
-				}
+		// refs against real events attach their latest cursor & fingerprint
+		// regardless of how many earlier events exist in the store.
+		if ev, evErr := store.GetLatestAttentionEventByDedupKey(ref); evErr == nil && ev != nil {
+			storedEvent = ev
+			cursor = ev.Cursor
+			fingerprint = attentionFingerprintForCLI(*ev)
+			if resolvedKey, _ := store.ResolveAttentionItemKey(cursor); resolvedKey != "" {
+				itemKey = resolvedKey
+				prior, _ = store.GetAttentionItemState(itemKey)
 			}
 		}
 	}

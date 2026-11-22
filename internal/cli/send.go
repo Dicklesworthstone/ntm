@@ -1001,6 +1001,14 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("oc").NoOptDefVal = "true"
 	cmd.Flags().Var(newSendTargetValue(AgentTypeOmp, &targets), "omp", "send to Oh My Pi (omp) agents (optional :variant filter)")
 	cmd.Flags().Lookup("omp").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeCursor, &targets), "cursor", "send to Cursor agents (optional :variant filter)")
+	cmd.Flags().Lookup("cursor").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeWindsurf, &targets), "windsurf", "send to Windsurf agents (optional :variant filter)")
+	cmd.Flags().Lookup("windsurf").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeAider, &targets), "aider", "send to Aider agents (optional :variant filter)")
+	cmd.Flags().Lookup("aider").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeOllama, &targets), "ollama", "send to Ollama agents (optional :variant filter)")
+	cmd.Flags().Lookup("ollama").NoOptDefVal = "true"
 	// Agent plugins (including shipped defaults like Pi) get the same selectors spawn/add expose (ntm#260).
 	for _, p := range registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
 		registerPluginSendFlags(cmd, p, &targets)
