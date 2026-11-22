@@ -200,6 +200,7 @@ func safeWebhookDialContext(allowLoopback bool) func(ctx context.Context, networ
 // redirect-blocking, SSRF-validated HTTP transport with optional HMAC-SHA256
 // signing (X-NTM-Signature: sha256=...) and bounded response reading.
 func DeliverJSON(ctx context.Context, client *http.Client, targetURL, secret string, payload []byte, headers map[string]string) (int, error) {
+	targetURL = strings.TrimSpace(targetURL)
 	if err := ValidateWebhookTargetURL(targetURL, true); err != nil {
 		return 0, err
 	}
