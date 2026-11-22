@@ -966,6 +966,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			if attempt > 0 {
 				refreshed, obsLookup = refreshLifecyclePane(ctx, opts.Session, original.ID)
 				if obsLookup == paneAbsent || (obsLookup == paneFound && refreshed.Dead) {
+					obs = refreshed
 					exited = true
 					break
 				}
@@ -1038,7 +1039,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
 			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 		})
-		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), false)
+		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), true)
 		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
 			exitErr = nil
 			exited = true
@@ -1047,10 +1048,12 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			break
 		}
 	}
-	if !exited {
+	if !exited || exitErr != nil || obsLookup != paneFound || !obs.Dead {
 		result.VerificationFailed = obsLookup == paneLookupFailed
 		result.Status = "failed"
-		if exitErr != nil {
+		if obsLookup == paneAbsent {
+			result.Detail = joinLifecycleDetail(result.Detail, "direct-exec pane disappeared before respawn could replace its shell")
+		} else if exitErr != nil {
 			result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
 		} else {
 			result.Detail = joinLifecycleDetail(result.Detail, "direct-exec agent still running after graceful exit attempts; inspect before killing")
@@ -1058,7 +1061,8 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		return obs, false
 	}
 
-	if err := tmux.DefaultClient.RespawnPaneIfCurrentContext(ctx, original.ID, original.PID, true, workingDir, true); err != nil {
+	respawnCtx := tmux.WithObservedPaneAgentType(ctx, original)
+	if err := tmux.DefaultClient.RespawnPaneIfCurrentContext(respawnCtx, original.ID, original.PID, true, workingDir, true); err != nil {
 		result.Status = "failed"
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("respawn shell failed: %v", err))
 		return obs, false
