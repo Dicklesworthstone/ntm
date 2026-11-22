@@ -82,10 +82,32 @@ func MonitorProcessPattern(session string) string {
 	return MonitorProcessPatternForExecutable(executablePath, session)
 }
 
+// monitorProcRoot is the Linux procfs root scanned by fast monitor discovery.
+// Tests override it to "" to exercise the portable pgrep fallback.
+var monitorProcRoot = "/proc"
+
+func monitorProcFSAvailable() bool {
+	if monitorProcRoot == "" || !process.HasProcFS() {
+		return false
+	}
+	if monitorProcRoot == "/proc" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(monitorProcRoot, "self", "status"))
+	return err == nil
+}
+
 // IsMonitorAlive checks whether the resilience monitor process is running for
 // the given session by looking for the "internal-monitor <session>" process.
 func IsMonitorAlive(session string) bool {
-	err := exec.Command("pgrep", "-f", MonitorProcessPattern(session)).Run()
+	pattern := MonitorProcessPattern(session)
+	if monitorProcFSAvailable() {
+		pids, err := findMonitorPIDsProcFS(context.Background(), monitorProcRoot, pattern)
+		if err == nil {
+			return len(pids) > 0
+		}
+	}
+	err := exec.Command("pgrep", "-f", pattern).Run()
 	return err == nil
 }
 
@@ -94,23 +116,47 @@ func IsMonitorAlive(session string) bool {
 // owner that has already joined its loops and written a terminal receipt can
 // briefly retain its PID while returning from main; that process is harmless.
 func unownedMonitorAlive(ctx context.Context, session string) (bool, error) {
-	output, err := exec.CommandContext(ctx, "pgrep", "-f", MonitorProcessPattern(session)).Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	pattern := MonitorProcessPattern(session)
+	var pids []int
+	if monitorProcFSAvailable() {
+		found, err := findMonitorPIDsProcFS(ctx, monitorProcRoot, pattern)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			return false, fmt.Errorf("inspect existing session monitor: %w", err)
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil // pgrep found no matching process.
+		pids = found
+	} else {
+		output, err := exec.CommandContext(ctx, "pgrep", "-f", pattern).Output()
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				return false, nil // pgrep found no matching process.
+			}
+			return false, fmt.Errorf("inspect existing session monitor: %w", err)
 		}
-		return false, fmt.Errorf("inspect existing session monitor: %w", err)
+		for _, raw := range strings.Fields(string(output)) {
+			pid, err := strconv.Atoi(raw)
+			if err == nil && pid > 0 {
+				pids = append(pids, pid)
+			}
+		}
+	}
+	if len(pids) == 0 {
+		return false, nil
 	}
 	status, _ := ReadSessionMonitorStatus(session)
-	for _, raw := range strings.Fields(string(output)) {
-		pid, err := strconv.Atoi(raw)
-		if err != nil || pid <= 0 {
-			continue
-		}
+	for _, pid := range pids {
 		if status != nil && status.PID == pid && (status.State == "stopped" || status.State == "failed") {
 			started, err := process.StartTime(pid)
 			if err == nil && started.Equal(status.ProcessStarted) {
@@ -120,6 +166,56 @@ func unownedMonitorAlive(ctx context.Context, session string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// findMonitorPIDsProcFS scans <root>/[0-9]*/cmdline directly on Linux to match
+// MonitorProcessPattern without spawning pgrep (~2ms vs ~95ms).
+func findMonitorPIDsProcFS(ctx context.Context, root, pattern string) ([]int, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	selfPID := os.Getpid()
+	var pids []int
+	for i, entry := range entries {
+		if i&63 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if len(name) == 0 || name[0] < '1' || name[0] > '9' {
+			continue
+		}
+		pid, perr := strconv.Atoi(name)
+		if perr != nil || pid <= 0 || pid == selfPID {
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(root, name, "cmdline"))
+		if rerr != nil || len(data) == 0 {
+			continue
+		}
+		// Match pgrep -f semantics: NUL separators become spaces, trailing NULs trimmed.
+		cmdline := strings.TrimSpace(strings.ReplaceAll(strings.TrimRight(string(data), "\x00"), "\x00", " "))
+		if cmdline == "" || !re.MatchString(cmdline) {
+			continue
+		}
+		if root == "/proc" && !process.IsAlive(pid) {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return pids, nil
 }
 
 func currentExecutablePath() (string, error) {

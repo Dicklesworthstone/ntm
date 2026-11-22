@@ -72,6 +72,9 @@ func TestSnapshotContextRejectsFailedObservations(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("snapshot requires Linux or macOS ps")
 	}
+	noProc := filepath.Join(t.TempDir(), "no-proc")
+	prev := procRootOverride.Swap(&noProc)
+	t.Cleanup(func() { procRootOverride.Store(prev) })
 	for _, tt := range []struct {
 		name string
 		body string
@@ -101,6 +104,9 @@ func TestSnapshotContextPinsFormatAndLocale(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("snapshot requires Linux or macOS ps")
 	}
+	noProc := filepath.Join(t.TempDir(), "no-proc")
+	prev := procRootOverride.Swap(&noProc)
+	t.Cleanup(func() { procRootOverride.Store(prev) })
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"[ \"$LC_ALL\" = C ] || exit 2\n" +
@@ -129,6 +135,9 @@ func TestSnapshotContextCancellation(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return
 	}
+	noProc := filepath.Join(t.TempDir(), "no-proc")
+	prev := procRootOverride.Swap(&noProc)
+	t.Cleanup(func() { procRootOverride.Store(prev) })
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "started")
 	t.Setenv("NTM_SNAPSHOT_STARTED", marker)
@@ -504,5 +513,67 @@ func TestLinuxProcFSFastPathAvoidsSubprocess(t *testing.T) {
 	}
 	if data, err := os.ReadFile(marker); err == nil && len(data) > 0 {
 		t.Fatalf("Linux /proc fast path spawned fallback subprocess(es): %s", strings.TrimSpace(string(data)))
+	}
+}
+
+func TestSnapshotPIDContextAndProcFSFastPath(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux /proc fast path test")
+	}
+	if !HasProcFS() {
+		t.Skip("/proc not mounted")
+	}
+
+	selfPID := os.Getpid()
+	proc, ok, err := SnapshotPIDContext(t.Context(), selfPID)
+	if err != nil || !ok || proc.PID != selfPID || proc.Started == "" || proc.Command == "" {
+		t.Fatalf("SnapshotPIDContext(self) = (%+v, %v, %v)", proc, ok, err)
+	}
+	if _, ok, err := SnapshotPIDContext(t.Context(), 999999999); err != nil || ok {
+		t.Fatalf("SnapshotPIDContext(absent) = (%v, %v), want (false, nil)", ok, err)
+	}
+	table, err := SnapshotContext(t.Context())
+	if err != nil {
+		t.Fatalf("SnapshotContext() = %v", err)
+	}
+	if got, exists := table[selfPID]; !exists || got.Started != proc.Started {
+		t.Fatalf("SnapshotContext()[self] = %+v (exists=%v), want Started=%q", got, exists, proc.Started)
+	}
+
+	// Verify procRootOverride uses /proc fast path directly even when ps is shadowed.
+	fakeProc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fakeProc, "self"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeProc, "self", "status"), []byte("State:\tR (running)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeProc, "stat"), []byte("btime 1700000000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(fakeProc, "4242"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 20 fields after ')': state ppid pgrp session tty_nr tpgid flags ... starttime(idx 19)
+	statLine := "4242 (fake-sh) S 1 4242 4242 0 4242 0 0 0 0 0 0 0 0 0 0 0 1 0 500\n"
+	if err := os.WriteFile(filepath.Join(fakeProc, "4242", "stat"), []byte(statLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := procRootOverride.Swap(&fakeProc)
+	t.Cleanup(func() { procRootOverride.Store(prev) })
+
+	stubDir := t.TempDir()
+	marker := filepath.Join(stubDir, "ps-called")
+	if err := os.WriteFile(filepath.Join(stubDir, "ps"), []byte("#!/bin/sh\necho ps >> "+marker+"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	fakeGot, found, err := SnapshotPIDContext(t.Context(), 4242)
+	if err != nil || !found || fakeGot.Command != "fake-sh" || fakeGot.State != "Ss+" {
+		t.Fatalf("SnapshotPIDContext(fake 4242) = (%+v, %v, %v)", fakeGot, found, err)
+	}
+	if data, err := os.ReadFile(marker); err == nil && len(data) > 0 {
+		t.Fatalf("procfs snapshot unexpectedly spawned ps: %s", strings.TrimSpace(string(data)))
 	}
 }

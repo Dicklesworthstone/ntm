@@ -1,14 +1,17 @@
 package robot
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	gopsprocess "github.com/shirou/gopsutil/v4/process"
@@ -193,6 +196,9 @@ func contextPercentForAgent(agent *Agent) *float64 {
 }
 
 func getProcessMemoryMB(pid int) (int, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %d", pid)
+	}
 	// Try /proc first (Linux)
 	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -205,6 +211,8 @@ func getProcessMemoryMB(pid int) (int, error) {
 				}
 			}
 		}
+	} else if runtime.GOOS == "linux" && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)) && process.HasProcFS() {
+		return 0, fmt.Errorf("failed to get memory for pid %d: %w", pid, err)
 	}
 
 	// Native path (darwin/windows): gopsutil answers RSS via libproc /

@@ -432,6 +432,11 @@ func TestSessionMonitorCanceledStopDoesNotCreateFiles(t *testing.T) {
 
 func TestSessionMonitorDiscoveryFailureRefusesStopAndLaunch(t *testing.T) {
 	dir := prepareMonitorTest(t)
+	// Force portable pgrep discovery path so empty PATH exercises the
+	// unavailable-process-query refusal on Linux as well as macOS.
+	prevProcRoot := monitorProcRoot
+	monitorProcRoot = ""
+	t.Cleanup(func() { monitorProcRoot = prevProcRoot })
 	// An unavailable process query is not evidence that an older resident
 	// does not exist. Neither stop nor start may silently accept that gap.
 	t.Setenv("PATH", t.TempDir())

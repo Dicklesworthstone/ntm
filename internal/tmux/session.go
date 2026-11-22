@@ -836,11 +836,10 @@ func (c *Client) ValidatePanePersistentShellContext(ctx context.Context, pane Pa
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, DefaultCommandTimeout)
 	defer cancel()
-	snapshot, err := process.SnapshotContext(probeCtx)
+	root, exists, err := process.SnapshotPIDContext(probeCtx, pane.PID)
 	if err != nil {
 		return fmt.Errorf("verify pane %s root process: %w", pane.ID, err)
 	}
-	root, exists := snapshot[pane.PID]
 	if !exists || strings.ContainsAny(root.State[:1], "ZXx") {
 		return fmt.Errorf("pane %s root process is no longer alive", pane.ID)
 	}

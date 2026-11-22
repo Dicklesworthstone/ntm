@@ -225,6 +225,7 @@ func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
 }
 
 func TestRealGuardedSendRechecksPIDBeforeEnter(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		doubleEnter bool
@@ -234,7 +235,9 @@ func TestRealGuardedSendRechecksPIDBeforeEnter(t *testing.T) {
 		{"prompt process replaced", true, false},
 		{"provider exits to same shell", true, true},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			session := createTestSession(t)
 			pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 			if tc.doubleEnter {

@@ -153,6 +153,7 @@ func TestPaneAgentAlive(t *testing.T) {
 	startProcess := func(t *testing.T, name string, args ...string) *exec.Cmd {
 		t.Helper()
 		cmd := exec.CommandContext(t.Context(), name, args...)
+		setTestProcessGroup(cmd)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			t.Fatalf("stdin pipe for %s: %v", name, err)
@@ -162,7 +163,7 @@ func TestPaneAgentAlive(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			_ = stdin.Close()
-			_ = cmd.Process.Kill()
+			killTestProcessGroup(cmd)
 			_ = cmd.Wait()
 		})
 		return cmd
@@ -3477,7 +3478,9 @@ esac
 					t.Setenv("NTM_TEST_WRAPPED_COMPOSER_RELEASE", outcome.release)
 					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 					defer cancel()
-					confirmed, rescued, err := provider.verify(NewClient(""), ctx, "%1", message, 80)
+					client := NewClient("")
+					client.MaxSendDelay = time.Millisecond
+					confirmed, rescued, err := provider.verify(client, ctx, "%1", message, 80)
 					if err != nil || confirmed != outcome.wantConfirmed || !rescued {
 						t.Fatalf("verification = (%v, %v, %v), want (%v, true, nil)", confirmed, rescued, err, outcome.wantConfirmed)
 					}
@@ -3532,7 +3535,7 @@ func TestValidatePanePersistentShellRootIdentity(t *testing.T) {
 		argv0 string
 		want  bool
 	}{
-		{name: "interactive shell", file: "sh", args: []string{"-i"}, want: true},
+		{name: "interactive shell", file: "/bin/sh", args: []string{"-i"}, want: true},
 		{name: "direct process", file: "sleep", args: []string{"30"}},
 		{name: "direct process with shell argv zero", file: "sleep", args: []string{"30"}, argv0: "bash"},
 	} {

@@ -21,16 +21,52 @@ import (
 )
 
 var (
-	procRootOverride     atomic.Pointer[string]
-	defaultProcFSOnce    sync.Once
-	defaultProcFSReady   bool
+	procRootOverride   atomic.Pointer[string]
+	defaultProcFSOnce  sync.Once
+	defaultProcFSReady bool
+	defaultBootTimeMu  sync.Once
+	defaultBootTimeSec int64
+	defaultBootTimeErr error
 )
+
+const linuxClockTicks = 100
+
+// HasProcFS reports whether Linux /proc is mounted and authoritative for
+// process inspection in the active environment.
+func HasProcFS() bool {
+	return procFSAvailable(procRoot())
+}
+
+// useProcFSSnapshot reports whether SnapshotContext/SnapshotPIDContext should
+// read Linux /proc directly instead of spawning `ps`. When a test explicitly
+// shadows `ps` on PATH (e.g. to simulate failed observations or synthetic
+// process-group metadata) and has not set a custom procRootOverride, honor the
+// shadowed `ps` binary.
+func useProcFSSnapshot(root string) bool {
+	if !procFSAvailable(root) {
+		return false
+	}
+	if procRootOverride.Load() != nil {
+		return true
+	}
+	psPath, err := exec.LookPath("ps")
+	if err != nil {
+		return false
+	}
+	return psPath == "/usr/bin/ps" || psPath == "/bin/ps"
+}
 
 func procRoot() string {
 	if p := procRootOverride.Load(); p != nil {
 		return *p
 	}
 	return "/proc"
+}
+
+// isProcGoneErr reports whether a /proc read failed because the target process
+// exited (ENOENT before open, or ESRCH if the process disappeared mid-read).
+func isProcGoneErr(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }
 
 func procFSAvailable(root string) bool {
@@ -81,6 +117,14 @@ func SnapshotContext(ctx context.Context) (map[int]SnapshotProcess, error) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("process snapshots are unsupported on %s", runtime.GOOS)
 	}
+	root := procRoot()
+	if useProcFSSnapshot(root) {
+		if table, err := snapshotFromProcFS(ctx, root); err == nil {
+			return table, nil
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("process snapshot: %w", err)
+		}
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, processSnapshotTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, "ps", "-ww", "-axo", "pid=,ppid=,pgid=,tpgid=,stat=,lstart=,ucomm=")
@@ -102,6 +146,162 @@ func SnapshotContext(ctx context.Context) (map[int]SnapshotProcess, error) {
 		return nil, errors.New("process snapshot exceeds the output limit")
 	}
 	return parseProcessSnapshot(output.Bytes())
+}
+
+// SnapshotPIDContext observes a single process lifetime without scanning the
+// entire process table on Linux. Returns (proc, true, nil) when found,
+// (zero, false, nil) when the process is definitively absent, or an error when
+// observation fails.
+func SnapshotPIDContext(ctx context.Context, pid int) (SnapshotProcess, bool, error) {
+	if ctx == nil {
+		return SnapshotProcess{}, false, errors.New("process snapshot requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return SnapshotProcess{}, false, err
+	}
+	if pid <= 0 {
+		return SnapshotProcess{}, false, nil
+	}
+	root := procRoot()
+	if useProcFSSnapshot(root) {
+		btime, err := procBootTime(root)
+		if err == nil {
+			data, rerr := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "stat"))
+			if rerr != nil {
+				if isProcGoneErr(rerr) {
+					return SnapshotProcess{}, false, nil
+				}
+			} else if proc, ok := parseProcStatSnapshot(pid, data, btime); ok {
+				return proc, true, nil
+			}
+		}
+	}
+	snapshot, err := SnapshotContext(ctx)
+	if err != nil {
+		return SnapshotProcess{}, false, err
+	}
+	proc, exists := snapshot[pid]
+	return proc, exists, nil
+}
+
+func procBootTime(root string) (int64, error) {
+	if root == "/proc" {
+		defaultBootTimeMu.Do(func() {
+			defaultBootTimeSec, defaultBootTimeErr = readProcBootTime("/proc")
+		})
+		return defaultBootTimeSec, defaultBootTimeErr
+	}
+	return readProcBootTime(root)
+}
+
+func readProcBootTime(root string) (int64, error) {
+	data, err := os.ReadFile(filepath.Join(root, "stat"))
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "btime ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			sec, perr := strconv.ParseInt(fields[1], 10, 64)
+			if perr == nil && sec > 0 {
+				return sec, nil
+			}
+		}
+		break
+	}
+	return 0, errors.New("proc/stat missing btime")
+}
+
+func parseProcStatSnapshot(pid int, data []byte, btime int64) (SnapshotProcess, bool) {
+	text := string(data)
+	start := strings.IndexByte(text, '(')
+	end := strings.LastIndexByte(text, ')')
+	if start < 0 || end <= start || end+2 > len(text) {
+		return SnapshotProcess{}, false
+	}
+	comm := text[start+1 : end]
+	fields := strings.Fields(text[end+2:])
+	// fields[0]=state fields[1]=ppid fields[2]=pgrp fields[5]=tpgid fields[19]=starttime
+	if len(fields) < 20 {
+		return SnapshotProcess{}, false
+	}
+	state := fields[0]
+	if len(state) == 0 || !strings.ContainsRune("RSDTtZXxIKWPUE", rune(state[0])) {
+		return SnapshotProcess{}, false
+	}
+	ppid, err1 := strconv.Atoi(fields[1])
+	pgid, err2 := strconv.Atoi(fields[2])
+	sid, errSid := strconv.Atoi(fields[3])
+	tpgid, err3 := strconv.Atoi(fields[5])
+	startTicks, err4 := strconv.ParseUint(fields[19], 10, 64)
+	if err1 != nil || err2 != nil || errSid != nil || err3 != nil || err4 != nil || ppid < 0 || pgid < 0 || tpgid < -1 {
+		return SnapshotProcess{}, false
+	}
+	if pid == sid {
+		state += "s"
+	}
+	if tpgid > 0 && pgid == tpgid {
+		state += "+"
+	}
+	sec := btime + int64(startTicks/linuxClockTicks)
+	nsec := int64(startTicks%linuxClockTicks) * (int64(time.Second) / linuxClockTicks)
+	started := time.Unix(sec, nsec).In(time.Local).Format("Mon Jan 2 15:04:05 2006")
+	return SnapshotProcess{
+		PID:     pid,
+		PPID:    ppid,
+		PGID:    pgid,
+		TPGID:   tpgid,
+		State:   state,
+		Started: started,
+		Command: comm,
+	}, true
+}
+
+func snapshotFromProcFS(ctx context.Context, root string) (map[int]SnapshotProcess, error) {
+	btime, err := procBootTime(root)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int]SnapshotProcess, len(entries))
+	for i, entry := range entries {
+		if i&63 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if len(name) == 0 || name[0] < '1' || name[0] > '9' {
+			continue
+		}
+		pid, perr := strconv.Atoi(name)
+		if perr != nil || pid <= 0 {
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(root, name, "stat"))
+		if rerr != nil {
+			continue
+		}
+		if proc, ok := parseProcStatSnapshot(pid, data, btime); ok {
+			result[pid] = proc
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, errors.New("procfs snapshot returned no processes")
+	}
+	return result, nil
 }
 
 // Keep even a malfunctioning ps bounded without retaining private stderr.
@@ -233,7 +433,7 @@ func IsAlive(pid int) bool {
 			break
 		}
 		return true
-	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+	} else if isProcGoneErr(err) && procFSAvailable(root) {
 		return false
 	}
 
@@ -364,11 +564,11 @@ func getChildPIDs(parentPID int) []int {
 			return pids
 		}
 		if procFSAvailable(root) {
-			if _, statErr := os.Stat(taskDir); errors.Is(statErr, os.ErrNotExist) {
+			if _, statErr := os.Stat(taskDir); isProcGoneErr(statErr) {
 				return pids
 			}
 		}
-	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+	} else if isProcGoneErr(err) && procFSAvailable(root) {
 		return nil
 	}
 
@@ -426,7 +626,7 @@ func GetCmdlineContext(ctx context.Context, pid int) []string {
 			return nil
 		}
 		return strings.Split(raw, "\x00")
-	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+	} else if isProcGoneErr(err) && procFSAvailable(root) {
 		return nil
 	}
 	// Fallback for non-Linux. `ps -o command=` returns a single
@@ -513,11 +713,11 @@ func GetChildPIDsContext(ctx context.Context, parentPID int, limit int) []int {
 			return out
 		}
 		if procFSAvailable(root) {
-			if _, statErr := os.Stat(taskDir); errors.Is(statErr, os.ErrNotExist) {
+			if _, statErr := os.Stat(taskDir); isProcGoneErr(statErr) {
 				return out
 			}
 		}
-	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+	} else if isProcGoneErr(err) && procFSAvailable(root) {
 		return nil
 	}
 	if native, ok := nativeChildPIDs(parentPID); ok {
@@ -626,7 +826,7 @@ func GetProcessState(pid int) (string, string, error) {
 				}
 			}
 		}
-	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+	} else if isProcGoneErr(err) && procFSAvailable(root) {
 		return "", "", fmt.Errorf("failed to get process state for pid %d", pid)
 	}
 

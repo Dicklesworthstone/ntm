@@ -4,10 +4,22 @@ package tmux
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
 )
+
+func setTestProcessGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func killTestProcessGroup(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+	}
+}
 
 func acquireGlobalTmuxTestLock(t *testing.T) {
 	t.Helper()

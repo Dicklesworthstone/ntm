@@ -2407,6 +2407,12 @@ func restartProcessIsForeground(ctx context.Context, rootPID, pid int) bool {
 	if rootOK && processOK {
 		return rootForeground > 0 && foregroundGroup == rootForeground && group == rootForeground
 	}
+	// On Linux with /proc mounted, TerminalForeground is authoritative; if
+	// either process disappeared or has no /proc/<pid>/stat entry, do not pay a
+	// ~60ms `ps` subprocess spawn just to discover the same absence.
+	if process.HasProcFS() {
+		return false
+	}
 	// Darwin's process library has a foreground check but no terminal-name
 	// implementation. One bounded ps snapshot supplies both tty ownership
 	// and the '+' foreground flag without reading command arguments.
