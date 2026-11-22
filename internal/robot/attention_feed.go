@@ -976,6 +976,97 @@ func (f *AttentionFeed) Replay(sinceCursor int64, limit int) ([]AttentionEvent, 
 	return f.journal.Replay(sinceCursor, limit)
 }
 
+// ReplayRecent returns up to limit newest non-expired attention events in
+// ascending cursor order, optionally scoped to session. Unlike Replay(0, limit),
+// which returns the oldest page from cursor 0, ReplayRecent always returns the
+// latest tail of the feed regardless of total cursor count.
+func (f *AttentionFeed) ReplayRecent(limit int, session string) ([]AttentionEvent, int64, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	session = strings.TrimSpace(session)
+	if f.store != nil {
+		type recentAttentionStore interface {
+			GetRecentAttentionEvents(limit int, sessionName string) ([]state.StoredAttentionEvent, error)
+		}
+		window, err := f.store.GetAttentionReplayWindow()
+		if err == nil {
+			_, _ = f.store.GCExpiredEvents()
+			var (
+				storedAsc []state.StoredAttentionEvent
+				queryErr  error
+			)
+			if rs, ok := f.store.(recentAttentionStore); ok {
+				storedDesc, err := rs.GetRecentAttentionEvents(limit, session)
+				queryErr = err
+				if queryErr == nil {
+					for i, j := 0, len(storedDesc)-1; i < j; i, j = i+1, j-1 {
+						storedDesc[i], storedDesc[j] = storedDesc[j], storedDesc[i]
+					}
+					storedAsc = storedDesc
+				}
+			} else {
+				allStored, err := f.store.GetAttentionEventsSince(0, maxInt(window.EventCount, limit))
+				queryErr = err
+				if queryErr == nil {
+					for _, ev := range allStored {
+						if session != "" && ev.SessionName != session {
+							continue
+						}
+						storedAsc = append(storedAsc, ev)
+					}
+					if len(storedAsc) > limit {
+						storedAsc = storedAsc[len(storedAsc)-limit:]
+					}
+				}
+			}
+			if queryErr != nil {
+				return nil, 0, fmt.Errorf("replay recent attention events from store: %w", queryErr)
+			}
+			events := f.hydrateStoredAttentionEvents(storedAsc)
+			newestCursor := maxCursor(window.NewestCursor, f.cursor.Current())
+			if tailStart := f.ephemeralFromCursor.Load(); tailStart > 0 {
+				tail, journalCursor, tailErr := f.journal.Replay(tailStart-1, 0)
+				if tailErr == nil && len(tail) > 0 {
+					for _, ev := range f.hydrateReplayEvents(tail) {
+						if session != "" && ev.Session != session {
+							continue
+						}
+						events = append(events, ev)
+					}
+					if len(events) > limit {
+						events = events[len(events)-limit:]
+					}
+					newestCursor = maxCursor(newestCursor, journalCursor)
+				}
+			}
+			if len(events) > 0 && events[len(events)-1].Cursor > newestCursor {
+				newestCursor = events[len(events)-1].Cursor
+			}
+			return events, newestCursor, nil
+		}
+	}
+
+	all, newestCursor, err := f.journal.Replay(0, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	events := f.hydrateReplayEvents(all)
+	if session != "" {
+		filtered := make([]AttentionEvent, 0, len(events))
+		for _, ev := range events {
+			if ev.Session == session {
+				filtered = append(filtered, ev)
+			}
+		}
+		events = filtered
+	}
+	if len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	return events, newestCursor, nil
+}
+
 // ReplayForIncident returns replayable attention events around an incident's timeline.
 func (f *AttentionFeed) ReplayForIncident(incidentID string, windowBefore, windowAfter time.Duration) ([]AttentionEvent, int64, error) {
 	if f.store == nil {

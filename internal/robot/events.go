@@ -27,6 +27,13 @@ type EventsOptions struct {
 	// Limit is the maximum number of events to return.
 	Limit int
 
+	// Tail requests the newest Limit matching events instead of the oldest page
+	// starting at SinceCursor=0.
+	Tail bool
+
+	// Order controls result ordering ("asc" default, or "desc" for newest-first).
+	Order string
+
 	// IncidentID enables bounded replay around a durable incident timeline.
 	IncidentID string
 
@@ -264,6 +271,18 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 			EventsLimit:      limit,
 			Truncated:        reconstruction != nil && reconstruction.Partial,
 		}
+	case opts.Tail && opts.SinceCursor == 0:
+		fetchLimit := limit*4 + 1
+		if fetchLimit > 4001 {
+			fetchLimit = 4001
+		}
+		events, newestCursor, err = feed.ReplayRecent(fetchLimit, opts.Session)
+		if err != nil {
+			return EventsOutput{
+				RobotResponse: NewErrorResponse(err, ErrCodeInternalError, ""),
+				Events:        []AttentionEvent{},
+			}, 500
+		}
 	default:
 		events, newestCursor, err = feed.Replay(opts.SinceCursor, limit+1)
 		if err != nil {
@@ -300,7 +319,12 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 	// still means more of the feed remains.
 	hasMore := len(events) > limit
 	if len(filtered) > limit {
-		filtered = filtered[:limit]
+		if opts.Tail && opts.SinceCursor == 0 {
+			filtered = filtered[len(filtered)-limit:]
+		} else {
+			filtered = filtered[:limit]
+		}
+		hasMore = true
 	}
 
 	// Compute next cursor.
@@ -318,6 +342,14 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 		nextCursor = events[len(events)-1].Cursor
 	case newestCursor > 0:
 		nextCursor = newestCursor
+	}
+	if opts.Tail && opts.SinceCursor == 0 && newestCursor > nextCursor {
+		nextCursor = newestCursor
+	}
+	if strings.EqualFold(strings.TrimSpace(opts.Order), "desc") && len(filtered) > 1 {
+		for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+			filtered[i], filtered[j] = filtered[j], filtered[i]
+		}
 	}
 
 	// Build replay window info

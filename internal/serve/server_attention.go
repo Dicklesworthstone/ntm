@@ -662,6 +662,7 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 		ExplicitStore:       true,
 	}
 
+	sinceCursorProvided := false
 	if sc := r.URL.Query().Get("since_cursor"); sc != "" {
 		parsed, err := strconv.ParseInt(sc, 10, 64)
 		if err != nil {
@@ -669,6 +670,29 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		opts.SinceCursor = parsed
+		sinceCursorProvided = true
+	}
+
+	if rawTail := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tail"))); rawTail != "" {
+		switch rawTail {
+		case "true", "1":
+			opts.Tail = true
+		case "false", "0":
+			opts.Tail = false
+		default:
+			writeError(w, http.StatusBadRequest, "invalid tail: expected true or false")
+			return
+		}
+	}
+	if rawOrder := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order"))); rawOrder != "" {
+		if rawOrder != "asc" && rawOrder != "desc" {
+			writeError(w, http.StatusBadRequest, "invalid order: expected asc or desc")
+			return
+		}
+		opts.Order = rawOrder
+		if rawOrder == "desc" && !sinceCursorProvided {
+			opts.Tail = true
+		}
 	}
 
 	limit := 100
