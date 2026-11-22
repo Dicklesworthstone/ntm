@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -851,7 +852,16 @@ func TestSLBActorProvenanceBlocksSamePaneSameSessionAndEnvStripping(t *testing.T
 		t.Fatalf("forged slb_verified=1 provenance bypassed SLB: err=%v, want ErrSLBSelfApproval", err)
 	}
 	t.Setenv("SLB_SESSION_ID", "slb-sess-distinct")
-	if err := engine.Approve(ctx, apprForge.ID, "slb:alice"); !errors.Is(err, ErrSLBSelfApproval) {
-		t.Fatalf("same normalized identity slb:alice bypassed SLB self-approval: err=%v, want ErrSLBSelfApproval", err)
+	for _, spoof := range []string{"slb:alice", "SLB:Alice", "slb:slb:alice", "  ALICE  ", "", "slb:"} {
+		if err := engine.Approve(ctx, apprForge.ID, spoof); !errors.Is(err, ErrSLBSelfApproval) {
+			t.Fatalf("spoofed identity %q bypassed SLB self-approval: err=%v, want ErrSLBSelfApproval", spoof, err)
+		}
+	}
+
+	// 5. A tmux-pane / SLB-session agent request CANNOT be self-approved through
+	// unauthenticated local HTTP (http_local=1) even under a different display name.
+	localHTTPCtx := WithActorProvenance(ctx, fmt.Sprintf("http_local=1;uid=%d", os.Getuid()))
+	if err := engine.Approve(localHTTPCtx, apprForge.ID, "bob"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("unauthenticated local HTTP bypassed pane/SLB provenance: err=%v, want ErrSLBSelfApproval", err)
 	}
 }

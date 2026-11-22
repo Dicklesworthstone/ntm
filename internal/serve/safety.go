@@ -1092,14 +1092,9 @@ func (s *Server) httpActorProvenance(r *http.Request) string {
 		}
 		return fmt.Sprintf("auth=%s;principal=%s", mode, strings.NewReplacer(";", "_", "=", "_").Replace(rc.UserID))
 	}
-	parts := []string{"http_local=1", fmt.Sprintf("uid=%d", os.Getuid())}
-	if slbSess := strings.TrimSpace(r.Header.Get("X-SLB-Session-ID")); slbSess != "" {
-		parts = append(parts, "slb_session="+strings.NewReplacer(";", "_", "=", "_").Replace(slbSess))
-	}
-	if pane := strings.TrimSpace(r.Header.Get("X-TMUX-Pane")); pane != "" {
-		parts = append(parts, "pane="+strings.NewReplacer(";", "_", "=", "_").Replace(pane))
-	}
-	return strings.Join(parts, ";")
+	// Do not trust unauthenticated client headers (e.g. X-SLB-Session-ID or
+	// X-TMUX-Pane) to fabricate distinct provenance on local HTTP requests.
+	return fmt.Sprintf("http_local=1;uid=%d", os.Getuid())
 }
 
 // writeApprovalActionError maps engine failures onto the HTTP statuses the

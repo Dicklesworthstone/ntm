@@ -175,6 +175,14 @@ func parseActorProvenance(raw string) map[string]string {
 	return out
 }
 
+func normalizeActorIdentity(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	for strings.HasPrefix(s, "slb:") {
+		s = strings.TrimSpace(strings.TrimPrefix(s, "slb:"))
+	}
+	return s
+}
+
 func slbActorProvenanceConflict(requestedProv, approverProv string, slbVerified bool) bool {
 	req := parseActorProvenance(requestedProv)
 	if len(req) == 0 {
@@ -509,9 +517,9 @@ func slbDecisionReview(requestID, requester string, status *tools.SLBRequestStat
 	// "slb:" is an audit-source prefix, not another human. A requester
 	// named alice cannot approve her own request by coming back as slb:alice.
 	if decision == "approve" {
-		requester = strings.TrimSpace(requester)
-		if requester == "" || review.Reviewer == requester || "slb:"+review.Reviewer == requester ||
-			strings.TrimPrefix(review.Reviewer, "slb:") == strings.TrimPrefix(requester, "slb:") {
+		normRequester := normalizeActorIdentity(requester)
+		normReviewer := normalizeActorIdentity(review.Reviewer)
+		if normRequester == "" || normReviewer == "" || normReviewer == normRequester {
 			return tools.SLBReview{}, false
 		}
 	}
@@ -547,8 +555,9 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 	}
 	approverProv := resolveActorProvenance(ctx, "")
 	slbVerified := ctx != nil && ctx.Value(slbVerifiedContextKey{}) == true
-	sameActor := strings.TrimSpace(approverID) == strings.TrimSpace(approval.RequestedBy) ||
-		strings.TrimPrefix(strings.TrimSpace(approverID), "slb:") == strings.TrimPrefix(strings.TrimSpace(approval.RequestedBy), "slb:")
+	normApprover := normalizeActorIdentity(approverID)
+	normRequester := normalizeActorIdentity(approval.RequestedBy)
+	sameActor := normApprover == "" || normApprover == normRequester
 	if approval.RequiresSLB && (sameActor || slbActorProvenanceConflict(approval.RequestedProvenance, approverProv, slbVerified)) {
 		return ErrSLBSelfApproval
 	}
