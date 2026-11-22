@@ -226,6 +226,14 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
   const outputRef = useRef<HTMLDivElement | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsFullSnapshotKeyRef = useRef<string | null>(null);
+  const lastAppliedBackfillRef = useRef<{
+    key: string;
+    updatedAt: number;
+    lines: number;
+  } | null>(null);
+  const maxBufferRef = useRef(
+    Math.max(DEFAULT_OUTPUT_LINES, MAX_STREAM_BUFFER_LINES)
+  );
 
   const [selectedPane, setSelectedPane] = useState<number | null>(null);
   const [outputLines, setOutputLines] = useState(DEFAULT_OUTPUT_LINES);
@@ -300,12 +308,29 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     refetchOnWindowFocus: !(isConnected && streamActive),
   });
   const refetchOutputBackfill = outputQuery.refetch;
+  maxBufferRef.current = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
 
   // Seed or refresh the output buffer whenever REST backfill completes.
   useEffect(() => {
     if (!activePaneKey || !outputQuery.data) {
       return;
     }
+    const updatedAt = outputQuery.dataUpdatedAt;
+    const prevApplied = lastAppliedBackfillRef.current;
+    if (
+      prevApplied?.key === activePaneKey &&
+      prevApplied.updatedAt === updatedAt &&
+      prevApplied.lines === outputLines
+    ) {
+      return;
+    }
+    const hadPriorBackfill = prevApplied?.key === activePaneKey;
+    lastAppliedBackfillRef.current = {
+      key: activePaneKey,
+      updatedAt,
+      lines: outputLines,
+    };
+
     const rawOutput = outputQuery.data.output || "";
     const backfillLines = rawOutput ? rawOutput.split("\n") : [];
     const maxBuffer = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
@@ -327,8 +352,9 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       if (wsFullSnapshotKeyRef.current === activePaneKey && prev.lines.length > 0) {
         return prev;
       }
-      // Merge initial REST backfill with any early incremental WS lines.
-      if (prev.lines.length > 0) {
+      // Merge initial REST backfill with any early incremental WS lines that
+      // arrived before the first backfill completed for this pane.
+      if (!hadPriorBackfill && prev.lines.length > 0) {
         const merged = [...backfillLines, ...prev.lines].slice(-maxBuffer);
         return { key: activePaneKey, lines: merged };
       }
@@ -351,7 +377,6 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     const ws = getWsClient();
     const fallbackTopic = `panes:${sessionId}:${paneIndex}`;
     const subscribedTopics = new Set<string>([fallbackTopic]);
-    const maxBuffer = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
     const encodedPaneIndex = encodeURIComponent(String(paneIndex));
     const streamPath = `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/stream`;
     let cancelled = false;
@@ -376,7 +401,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           const base = prev.key === activePaneKey ? prev.lines : [];
           return {
             key: activePaneKey,
-            lines: applyPaneOutputEvent(base, event.data, maxBuffer),
+            lines: applyPaneOutputEvent(base, event.data, maxBufferRef.current),
           };
         });
       } else if (event.event_type === "pane.output.dropped") {
@@ -434,7 +459,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
         void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
       }
     };
-  }, [activePaneKey, encodedSessionId, isConnected, outputLines, paneIndex, refetchOutputBackfill, sessionId]);
+  }, [activePaneKey, encodedSessionId, isConnected, paneIndex, refetchOutputBackfill, sessionId]);
 
   useEffect(() => {
     const panes = panesQuery.data?.panes ?? [];

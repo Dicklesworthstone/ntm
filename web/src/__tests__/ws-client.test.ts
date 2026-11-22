@@ -485,6 +485,24 @@ describe("handleWsEvent", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["panes"],
     });
+    // Live pane.output frames must NOT refetch pane-output-backfill (which
+    // would turn live WS streaming into an N-requests-per-second REST storm).
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ["pane-output-backfill", "demo", 2],
+    });
+
+    invalidateSpy.mockClear();
+    handleWsEvent(queryClient, {
+      type: "event",
+      topic: "panes:demo:2",
+      event_type: "pane.output.dropped",
+      data: { dropped: 5 },
+      ts: new Date().toISOString(),
+      seq: 18,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["pane-output-backfill", "demo", 2],
+    });
   });
 
   it("invalidates ['agents'] on agent events and ['memory']/['cm'] on memory topic events", () => {

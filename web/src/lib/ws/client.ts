@@ -283,6 +283,8 @@ export class NtmWebSocket {
     }
     this.setState("disconnected");
     this.subscriptions.clear();
+    this.lastSeq = null;
+    this.lastAttentionCursor = null;
   }
 
   /**
@@ -424,8 +426,15 @@ export class NtmWebSocket {
       try {
         const message = JSON.parse(frame) as WSMessage;
 
-        // Track sequence for resumption
-        if (message.seq !== undefined) {
+        // Track hub sequence for resumption on non-attention topics.
+        // Attention frames carry the AttentionFeed cursor in `seq`, which is
+        // tracked separately in `lastAttentionCursor` so it never corrupts
+        // the hub's event-sequence cursor.
+        const isAttentionTopic =
+          message.topic === "attention" ||
+          (typeof message.topic === "string" &&
+            message.topic.startsWith("attention:"));
+        if (message.seq !== undefined && !isAttentionTopic) {
           this.lastSeq = message.seq;
         }
 

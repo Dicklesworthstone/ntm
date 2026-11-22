@@ -184,10 +184,10 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
       queryClient.invalidateQueries({
         queryKey: ["pane-output", sessionName, parsedPaneIdx],
       });
-      queryClient.invalidateQueries({
-        queryKey: ["pane-output-backfill", sessionName, parsedPaneIdx],
-      });
       if (event_type !== "pane.output") {
+        queryClient.invalidateQueries({
+          queryKey: ["pane-output-backfill", sessionName, parsedPaneIdx],
+        });
         queryClient.invalidateQueries({
           queryKey: ["session-panes", sessionName],
         });
