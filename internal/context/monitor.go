@@ -640,17 +640,17 @@ func (m *ContextMonitor) RegisterAgentWithTranscript(agentID, paneID, model, age
 func (m *ContextMonitor) UpdateFromTranscript(agentID string) (int64, error) {
 	m.mu.RLock()
 	state, exists := m.states[agentID]
+	var transcriptPath string
+	if exists && state != nil {
+		transcriptPath = state.TranscriptPath
+	}
 	m.mu.RUnlock()
 
-	if !exists {
+	if !exists || transcriptPath == "" {
 		return 0, nil
 	}
 
-	if state.TranscriptPath == "" {
-		return 0, nil // No transcript path configured
-	}
-
-	info, err := os.Stat(state.TranscriptPath)
+	info, err := os.Stat(transcriptPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil // File doesn't exist yet, not an error
@@ -716,28 +716,33 @@ func (m *ContextMonitor) ShouldTriggerHandoff(agentID string, predictor *Context
 	}
 
 	implicitPredictor := false
-	if predictor == nil {
-		if state := m.GetState(agentID); state != nil {
-			predictor = state.predictor
-			implicitPredictor = true
-		}
+	m.mu.RLock()
+	st := m.states[agentID]
+	var stateModel string
+	var statePredictor *ContextPredictor
+	if st != nil {
+		stateModel = st.Model
+		statePredictor = st.predictor
+	}
+	m.mu.RUnlock()
+
+	if predictor == nil && statePredictor != nil {
+		predictor = statePredictor
+		implicitPredictor = true
 	}
 
 	// Velocity-based prediction (if predictor available)
-	if predictor != nil {
-		state := m.GetState(agentID)
-		if state != nil {
-			prediction := predictor.PredictExhaustion(GetContextLimit(state.Model))
-			if prediction != nil && (!implicitPredictor || prediction.WindowDuration >= 1.0/60.0) {
-				rec.TokenVelocity = prediction.TokenVelocity
+	if predictor != nil && st != nil {
+		prediction := predictor.PredictExhaustion(GetContextLimit(stateModel))
+		if prediction != nil && (!implicitPredictor || prediction.WindowDuration >= 1.0/60.0) {
+			rec.TokenVelocity = prediction.TokenVelocity
 
-				// If velocity predicts exhaustion in next 8 minutes, trigger
-				if prediction.TokenVelocity > 0 && prediction.MinutesToExhaustion > 0 && prediction.MinutesToExhaustion < 8 {
-					rec.ShouldTrigger = true
-					rec.ShouldWarn = true
-					rec.Reason = "velocity " + strconv.FormatFloat(prediction.TokenVelocity, 'f', 0, 64) +
-						" tpm predicts exhaustion in " + strconv.FormatFloat(prediction.MinutesToExhaustion, 'f', 1, 64) + " min"
-				}
+			// If velocity predicts exhaustion in next 8 minutes, trigger
+			if prediction.TokenVelocity > 0 && prediction.MinutesToExhaustion > 0 && prediction.MinutesToExhaustion < 8 {
+				rec.ShouldTrigger = true
+				rec.ShouldWarn = true
+				rec.Reason = "velocity " + strconv.FormatFloat(prediction.TokenVelocity, 'f', 0, 64) +
+					" tpm predicts exhaustion in " + strconv.FormatFloat(prediction.MinutesToExhaustion, 'f', 1, 64) + " min"
 			}
 		}
 	}
