@@ -50148,6 +50148,10 @@
           "fifo_dir": {
             "type": "string"
           },
+          "flush_interval_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
           "pipe_pane_count": {
             "type": "integer"
           },

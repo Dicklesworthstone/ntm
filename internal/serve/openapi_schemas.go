@@ -798,11 +798,12 @@ type PaneStreamEnvelopeResponse struct {
 
 type StreamingStatsEnvelopeResponse struct {
 	APIResponse
-	ActiveStreams int      `json:"active_streams"`
-	PipePaneCount int      `json:"pipe_pane_count"`
-	FallbackCount int      `json:"fallback_count"`
-	FIFODir       string   `json:"fifo_dir,omitempty"`
-	ActiveTargets []string `json:"active_targets"`
+	ActiveStreams   int      `json:"active_streams"`
+	PipePaneCount   int      `json:"pipe_pane_count"`
+	FallbackCount   int      `json:"fallback_count"`
+	FlushIntervalMS int64    `json:"flush_interval_ms,omitempty"`
+	FIFODir         string   `json:"fifo_dir,omitempty"`
+	ActiveTargets   []string `json:"active_targets"`
 }
 
 type MetricsExportEnvelopeResponse struct {
