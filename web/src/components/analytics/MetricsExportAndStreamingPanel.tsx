@@ -19,6 +19,10 @@ import {
 
 export interface StreamingStatsResponse extends ApiEnvelope {
   active_streams?: number;
+  pipe_pane_count?: number;
+  fallback_count?: number;
+  flush_interval_ms?: number;
+  fifo_dir?: string;
   total_chunks?: number;
   total_bytes?: number;
   dropped_chunks?: number;
@@ -198,6 +202,24 @@ export function MetricsExportAndStreamingPanel({
                 {typeof streamingQuery.data.active_streams === "number" && (
                   <span>
                     Streams: <strong>{streamingQuery.data.active_streams}</strong>
+                  </span>
+                )}
+                {typeof streamingQuery.data.pipe_pane_count === "number" && (
+                  <span>
+                    Pipe-Pane:{" "}
+                    <strong>{streamingQuery.data.pipe_pane_count}</strong>
+                  </span>
+                )}
+                {typeof streamingQuery.data.fallback_count === "number" && (
+                  <span>
+                    Fallback:{" "}
+                    <strong>{streamingQuery.data.fallback_count}</strong>
+                  </span>
+                )}
+                {typeof streamingQuery.data.flush_interval_ms === "number" && (
+                  <span>
+                    Flush:{" "}
+                    <strong>{streamingQuery.data.flush_interval_ms}ms</strong>
                   </span>
                 )}
                 {typeof streamingQuery.data.dropped_chunks === "number" && (
