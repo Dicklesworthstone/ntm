@@ -4018,6 +4018,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
+		// When the history panel's full-prompt preview overlay is open, route
+		// keys directly to it before popupMode Esc / global toggles so q/esc
+		// close the preview instead of closing the popup or shifting focus.
+		if m.focusedPanel == PanelHistory && m.historyPanel != nil && m.historyPanel.IsPreviewOpen() {
+			_, cmd := m.historyPanel.Update(msg)
+			return m, cmd
+		}
+
 		// Popup mode: Escape closes the overlay (exits cleanly)
 		if m.popupMode && msg.String() == "esc" {
 			return m, m.exitPopupOverlay()
@@ -4139,14 +4147,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				(m.tier < layout.TierUltra && m.focusedPanel != PanelPaneList && m.activeOperationalPanel() == m.workflowPanel)) &&
 			msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
-			return m, cmd
-		}
-
-		// When the history panel's full-prompt preview overlay is open, route
-		// keys directly to it so q/esc close the preview instead of quitting
-		// the dashboard and j/k scroll the preview cleanly.
-		if m.focusedPanel == PanelHistory && m.historyPanel != nil && m.historyPanel.IsPreviewOpen() {
-			_, cmd := m.historyPanel.Update(msg)
 			return m, cmd
 		}
 
