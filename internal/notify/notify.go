@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -511,9 +512,71 @@ func jsonMap(details map[string]string) string {
 	return string(b)
 }
 
-var notifyBlockedMetadataIPs = []net.IP{
-	net.ParseIP("fd00:ec2::254"),   // AWS IMDSv2 IPv6 endpoint
-	net.ParseIP("100.100.100.200"), // Alibaba Cloud metadata endpoint
+var (
+	notifyBlockedMetadataIPs = []net.IP{
+		net.ParseIP("fd00:ec2::254"),   // AWS IMDSv2 IPv6 endpoint
+		net.ParseIP("100.100.100.200"), // Alibaba Cloud metadata endpoint
+	}
+	notifyCGNATPrefix = netip.MustParsePrefix("100.64.0.0/10")
+)
+
+func parseLegacyNotifyIPv4Literal(host string) (net.IP, bool) {
+	if host == "" || strings.Contains(host, ":") {
+		return nil, false
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) < 1 || len(parts) > 4 {
+		return nil, false
+	}
+	vals := make([]uint64, len(parts))
+	for i, part := range parts {
+		if part == "" || strings.Contains(part, "_") {
+			return nil, false
+		}
+		var (
+			v   uint64
+			err error
+		)
+		switch {
+		case strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X"):
+			if len(part) <= 2 {
+				return nil, false
+			}
+			v, err = strconv.ParseUint(part[2:], 16, 64)
+		case len(part) > 1 && part[0] == '0':
+			v, err = strconv.ParseUint(part[1:], 8, 64)
+		default:
+			v, err = strconv.ParseUint(part, 10, 64)
+		}
+		if err != nil {
+			return nil, false
+		}
+		vals[i] = v
+	}
+	var ipUint uint32
+	switch len(vals) {
+	case 1:
+		if vals[0] > 0xFFFFFFFF {
+			return nil, false
+		}
+		ipUint = uint32(vals[0])
+	case 2:
+		if vals[0] > 0xFF || vals[1] > 0xFFFFFF {
+			return nil, false
+		}
+		ipUint = uint32((vals[0] << 24) | vals[1])
+	case 3:
+		if vals[0] > 0xFF || vals[1] > 0xFF || vals[2] > 0xFFFF {
+			return nil, false
+		}
+		ipUint = uint32((vals[0] << 24) | (vals[1] << 16) | vals[2])
+	case 4:
+		if vals[0] > 0xFF || vals[1] > 0xFF || vals[2] > 0xFF || vals[3] > 0xFF {
+			return nil, false
+		}
+		ipUint = uint32((vals[0] << 24) | (vals[1] << 16) | (vals[2] << 8) | vals[3])
+	}
+	return net.IPv4(byte(ipUint>>24), byte(ipUint>>16), byte(ipUint>>8), byte(ipUint)), true
 }
 
 func validateNotifyWebhookURL(rawURL string, allowLoopback bool) error {
@@ -544,12 +607,24 @@ func validateNotifyWebhookURL(rawURL string, allowLoopback bool) error {
 		if err := validateNotifyWebhookIP(ip, allowLoopback); err != nil {
 			return err
 		}
+	} else if _, ok := parseLegacyNotifyIPv4Literal(lowerHost); ok {
+		return fmt.Errorf("webhook non-canonical IPv4 literal %q blocked by SSRF policy", host)
 	}
 	return nil
 }
 
 func validateNotifyWebhookIP(ip net.IP, allowLoopback bool) error {
-	if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+	if addr, ok := netip.AddrFromSlice(ip); ok {
+		addr = addr.Unmap()
+		if addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
+			addr.IsMulticast() || addr.IsPrivate() || notifyCGNATPrefix.Contains(addr) {
+			return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+		}
+		if !allowLoopback && addr.IsLoopback() {
+			return fmt.Errorf("webhook loopback IP %s blocked by SSRF policy", ip.String())
+		}
+	}
+	if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsPrivate() {
 		return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
 	}
 	for _, blocked := range notifyBlockedMetadataIPs {

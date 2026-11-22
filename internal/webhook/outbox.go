@@ -21,6 +21,7 @@ const (
 	outboxVersion      = 1
 	outboxRecordLimit  = 2 * 1024 * 1024
 	outboxPollInterval = time.Second
+	outboxMinRetryWait = 5 * time.Millisecond
 )
 
 // An outbox record contains the already-redacted event and frozen wire payload,
@@ -327,28 +328,37 @@ func (m *WebhookManager) dispatchOutbox(event Event, webhooks []*WebhookConfig) 
 // process can then retry the same delivery ID, never a concurrent second send.
 func (m *WebhookManager) outboxFeeder() {
 	defer m.wg.Done()
-	ticker := time.NewTicker(outboxPollInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(outboxPollInterval)
+	defer timer.Stop()
 	for {
-		m.feedOutbox()
+		wait := m.feedOutbox()
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
 		select {
 		case <-m.retryStop:
 			return
 		case <-m.outbox.wake:
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
 
-func (m *WebhookManager) feedOutbox() {
+func (m *WebhookManager) feedOutbox() time.Duration {
+	nextWait := outboxPollInterval
 	entries, err := os.ReadDir(m.outbox.dir)
 	if err != nil {
 		slog.Warn("cannot scan webhook outbox", "error", err)
-		return
+		return nextWait
 	}
+	now := time.Now()
 	for _, entry := range entries {
 		if m.stopping.Load() {
-			return
+			return nextWait
 		}
 		key := entry.Name()
 		if !validOutboxKey(key) {
@@ -362,7 +372,16 @@ func (m *WebhookManager) feedOutbox() {
 			slog.Warn("invalid webhook outbox record retained", "record", key, "error", err)
 			continue
 		}
-		if record.Failed || record.NextRetry.After(time.Now()) || !m.mayPersistWebhook(record.Event) {
+		if record.Failed || !m.mayPersistWebhook(record.Event) {
+			continue
+		}
+		if record.NextRetry.After(now) {
+			if delay := record.NextRetry.Sub(now); delay < nextWait {
+				if delay < outboxMinRetryWait {
+					delay = outboxMinRetryWait
+				}
+				nextWait = delay
+			}
 			continue
 		}
 		m.webhooksMu.RLock()
@@ -381,11 +400,12 @@ func (m *WebhookManager) feedOutbox() {
 		m.lifecycleMu.Lock()
 		if !m.started.Load() {
 			m.lifecycleMu.Unlock()
-			return
+			return nextWait
 		}
 		m.offerOutbox(record, wh)
 		m.lifecycleMu.Unlock()
 	}
+	return nextWait
 }
 
 // offerOutbox requires lifecycleMu. Queue pressure never evicts a receipt;

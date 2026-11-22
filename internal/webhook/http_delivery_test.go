@@ -252,3 +252,41 @@ func TestWebhookSSRFPolicyRejectsMetadataAndUnspecified(t *testing.T) {
 		}
 	}
 }
+
+func TestWebhookSSRFBlocksPrivateCGNATULAAndLegacyIPv4(t *testing.T) {
+	t.Parallel()
+	blocked := []string{
+		"http://10.0.0.1/hook",
+		"http://172.16.0.1/hook",
+		"http://192.168.1.5/hook",
+		"http://100.64.0.1/hook",
+		"http://[fc00::1]/hook",
+		"http://[fd00::1]/hook",
+		"http://[::ffff:192.168.1.1]/hook",
+		"http://2130706433/hook",
+		"http://0x7f000001/hook",
+		"http://0177.0.0.1/hook",
+		"http://127.1/hook",
+	}
+	for _, rawURL := range blocked {
+		if err := ValidateWebhookTargetURL(rawURL, true); err == nil {
+			t.Errorf("ValidateWebhookTargetURL(%q) unexpectedly succeeded", rawURL)
+		}
+	}
+
+	mgr := NewManager(ManagerConfig{})
+	if err := mgr.Register(WebhookConfig{
+		ID:      "trimmed-loopback",
+		Name:    "Trimmed",
+		URL:     "  http://127.0.0.1:18080/hook  ",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("Register(whitespace-padded loopback URL) failed: %v", err)
+	}
+	mgr.webhooksMu.RLock()
+	wh := mgr.webhooks["trimmed-loopback"]
+	mgr.webhooksMu.RUnlock()
+	if wh == nil || wh.URL != "http://127.0.0.1:18080/hook" {
+		t.Fatalf("registered webhook = %+v, want trimmed URL", wh)
+	}
+}

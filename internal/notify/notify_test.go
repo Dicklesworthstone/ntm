@@ -805,4 +805,25 @@ func TestWebhookSSRFAndRedirectProtection(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("private CGNAT ULA and legacy inet_aton literals blocked", func(t *testing.T) {
+		for _, rawURL := range []string{
+			"http://10.0.0.1/hook",
+			"http://172.16.0.1/hook",
+			"http://192.168.1.10/hook",
+			"http://100.64.0.1/hook",
+			"http://[fc00::1]/hook",
+			"http://[fd12:3456::1]/hook",
+			"http://[::ffff:10.0.0.1]/hook",
+			"http://2130706433/hook",
+			"http://0x7f000001/hook",
+			"http://0177.0.0.1/hook",
+			"http://127.1/hook",
+			"http://169.254.43518/hook",
+		} {
+			if err := validateNotifyWebhookURL(rawURL, true); err == nil {
+				t.Errorf("validateNotifyWebhookURL(%q) unexpectedly succeeded", rawURL)
+			}
+		}
+	})
 }

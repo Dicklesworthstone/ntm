@@ -276,6 +276,7 @@ func NewManagerWithRedaction(cfg ManagerConfig, redactionCfg redaction.Config) *
 
 // Register adds a webhook configuration to the manager
 func (m *WebhookManager) Register(cfg WebhookConfig) error {
+	cfg.URL = strings.TrimSpace(cfg.URL)
 	if cfg.URL == "" {
 		return errors.New("webhook URL is required")
 	}
@@ -781,7 +782,8 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 
 // send performs the actual HTTP request
 func (m *WebhookManager) send(d *Delivery) (int, error) {
-	if err := ValidateWebhookTargetURL(d.Webhook.URL, true); err != nil {
+	targetURL := strings.TrimSpace(d.Webhook.URL)
+	if err := ValidateWebhookTargetURL(targetURL, true); err != nil {
 		return 0, err
 	}
 	// Build payload from template
@@ -794,7 +796,7 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 	ctx, cancel := context.WithTimeout(m.ctx, d.Webhook.Timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, d.Webhook.Method, d.Webhook.URL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, d.Webhook.Method, targetURL, bytes.NewReader(payload))
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
