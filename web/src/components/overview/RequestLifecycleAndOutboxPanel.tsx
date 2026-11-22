@@ -29,7 +29,9 @@ export interface DurableRequestStatus extends ApiEnvelope {
   status?: string;
   state?: string;
   session?: string;
+  terminal?: boolean;
   completed?: boolean;
+  canceled?: boolean;
   cancelled?: boolean;
   timed_out?: boolean;
   outcome?: Record<string, unknown> | string;
@@ -41,10 +43,19 @@ export interface WebhookOutboxEntry {
   record: string;
   revision: string;
   delivery_id?: string;
+  webhook_id?: string;
+  session?: string;
   event_type?: string;
-  status: string;
+  state?: string;
+  status?: string;
+  blocked_by?: string;
+  attempt?: number;
   attempts?: number;
+  recoveries?: number;
+  last_status?: number;
   last_error?: string;
+  retry_allowed?: boolean;
+  archive_allowed?: boolean;
   updated_at?: string;
 }
 
@@ -272,8 +283,12 @@ export function RequestLifecycleAndOutboxPanel() {
                 {requestResult.session
                   ? ` · Session: ${requestResult.session}`
                   : ""}
-                {requestResult.completed ? " · completed" : ""}
-                {requestResult.cancelled ? " · cancelled" : ""}
+                {requestResult.completed || requestResult.terminal
+                  ? " · terminal"
+                  : ""}
+                {requestResult.canceled || requestResult.cancelled
+                  ? " · canceled"
+                  : ""}
               </div>
             </div>
           )}
@@ -332,25 +347,44 @@ export function RequestLifecycleAndOutboxPanel() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {outboxEntries.map((entry) => (
+                  {outboxEntries.map((entry) => {
+                    const entryState = entry.state || entry.status || "unknown";
+                    const attemptCount = entry.attempt ?? entry.attempts;
+                    const retryDisabled =
+                      outboxRecoverMutation.isPending ||
+                      entry.retry_allowed === false;
+                    const archiveDisabled =
+                      outboxRecoverMutation.isPending ||
+                      entry.archive_allowed === false;
+                    return (
                     <div
                       key={entry.record}
                       className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 flex flex-wrap items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
                         <div className="font-mono font-semibold text-gray-900 dark:text-white truncate">
-                          {entry.record} ({entry.status})
+                          {entry.record} ({entryState})
                         </div>
                         <div className="text-[11px] text-gray-500 dark:text-gray-400">
                           rev {entry.revision}
                           {entry.event_type ? ` · ${entry.event_type}` : ""}
+                          {typeof attemptCount === "number"
+                            ? ` · attempt ${attemptCount}`
+                            : ""}
+                          {typeof entry.last_status === "number" &&
+                          entry.last_status > 0
+                            ? ` · HTTP ${entry.last_status}`
+                            : ""}
+                          {entry.blocked_by
+                            ? ` · blocked: ${entry.blocked_by}`
+                            : ""}
                           {entry.last_error ? ` · ${entry.last_error}` : ""}
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          disabled={outboxRecoverMutation.isPending}
+                          disabled={retryDisabled}
                           onClick={() =>
                             outboxRecoverMutation.mutate({
                               action: "retry",
@@ -358,13 +392,13 @@ export function RequestLifecycleAndOutboxPanel() {
                               revision: entry.revision,
                             })
                           }
-                          className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700"
+                          className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
                           Retry
                         </button>
                         <button
                           type="button"
-                          disabled={outboxRecoverMutation.isPending}
+                          disabled={archiveDisabled}
                           onClick={() =>
                             outboxRecoverMutation.mutate({
                               action: "archive",
@@ -372,13 +406,14 @@ export function RequestLifecycleAndOutboxPanel() {
                               revision: entry.revision,
                             })
                           }
-                          className="rounded bg-gray-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-gray-700"
+                          className="rounded bg-gray-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-gray-700 disabled:opacity-50"
                         >
                           Archive
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
