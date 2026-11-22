@@ -217,35 +217,50 @@ func TestLifecycleFSMCrashPointModelChecker(t *testing.T) {
 					}
 					activeCountMu.Unlock()
 
+					// Check mutual exclusion invariant: while we hold an in-flight lease,
+					// activeOwners MUST be strictly 1. Decrement immediately BEFORE
+					// releasing the lease (Abort/FailRecoverable/Complete) so the next
+					// waiter that acquires the freed lease cannot observe our stale count.
+					releaseCounter := func() {
+						activeCountMu.Lock()
+						if activeOwners != 1 {
+							t.Errorf("single-owner invariant violated before release: activeOwners=%d", activeOwners)
+						}
+						activeOwners--
+						activeCountMu.Unlock()
+					}
 					action := rng.Intn(4)
 					var endErr error
 					switch action {
 					case 0: // abort during draining
+						releaseCounter()
 						endErr = fsm.Abort(lease, "abort_drain")
 					case 1: // fail during draining
+						releaseCounter()
 						endErr = fsm.FailRecoverable(lease, "drain", "fail_drain", "retry")
 					case 2: // fail during handing_off
 						if err := fsm.Transition(lease, StateHandingOff, "handoff"); err != nil {
+							releaseCounter()
 							endErr = err
 						} else {
+							releaseCounter()
 							endErr = fsm.FailRecoverable(lease, "handoff", "fail_handoff", "retry")
 						}
 					case 3: // complete full lifecycle
 						if err := fsm.Transition(lease, StateHandingOff, "handoff"); err != nil {
+							releaseCounter()
 							endErr = err
 						} else if err := fsm.Transition(lease, StateVerifying, "verify"); err != nil {
+							releaseCounter()
 							endErr = err
 						} else {
+							releaseCounter()
 							endErr = fsm.Complete(lease, "done")
 						}
 					}
 					if endErr != nil {
 						t.Errorf("worker %d step %d action %d error: %v", worker, step, action, endErr)
 					}
-
-					activeCountMu.Lock()
-					activeOwners--
-					activeCountMu.Unlock()
 				}
 			}()
 		}

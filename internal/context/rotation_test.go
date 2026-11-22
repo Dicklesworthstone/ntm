@@ -578,6 +578,9 @@ func (s *observedRotationSpawner) KillRotationPaneContext(_ stdcontext.Context, 
 }
 
 func TestConfirmRotationReadinessFailurePreservesOriginalMonitor(t *testing.T) {
+	savedDelay := MaxRotationDelay
+	MaxRotationDelay = 5 * time.Millisecond
+	t.Cleanup(func() { MaxRotationDelay = savedDelay })
 	workDir, _ := setupRotationTmux(t)
 	t.Setenv("ROTATION_CAPTURE", "Work in progress: implement the durable scheduler and preserve pending jobs.")
 	monitor := NewContextMonitor(DefaultMonitorConfig())
@@ -789,6 +792,9 @@ func TestRotateAgentFailureEmitsRotationAlert(t *testing.T) {
 }
 
 func TestRotateAgentSuccessEmitsCompletionAlert(t *testing.T) {
+	savedDelay := MaxRotationDelay
+	MaxRotationDelay = 5 * time.Millisecond
+	t.Cleanup(func() { MaxRotationDelay = savedDelay })
 	tracker := alerts.GetGlobalTracker()
 	clearAlertTracker(tracker)
 	t.Cleanup(func() { clearAlertTracker(tracker) })
@@ -827,6 +833,9 @@ func TestRotateAgentSuccessEmitsCompletionAlert(t *testing.T) {
 }
 
 func TestRotateAgent_LongSessionResetsReplacementMonitorState(t *testing.T) {
+	savedDelay := MaxRotationDelay
+	MaxRotationDelay = 5 * time.Millisecond
+	t.Cleanup(func() { MaxRotationDelay = savedDelay })
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	const agentID = "long-session__cc_1"
 	monitor.RegisterAgent(agentID, "%0", "claude-opus-4")
@@ -866,6 +875,9 @@ func TestRotateAgent_LongSessionResetsReplacementMonitorState(t *testing.T) {
 }
 
 func TestManualRotate_HandoffFailurePreservesOriginalAgent(t *testing.T) {
+	savedDelay := MaxRotationDelay
+	MaxRotationDelay = 5 * time.Millisecond
+	t.Cleanup(func() { MaxRotationDelay = savedDelay })
 	for _, cleanupFails := range []bool{false, true} {
 		name := "cleanup_would_succeed"
 		if cleanupFails {
