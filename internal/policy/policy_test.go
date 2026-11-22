@@ -986,13 +986,29 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 		{"force-with-lease combined with --force", "git push --force-with-lease --force origin main"},
 		{"force-with-lease combined with -f", "git push --force-with-lease -f origin main"},
 		{"rm -fr /", "rm -fr /"},
+		{"rm -Rf /", "rm -Rf /"},
+		{"rm -fR /", "rm -fR /"},
 		{"rm -r -f /", "rm -r -f /"},
+		{"rm -r -v -f /", "rm -r -v -f /"},
+		{"rm -rf -- /", "rm -rf -- /"},
+		{"rm -rf --no-preserve-root /", "rm -rf --no-preserve-root /"},
 		{"rm --recursive --force /", "rm --recursive --force /"},
 		{"git -C repo reset --hard", "git -C /tmp/repo reset --hard HEAD"},
 		{"git -c core.hooksPath=/dev/null push --force", "git -c core.hooksPath=/dev/null push --force"},
 		{"git branch --delete --force", "git branch --delete --force main"},
+		{"git branch -d -f", "git branch -d -f main"},
+		{"git branch -d --force", "git branch -d --force main"},
+		{"git branch -df", "git branch -df main"},
+		{"git branch -fd", "git branch -fd main"},
 		{"pipeline containing blocked command", "git reset --soft HEAD~1 | git clean -fd"},
 		{"newline separated blocked command", "git reset --soft HEAD~1\nrm -rf ~"},
+		{"async & separator after allowed push", "git push --force-with-lease origin main & git reset --hard HEAD~1"},
+		{"async & separator after allowed reset", "git reset --soft HEAD~1 & rm -rf /"},
+		{"ANSI-C quote escaping bypass", `git push --force-with-lease origin $'\'' ; git reset --hard HEAD~1`},
+		{"command substitution $(...) inside allowed reset", "git reset --soft $(rm -rf /)"},
+		{"command substitution $(...) inside allowed push", "git push --force-with-lease origin $(git reset --hard)"},
+		{"double-quoted command substitution", `git push --force-with-lease origin "$(rm -rf /)"`},
+		{"backtick command substitution inside allowed reset", "git reset --soft `rm -rf /`"},
 	}
 
 	for _, tc := range blocked {
@@ -1006,6 +1022,14 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 	// Legitimate compound with allowed + approval should resolve to approval (most restrictive).
 	if got := checkAction(p, "git reset --soft HEAD~1 && git commit --amend"); got != ActionApprove {
 		t.Errorf("Check(allow && approve) = %q, want %q", got, ActionApprove)
+	}
+	// Redirection with '&' must not split an allowed command.
+	if got := checkAction(p, "git reset --soft HEAD~1 2>&1"); got != ActionAllow {
+		t.Errorf("Check(redirection 2>&1) = %q, want %q", got, ActionAllow)
+	}
+	// Pure shell comment must not trigger a false-positive block.
+	if got := checkAction(p, "# git reset --hard"); got != "" {
+		t.Errorf("Check(pure comment) = %q, want empty (unmatched)", got)
 	}
 	// Quoted shell separator must not split into bogus subcommands.
 	if got := checkAction(p, `git commit -m "fix && clean docs"`); got == ActionBlock {
