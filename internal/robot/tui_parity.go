@@ -104,14 +104,35 @@ func GetFiles(opts FilesOptions) (*FilesOutput, error) {
 		},
 	}
 
-	// Get file changes from the global store
-	store := tracker.GlobalFileChanges
-	if store == nil {
-		output.AgentHints = &AgentHints{
-			Summary: "File change tracking not initialized",
-			Notes:   []string{"File changes are tracked when agents modify files within ntm sessions"},
+	// Collect file changes from both the durable cross-process ledger (written
+	// by session monitors / CLI invocations) and the in-process store so one-shot
+	// CLI/REST invocations observe real session activity instead of always
+	// returning an empty list.
+	var allChanges []tracker.RecordedFileChange
+	if opts.Session != "" {
+		if manifest, err := resilience.LoadManifest(opts.Session); err == nil && manifest.ProjectDir != "" {
+			allChanges = tracker.ChangesForProject(manifest.ProjectDir)
+		} else {
+			allChanges = tracker.RecordedChanges()
 		}
-		return output, nil
+	} else {
+		allChanges = tracker.RecordedChanges()
+	}
+	if store := tracker.GlobalFileChanges; store != nil {
+		if memChanges := store.All(); len(memChanges) > 0 {
+			seen := make(map[string]struct{}, len(allChanges))
+			for _, c := range allChanges {
+				key := fmt.Sprintf("%d|%s|%s|%s", c.Timestamp.UnixNano(), c.Session, c.Change.Path, c.Change.Type)
+				seen[key] = struct{}{}
+			}
+			for _, c := range memChanges {
+				key := fmt.Sprintf("%d|%s|%s|%s", c.Timestamp.UnixNano(), c.Session, c.Change.Path, c.Change.Type)
+				if _, exists := seen[key]; !exists {
+					allChanges = append(allChanges, c)
+					seen[key] = struct{}{}
+				}
+			}
+		}
 	}
 
 	// Calculate time cutoff
@@ -134,9 +155,6 @@ func GetFiles(opts FilesOptions) (*FilesOutput, error) {
 			opts.TimeWindow = "15m"
 		}
 	}
-
-	// Get changes from store
-	allChanges := store.All()
 
 	// Track unique files and conflicts
 	fileAgents := make(map[string]map[string]time.Time) // path -> agent -> last touch time
