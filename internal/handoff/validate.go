@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"regexp"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 var (
@@ -80,12 +82,15 @@ func (h *Handoff) Validate() ValidationErrors {
 	}
 
 	// AgentType validation (if provided)
-	if h.AgentType != "" && !ValidAgentTypes[h.AgentType] {
-		errs = append(errs, ValidationError{
-			Field:   "agent_type",
-			Message: "must be cc, cod, or gmi",
-			Value:   h.AgentType,
-		})
+	if h.AgentType != "" {
+		canonical := agent.AgentType(h.AgentType).Canonical()
+		if !ValidAgentTypes[h.AgentType] && (!canonical.IsValid() || canonical == agent.AgentTypeUser) {
+			errs = append(errs, ValidationError{
+				Field:   "agent_type",
+				Message: "must be a valid agent type (cc, cod, gmi, agy, grok, omp, pi, oc, cursor, windsurf, aider, ollama)",
+				Value:   h.AgentType,
+			})
+		}
 	}
 
 	// Token validation (if token context is provided)

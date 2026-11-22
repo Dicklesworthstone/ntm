@@ -1130,6 +1130,8 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 			if s.config.Agents.Opencode != "" {
 				return s.config.Agents.Opencode
 			}
+		case agent.AgentTypePi:
+			return "pi"
 		}
 	}
 
@@ -1147,6 +1149,8 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 		return defaults.Grok
 	case agent.AgentTypeOmp:
 		return defaults.Omp
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeOpencode:
 		return defaults.Opencode
 	case agent.AgentTypeCursor:
@@ -1246,6 +1250,8 @@ func agentTypeShort(agentType string) string {
 		return "oc"
 	case agent.AgentTypeOmp:
 		return "omp"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:
@@ -1278,6 +1284,8 @@ func agentTypeLong(shortType string) string {
 		return "opencode"
 	case agent.AgentTypeOmp:
 		return "omp"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

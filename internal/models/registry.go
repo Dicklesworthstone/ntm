@@ -422,6 +422,8 @@ var agentTypeBudgetPct = map[string]int{
 	"agy":      10, // Antigravity (Gemini successor): mirrors Gemini's budget
 	"grok":     85, // Grok Build
 	"oc":       85, // OpenCode
+	"omp":      78, // Oh My Pi (conservative 78% pack budget)
+	"pi":       85, // Pi
 	"cursor":   85, // Cursor
 	"windsurf": 85, // Windsurf
 	"aider":    85, // Aider
@@ -437,6 +439,7 @@ var agentTypeDefaultModels = map[string]string{
 	"grok":     "grok-4",
 	"oc":       "claude-sonnet-4",
 	"omp":      "claude-sonnet-4",
+	"pi":       "claude-sonnet-4",
 	"cursor":   "claude-3.5-sonnet",
 	"windsurf": "claude-3.5-sonnet",
 	"aider":    "claude-3.5-sonnet",

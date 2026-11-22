@@ -23,6 +23,10 @@ type StatusBarOptions struct {
 	PiCount          int
 	OpencodeCount    int
 	AntigravityCount int
+	CursorCount      int
+	WindsurfCount    int
+	AiderCount       int
+	OllamaCount      int
 	UserCount        int
 	FocusedPanel     string
 	LayoutTier       string // "Narrow", "Split", "Wide", "Ultra", "Mega"
@@ -114,6 +118,10 @@ func renderStatusLeft(t theme.Theme, base lipgloss.Style, opts StatusBarOptions)
 		{"PI", t.Sapphire, opts.PiCount},
 		{"OC", ocColor, opts.OpencodeCount},
 		{"AGY", t.Lavender, opts.AntigravityCount},
+		{"CUR", t.Cursor, opts.CursorCount},
+		{"WS", t.Windsurf, opts.WindsurfCount},
+		{"AID", t.Aider, opts.AiderCount},
+		{"OLL", t.Ollama, opts.OllamaCount},
 	}
 
 	for _, ab := range badges {

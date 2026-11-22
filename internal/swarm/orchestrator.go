@@ -714,6 +714,8 @@ func planWithSuccessfulSessions(plan *SwarmPlan, result *OrchestrationResult) *S
 			filtered.TotalCod += sess.PaneCount
 		case "gmi":
 			filtered.TotalGmi += sess.PaneCount
+		case "agy":
+			filtered.TotalAgy += sess.PaneCount
 		}
 	}
 

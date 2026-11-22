@@ -17,18 +17,18 @@ import (
 // CategoryAffinities maps reasoning categories to preferred agent types (ordered).
 // These preferences are applied when assigning modes to panes by category.
 var CategoryAffinities = map[ModeCategory][]string{
-	CategoryFormal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryUncertainty: {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryCausal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryPractical:   {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryStrategic:   {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryDialectical: {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryModal:       {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryDomain:      {string(tmux.AgentClaude), string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode)},
-	CategoryMeta:        {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
-	CategoryAmpliative:  {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode)},
-	CategoryVagueness:   {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode)},
-	CategoryChange:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryFormal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryUncertainty: {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryCausal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryPractical:   {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryStrategic:   {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryDialectical: {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryModal:       {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryDomain:      {string(tmux.AgentClaude), string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode)},
+	CategoryMeta:        {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryAmpliative:  {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentOpencode)},
+	CategoryVagueness:   {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentOpencode)},
+	CategoryChange:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentPi), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
 }
 
 var defaultPreferredTypes = []string{
@@ -37,6 +37,7 @@ var defaultPreferredTypes = []string{
 	string(tmux.AgentGemini),
 	string(tmux.AgentAntigravity),
 	string(tmux.AgentOmp),
+	string(tmux.AgentPi),
 	string(tmux.AgentGrok),
 	string(tmux.AgentOpencode),
 }

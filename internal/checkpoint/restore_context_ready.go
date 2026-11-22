@@ -149,7 +149,7 @@ func restoreContextReadiness(pane status.PaneObservation, paneID string, expecte
 		return false, "agent has existing draft or queued input", nil
 	}
 	switch expected.Canonical() {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGrok, tmux.AgentOmp, tmux.AgentPi:
+	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGrok, tmux.AgentOmp, tmux.AgentPi, tmux.AgentOpencode, tmux.AgentAntigravity:
 		if !composer.MarkerVisible {
 			return false, "agent composer is not visible", nil
 		}

@@ -16,12 +16,15 @@ func init() {
 		"swarm.tier1_allocation.cc",
 		"swarm.tier1_allocation.cod",
 		"swarm.tier1_allocation.gmi",
+		"swarm.tier1_allocation.agy",
 		"swarm.tier2_allocation.cc",
 		"swarm.tier2_allocation.cod",
 		"swarm.tier2_allocation.gmi",
+		"swarm.tier2_allocation.agy",
 		"swarm.tier3_allocation.cc",
 		"swarm.tier3_allocation.cod",
 		"swarm.tier3_allocation.gmi",
+		"swarm.tier3_allocation.agy",
 	} {
 		config.RegisterReader(key, (*AllocationCalculator).CalculateProjectAllocation)
 	}

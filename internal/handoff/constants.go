@@ -44,17 +44,35 @@ var ValidOutcomes = map[string]bool{
 
 // AgentType values for identifying agent types.
 const (
-	AgentTypeClaude = "cc"
-	AgentTypeCodex  = "cod"
-	AgentTypeGemini = "gmi"
+	AgentTypeClaude      = "cc"
+	AgentTypeCodex       = "cod"
+	AgentTypeGemini      = "gmi"
+	AgentTypeAntigravity = "agy"
+	AgentTypeGrok        = "grok"
+	AgentTypeOmp         = "omp"
+	AgentTypePi          = "pi"
+	AgentTypeOpencode    = "oc"
+	AgentTypeCursor      = "cursor"
+	AgentTypeWindsurf    = "windsurf"
+	AgentTypeAider       = "aider"
+	AgentTypeOllama      = "ollama"
 )
 
-// ValidAgentTypes is the set of valid agent type values.
+// ValidAgentTypes is the set of valid canonical agent type values.
 var ValidAgentTypes = map[string]bool{
-	AgentTypeClaude: true,
-	AgentTypeCodex:  true,
-	AgentTypeGemini: true,
-	"":              true, // Empty is allowed (optional field)
+	AgentTypeClaude:      true,
+	AgentTypeCodex:       true,
+	AgentTypeGemini:      true,
+	AgentTypeAntigravity: true,
+	AgentTypeGrok:        true,
+	AgentTypeOmp:         true,
+	AgentTypePi:          true,
+	AgentTypeOpencode:    true,
+	AgentTypeCursor:      true,
+	AgentTypeWindsurf:    true,
+	AgentTypeAider:       true,
+	AgentTypeOllama:      true,
+	"":                   true, // Empty is allowed (optional field)
 }
 
 // ValidationError represents a validation error with structured fields.
