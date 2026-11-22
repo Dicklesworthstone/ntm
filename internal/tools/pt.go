@@ -339,7 +339,7 @@ func parsePTWatch(data []byte, wanted map[int]struct{}, started, finished time.T
 	byPID := make(map[int]PTProcessResult, len(wanted))
 	seen := make(map[int]bool)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 4096), 64*1024)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	line := 0
 	for scanner.Scan() {
 		line++
@@ -357,8 +357,8 @@ func parsePTWatch(data []byte, wanted map[int]struct{}, started, finished time.T
 			return nil, fmt.Errorf("%w: invalid pt watch record %d", ErrSchemaValidation, line)
 		}
 		switch event.Event {
-		case "goal_violated", "baseline_anomaly":
-			continue // Host events are not process classifications.
+		case "goal_violated", "baseline_anomaly", "agent_activity", "memory_limit_diagnostics", "pressure_regime_observed":
+			continue // Host/telemetry events are not process classifications.
 		case "candidate_detected":
 		default:
 			return nil, fmt.Errorf("%w: unexpected pt watch event on record %d", ErrSchemaValidation, line)

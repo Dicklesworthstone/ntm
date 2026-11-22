@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -437,4 +438,29 @@ func TestPTClassifyProcessesReadsInstalledPT(t *testing.T) {
 		}
 	}
 	t.Logf("pt reported %d candidates; classified %d PIDs", len(direct), len(results))
+}
+
+func TestParsePTWatch_AcceptsHostTelemetryEventsAndRejectsUnknown(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	ts := now.Format(time.RFC3339Nano)
+	payload := strings.Join([]string{
+		`{"event":"agent_activity","timestamp":"` + ts + `","status":"observed"}`,
+		`{"event":"memory_limit_diagnostics","timestamp":"` + ts + `"}`,
+		`{"event":"pressure_regime_observed","timestamp":"` + ts + `"}`,
+		`{"event":"candidate_detected","timestamp":"` + ts + `","pid":4242,"classification":"kill","confidence":0.95}`,
+	}, "\n") + "\n"
+
+	results, err := parsePTWatch([]byte(payload), map[int]struct{}{4242: {}}, now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("parsePTWatch rejected valid host telemetry events: %v", err)
+	}
+	if len(results) != 1 || results[0].PID != 4242 || results[0].Classification != PTClassAbandoned {
+		t.Fatalf("parsePTWatch results = %+v, want PID 4242 abandoned", results)
+	}
+
+	unknownPayload := `{"event":"totally_unknown_event","timestamp":"` + ts + `"}` + "\n"
+	if _, err := parsePTWatch([]byte(unknownPayload), map[int]struct{}{4242: {}}, now.Add(-time.Second), now.Add(time.Second)); !errors.Is(err, ErrSchemaValidation) {
+		t.Fatalf("parsePTWatch(unknown event) err = %v, want ErrSchemaValidation", err)
+	}
 }
