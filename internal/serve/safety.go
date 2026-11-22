@@ -343,9 +343,20 @@ func (s *Server) handleSafetyInstallV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create default policy file if it doesn't exist
+	// Use policy.ResolveEffectivePath so installing default wrappers never
+	// creates a home policy that silently shadows a project-local .ntm/policy.yaml.
 	policyPath := filepath.Join(ntmDir, "policy.yaml")
-	if !safetyFileExists(policyPath) || req.Force {
+	policyExists := safetyFileExists(policyPath)
+	if effectivePath, exists, pathErr := policy.ResolveEffectivePath(); pathErr == nil && effectivePath != "" {
+		policyPath = effectivePath
+		policyExists = exists
+	}
+	if !policyExists || req.Force {
+		if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				"failed to create policy directory", nil, reqID)
+			return
+		}
 		if err := writeDefaultPolicyFile(policyPath); err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 				"failed to write policy file", nil, reqID)

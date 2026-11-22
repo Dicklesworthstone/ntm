@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -205,10 +207,8 @@ func runSafetyStatus(cmd *cobra.Command, args []string) error {
 	var policyPath string
 	if err == nil {
 		blocked, approval, allowed = p.Stats()
-		// Check if custom policy exists
-		customPath := filepath.Join(ntmDir, "policy.yaml")
-		if fileExists(customPath) {
-			policyPath = customPath
+		if effectivePath, exists, pathErr := policy.ResolveEffectivePath(); pathErr == nil && exists {
+			policyPath = effectivePath
 		}
 	}
 
@@ -640,37 +640,57 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 		}
 	}
 
-	// If policy marks the command as dangerous, consult DCG when available.
+	// Consult DCG custom rules and binary when policy marks the command as
+	// dangerous (or when custom DCG blocklist rules are configured).
+	var dcgCfg config.DCGConfig
+	if loadedCfg, cfgErr := config.LoadMerged("", ""); cfgErr == nil && loadedCfg != nil {
+		dcgCfg = loadedCfg.Integrations.DCG
+	}
 	if match != nil && match.Action != policy.ActionAllow {
-		dcg := &CheckDCGVerdict{}
-		adapter := tools.NewDCGAdapter()
-		if _, installed := adapter.Detect(); installed {
-			dcg.Available = true
-			dcg.Checked = true
+		dcgVerdict := &CheckDCGVerdict{}
+		customVerdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
+		if customVerdict.Blocked {
+			dcgVerdict.Checked = true
+			dcgVerdict.Blocked = true
+			dcgVerdict.Reason = fmt.Sprintf("blocked by integrations.dcg.custom_blocklist rule %q", customVerdict.MatchedRule)
+			if customVerdict.OverrideDenied {
+				dcgVerdict.Reason += " (custom_whitelist override denied because integrations.dcg.allow_override=false)"
+			}
+			if match.Action != policy.ActionBlock {
+				resp.Action = string(policy.ActionBlock)
+				resp.Pattern = "dcg"
+				resp.Reason = dcgVerdict.Reason
+			}
+		} else if !customVerdict.Whitelisted {
+			adapter := tools.NewDCGAdapterWithBinary(dcgCfg.BinaryPath)
+			if _, installed := adapter.Detect(); installed {
+				dcgVerdict.Available = true
+				dcgVerdict.Checked = true
 
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
 
-			blocked, err := adapter.CheckCommand(ctx, command)
-			if err != nil {
-				dcg.Error = err.Error()
-			} else if blocked != nil {
-				dcg.Blocked = true
-				dcg.Reason = blocked.Reason
+				blocked, err := adapter.CheckCommand(ctx, command)
+				if err != nil {
+					dcgVerdict.Error = err.Error()
+				} else if blocked != nil {
+					dcgVerdict.Blocked = true
+					dcgVerdict.Reason = blocked.Reason
 
-				// If DCG blocks, enforce that decision even if policy only required approval.
-				if match.Action != policy.ActionBlock {
-					resp.Action = string(policy.ActionBlock)
-					resp.Pattern = "dcg"
-					if dcg.Reason != "" {
-						resp.Reason = dcg.Reason
-					} else {
-						resp.Reason = "blocked by dcg"
+					// If DCG blocks, enforce that decision even if policy only required approval.
+					if match.Action != policy.ActionBlock {
+						resp.Action = string(policy.ActionBlock)
+						resp.Pattern = "dcg"
+						if dcgVerdict.Reason != "" {
+							resp.Reason = dcgVerdict.Reason
+						} else {
+							resp.Reason = "blocked by dcg"
+						}
 					}
 				}
 			}
 		}
-		resp.DCG = dcg
+		resp.DCG = dcgVerdict
 	}
 
 	// Exit code 1 for Block or Approve (to block execution in wrapper scripts)
@@ -747,10 +767,19 @@ func runSafetyInstall(force bool) error {
 		return fmt.Errorf("registering Claude Code hook in %s: %w", settingsPath, err)
 	}
 
-	// Create default policy file if it doesn't exist
+	// Create default policy file at the effective path so a newly written home
+	// policy never shadows an existing project-local .ntm/policy.yaml.
 	policyPath := filepath.Join(ntmDir, "policy.yaml")
+	policyExists := fileExists(policyPath)
+	if effectivePath, exists, pathErr := policy.ResolveEffectivePath(); pathErr == nil && effectivePath != "" {
+		policyPath = effectivePath
+		policyExists = exists
+	}
 	policyCreated := false
-	if !fileExists(policyPath) || force {
+	if !policyExists || force {
+		if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+			return fmt.Errorf("creating policy directory: %w", err)
+		}
 		if err := writeDefaultPolicy(policyPath); err != nil {
 			return err
 		}

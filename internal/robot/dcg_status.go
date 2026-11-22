@@ -61,7 +61,10 @@ func GetDCGStatus() (*DCGStatusOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	adapter := tools.NewDCGAdapter()
+	// Resolve the real DCG integration config (global + project overlay)
+	// before probing so custom binary_path and enabled settings are honored.
+	dcgCfg, auditLogPath := resolveDCGSettings()
+	adapter := tools.NewDCGAdapterWithBinary(dcgCfg.BinaryPath)
 
 	// Check DCG availability
 	availability, err := adapter.GetAvailability(ctx)
@@ -77,7 +80,7 @@ func GetDCGStatus() (*DCGStatusOutput, error) {
 
 	// Build status
 	status := DCGStatus{
-		Enabled:    availability.Available && availability.Compatible,
+		Enabled:    dcgCfg.Enabled && availability.Available && availability.Compatible,
 		Available:  availability.Available,
 		BinaryPath: availability.Path,
 	}
@@ -85,10 +88,6 @@ func GetDCGStatus() (*DCGStatusOutput, error) {
 	if availability.Version.Major > 0 || availability.Version.Minor > 0 || availability.Version.Patch > 0 {
 		status.Version = availability.Version.String()
 	}
-
-	// Resolve the real DCG integration config (global + project overlay),
-	// rather than reporting hardcoded defaults.
-	dcgCfg, auditLogPath := resolveDCGSettings()
 
 	// Get audit log stats
 	stats := DCGStatsStatus{}
@@ -188,7 +187,8 @@ func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	adapter := tools.NewDCGAdapter()
+	dcgCfg, _ := resolveDCGSettings()
+	adapter := tools.NewDCGAdapterWithBinary(dcgCfg.BinaryPath)
 	availability, err := adapter.GetAvailability(ctx)
 	if err != nil {
 		output := &DCGCheckOutput{
@@ -241,7 +241,6 @@ func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 
 	// Enforce [integrations.dcg] custom_blocklist / custom_whitelist / allow_override
 	// identically to ntm send / --robot-send before delegating to the dcg binary.
-	dcgCfg, _ := resolveDCGSettings()
 	customVerdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
 	if customVerdict.Whitelisted {
 		output.Allowed = true

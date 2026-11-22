@@ -19,10 +19,20 @@ type DCGAdapter struct {
 	*BaseAdapter
 }
 
-// NewDCGAdapter creates a new DCG adapter
+// NewDCGAdapter creates a new DCG adapter using the default "dcg" binary name.
 func NewDCGAdapter() *DCGAdapter {
+	return NewDCGAdapterWithBinary("")
+}
+
+// NewDCGAdapterWithBinary creates a new DCG adapter using the configured
+// binary path (falling back to "dcg" on PATH when empty).
+func NewDCGAdapterWithBinary(binaryPath string) *DCGAdapter {
+	bin := strings.TrimSpace(binaryPath)
+	if bin == "" {
+		bin = "dcg"
+	}
 	return &DCGAdapter{
-		BaseAdapter: NewBaseAdapter(ToolDCG, "dcg"),
+		BaseAdapter: NewBaseAdapter(ToolDCG, bin),
 	}
 }
 
@@ -122,9 +132,13 @@ type DCGAvailability struct {
 	Error       string    `json:"error,omitempty"`
 }
 
+type dcgAvailabilityCacheEntry struct {
+	availability DCGAvailability
+	expiry       time.Time
+}
+
 var (
-	dcgAvailabilityCache  DCGAvailability
-	dcgAvailabilityExpiry time.Time
+	dcgAvailabilityCaches = make(map[string]dcgAvailabilityCacheEntry)
 	dcgAvailabilityMutex  sync.RWMutex
 	dcgAvailabilityTTL    = 5 * time.Minute
 	dcgMinVersion         = Version{Major: 0, Minor: 1, Patch: 0}
@@ -205,12 +219,13 @@ func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 	return &DCGStatus{Enabled: true}, nil
 }
 
-// GetAvailability returns whether dcg is available and compatible, with caching.
+// GetAvailability returns whether dcg is available and compatible, with per-binary caching.
 // It logs a warning if dcg is missing or incompatible, but does not return an error.
 func (a *DCGAdapter) GetAvailability(ctx context.Context) (*DCGAvailability, error) {
+	cacheKey := a.BinaryName()
 	dcgAvailabilityMutex.RLock()
-	if time.Now().Before(dcgAvailabilityExpiry) {
-		availability := dcgAvailabilityCache
+	if entry, ok := dcgAvailabilityCaches[cacheKey]; ok && time.Now().Before(entry.expiry) {
+		availability := entry.availability
 		dcgAvailabilityMutex.RUnlock()
 		return &availability, nil
 	}
@@ -220,8 +235,8 @@ func (a *DCGAdapter) GetAvailability(ctx context.Context) (*DCGAvailability, err
 	defer dcgAvailabilityMutex.Unlock()
 
 	// Double-check after acquiring write lock
-	if time.Now().Before(dcgAvailabilityExpiry) {
-		availability := dcgAvailabilityCache
+	if entry, ok := dcgAvailabilityCaches[cacheKey]; ok && time.Now().Before(entry.expiry) {
+		availability := entry.availability
 		return &availability, nil
 	}
 
@@ -233,8 +248,10 @@ func (a *DCGAdapter) GetAvailability(ctx context.Context) (*DCGAvailability, err
 	if ctx.Err() != nil {
 		return availability, nil
 	}
-	dcgAvailabilityCache = *availability
-	dcgAvailabilityExpiry = time.Now().Add(dcgAvailabilityTTL)
+	dcgAvailabilityCaches[cacheKey] = dcgAvailabilityCacheEntry{
+		availability: *availability,
+		expiry:       time.Now().Add(dcgAvailabilityTTL),
+	}
 
 	return availability, nil
 }
@@ -242,7 +259,7 @@ func (a *DCGAdapter) GetAvailability(ctx context.Context) (*DCGAvailability, err
 // InvalidateAvailabilityCache forces the next GetAvailability call to re-check.
 func (a *DCGAdapter) InvalidateAvailabilityCache() {
 	dcgAvailabilityMutex.Lock()
-	dcgAvailabilityExpiry = time.Time{}
+	clear(dcgAvailabilityCaches)
 	dcgAvailabilityMutex.Unlock()
 }
 

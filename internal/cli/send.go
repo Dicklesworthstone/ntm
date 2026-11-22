@@ -3884,7 +3884,8 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	adapter := tools.NewDCGAdapter()
+	dcgCfg := cfg.Integrations.DCG
+	adapter := tools.NewDCGAdapterWithBinary(dcgCfg.BinaryPath)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if !adapter.IsAvailable(ctx) {
@@ -3893,7 +3894,6 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 		return ctx.Err()
 	}
 
-	dcgCfg := cfg.Integrations.DCG
 	for _, command := range commands {
 		verdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
 		if verdict.Whitelisted {
