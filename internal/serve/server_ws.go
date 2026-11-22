@@ -1156,6 +1156,10 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 	c.attentionSubMu.Lock()
 	if c.attentionSub == sub {
 		sub.unsubscribe = unsub
+		// Retain the requested topics atomically under attentionSubMu so a
+		// concurrent disconnect or resubscribe cannot interleave Unsubscribe
+		// before Subscribe and leak stale topics on c.topics.
+		c.Subscribe(topics)
 	} else {
 		c.attentionSubMu.Unlock()
 		unsub()
@@ -1165,11 +1169,6 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		}
 	}
 	c.attentionSubMu.Unlock()
-
-	// Retain the requested topics for replacement and explicit unsubscribe.
-	// Live attention events use the durable feed callback above, so Start does
-	// not bridge attention events back through wsHub.
-	c.Subscribe(topics)
 
 	// Perform replay if cursor is not "start from now"
 	var replayCount int
@@ -1367,6 +1366,62 @@ func (c *WSClient) removeAttentionTopics(topics []string) {
 }
 
 // deliverAttentionEvent delivers a single attention event to the client.
+// matchesAttentionSub applies session, profile, category, actionability, and
+// operator muted/snoozed exclusion filters consistently for both replay and
+// live WebSocket attention delivery.
+func matchesAttentionSub(sub WSAttentionSub, event robot.AttentionEvent) bool {
+	if sub.Session != "" && event.Session != sub.Session {
+		return false
+	}
+	if sub.Profile != "" {
+		resolved := robot.ResolveEffectiveFilters(sub.Profile, robot.ProfileFilters{})
+		if !resolved.MatchesFilters(&event) {
+			return false
+		}
+	}
+	if !matchesAttentionFilters(event, sub.CategoryFilter, "", sub.ActionabilityFilter) {
+		return false
+	}
+	if sub.ExcludeMuted && attentionEventIsMuted(event) {
+		return false
+	}
+	if sub.ExcludeSnoozed && attentionEventIsSnoozed(event, time.Now().UTC()) {
+		return false
+	}
+	return true
+}
+
+func attentionEventIsMuted(event robot.AttentionEvent) bool {
+	if event.Details == nil {
+		return false
+	}
+	if muted, ok := event.Details["attention_muted"].(bool); ok && muted {
+		return true
+	}
+	if st, ok := event.Details["attention_state"].(string); ok && strings.EqualFold(strings.TrimSpace(st), "muted") {
+		return true
+	}
+	return false
+}
+
+func attentionEventIsSnoozed(event robot.AttentionEvent, now time.Time) bool {
+	if event.Details == nil {
+		return false
+	}
+	if st, ok := event.Details["attention_state"].(string); ok && strings.EqualFold(strings.TrimSpace(st), "snoozed") {
+		return true
+	}
+	if raw, ok := event.Details["attention_snoozed_until"].(string); ok && strings.TrimSpace(raw) != "" {
+		if until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw)); err == nil && now.Before(until) {
+			return true
+		}
+		if until, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil && now.Before(until) {
+			return true
+		}
+	}
+	return false
+}
+
 // Applies subscription filters, runs redaction immediately (so redaction
 // failures fail-fast even during replay), buffers valid live frames until
 // historical replay completes so cursors never interleave or duplicate, and
@@ -1391,13 +1446,8 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 		return
 	}
 
-	// Apply session filter
-	if criteria.Session != "" && event.Session != criteria.Session {
-		return
-	}
-
-	// Apply category/actionability filters (session already checked above)
-	if !matchesAttentionFilters(event, criteria.CategoryFilter, "", criteria.ActionabilityFilter) {
+	// Apply session, profile, category, actionability, and muted/snoozed filters
+	if !matchesAttentionSub(criteria, event) {
 		return
 	}
 
@@ -1498,12 +1548,8 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 			continue
 		}
 
-		// Apply filters
-		if sub.Session != "" && event.Session != sub.Session {
-			continue
-		}
-		// Session already checked above
-		if !matchesAttentionFilters(event, sub.CategoryFilter, "", sub.ActionabilityFilter) {
+		// Apply session, profile, category, actionability, and muted/snoozed filters
+		if !matchesAttentionSub(*sub, event) {
 			continue
 		}
 

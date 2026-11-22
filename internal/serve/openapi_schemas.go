@@ -96,12 +96,9 @@ type AutoRotateConfigEnvelopeResponse struct {
 }
 
 type AutoRotateConfigPatchRequest struct {
-	AutoRotateEnabled     *bool    `json:"auto_rotate_enabled,omitempty"`
-	AutoRotateThreshold   *float64 `json:"auto_rotate_threshold,omitempty"`
-	RateLimitCooldownSec  *int     `json:"rate_limit_cooldown_sec,omitempty"`
-	PreferLeastUsed       *bool    `json:"prefer_least_used,omitempty"`
-	NotifyOnRotate        *bool    `json:"notify_on_rotate,omitempty"`
-	MaxRotationsPerWindow *int     `json:"max_rotations_per_window,omitempty"`
+	AutoRotateEnabled         *bool `json:"auto_rotate_enabled,omitempty"`
+	AutoRotateCooldownSeconds *int  `json:"auto_rotate_cooldown_seconds,omitempty"`
+	AutoRotateOnRateLimit     *bool `json:"auto_rotate_on_rate_limit,omitempty"`
 }
 
 type AccountHistoryEnvelopeResponse struct {

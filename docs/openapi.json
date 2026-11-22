@@ -24530,10 +24530,16 @@
           "agy_count": {
             "type": "integer"
           },
+          "aider_count": {
+            "type": "integer"
+          },
           "cc_count": {
             "type": "integer"
           },
           "cod_count": {
+            "type": "integer"
+          },
+          "cursor_count": {
             "type": "integer"
           },
           "gmi_count": {
@@ -24551,6 +24557,9 @@
           "oc_count": {
             "type": "integer"
           },
+          "ollama_count": {
+            "type": "integer"
+          },
           "omp_count": {
             "type": "integer"
           },
@@ -24560,6 +24569,9 @@
               "type": "string"
             }
           },
+          "pi_count": {
+            "type": "integer"
+          },
           "preset": {
             "type": "string"
           },
@@ -24568,6 +24580,9 @@
           },
           "wait_ready": {
             "type": "boolean"
+          },
+          "windsurf_count": {
+            "type": "integer"
           },
           "worktree_name": {
             "type": "string"
@@ -26686,23 +26701,14 @@
       "AutoRotateConfigPatchRequest": {
         "type": "object",
         "properties": {
+          "auto_rotate_cooldown_seconds": {
+            "type": "integer"
+          },
           "auto_rotate_enabled": {
             "type": "boolean"
           },
-          "auto_rotate_threshold": {
-            "type": "number"
-          },
-          "max_rotations_per_window": {
-            "type": "integer"
-          },
-          "notify_on_rotate": {
+          "auto_rotate_on_rate_limit": {
             "type": "boolean"
-          },
-          "prefer_least_used": {
-            "type": "boolean"
-          },
-          "rate_limit_cooldown_sec": {
-            "type": "integer"
           }
         }
       },

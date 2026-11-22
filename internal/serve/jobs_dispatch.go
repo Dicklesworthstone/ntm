@@ -339,6 +339,10 @@ type jobSwarmSpawnParams struct {
 	OmpModel            string   `json:"omp_model,omitempty"`
 	OmpReasoningEffort  string   `json:"omp_reasoning_effort,omitempty"`
 	OcModel             string   `json:"oc_model,omitempty"`
+	OllamaModel         string   `json:"ollama_model,omitempty"`
+	AiderModel          string   `json:"aider_model,omitempty"`
+	CursorModel         string   `json:"cursor_model,omitempty"`
+	WindsurfModel       string   `json:"windsurf_model,omitempty"`
 	AssignWork          bool     `json:"assign_work,omitempty"`
 	AssignStrategy      string   `json:"assign_strategy,omitempty"`
 	CustomNames         []string `json:"custom_names,omitempty"`
@@ -421,6 +425,10 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		GrokCount:           req.GrokCount,
 		OmpCount:            req.OmpCount,
 		OcCount:             req.OcCount,
+		OllamaCount:         req.OllamaCount,
+		AiderCount:          req.AiderCount,
+		CursorCount:         req.CursorCount,
+		WindsurfCount:       req.WindsurfCount,
 		Preset:              req.Preset,
 		Personas:            append([]string(nil), req.Personas...),
 		ProfileSet:          req.ProfileSet,
@@ -443,11 +451,20 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		OmpModel:            req.OmpModel,
 		OmpReasoningEffort:  req.OmpReasoningEffort,
 		OcModel:             req.OcModel,
+		OllamaModel:         req.OllamaModel,
+		AiderModel:          req.AiderModel,
+		CursorModel:         req.CursorModel,
+		WindsurfModel:       req.WindsurfModel,
 		AssignWork:          req.AssignWork,
 		AssignStrategy:      req.AssignStrategy,
 		CustomNames:         req.CustomNames,
 		RequireReservation:  req.RequireReservation,
 		ReservationPaths:    req.ReservationPaths,
+	}
+	if req.PiCount != 0 {
+		opts.PluginAgents = map[string]robot.PluginSpawnSpec{
+			"pi": {Count: req.PiCount},
+		}
 	}
 	if err := req.applyDeliveryOptions(&opts); err != nil {
 		return nil, err

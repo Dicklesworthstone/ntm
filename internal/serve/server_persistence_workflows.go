@@ -280,7 +280,7 @@ func (s *Server) workflowProjectScopeMiddleware(next http.Handler) http.Handler 
 			} else if readErr != nil {
 				_ = origBody.Close()
 				bodyReadErr = readErr
-				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), workflowErrReader{err: readErr}))
+				r.Body = io.NopCloser(workflowErrReader{err: readErr})
 			} else {
 				_ = origBody.Close()
 				r.Body = io.NopCloser(bytes.NewReader(raw))

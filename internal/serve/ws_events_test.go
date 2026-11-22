@@ -1241,3 +1241,54 @@ func TestWSRedactionAttentionFailureCannotAcknowledgeOrSkipHistory(t *testing.T)
 		})
 	}
 }
+
+func TestWSAttentionSubscriptionProfileAndMuteSnoozeFilters(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	future := now.Add(time.Hour).Format(time.RFC3339)
+
+	sub := WSAttentionSub{
+		Active:         true,
+		Profile:        "alerts",
+		ExcludeMuted:   true,
+		ExcludeSnoozed: true,
+	}
+
+	if matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        1,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+		Details:       map[string]any{"attention_muted": true},
+	}) {
+		t.Fatal("muted event must be filtered out when ExcludeMuted=true")
+	}
+
+	if matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        2,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+		Details:       map[string]any{"attention_state": "snoozed", "attention_snoozed_until": future},
+	}) {
+		t.Fatal("actively snoozed event must be filtered out when ExcludeSnoozed=true")
+	}
+
+	if matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        3,
+		Category:      robot.EventCategoryPane,
+		Actionability: robot.ActionabilityBackground,
+		Severity:      robot.SeverityInfo,
+	}) {
+		t.Fatal("low-severity pane background event must be filtered out by alerts profile")
+	}
+
+	if !matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        4,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+	}) {
+		t.Fatal("unmuted action-required error alert should match alerts profile")
+	}
+}

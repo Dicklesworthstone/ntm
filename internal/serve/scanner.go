@@ -21,6 +21,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
+	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
 // Scanner-specific error codes
@@ -1091,6 +1092,20 @@ func (s *Server) handleBugsNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	channel := strings.ToLower(strings.TrimSpace(req.Channel))
+	switch channel {
+	case "webhook", "slack":
+		if err := webhook.ValidateWebhookTargetURL(req.Endpoint, true); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("invalid notification endpoint: %v", err), nil, reqID)
+			return
+		}
+	default:
+		writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented,
+			fmt.Sprintf("notification channel %q is not implemented (supported: webhook, slack)", req.Channel), nil, reqID)
+		return
+	}
+
 	// Get non-dismissed findings
 	minSeverity := req.MinSeverity
 	if minSeverity == "" {
@@ -1123,9 +1138,8 @@ func (s *Server) handleBugsNotify(w http.ResponseWriter, r *http.Request) {
 	slog.Info("bugs notify request", "request_id", reqID, "channel", req.Channel,
 		"endpoint", req.Endpoint, "findings_count", len(toNotify))
 
-	// Publish notification event (consumed by webhook subscribers and WebSocket clients)
 	notifyPayload := map[string]interface{}{
-		"channel":        req.Channel,
+		"channel":        channel,
 		"findings_count": len(toNotify),
 		"min_severity":   minSeverity,
 	}
@@ -1141,13 +1155,36 @@ func (s *Server) handleBugsNotify(w http.ResponseWriter, r *http.Request) {
 		}
 		notifyPayload["findings"] = summaries
 	}
+	if channel == "slack" {
+		notifyPayload["text"] = fmt.Sprintf("NTM Scanner: %d finding(s) at or above severity %s", len(toNotify), minSeverity)
+	}
+
+	payloadBytes, err := json.Marshal(notifyPayload)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			"failed to encode notification payload", nil, reqID)
+		return
+	}
+	statusCode, deliverErr := webhook.DeliverJSON(r.Context(), nil, req.Endpoint, "", payloadBytes, nil)
+	if deliverErr != nil {
+		details := map[string]interface{}{"channel": channel}
+		if statusCode > 0 {
+			details["status_code"] = statusCode
+		}
+		writeErrorResponse(w, http.StatusBadGateway, ErrCodeInternalError,
+			fmt.Sprintf("notification delivery failed: %v", deliverErr), details, reqID)
+		return
+	}
+
+	// Publish notification event to WebSocket subscribers only after real delivery succeeded.
 	s.publishScannerEvent("scanner.notify", notifyPayload)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"notified":       true,
-		"channel":        req.Channel,
+		"channel":        channel,
+		"status_code":    statusCode,
 		"findings_count": len(toNotify),
-		"message":        fmt.Sprintf("Notification queued for %d findings", len(toNotify)),
+		"message":        fmt.Sprintf("Notification delivered for %d findings", len(toNotify)),
 	}, reqID)
 }
 

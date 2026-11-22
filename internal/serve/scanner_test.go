@@ -533,6 +533,18 @@ func TestHandleBugsNotify(t *testing.T) {
 	addTestFinding("scan-1", "finding-1", scanner.SeverityWarning, "main.go", "security", false, "")
 	addTestFinding("scan-1", "finding-2", scanner.SeverityInfo, "main.go", "security", false, "")
 
+	var receivedPayload map[string]interface{}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("webhook method=%s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&receivedPayload); err != nil {
+			t.Errorf("decode webhook body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer receiver.Close()
+
 	srv, _ := setupTestServer(t)
 	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/bugs/notify", strings.NewReader(`{"channel":""}`))
 	badRec := httptest.NewRecorder()
@@ -541,12 +553,30 @@ func TestHandleBugsNotify(t *testing.T) {
 		t.Fatalf("bad status=%d, want %d", badRec.Code, http.StatusBadRequest)
 	}
 
+	// Unsupported channel must return 501 NOT_IMPLEMENTED instead of fabricating success.
+	emailReq := httptest.NewRequest(http.MethodPost, "/api/v1/bugs/notify",
+		strings.NewReader(`{"channel":"email","endpoint":"ops@example.com","min_severity":"warning"}`))
+	emailRec := httptest.NewRecorder()
+	srv.handleBugsNotify(emailRec, emailReq)
+	if emailRec.Code != http.StatusNotImplemented {
+		t.Fatalf("email channel status=%d, want %d", emailRec.Code, http.StatusNotImplemented)
+	}
+
+	// Cloud metadata endpoint must be rejected by SSRF validation.
+	ssrfReq := httptest.NewRequest(http.MethodPost, "/api/v1/bugs/notify",
+		strings.NewReader(`{"channel":"webhook","endpoint":"http://169.254.169.254/latest/meta-data/","min_severity":"warning"}`))
+	ssrfRec := httptest.NewRecorder()
+	srv.handleBugsNotify(ssrfRec, ssrfReq)
+	if ssrfRec.Code != http.StatusBadRequest {
+		t.Fatalf("ssrf status=%d, want %d", ssrfRec.Code, http.StatusBadRequest)
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/bugs/notify",
-		strings.NewReader(`{"channel":"webhook","endpoint":"http://example","min_severity":"warning"}`))
+		strings.NewReader(`{"channel":"webhook","endpoint":"`+receiver.URL+`","min_severity":"warning"}`))
 	rec := httptest.NewRecorder()
 	srv.handleBugsNotify(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("status=%d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var resp map[string]interface{}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
@@ -557,6 +587,9 @@ func TestHandleBugsNotify(t *testing.T) {
 	}
 	if got := int(resp["findings_count"].(float64)); got != 1 {
 		t.Fatalf("findings_count=%d, want 1", got)
+	}
+	if receivedPayload == nil || int(receivedPayload["findings_count"].(float64)) != 1 {
+		t.Fatalf("webhook receiver did not get expected payload: %#v", receivedPayload)
 	}
 }
 

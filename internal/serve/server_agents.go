@@ -309,21 +309,26 @@ func servedAgentType(raw string) string {
 
 // AgentSpawnRequest is the request body for POST /sessions/{id}/agents/spawn.
 type AgentSpawnRequest struct {
-	CCCount      int      `json:"cc_count,omitempty"`
-	CodCount     int      `json:"cod_count,omitempty"`
-	GmiCount     int      `json:"gmi_count,omitempty"`
-	AgyCount     int      `json:"agy_count,omitempty"`
-	GrokCount    int      `json:"grok_count,omitempty"`
-	OmpCount     int      `json:"omp_count,omitempty"`
-	OcCount      int      `json:"oc_count,omitempty"`
-	Preset       string   `json:"preset,omitempty"`
-	Personas     []string `json:"personas,omitempty"`
-	ProfileSet   string   `json:"profile_set,omitempty"`
-	Worktrees    bool     `json:"worktrees,omitempty"`
-	WorktreeName string   `json:"worktree_name,omitempty"`
-	NoHooks      bool     `json:"no_hooks,omitempty"`
-	WaitReady    bool     `json:"wait_ready,omitempty"`
-	Label        string   `json:"label,omitempty"` // Goal label for multi-session support
+	CCCount       int      `json:"cc_count,omitempty"`
+	CodCount      int      `json:"cod_count,omitempty"`
+	GmiCount      int      `json:"gmi_count,omitempty"`
+	AgyCount      int      `json:"agy_count,omitempty"`
+	GrokCount     int      `json:"grok_count,omitempty"`
+	OmpCount      int      `json:"omp_count,omitempty"`
+	OcCount       int      `json:"oc_count,omitempty"`
+	OllamaCount   int      `json:"ollama_count,omitempty"`
+	AiderCount    int      `json:"aider_count,omitempty"`
+	CursorCount   int      `json:"cursor_count,omitempty"`
+	WindsurfCount int      `json:"windsurf_count,omitempty"`
+	PiCount       int      `json:"pi_count,omitempty"`
+	Preset        string   `json:"preset,omitempty"`
+	Personas      []string `json:"personas,omitempty"`
+	ProfileSet    string   `json:"profile_set,omitempty"`
+	Worktrees     bool     `json:"worktrees,omitempty"`
+	WorktreeName  string   `json:"worktree_name,omitempty"`
+	NoHooks       bool     `json:"no_hooks,omitempty"`
+	WaitReady     bool     `json:"wait_ready,omitempty"`
+	Label         string   `json:"label,omitempty"` // Goal label for multi-session support
 }
 
 // hasAgentCountOrPreset reports whether the request names at least one agent
@@ -331,12 +336,13 @@ type AgentSpawnRequest struct {
 func (req AgentSpawnRequest) hasAgentCountOrPreset() bool {
 	return req.CCCount != 0 || req.CodCount != 0 || req.GmiCount != 0 || req.AgyCount != 0 ||
 		req.GrokCount != 0 || req.OmpCount != 0 || req.OcCount != 0 ||
+		req.OllamaCount != 0 || req.AiderCount != 0 || req.CursorCount != 0 || req.WindsurfCount != 0 || req.PiCount != 0 ||
 		req.Preset != "" || len(req.Personas) > 0 || strings.TrimSpace(req.ProfileSet) != ""
 }
 
 // agentSpawnCountRequiredMessage is the shared validation error for a spawn
 // request that names no agents.
-const agentSpawnCountRequiredMessage = "at least one agent count (cc_count, cod_count, gmi_count, agy_count, grok_count, omp_count, oc_count) or preset required"
+const agentSpawnCountRequiredMessage = "at least one agent count (cc_count, cod_count, gmi_count, agy_count, grok_count, omp_count, oc_count, ollama_count, aider_count, cursor_count, windsurf_count, pi_count) or preset required"
 
 // handleAgentSpawnV1 handles POST /api/v1/sessions/{sessionId}/agents/spawn.
 func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
@@ -360,22 +366,31 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := robot.SpawnOptions{
-		Session:      sessionID,
-		Label:        req.Label,
-		CCCount:      req.CCCount,
-		CodCount:     req.CodCount,
-		GmiCount:     req.GmiCount,
-		AgyCount:     req.AgyCount,
-		GrokCount:    req.GrokCount,
-		OmpCount:     req.OmpCount,
-		OcCount:      req.OcCount,
-		Preset:       req.Preset,
-		Personas:     append([]string(nil), req.Personas...),
-		ProfileSet:   req.ProfileSet,
-		UseWorktrees: req.Worktrees,
-		WorktreeName: req.WorktreeName,
-		NoHooks:      req.NoHooks,
-		WaitReady:    req.WaitReady,
+		Session:       sessionID,
+		Label:         req.Label,
+		CCCount:       req.CCCount,
+		CodCount:      req.CodCount,
+		GmiCount:      req.GmiCount,
+		AgyCount:      req.AgyCount,
+		GrokCount:     req.GrokCount,
+		OmpCount:      req.OmpCount,
+		OcCount:       req.OcCount,
+		OllamaCount:   req.OllamaCount,
+		AiderCount:    req.AiderCount,
+		CursorCount:   req.CursorCount,
+		WindsurfCount: req.WindsurfCount,
+		Preset:        req.Preset,
+		Personas:      append([]string(nil), req.Personas...),
+		ProfileSet:    req.ProfileSet,
+		UseWorktrees:  req.Worktrees,
+		WorktreeName:  req.WorktreeName,
+		NoHooks:       req.NoHooks,
+		WaitReady:     req.WaitReady,
+	}
+	if req.PiCount != 0 {
+		opts.PluginAgents = map[string]robot.PluginSpawnSpec{
+			"pi": {Count: req.PiCount},
+		}
 	}
 
 	if s.spawnAgents == nil {

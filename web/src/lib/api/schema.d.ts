@@ -5663,18 +5663,23 @@ export interface components {
         };
         AgentSpawnRequest: {
             agy_count?: number;
+            aider_count?: number;
             cc_count?: number;
             cod_count?: number;
+            cursor_count?: number;
             gmi_count?: number;
             grok_count?: number;
             label?: string;
             no_hooks?: boolean;
             oc_count?: number;
+            ollama_count?: number;
             omp_count?: number;
             personas?: string[];
+            pi_count?: number;
             preset?: string;
             profile_set?: string;
             wait_ready?: boolean;
+            windsurf_count?: number;
             worktree_name?: string;
             worktrees?: boolean;
         };
@@ -6374,12 +6379,9 @@ export interface components {
             timestamp: string;
         };
         AutoRotateConfigPatchRequest: {
+            auto_rotate_cooldown_seconds?: number;
             auto_rotate_enabled?: boolean;
-            auto_rotate_threshold?: number;
-            max_rotations_per_window?: number;
-            notify_on_rotate?: boolean;
-            prefer_least_used?: boolean;
-            rate_limit_cooldown_sec?: number;
+            auto_rotate_on_rate_limit?: boolean;
         };
         AutomationConfig: {
             AutoCommit: boolean;
