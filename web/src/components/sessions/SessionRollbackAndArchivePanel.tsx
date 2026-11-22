@@ -161,6 +161,9 @@ export function SessionRollbackAndArchivePanel({
           queryKey: ["sessions", sessionId],
         });
         void queryClient.invalidateQueries({
+          queryKey: ["session-panes", sessionId],
+        });
+        void queryClient.invalidateQueries({
           queryKey: ["session-checkpoints", sessionId],
         });
       }

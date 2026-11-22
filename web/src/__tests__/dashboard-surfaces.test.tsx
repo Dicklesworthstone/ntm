@@ -523,6 +523,16 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
           });
         }
         if (
+          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/stream" &&
+          (options?.method === "POST" || options?.method === "DELETE")
+        ) {
+          return reply(
+            options.method === "POST"
+              ? { target: "%7", topic: "panes:%7", message: "streaming started" }
+              : { target: "%7", message: "streaming stopped" }
+          );
+        }
+        if (
           url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/input" &&
           options?.method === "POST"
         ) {
@@ -564,24 +574,27 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
       "GET /api/v1/sessions/my%2Fproj%231/panes/0/output?lines=200"
     );
 
-    // Subscribed to exact PaneStreamer topic panes:my/proj#1:0
+    // Starts server PaneStreamer and subscribes to both fallback and authoritative server topic panes:%7
     await waitFor(() => {
+      expect(requestedPaths).toContain(
+        "POST /api/v1/sessions/my%2Fproj%231/panes/0/stream"
+      );
       expect(
         socket.sentFrames.some(
           (frame) =>
             frame.type === "subscribe" &&
             Array.isArray(frame.data?.topics) &&
-            (frame.data?.topics as string[]).includes(`panes:${sessionId}:0`)
+            (frame.data?.topics as string[]).includes("panes:%7")
         )
       ).toBe(true);
     });
 
-    // Deliver live incremental pane.output event over WS
+    // Deliver live incremental pane.output event over WS on server-returned panes:%7 topic
     act(() => {
       socket.onmessage?.({
         data: JSON.stringify({
           type: "event",
-          topic: `panes:${sessionId}:0`,
+          topic: "panes:%7",
           event_type: "pane.output",
           seq: 11,
           ts: new Date().toISOString(),
@@ -597,12 +610,12 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     expect(await screen.findByText("streamed live line 3")).toBeInTheDocument();
     expect(screen.getByText("initial backfill line 1")).toBeInTheDocument();
 
-    // Deliver full snapshot pane.output event over WS
+    // Deliver full snapshot pane.output event over WS on server-returned panes:%7 topic
     act(() => {
       socket.onmessage?.({
         data: JSON.stringify({
           type: "event",
-          topic: `panes:${sessionId}:0`,
+          topic: "panes:%7",
           event_type: "pane.output",
           seq: 12,
           ts: new Date().toISOString(),

@@ -236,6 +236,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     key: string | null;
     lines: string[];
   }>({ key: null, lines: [] });
+  const [streamActive, setStreamActive] = useState(false);
 
   const encodedSessionId = useMemo(
     () => encodeURIComponent(sessionId),
@@ -295,8 +296,8 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       );
     },
     enabled: paneIndex !== null,
-    refetchInterval: isConnected ? false : 2500,
-    refetchOnWindowFocus: !isConnected,
+    refetchInterval: isConnected && streamActive ? false : 2500,
+    refetchOnWindowFocus: !(isConnected && streamActive),
   });
   const refetchOutputBackfill = outputQuery.refetch;
 
@@ -316,7 +317,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           lines: backfillLines.slice(-maxBuffer),
         };
       }
-      if (!isConnected) {
+      if (!isConnected || !streamActive) {
         return {
           key: activePaneKey,
           lines: backfillLines.slice(-maxBuffer),
@@ -336,22 +337,30 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
         lines: backfillLines.slice(-maxBuffer),
       };
     });
-  }, [activePaneKey, isConnected, outputLines, outputQuery.data, outputQuery.dataUpdatedAt]);
+  }, [activePaneKey, isConnected, outputLines, outputQuery.data, outputQuery.dataUpdatedAt, streamActive]);
 
-  // Subscribe to WebSocket PaneStreamer topic panes:${sessionId}:${paneIndex}
-  // for real-time output frames without 2.5s REST polling.
+  // Start backend PaneStreamer and subscribe to its authoritative WebSocket
+  // topic when WS is connected; fall back seamlessly to 2.5s REST polling
+  // whenever WS is disconnected or starting the stream fails.
   useEffect(() => {
     if (paneIndex === null || !activePaneKey) {
+      setStreamActive(false);
       return;
     }
 
     const ws = getWsClient();
-    const paneTopic = `panes:${sessionId}:${paneIndex}`;
+    const fallbackTopic = `panes:${sessionId}:${paneIndex}`;
+    const subscribedTopics = new Set<string>([fallbackTopic]);
     const maxBuffer = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
+    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
+    const streamPath = `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/stream`;
+    let cancelled = false;
+    let startedOnServer = false;
     wsFullSnapshotKeyRef.current = null;
+    setStreamActive(false);
 
     const unsubEvent = ws.onEvent((event) => {
-      if (event.topic !== paneTopic) {
+      if (!subscribedTopics.has(event.topic)) {
         return;
       }
 
@@ -375,17 +384,57 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
     });
 
-    void ws.subscribe(paneTopic, { mode: "lines" }).catch((err) => {
+    void ws.subscribe(fallbackTopic, { mode: "lines" }).catch((err) => {
       if (process.env.NODE_ENV === "development") {
-        console.error("[Sessions] WS pane subscribe error", paneTopic, err);
+        console.error("[Sessions] WS pane subscribe error", fallbackTopic, err);
       }
     });
 
+    if (isConnected) {
+      void (async () => {
+        try {
+          const res = await apiFetch<{ topic?: string }>(streamPath, {
+            method: "POST",
+          });
+          if (cancelled) {
+            void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+            return;
+          }
+          startedOnServer = true;
+          const serverTopic =
+            typeof res?.topic === "string" && res.topic.trim()
+              ? res.topic.trim()
+              : fallbackTopic;
+          if (!subscribedTopics.has(serverTopic)) {
+            subscribedTopics.add(serverTopic);
+            await ws.subscribe(serverTopic, { mode: "lines" });
+          }
+          if (!cancelled) {
+            setStreamActive(true);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setStreamActive(false);
+          }
+          if (process.env.NODE_ENV === "development") {
+            console.error("[Sessions] Start pane stream failed, falling back to polling", err);
+          }
+        }
+      })();
+    }
+
     return () => {
+      cancelled = true;
+      setStreamActive(false);
       unsubEvent();
-      void ws.unsubscribe(paneTopic).catch(() => {});
+      for (const topic of subscribedTopics) {
+        void ws.unsubscribe(topic).catch(() => {});
+      }
+      if (startedOnServer) {
+        void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+      }
     };
-  }, [activePaneKey, outputLines, paneIndex, refetchOutputBackfill, sessionId]);
+  }, [activePaneKey, encodedSessionId, isConnected, outputLines, paneIndex, refetchOutputBackfill, sessionId]);
 
   useEffect(() => {
     const panes = panesQuery.data?.panes ?? [];
@@ -428,7 +477,10 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
   const agentCounts = useMemo(() => {
     const panes = panesQuery.data?.panes || [];
     return panes.reduce<Record<string, number>>((acc, pane) => {
-      const type = pane.type || "unknown";
+      const type = (pane.type || "").trim().toLowerCase();
+      if (!type || type === "user" || type === "service" || type === "unknown") {
+        return acc;
+      }
       acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
@@ -460,7 +512,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
 
       setPrompt("");
-      if (!isConnected) {
+      if (!isConnected || !streamActive) {
         void queryClient.invalidateQueries({
           queryKey: ["pane-output-backfill", sessionId, paneIndex],
         });
@@ -835,23 +887,41 @@ function SessionCheckpointsSection({
     },
   });
 
+  const [forceOverwriteRestore, setForceOverwriteRestore] = useState(false);
+
   const restoreCheckpointMutation = useMutation({
-    mutationFn: (checkpointId: string) =>
-      apiFetch<RestoreCheckpointResponse>(
+    mutationFn: (checkpointId: string) => {
+      const safeSlug = checkpointId
+        .replace(/[^a-zA-Z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 24);
+      const restoreBody = forceOverwriteRestore
+        ? { force: true }
+        : {
+            force: false,
+            target_session: `${sessionId}-restored-${safeSlug || "copy"}`,
+          };
+      return apiFetch<RestoreCheckpointResponse>(
         `/api/v1/sessions/${encodedSessionId}/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
         {
           method: "POST",
           headers: {
             "Idempotency-Key": createCheckpointIdempotencyKey("cp-restore"),
           },
-          body: JSON.stringify({ force: true }),
+          body: JSON.stringify(restoreBody),
         }
-      ),
+      );
+    },
     onSuccess: (res, cpId) => {
+      const targetNote =
+        res.session_name && res.session_name !== sessionId
+          ? ` Target session: "${res.session_name}".`
+          : "";
       onNotice({
         type: "success",
-        message: `Restored checkpoint "${cpId}" (${res.panes_restored} pane(s) restored).`,
+        message: `Restored checkpoint "${cpId}" (${res.panes_restored} pane(s) restored).${targetNote}`,
       });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
       void queryClient.invalidateQueries({ queryKey: ["sessions", sessionId] });
       void queryClient.invalidateQueries({
         queryKey: ["session-panes", sessionId],
@@ -1069,6 +1139,18 @@ function SessionCheckpointsSection({
                     >
                       {isVerifying ? "Verifying…" : "Verify Integrity"}
                     </button>
+
+                    <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={forceOverwriteRestore}
+                        onChange={(e) =>
+                          setForceOverwriteRestore(e.target.checked)
+                        }
+                        className="h-3.5 w-3.5"
+                      />
+                      Overwrite live session
+                    </label>
 
                     <button
                       type="button"
