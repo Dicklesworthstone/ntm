@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -1494,5 +1495,66 @@ func TestExpandPath_NoHome(t *testing.T) {
 	result = util.ExpandPath("")
 	if result != "" {
 		t.Errorf("ExpandPath('') = %q, want ''", result)
+	}
+}
+
+func TestArchiverRedactsSecretsBeforePersisting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tmux shell script requires POSIX")
+	}
+	dir := t.TempDir()
+	secret := "sk-proj-FAKEtestkey1234567890123456789012345678901234"
+	fakeTmux := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\nprintf 'output line with token %s\\n' '" + secret + "'\n"
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", fakeTmux)
+
+	rcfg := redaction.DefaultConfig()
+	rcfg.Mode = redaction.ModeRedact
+
+	var recorded []*ArchiveRecord
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName:     "redact-sess",
+		OutputDir:       dir,
+		Interval:        time.Second,
+		LinesPerCapture: 100,
+		RedactionConfig: &rcfg,
+		OnRecord: func(rec *ArchiveRecord) {
+			recorded = append(recorded, rec)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewArchiver: %v", err)
+	}
+
+	pane := tmux.Pane{ID: "%1", Index: 1, Title: "redact-sess__cc_1", Type: tmux.AgentClaude}
+	if err := a.capturePane(context.Background(), pane); err != nil {
+		t.Fatalf("capturePane: %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("recorded = %d, want 1", len(recorded))
+	}
+	if strings.Contains(recorded[0].Content, secret) || !strings.Contains(recorded[0].Content, "[REDACTED:") {
+		t.Fatalf("recorded content did not redact secret: %q", recorded[0].Content)
+	}
+
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("glob archive files = %v, err=%v", files, err)
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("archive file leaked raw secret: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "[REDACTED:") {
+		t.Fatalf("archive file did not contain redaction placeholder: %s", string(raw))
 	}
 }

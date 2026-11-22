@@ -66,7 +66,7 @@ func TestRestoreReadinessLifecycleWithholdsContextFromBlockedUI(t *testing.T) {
 					if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_SCREEN"), []byte(tc.screen), 0600); err != nil {
 						return err
 					}
-					timer = time.AfterFunc(750*time.Millisecond, cancel)
+					timer = time.AfterFunc(80*time.Millisecond, cancel)
 				}
 				return nil
 			})

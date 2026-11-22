@@ -12,10 +12,11 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-const (
-	restoreContextReadyTimeout = 30 * time.Second
-	restoreContextReadyPoll    = 200 * time.Millisecond
-)
+const restoreContextReadyTimeout = 30 * time.Second
+
+// restoreContextReadyPoll is a var so tests can tighten the readiness polling
+// cadence without changing production behavior.
+var restoreContextReadyPoll = 200 * time.Millisecond
 
 // ErrRestoreContextNotReady means saved context was withheld. Waiting never
 // clears a draft, answers a dialog, interrupts a turn, or relaunches a pane.

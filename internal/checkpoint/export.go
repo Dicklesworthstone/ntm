@@ -730,6 +730,12 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 	}
 	cp.SessionName = sessionName
 
+	// Enforce privacy mode before persisting an imported checkpoint to disk
+	// (matches Create and Export).
+	if err := privacy.GetDefaultManager().CanPersist(sessionName, privacy.OpCheckpoint); err != nil {
+		return nil, fmt.Errorf("checkpoint import blocked: %w", err)
+	}
+
 	// Apply TargetDir override or expand ${WORKING_DIR} placeholder
 	if opts.TargetDir != "" {
 		cp.WorkingDir = opts.TargetDir

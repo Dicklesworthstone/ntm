@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -95,6 +96,7 @@ type Archiver struct {
 	writeErr        error
 	started         time.Time
 	totalRecords    int
+	redactionCfg    *redaction.Config
 	onRecord        func(*ArchiveRecord) // Optional callback for testing
 	getPanes        func(context.Context, string) ([]tmux.Pane, error)
 	writeFile       func(*os.File, []byte) (int, error)
@@ -107,6 +109,7 @@ type ArchiverOptions struct {
 	Interval        time.Duration
 	LinesPerCapture int
 	MaxFileBytes    int64                // Zero uses DefaultMaxFileBytes; negative values are invalid.
+	RedactionConfig *redaction.Config    // Optional redaction config applied before persisting scrollback.
 	OnRecord        func(*ArchiveRecord) // Callback when record is written
 }
 
@@ -171,6 +174,10 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		started:         time.Now(),
 		onRecord:        opts.OnRecord,
 		getPanes:        tmux.GetPanesContext,
+	}
+	if opts.RedactionConfig != nil {
+		cfgCopy := opts.RedactionConfig.DeepCopy()
+		a.redactionCfg = &cfgCopy
 	}
 	file, err := a.openChunk(a.started)
 	if err != nil {
@@ -300,6 +307,15 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 		return nil
 	}
 
+	// Apply configured redaction before writing scrollback to disk so secrets
+	// are not persisted verbatim into ~/.ntm/archive/*.jsonl.
+	persistedContent := newContent
+	if a.redactionCfg != nil && (a.redactionCfg.Mode == redaction.ModeRedact || a.redactionCfg.Mode == redaction.ModeBlock) {
+		effective := *a.redactionCfg
+		effective.Mode = redaction.ModeRedact
+		persistedContent = redaction.ScanAndRedact(newContent, effective).Output
+	}
+
 	// Create record
 	paneName := fmt.Sprintf("%s_%d", pane.Type, pane.Index)
 	record := &ArchiveRecord{
@@ -309,8 +325,8 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 		Agent:     string(pane.Type),
 		Model:     pane.Variant,
 		Timestamp: time.Now().UTC(),
-		Content:   newContent,
-		Lines:     countLines(newContent),
+		Content:   persistedContent,
+		Lines:     countLines(persistedContent),
 		Sequence:  state.Sequence + 1,
 	}
 

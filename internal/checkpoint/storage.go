@@ -240,12 +240,66 @@ func GenerateID(name string) string {
 	}
 	id := fmt.Sprintf("%s-%s", timestamp, hex.EncodeToString(randBytes[:]))
 
-	// Sanitize name for filesystem safety
-	safeName := sanitizeName(name)
+	// Sanitize name for strict checkpoint ID compatibility (^[A-Za-z0-9._-]+$, no "..").
+	safeName := sanitizeCheckpointIDLabel(name)
 	if safeName == "" {
 		return id
 	}
 	return fmt.Sprintf("%s-%s", id, safeName)
+}
+
+// sanitizeCheckpointIDLabel normalizes an arbitrary user-provided checkpoint
+// name into a safe suffix that always passes validateCheckpointID.
+func sanitizeCheckpointIDLabel(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	prevDot := false
+	prevDash := false
+	for _, r := range trimmed {
+		switch {
+		case (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_':
+			b.WriteRune(r)
+			prevDot = false
+			prevDash = false
+		case r == ' ' || r == '%':
+			b.WriteByte('_')
+			prevDot = false
+			prevDash = false
+		case r == '.':
+			if prevDot {
+				// Prevent ".." traversal sequences inside checkpoint IDs.
+				continue
+			}
+			b.WriteByte('.')
+			prevDot = true
+			prevDash = false
+		case r == '-':
+			if prevDash {
+				continue
+			}
+			b.WriteByte('-')
+			prevDot = false
+			prevDash = true
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+			prevDot = false
+		}
+		if b.Len() >= 50 {
+			break
+		}
+	}
+	safe := strings.Trim(b.String(), ".-_")
+	if len(safe) > 50 {
+		safe = strings.Trim(safe[:50], ".-_")
+	}
+	return safe
 }
 
 // sanitizeName makes a name safe for use in file paths.

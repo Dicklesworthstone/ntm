@@ -228,6 +228,10 @@ func runMonitorContext(parent context.Context, session string) (runErr error) {
 
 	// Initialize archiver for background CASS capture
 	archiverOpts := archive.DefaultArchiverOptions(session)
+	if cfg != nil {
+		redactCfg := cfg.Redaction.ToRedactionLibConfig()
+		archiverOpts.RedactionConfig = &redactCfg
+	}
 	archiver, err := archive.NewArchiver(archiverOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize archiver: %v\n", err)

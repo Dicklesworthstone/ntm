@@ -23,6 +23,14 @@ import (
 // rather than merely changing an in-memory status after all mutations finish.
 func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Helper()
+	savedPoll := restoreContextReadyPoll
+	restoreContextReadyPoll = 5 * time.Millisecond
+	savedMaxSendDelay := tmux.DefaultClient.MaxSendDelay
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
+	t.Cleanup(func() {
+		restoreContextReadyPoll = savedPoll
+		tmux.DefaultClient.MaxSendDelay = savedMaxSendDelay
+	})
 	dir := t.TempDir()
 	log, ready := filepath.Join(dir, "calls"), filepath.Join(dir, "ready")
 	optionsDir := filepath.Join(dir, "options")

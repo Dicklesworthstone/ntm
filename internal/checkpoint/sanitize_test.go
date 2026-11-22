@@ -56,3 +56,20 @@ func TestSanitizeName_UTF8AndLength(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateIDProducesValidCheckpointIDForSpecialNames(t *testing.T) {
+	t.Parallel()
+	names := []string{
+		"fix #42 (urgent)",
+		"don't break .. traversal",
+		"Hello 🌍 世界",
+		"///...###",
+		"",
+	}
+	for _, name := range names {
+		id := GenerateID(name)
+		if err := validateCheckpointID(id); err != nil {
+			t.Errorf("GenerateID(%q) = %q failed validateCheckpointID: %v", name, id, err)
+		}
+	}
+}
