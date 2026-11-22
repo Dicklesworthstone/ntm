@@ -130,6 +130,14 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		resp, timedOut := interruptContextErrorResponse(ctxErr, false, "Interrupt canceled before inspecting session")
+		output.TimedOut = timedOut
+		output.RobotResponse = resp
+		output.CompletedAt = time.Now().UTC()
+		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
+	}
+
 	if !tmux.SessionExists(opts.Session) {
 		output.Failed = append(output.Failed, InterruptError{
 			Pane:   "session",
@@ -162,6 +170,16 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 				"Check tmux session state",
 			)
 		}
+		output.CompletedAt = time.Now().UTC()
+		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
+	}
+	// SessionObserver.Observe swallows per-pane capture cancellation and returns
+	// err == nil with degraded FreshnessUnavailable/"unknown" pane states. Fail
+	// closed before claiming durable op IDs or sending Ctrl+C to panes.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		resp, timedOut := interruptContextErrorResponse(ctxErr, false, "Interrupt canceled while inspecting panes")
+		output.TimedOut = timedOut
+		output.RobotResponse = resp
 		output.CompletedAt = time.Now().UTC()
 		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
@@ -470,10 +488,16 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 					robotPreparedDispatchRequest(dispatchPanes, messageTargets, sendOpts, inputMessage, true),
 				)
 				if prepareErr != nil {
-					output.RobotResponse = robotDispatchPrepareErrorResponse(prepareErr)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						resp, timedOut := interruptContextErrorResponse(ctxErr, false, "Interrupt follow-up canceled by caller")
+						output.TimedOut = output.TimedOut || timedOut
+						output.RobotResponse = resp
+					} else {
+						output.RobotResponse = robotDispatchPrepareErrorResponse(prepareErr)
+					}
 					output.Failed = append(output.Failed, InterruptError{Pane: "dispatch", Reason: fmt.Sprintf("failed to prepare follow-up message: %v", prepareErr)})
 				} else {
-					result, _ := service.Dispatch(ctx, prepared)
+					result, dispatchErr := service.Dispatch(ctx, prepared)
 					for _, receipt := range result.Receipts {
 						if receipt.Status == dispatchsvc.ReceiptDelivered {
 							output.MessageSent = true
@@ -481,6 +505,13 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 						}
 						if receipt.Status == dispatchsvc.ReceiptFailed || receipt.Status == dispatchsvc.ReceiptSkipped || receipt.Status == dispatchsvc.ReceiptBlocked {
 							output.Failed = append(output.Failed, InterruptError{Pane: receipt.Target.Address, Reason: fmt.Sprintf("failed to send message: %s", receipt.Error)})
+						}
+					}
+					if dispatchErr != nil || ctx.Err() != nil {
+						if ctxErr := ctx.Err(); ctxErr != nil {
+							resp, timedOut := interruptContextErrorResponse(ctxErr, false, "Interrupt follow-up canceled by caller")
+							output.TimedOut = output.TimedOut || timedOut
+							output.RobotResponse = resp
 						}
 					}
 				}

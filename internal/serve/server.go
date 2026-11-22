@@ -1237,7 +1237,7 @@ func robotErrorHTTPStatus(code string) int {
 	case robot.ErrCodeResourceBusy, robot.ErrCodeStaleWorkCoordination:
 		return http.StatusConflict
 	case robot.ErrCodeIdempotencyConflict, robot.ErrCodeOperationInProgress, robot.ErrCodeOperationOutcomeUnknown,
-		robot.ErrCodeAmbiguousRequest, "REQUEST_IDENTITY_CHANGED", "REQUEST_ALREADY_DISPATCHED", "REQUEST_NOT_CANCELLABLE":
+		robot.ErrCodeAmbiguousRequest, "REQUEST_IDENTITY_CHANGED", "REQUEST_ALREADY_DISPATCHED", "REQUEST_NOT_CANCELLABLE", "OPERATION_CANCELED":
 		// The operation ID (Idempotency-Key) is bound to a different command,
 		// another request holding it is still running, or a cancel request arrived
 		// after dispatch started / after terminal completion: a client-side

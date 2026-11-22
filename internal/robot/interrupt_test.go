@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -261,5 +262,37 @@ func TestObserveInterruptPollRefreshesActivityAndFailsClosed(t *testing.T) {
 	)
 	if unavailable.Current.Freshness != status.FreshnessUnavailable || unavailable.Current.Error == "" {
 		t.Fatalf("activity failure authorized current state: %+v", unavailable.Current)
+	}
+}
+
+func TestGetInterruptContext_PreCanceledReturnsCanceled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, err := GetInterrupt(InterruptOptions{
+		Context:   ctx,
+		Session:   "any-session",
+		Message:   "follow up",
+		TimeoutMs: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetInterrupt(canceled) err = %v", err)
+	}
+	if out == nil || out.Success || out.ErrorCode != "CANCELED" || out.TimedOut {
+		t.Fatalf("GetInterrupt(canceled) = %+v, want ErrorCode=CANCELED TimedOut=false", out)
+	}
+
+	dlCtx, dlCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer dlCancel()
+	dlOut, err := GetInterrupt(InterruptOptions{
+		Context:   dlCtx,
+		Session:   "any-session",
+		TimeoutMs: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetInterrupt(deadline) err = %v", err)
+	}
+	if dlOut == nil || dlOut.Success || dlOut.ErrorCode != ErrCodeTimeout || dlOut.TimedOut {
+		t.Fatalf("GetInterrupt(deadline) = %+v, want ErrorCode=%s TimedOut=false (pre-wait deadline)", dlOut, ErrCodeTimeout)
 	}
 }

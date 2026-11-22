@@ -24,6 +24,7 @@ import (
 // Seed the same real SQLite store the helper processes open, then prove Cobra
 // forwards --session instead of inspecting or canceling the newer sibling.
 func TestRobotRequestSessionAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
 	store, err := state.Open(filepath.Join(configHome, "ntm", "state.db"))
