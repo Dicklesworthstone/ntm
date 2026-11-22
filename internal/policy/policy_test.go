@@ -972,3 +972,47 @@ func checkAction(p *Policy, command string) Action {
 	}
 	return ""
 }
+
+func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
+	p := DefaultPolicy()
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"allowed prefix && rm -rf /", "git reset --soft HEAD~1 && rm -rf /"},
+		{"allowed prefix ; git reset --hard", "git push --force-with-lease; git reset --hard HEAD"},
+		{"comment smuggling allowed keyword", "rm -rf / # git reset --soft"},
+		{"force-with-lease combined with --force", "git push --force-with-lease --force origin main"},
+		{"force-with-lease combined with -f", "git push --force-with-lease -f origin main"},
+		{"rm -fr /", "rm -fr /"},
+		{"rm -r -f /", "rm -r -f /"},
+		{"rm --recursive --force /", "rm --recursive --force /"},
+		{"git -C repo reset --hard", "git -C /tmp/repo reset --hard HEAD"},
+		{"git -c core.hooksPath=/dev/null push --force", "git -c core.hooksPath=/dev/null push --force"},
+		{"git branch --delete --force", "git branch --delete --force main"},
+		{"pipeline containing blocked command", "git reset --soft HEAD~1 | git clean -fd"},
+		{"newline separated blocked command", "git reset --soft HEAD~1\nrm -rf ~"},
+	}
+
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkAction(p, tc.cmd); got != ActionBlock {
+				t.Errorf("Check(%q) = %q, want %q", tc.cmd, got, ActionBlock)
+			}
+		})
+	}
+
+	// Legitimate compound with allowed + approval should resolve to approval (most restrictive).
+	if got := checkAction(p, "git reset --soft HEAD~1 && git commit --amend"); got != ActionApprove {
+		t.Errorf("Check(allow && approve) = %q, want %q", got, ActionApprove)
+	}
+	// Quoted shell separator must not split into bogus subcommands.
+	if got := checkAction(p, `git commit -m "fix && clean docs"`); got == ActionBlock {
+		t.Errorf("Check(quoted commit message) = %q, must not block benign quoted separator", got)
+	}
+	// Subshell-invoked destructive commands inside quotes must remain blocked.
+	if got := checkAction(p, `sh -c "rm -rf /"`); got != ActionBlock {
+		t.Errorf("Check(sh -c rm -rf /) = %q, want %q", got, ActionBlock)
+	}
+}

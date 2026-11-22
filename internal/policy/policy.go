@@ -171,6 +171,8 @@ func loadOrDefaultAt(projectPolicyPath string) (*Policy, error) {
 
 // DefaultPolicy returns a sensible default policy for destructive command protection.
 func DefaultPolicy() *Policy {
+	const gitOpts = `(?:\s+(?:-[Cc]\s+\S+|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)|--no-pager|-p|--paginate|--bare|--no-replace-objects))*`
+	const rmRF = `rm\s+(?:-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*|(?:-[rR]|--recursive)\s+(?:-f|--force)|(?:-f|--force)\s+(?:-[rR]|--recursive))`
 	p := &Policy{
 		Version: 1,
 		// Automation defaults
@@ -179,27 +181,27 @@ func DefaultPolicy() *Policy {
 			AutoCommit:   true,       // Allow auto-commit
 			ForceRelease: "approval", // Require approval for force release
 		},
-		// Allowed patterns checked FIRST - explicitly safe commands
+		// Allowed patterns checked FIRST per subcommand - explicitly safe commands
 		Allowed: []Rule{
-			{Pattern: `git\s+push\s+.*--force-with-lease`, Reason: "Safe force push (prevents overwriting others' work)"},
-			{Pattern: `git\s+reset\s+--soft`, Reason: "Soft reset preserves changes"},
-			{Pattern: `git\s+reset\s+HEAD~?\d*$`, Reason: "Mixed reset preserves working directory"},
+			{Pattern: `^git` + gitOpts + `\s+push\s+.*--force-with-lease(\b|=)`, Reason: "Safe force push (prevents overwriting others' work)"},
+			{Pattern: `^git` + gitOpts + `\s+reset\s+--soft(\s|$)`, Reason: "Soft reset preserves changes"},
+			{Pattern: `^git` + gitOpts + `\s+reset\s+HEAD~?\d*$`, Reason: "Mixed reset preserves working directory"},
 		},
-		// Blocked patterns - dangerous commands (checked after allowed)
+		// Blocked patterns - dangerous commands (checked after allowed per subcommand)
 		Blocked: []Rule{
-			{Pattern: `git\s+reset\s+--hard`, Reason: "Hard reset loses uncommitted changes"},
-			{Pattern: `git\s+clean(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|$)`, Reason: "Removes untracked files permanently"},
-			{Pattern: `git\s+push(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|$)`, Reason: "Force push can overwrite remote history"},
-			{Pattern: `git\s+push(\s+.*?)?\s(\+|:\+)`, Reason: "Force push via +refspec can overwrite remote history"},
-			{Pattern: `rm\s+-rf\s+(/|~|\*|\.|\.\.)(/|\s|$)`, Reason: "Critical recursive deletion"},
-			{Pattern: `git\s+branch\s+-D`, Reason: "Force delete branch loses unmerged work"},
-			{Pattern: `git\s+stash\s+(drop|clear)`, Reason: "Losing stashed work"},
+			{Pattern: `git` + gitOpts + `\s+reset(\s+.*?)?\s--hard(\s|['")]|$)`, Reason: "Hard reset loses uncommitted changes"},
+			{Pattern: `git` + gitOpts + `\s+clean(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|['")]|$)`, Reason: "Removes untracked files permanently"},
+			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|['")]|$)`, Reason: "Force push can overwrite remote history"},
+			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(\+|:\+)`, Reason: "Force push via +refspec can overwrite remote history"},
+			{Pattern: rmRF + `\s+(/|~|\*|\.|\.\.)(/|\s|['")]|$)`, Reason: "Critical recursive deletion"},
+			{Pattern: `git` + gitOpts + `\s+branch(\s+.*?)?\s(-D|--delete\s+.*(-f|--force)|(-f|--force)\s+.*(--delete|-d))(\s|['")]|$)`, Reason: "Force delete branch loses unmerged work"},
+			{Pattern: `git` + gitOpts + `\s+stash\s+(drop|clear)(\s|['")]|$)`, Reason: "Losing stashed work"},
 		},
 		// Approval required - potentially dangerous commands
 		ApprovalRequired: []Rule{
-			{Pattern: `git\s+rebase(\s+.*?)?\s(-i|--interactive)`, Reason: "Interactive rebase rewrites history"},
-			{Pattern: `git\s+commit\s+--amend`, Reason: "Amending rewrites history"},
-			{Pattern: `rm\s+-rf\s+\S`, Reason: "Recursive force delete"},
+			{Pattern: `git` + gitOpts + `\s+rebase(\s+.*?)?\s(-i|--interactive)(\s|$)`, Reason: "Interactive rebase rewrites history"},
+			{Pattern: `git` + gitOpts + `\s+commit(\s+.*?)?\s--amend(\s|$)`, Reason: "Amending rewrites history"},
+			{Pattern: rmRF + `\s+\S`, Reason: "Recursive force delete"},
 			{Pattern: `force_release`, Reason: "Force release another agent's reservation", SLB: true},
 		},
 	}
@@ -255,21 +257,106 @@ func (p *Policy) compile() error {
 	return errs
 }
 
-// Check evaluates a command against the policy and returns a match if found.
-// Returns nil if the command is not matched by any rule (implicitly allowed).
-// Order of precedence: allowed > blocked > approval_required
-func (p *Policy) Check(command string) *Match {
-	// Normalize command for matching
-	cmd := strings.TrimSpace(command)
+var gitPushUnconditionalForceRE = regexp.MustCompile(`\s(-[a-zA-Z]*f[a-zA-Z]*|--force)(\s|['")]|$)`)
 
-	// Check allowed first (explicit allowlist takes precedence)
+// splitShellSubcommands splits a compound shell command on unquoted command
+// separators (&&, ||, ;, |, newline) and strips unquoted shell comments (# ...)
+// so an allowed prefix or trailing comment cannot smuggle a destructive command
+// past policy enforcement.
+func splitShellSubcommands(command string) []string {
+	var parts []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			parts = append(parts, s)
+		}
+		cur.Reset()
+	}
+
+	n := len(command)
+	for i := 0; i < n; i++ {
+		ch := command[i]
+		if escaped {
+			cur.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			}
+			cur.WriteByte(ch)
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			cur.WriteByte(ch)
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			cur.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+			cur.WriteByte(ch)
+		case '"':
+			inDouble = true
+			cur.WriteByte(ch)
+		case '#':
+			// POSIX shell treats '#' as a comment start when at the start of a word.
+			if cur.Len() == 0 || i == 0 || command[i-1] == ' ' || command[i-1] == '\t' || command[i-1] == '\n' || command[i-1] == ';' || command[i-1] == '|' || command[i-1] == '&' {
+				for i < n && command[i] != '\n' {
+					i++
+				}
+				flush()
+				continue
+			}
+			cur.WriteByte(ch)
+		case ';', '\n':
+			flush()
+		case '|':
+			if i+1 < n && command[i+1] == '|' {
+				i++
+			}
+			flush()
+		case '&':
+			if i+1 < n && command[i+1] == '&' {
+				i++
+				flush()
+				continue
+			}
+			cur.WriteByte(ch)
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	flush()
+	return parts
+}
+
+func (p *Policy) checkSingle(cmd, fullCmd string) *Match {
+	// Check allowed first (explicit allowlist takes precedence per subcommand)
 	for _, rule := range p.Allowed {
 		if rule.regex != nil && rule.regex.MatchString(cmd) {
+			// Guard against `git push --force-with-lease --force` (or `-f`),
+			// where git honors the unconditional --force flag.
+			if strings.Contains(rule.Pattern, "force-with-lease") && gitPushUnconditionalForceRE.MatchString(cmd) {
+				continue
+			}
 			return &Match{
 				Action:  ActionAllow,
 				Pattern: rule.Pattern,
 				Reason:  rule.Reason,
-				Command: cmd,
+				Command: fullCmd,
 			}
 		}
 	}
@@ -281,7 +368,7 @@ func (p *Policy) Check(command string) *Match {
 				Action:  ActionBlock,
 				Pattern: rule.Pattern,
 				Reason:  rule.Reason,
-				Command: cmd,
+				Command: fullCmd,
 			}
 		}
 	}
@@ -293,14 +380,59 @@ func (p *Policy) Check(command string) *Match {
 				Action:  ActionApprove,
 				Pattern: rule.Pattern,
 				Reason:  rule.Reason,
-				Command: cmd,
+				Command: fullCmd,
 				SLB:     rule.SLB,
 			}
 		}
 	}
 
-	// No match - implicitly allowed
 	return nil
+}
+
+// Check evaluates a command against the policy and returns a match if found.
+// Returns nil if the command is not matched by any rule (implicitly allowed).
+// For compound commands (&&, ||, ;, |, newlines), every subcommand is checked
+// independently and the most restrictive action wins (block > approve > allow).
+func (p *Policy) Check(command string) *Match {
+	// Normalize command for matching
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return nil
+	}
+
+	subcommands := splitShellSubcommands(cmd)
+	if len(subcommands) <= 1 {
+		target := cmd
+		if len(subcommands) == 1 {
+			target = subcommands[0]
+		}
+		return p.checkSingle(target, cmd)
+	}
+
+	var firstApprove *Match
+	var firstAllow *Match
+	for _, sub := range subcommands {
+		m := p.checkSingle(sub, cmd)
+		if m == nil {
+			continue
+		}
+		switch m.Action {
+		case ActionBlock:
+			return m
+		case ActionApprove:
+			if firstApprove == nil || (m.SLB && !firstApprove.SLB) {
+				firstApprove = m
+			}
+		case ActionAllow:
+			if firstAllow == nil {
+				firstAllow = m
+			}
+		}
+	}
+	if firstApprove != nil {
+		return firstApprove
+	}
+	return firstAllow
 }
 
 // Stats returns counts of rules by type.
