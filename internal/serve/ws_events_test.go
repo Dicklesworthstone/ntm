@@ -1335,4 +1335,24 @@ func TestWSAttentionSubscriptionProfileAndMuteSnoozeFilters(t *testing.T) {
 	}) {
 		t.Fatal("pinned muted event must not be suppressed by ExcludeMuted")
 	}
+
+	// Priority override keeps muted/snoozed items visible.
+	if !matchesAttentionSub(sub, robot.AttentionEvent{
+		Cursor:        8,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityError,
+		Details: map[string]any{
+			"attention_muted":             true,
+			"attention_state":             "snoozed",
+			"attention_snoozed_until":     future,
+			"attention_override_priority": "critical",
+		},
+	}) {
+		t.Fatal("priority-overridden event must not be suppressed by ExcludeMuted/ExcludeSnoozed")
+	}
+
+	if !isValidTopic("workflows:*") || !isValidTopic("workflows:demo") {
+		t.Fatal("workflows:* and workflows:<session> must be valid WebSocket topics")
+	}
 }

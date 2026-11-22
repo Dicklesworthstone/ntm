@@ -113,6 +113,8 @@ type WSAttentionSub struct {
 	// StartedAt is when this subscription started.
 	StartedAt time.Time `json:"started_at"`
 
+	feed attentionStreamFeed
+
 	// EventCount is the number of events delivered since subscription started.
 	EventCount int64 `json:"event_count"`
 
@@ -1010,6 +1012,7 @@ func isValidTopic(topic string) bool {
 		strings.HasPrefix(topic, "mail:") ||
 		strings.HasPrefix(topic, "reservations:") ||
 		strings.HasPrefix(topic, "pipelines:") ||
+		strings.HasPrefix(topic, "workflows:") ||
 		strings.HasPrefix(topic, "approvals:") ||
 		strings.HasPrefix(topic, "accounts:") ||
 		strings.HasPrefix(topic, "attention:") {
@@ -1138,6 +1141,7 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		ExcludeMuted:        excludeMuted,
 		ExcludeSnoozed:      excludeSnoozed,
 		StartedAt:           time.Now(),
+		feed:                feed,
 		topics:              append([]string(nil), topics...),
 		replaying:           sinceCursor >= 0,
 	}
@@ -1391,11 +1395,22 @@ func matchesAttentionSub(sub WSAttentionSub, event robot.AttentionEvent) bool {
 	return true
 }
 
+func attentionEventHasPriorityOverride(event robot.AttentionEvent) bool {
+	if event.Details == nil {
+		return false
+	}
+	override, ok := event.Details["attention_override_priority"].(string)
+	return ok && strings.TrimSpace(override) != ""
+}
+
 func attentionEventIsMuted(event robot.AttentionEvent) bool {
 	if event.Details == nil {
 		return false
 	}
 	if pinned, ok := event.Details["attention_pinned"].(bool); ok && pinned {
+		return false
+	}
+	if attentionEventHasPriorityOverride(event) {
 		return false
 	}
 	if reason, ok := event.Details["attention_hidden_reason"].(string); ok && strings.TrimSpace(reason) != "" {
@@ -1417,6 +1432,9 @@ func attentionEventIsSnoozed(event robot.AttentionEvent, now time.Time) bool {
 	if pinned, ok := event.Details["attention_pinned"].(bool); ok && pinned {
 		return false
 	}
+	if attentionEventHasPriorityOverride(event) {
+		return false
+	}
 	hasState := false
 	stateIsSnoozed := false
 	if st, ok := event.Details["attention_state"].(string); ok && strings.TrimSpace(st) != "" {
@@ -1436,6 +1454,10 @@ func attentionEventIsSnoozed(event robot.AttentionEvent, now time.Time) bool {
 		}
 	}
 	return hasState && stateIsSnoozed
+}
+
+type attentionEventHydrator interface {
+	HydrateEvent(event robot.AttentionEvent) robot.AttentionEvent
 }
 
 // Applies subscription filters, runs redaction immediately (so redaction
@@ -1464,11 +1486,13 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 
 	// Hydrate live events with durable operator state when mute/snooze exclusion
 	// is active so muted or snoozed items are filtered on live delivery as well
-	// as during historical replay.
+	// as during historical replay. Prefer the subscribed feed over the global feed.
 	if (criteria.ExcludeMuted || criteria.ExcludeSnoozed) &&
 		(event.Details == nil || event.Details["attention_state"] == nil) {
-		if feed := robot.GetAttentionFeed(); feed != nil {
-			event = feed.HydrateEvent(event)
+		if hydrator, ok := criteria.feed.(attentionEventHydrator); ok {
+			event = hydrator.HydrateEvent(event)
+		} else if globalFeed := robot.GetAttentionFeed(); globalFeed != nil {
+			event = globalFeed.HydrateEvent(event)
 		}
 	}
 
