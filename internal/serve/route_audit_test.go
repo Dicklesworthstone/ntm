@@ -32,6 +32,7 @@ func setupRouteAuditServer(t *testing.T) *Server {
 		Port:     0,
 		EventBus: eventBus,
 	})
+	srv.auditLogsDir = t.TempDir()
 
 	t.Cleanup(func() {
 		srv.Stop()

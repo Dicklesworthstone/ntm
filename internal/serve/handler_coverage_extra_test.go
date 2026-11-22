@@ -547,6 +547,7 @@ func TestHandlePatchConfigV1(t *testing.T) {
 func TestHandleRobotStatusV1(t *testing.T) {
 	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/robot/status", nil)
 	rec := httptest.NewRecorder()
 	srv.handleRobotStatusV1(rec, req)

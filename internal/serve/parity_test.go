@@ -415,6 +415,7 @@ func TestParitySessionsEndpoint(t *testing.T) {
 func TestParityRobotStatusEndpoint(t *testing.T) {
 	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
 
 	// Call REST handler
 	req := httptest.NewRequest(http.MethodGet, "/api/robot/status", nil)

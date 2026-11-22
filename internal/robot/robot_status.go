@@ -307,7 +307,10 @@ func ComputeProgress(beads *bv.BeadsSummary) *ProgressSummary {
 
 // GetStatusWithOptions collects status and applies pagination to sessions.
 func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
-	wd := mustGetwd()
+	wd := strings.TrimSpace(opts.ProjectDir)
+	if wd == "" {
+		wd = mustGetwd()
+	}
 	cfg, err := config.LoadMerged(wd, config.DefaultPath())
 	if err != nil {
 		cfg = config.Default()
@@ -434,7 +437,7 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 	// Work counts come only from a source-verified observation; unverifiable
 	// work reports none (GH #283). A failing work source is already named in
 	// the source-health rows the refresh records.
-	projectDir, err := resolveNormalizedProjectDir("")
+	projectDir, err := resolveNormalizedProjectDir(opts.ProjectDir)
 	if err != nil {
 		return nil, fmt.Errorf("status work: %w", err)
 	}

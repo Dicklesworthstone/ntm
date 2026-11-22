@@ -9,6 +9,7 @@ type PaginationOptions struct {
 	Offset        int
 	Store         *state.Store `json:"-"`
 	ExplicitStore bool         `json:"-"`
+	ProjectDir    string       `json:"-"`
 }
 
 func (opts PaginationOptions) resolveStore() *state.Store {

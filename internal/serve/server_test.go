@@ -68,7 +68,20 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("TMUX_PANE", "")
 		_ = os.Setenv("TMUX_TMPDIR", socketRoot)
 	}
+	// Isolate XDG data/config dirs and Agent Mail URL so serve unit tests
+	// never scan the developer's live audit logs, CASS/CM stores, or ambient
+	// Agent Mail server. Tests needing custom stubs override via t.Setenv.
+	dataHome, dataErr := os.MkdirTemp("", "ntm-serve-data-")
+	if dataErr == nil {
+		_ = os.Setenv("XDG_DATA_HOME", dataHome)
+		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(dataHome, "config"))
+	}
+	_ = os.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+
 	code := m.Run()
+	if dataHome != "" {
+		_ = os.RemoveAll(dataHome)
+	}
 	if socketRoot != "" {
 		_ = os.RemoveAll(socketRoot)
 	}
@@ -3288,6 +3301,7 @@ func TestSessionEndpointMissingID(t *testing.T) {
 func TestRobotStatusEndpoint(t *testing.T) {
 	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/robot/status", nil)
 	rec := httptest.NewRecorder()
