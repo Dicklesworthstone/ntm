@@ -185,6 +185,11 @@ func TestContextProcessQueriesCancelPortableCommands(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("portable command fixtures require a POSIX shell")
 	}
+	// Force portable ps/pgrep fallback on Linux so this test exercises
+	// subprocess cancellation rather than the native /proc fast path.
+	noProc := filepath.Join(t.TempDir(), "no-proc")
+	prev := procRootOverride.Swap(&noProc)
+	t.Cleanup(func() { procRootOverride.Store(prev) })
 	for _, name := range []string{"ps", "pgrep"} {
 		if name == "pgrep" && runtime.GOOS == "darwin" {
 			continue // macOS has a native process snapshot instead of pgrep
@@ -432,5 +437,72 @@ func TestStartTime(t *testing.T) {
 	}
 	if _, err := StartTime(-5); err == nil {
 		t.Fatal("StartTime(-5) should error")
+	}
+}
+
+func TestLinuxProcFSFastPathAvoidsSubprocess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux /proc")
+	}
+	if !procFSAvailable("/proc") {
+		t.Skip("/proc not available")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "subprocess-called")
+	for _, name := range []string{"ps", "pgrep"} {
+		script := "#!/bin/sh\necho " + name + " >> \"" + marker + "\"\nexit 99\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Missing PID must short-circuit via /proc without spawning ps/pgrep.
+	const missingPID = 999999999
+	if got := GetCmdlineContext(t.Context(), missingPID); got != nil {
+		t.Fatalf("GetCmdlineContext(missing) = %v, want nil", got)
+	}
+	if got := GetChildPIDsContext(t.Context(), missingPID, 8); got != nil {
+		t.Fatalf("GetChildPIDsContext(missing) = %v, want nil", got)
+	}
+	if HasChildAlive(missingPID) {
+		t.Fatal("HasChildAlive(missing) = true, want false")
+	}
+	if _, _, err := GetProcessState(missingPID); err == nil {
+		t.Fatal("GetProcessState(missing) = nil, want error")
+	}
+	if IsAlive(missingPID) {
+		t.Fatal("IsAlive(missing) = true, want false")
+	}
+
+	// Live parent with an actual child must detect the child purely via /proc.
+	child := exec.Command("/bin/sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatalf("start child sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		if child.Process != nil {
+			_ = child.Process.Kill()
+		}
+		_ = child.Wait()
+	})
+
+	self := os.Getpid()
+	if !HasChildAlive(self) {
+		t.Fatalf("HasChildAlive(%d) = false while child %d is running", self, child.Process.Pid)
+	}
+	children := GetChildPIDsContext(t.Context(), self, 64)
+	found := false
+	for _, pid := range children {
+		if pid == child.Process.Pid {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("GetChildPIDsContext(%d) = %v, missing running child %d", self, children, child.Process.Pid)
+	}
+	if data, err := os.ReadFile(marker); err == nil && len(data) > 0 {
+		t.Fatalf("Linux /proc fast path spawned fallback subprocess(es): %s", strings.TrimSpace(string(data)))
 	}
 }

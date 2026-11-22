@@ -8,14 +8,45 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	gopsutil "github.com/shirou/gopsutil/v4/process"
 )
+
+var (
+	procRootOverride     atomic.Pointer[string]
+	defaultProcFSOnce    sync.Once
+	defaultProcFSReady   bool
+)
+
+func procRoot() string {
+	if p := procRootOverride.Load(); p != nil {
+		return *p
+	}
+	return "/proc"
+}
+
+func procFSAvailable(root string) bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if root == "/proc" {
+		defaultProcFSOnce.Do(func() {
+			_, err := os.Stat("/proc/self/status")
+			defaultProcFSReady = err == nil
+		})
+		return defaultProcFSReady
+	}
+	_, err := os.Stat(filepath.Join(root, "self", "status"))
+	return err == nil
+}
 
 // SnapshotProcess is one process lifetime observed by SnapshotContext. Started
 // is ps's locale-independent start timestamp; Command is the kernel process
@@ -188,7 +219,8 @@ func IsAlive(pid int) bool {
 
 	// Fast path: inspect /proc state directly on Linux. Zombie and dead
 	// processes still have a /proc entry until reaped, but they are not alive.
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+	root := procRoot()
+	if data, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "status")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if !strings.HasPrefix(line, "State:") {
 				continue
@@ -201,6 +233,8 @@ func IsAlive(pid int) bool {
 			break
 		}
 		return true
+	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+		return false
 	}
 
 	// Native snapshot (darwin): one sysctl lookup answers both existence and
@@ -304,24 +338,38 @@ func getChildPIDs(parentPID int) []int {
 
 	// /proc walk: every thread of the parent can be the recorded
 	// fork() caller in Linux's accounting, so read every
-	// task/<tid>/children file.
-	taskDir := fmt.Sprintf("/proc/%d/task", parentPID)
+	// task/<tid>/children file. When /proc is authoritative on Linux,
+	// avoid spawning pgrep (which scans the entire process table).
+	root := procRoot()
+	taskDir := filepath.Join(root, strconv.Itoa(parentPID), "task")
 	if entries, err := os.ReadDir(taskDir); err == nil {
+		readAnyChildren := false
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
 			}
-			path := fmt.Sprintf("%s/%s/children", taskDir, entry.Name())
+			path := filepath.Join(taskDir, entry.Name(), "children")
 			data, rerr := os.ReadFile(path)
 			if rerr != nil {
 				continue
 			}
+			readAnyChildren = true
 			for _, raw := range strings.Fields(string(data)) {
 				if pid, perr := strconv.Atoi(raw); perr == nil {
 					add(pid)
 				}
 			}
 		}
+		if readAnyChildren {
+			return pids
+		}
+		if procFSAvailable(root) {
+			if _, statErr := os.Stat(taskDir); errors.Is(statErr, os.ErrNotExist) {
+				return pids
+			}
+		}
+	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+		return nil
 	}
 
 	// Native snapshot (darwin): one sysctl call replaces the pgrep spawn.
@@ -334,9 +382,7 @@ func getChildPIDs(parentPID int) []int {
 		}
 	}
 
-	// Fallback / supplement: pgrep also picks up children where the
-	// parent's /proc layout is absent (macOS) or where /proc lists
-	// have raced behind the kernel.
+	// Fallback for systems without /proc or Linux kernels lacking CONFIG_PROC_CHILDREN.
 	if cmd := exec.Command("pgrep", "-P", strconv.Itoa(parentPID)); cmd != nil {
 		if out, err := cmd.Output(); err == nil {
 			for _, raw := range strings.Fields(string(out)) {
@@ -372,13 +418,16 @@ func GetCmdlineContext(ctx context.Context, pid int) []string {
 	if ctx == nil || ctx.Err() != nil || pid <= 0 {
 		return nil
 	}
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+	root := procRoot()
+	if data, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "cmdline")); err == nil {
 		// /proc/.../cmdline is NUL-separated, with a trailing NUL.
 		raw := strings.TrimRight(string(data), "\x00")
 		if raw == "" {
 			return nil
 		}
 		return strings.Split(raw, "\x00")
+	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+		return nil
 	}
 	// Fallback for non-Linux. `ps -o command=` returns a single
 	// space-separated string with no easy way to recover argv0
@@ -399,7 +448,7 @@ func GetCmdlineContext(ctx context.Context, pid int) []string {
 }
 
 // GetChildPIDs returns up to `limit` direct children of `parentPID`.
-// Linux fast path reads `/proc/<pid>/task/<pid>/children`; falls back
+// Linux fast path reads `/proc/<pid>/task/*/children`; falls back
 // to `pgrep -P`. Returns nil on failure.
 func GetChildPIDs(parentPID int, limit int) []int {
 	return GetChildPIDsContext(context.Background(), parentPID, limit)
@@ -430,9 +479,46 @@ func GetChildPIDsContext(ctx context.Context, parentPID int, limit int) []int {
 		return out
 	}
 
-	taskPath := fmt.Sprintf("/proc/%d/task/%d/children", parentPID, parentPID)
-	if data, err := os.ReadFile(taskPath); err == nil {
-		return collect(strings.Fields(string(data)))
+	root := procRoot()
+	taskDir := filepath.Join(root, strconv.Itoa(parentPID), "task")
+	if entries, err := os.ReadDir(taskDir); err == nil {
+		seen := make(map[int]struct{})
+		var out []int
+		readAnyChildren := false
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			data, rerr := os.ReadFile(filepath.Join(taskDir, entry.Name(), "children"))
+			if rerr != nil {
+				continue
+			}
+			readAnyChildren = true
+			for _, p := range strings.Fields(string(data)) {
+				pid, perr := strconv.Atoi(p)
+				if perr != nil || pid <= 0 {
+					continue
+				}
+				if _, dup := seen[pid]; dup {
+					continue
+				}
+				seen[pid] = struct{}{}
+				out = append(out, pid)
+				if len(out) >= limit {
+					return out
+				}
+			}
+		}
+		if readAnyChildren {
+			return out
+		}
+		if procFSAvailable(root) {
+			if _, statErr := os.Stat(taskDir); errors.Is(statErr, os.ErrNotExist) {
+				return out
+			}
+		}
+	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+		return nil
 	}
 	if native, ok := nativeChildPIDs(parentPID); ok {
 		var out []int
@@ -494,7 +580,7 @@ func SessionTerminalForeground(pid int) (tpgid, pgrp, sid int, ok bool) {
 	if pid <= 0 {
 		return 0, 0, 0, false
 	}
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	data, err := os.ReadFile(filepath.Join(procRoot(), strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, 0, 0, false
 	}
@@ -525,7 +611,8 @@ func GetProcessState(pid int) (string, string, error) {
 	}
 
 	// Try /proc first (Linux)
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+	root := procRoot()
+	if data, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "status")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.HasPrefix(line, "State:") {
 				fields := strings.Fields(line)
@@ -539,6 +626,8 @@ func GetProcessState(pid int) (string, string, error) {
 				}
 			}
 		}
+	} else if errors.Is(err, os.ErrNotExist) && procFSAvailable(root) {
+		return "", "", fmt.Errorf("failed to get process state for pid %d", pid)
 	}
 
 	// Native snapshot (darwin): one sysctl lookup replaces the ps spawn,
