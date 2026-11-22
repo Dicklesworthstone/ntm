@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -938,6 +939,21 @@ func (m *Model) setPaneListSelectionByPaneID(paneID string) {
 		m.cursor = 0
 	}
 	m.paneList.Select(m.cursor)
+}
+
+func (m *Model) selectPaneByTimelineAgent(agentID string) bool {
+	target := strings.TrimSpace(agentID)
+	if target == "" {
+		return false
+	}
+	for i, p := range m.panes {
+		if p.ID == target || p.Title == target || strings.HasSuffix(p.Title, "__"+target) {
+			m.cursor = i
+			m.setPaneListSelectionByPaneID(p.ID)
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) rebuildPaneList() tea.Cmd {

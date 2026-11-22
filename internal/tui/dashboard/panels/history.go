@@ -266,9 +266,18 @@ func (m *HistoryPanel) HasError() bool {
 	return m.err != nil
 }
 
-// IsPreviewOpen reports whether the full-prompt preview overlay is active.
+// IsPreviewOpen reports whether the full-prompt preview overlay is active and
+// has a visible entry backing it.
 func (m *HistoryPanel) IsPreviewOpen() bool {
-	return m.showPreview
+	return m.showPreview && len(m.visibleEntries) > 0
+}
+
+// Blur overrides PanelBase.Blur so losing focus always closes any open
+// full-prompt preview overlay rather than leaving it armed/painted unfocused.
+func (m *HistoryPanel) Blur() {
+	m.PanelBase.Blur()
+	m.showPreview = false
+	m.previewScroll = 0
 }
 
 // SetPanes provides pane metadata used for agent-type filtering and rendering targets.
@@ -584,6 +593,8 @@ func (m *HistoryPanel) applyFilters() {
 	if len(m.visibleEntries) == 0 {
 		m.cursor = 0
 		m.offset = 0
+		m.showPreview = false
+		m.previewScroll = 0
 		if m.tableInit {
 			m.rebuildTableRows()
 			m.syncOffsetFromTable()

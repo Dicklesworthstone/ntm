@@ -197,6 +197,7 @@ func (m *Model) rebuildFocusRing(logChanges bool) {
 	current := m.focusRing.Current()
 	if current.ID == "" {
 		m.focusedPanel = PanelPaneList
+		m.syncSidebarPanelFocusState()
 		m.syncFocusAnimations()
 		return
 	}
@@ -208,6 +209,7 @@ func (m *Model) rebuildFocusRing(logChanges bool) {
 		}
 	}
 	m.focusedPanel = current.Panel
+	m.syncSidebarPanelFocusState()
 	m.syncFocusAnimations()
 }
 
@@ -225,6 +227,7 @@ func (m *Model) setFocusedPanel(panel PanelID) bool {
 	if previous != panel {
 		logFocusf("focus: %s -> %s", panelIDString(previous), targetID)
 	}
+	m.syncSidebarPanelFocusState()
 	m.syncFocusAnimations()
 	return true
 }

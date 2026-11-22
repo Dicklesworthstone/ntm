@@ -77,6 +77,19 @@ func (m *TimelinePanel) HasError() bool {
 	return m.err != nil
 }
 
+// IsOverlayOpen returns true when the marker detail overlay is actively shown.
+func (m *TimelinePanel) IsOverlayOpen() bool {
+	return m.showOverlay && m.selectedMarker != nil
+}
+
+// Blur clears focus and dismisses any open marker detail overlay so it cannot
+// trap or bleed keys after focus leaves the timeline panel.
+func (m *TimelinePanel) Blur() {
+	m.PanelBase.Blur()
+	m.showOverlay = false
+	m.selectedMarker = nil
+}
+
 // Init implements tea.Model
 func (m *TimelinePanel) Init() tea.Cmd {
 	return nil
@@ -160,9 +173,11 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Jump to first marker in view
 			m.selectFirstMarkerInView()
 		case "enter":
-			// If marker is selected, show details overlay
-			if m.markerIndex >= 0 && m.markerIndex < len(m.data.Markers) {
-				marker := m.data.Markers[m.markerIndex]
+			// If marker is selected, show details overlay using the same visible
+			// sorted slice that markerIndex addresses.
+			visibleMarkers := m.getVisibleMarkers()
+			if m.markerIndex >= 0 && m.markerIndex < len(visibleMarkers) {
+				marker := visibleMarkers[m.markerIndex]
 				m.selectedMarker = &marker
 				m.showOverlay = true
 				return m, func() tea.Msg {

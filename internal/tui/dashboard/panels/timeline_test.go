@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -931,5 +933,47 @@ func TestTimelinePanel_MarkerKeybindings(t *testing.T) {
 
 	for action := range expectedActions {
 		t.Errorf("missing keybinding for marker action %q", action)
+	}
+}
+
+func TestTimelinePanelOverlayBlurAndVisibleMarkerIndexing(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	p := NewTimelinePanel()
+	p.SetSize(80, 20)
+	p.Focus()
+	// Put an out-of-window marker first so raw data.Markers[0] != visibleMarkers[0].
+	p.SetData(TimelineData{
+		Events: []state.AgentEvent{
+			{AgentID: "cc_1", State: state.TimelineWorking, Timestamp: now.Add(-5 * time.Minute)},
+		},
+		Markers: []state.TimelineMarker{
+			{ID: "old-hidden", AgentID: "cc_1", Type: state.MarkerError, Timestamp: now.Add(-3 * time.Hour), Message: "out of window"},
+			{ID: "visible-later", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-1 * time.Minute), Message: "later"},
+			{ID: "visible-first", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-4 * time.Minute), Message: "first visible"},
+		},
+	}, nil)
+
+	// Navigate to first visible marker and press enter.
+	p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected MarkerSelectMsg cmd on enter")
+	}
+	msg, ok := cmd().(MarkerSelectMsg)
+	if !ok {
+		t.Fatalf("expected MarkerSelectMsg, got %T", cmd())
+	}
+	if msg.Marker.ID != "visible-first" {
+		t.Fatalf("selected marker ID = %q, want visible-first (must index sorted visibleMarkers)", msg.Marker.ID)
+	}
+	if !p.IsOverlayOpen() {
+		t.Fatal("expected IsOverlayOpen() = true after enter on marker")
+	}
+
+	// Blurring must dismiss the overlay so it cannot trap keys on focus change.
+	p.Blur()
+	if p.IsOverlayOpen() {
+		t.Fatal("expected Blur() to dismiss marker overlay")
 	}
 }

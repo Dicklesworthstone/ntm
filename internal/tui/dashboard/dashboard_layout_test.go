@@ -4211,3 +4211,52 @@ func TestDashboardSidebarHasErrorAndBoundedPanelView(t *testing.T) {
 		t.Fatalf("expected non-viewport panel output bounded to 3 lines, got %d", len(lines))
 	}
 }
+
+func TestDashboardSidebarRenderPreservesOpenTimelineAndHistoryOverlays(t *testing.T) {
+	now := time.Now()
+	m := newTestModel(200)
+	m.popupMode = true
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.filesPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = panels.NewTimelinePanel()
+	m.timelinePanel.SetData(panels.TimelineData{
+		Events: []state.AgentEvent{
+			{AgentID: "cc_1", State: state.TimelineWorking, Timestamp: now.Add(-5 * time.Minute)},
+		},
+		Markers: []state.TimelineMarker{
+			{ID: "m1", AgentID: "cc_1", SessionID: "test", Type: state.MarkerPrompt, Timestamp: now.Add(-2 * time.Minute), Message: "hello marker"},
+		},
+	}, nil)
+
+	// Focus sidebar timeline, select marker, open overlay.
+	m.syncSidebarPanelFocusState()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	next := updated.(Model)
+	updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next = updated.(Model)
+	if !next.timelinePanel.IsOverlayOpen() {
+		t.Fatal("expected timeline overlay to open on enter")
+	}
+
+	// Rendering the sidebar (which calls syncSidebarPanelFocusState) MUST NOT
+	// blur the active timeline panel or dismiss its open overlay.
+	_ = next.renderSidebar(60, 24)
+	if !next.timelinePanel.IsOverlayOpen() {
+		t.Fatal("renderSidebar() wiped open timeline marker overlay")
+	}
+
+	// Pressing Esc in popupMode must dismiss the overlay instead of quitting.
+	updated, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	next = updated.(Model)
+	if next.timelinePanel.IsOverlayOpen() {
+		t.Fatal("Esc did not dismiss open timeline overlay")
+	}
+	if cmd != nil {
+		if _, isQuit := cmd().(tea.QuitMsg); isQuit {
+			t.Fatal("Esc with open timeline overlay unexpectedly quit popupMode dashboard")
+		}
+	}
+}

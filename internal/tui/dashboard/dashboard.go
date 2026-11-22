@@ -1371,64 +1371,74 @@ func (m *Model) activateSidebarPanelForKey(msg tea.KeyMsg) bool {
 }
 
 func (m *Model) syncSidebarPanelFocusState() {
-	if m.rotationConfirmPanel != nil {
-		m.rotationConfirmPanel.Blur()
-	}
-	if m.ranoNetworkPanel != nil {
-		m.ranoNetworkPanel.Blur()
-	}
-	if m.rchPanel != nil {
-		m.rchPanel.Blur()
-	}
-	if m.costPanel != nil {
-		m.costPanel.Blur()
-	}
-	if m.metricsPanel != nil {
-		m.metricsPanel.Blur()
-	}
-	if m.historyPanel != nil {
-		m.historyPanel.Blur()
-	}
-	if m.filesPanel != nil {
-		m.filesPanel.Blur()
-	}
-	if m.cassPanel != nil {
-		m.cassPanel.Blur()
-	}
-	if m.workflowPanel != nil {
-		m.workflowPanel.Blur()
-	}
-	if m.quotaPanel != nil {
-		m.quotaPanel.Blur()
-	}
-	if m.rateLimitPanel != nil {
-		m.rateLimitPanel.Blur()
-	}
-	if m.accountsPanel != nil {
-		m.accountsPanel.Blur()
-	}
-	if m.pipelinesPanel != nil {
-		m.pipelinesPanel.Blur()
-	}
-	if m.approvalsPanel != nil {
-		m.approvalsPanel.Blur()
-	}
-	if m.worktreesPanel != nil {
-		m.worktreesPanel.Blur()
-	}
-	if m.mailInboxPanel != nil {
-		m.mailInboxPanel.Blur()
-	}
-	if m.timelinePanel != nil {
-		m.timelinePanel.Blur()
+	var activePanel panels.Panel
+	if m.focusedPanel == PanelSidebar {
+		if ref, ok := m.sidebarActivePanelRef(); ok {
+			m.sidebarActivePanel = ref.id
+			activePanel = ref.panel
+		}
+	} else if m.focusedPanel == PanelHistory && m.historyPanel != nil {
+		activePanel = m.historyPanel
 	}
 
-	if m.focusedPanel != PanelSidebar {
-		return
+	syncPanel := func(p panels.Panel) {
+		if p == activePanel {
+			p.Focus()
+			return
+		}
+		p.Blur()
 	}
-	if ref, ok := m.sidebarActivePanelRef(); ok {
-		m.sidebarActivePanel = ref.id
-		ref.panel.Focus()
+
+	if m.rotationConfirmPanel != nil {
+		syncPanel(m.rotationConfirmPanel)
+	}
+	if m.ranoNetworkPanel != nil {
+		syncPanel(m.ranoNetworkPanel)
+	}
+	if m.rchPanel != nil {
+		syncPanel(m.rchPanel)
+	}
+	if m.costPanel != nil {
+		syncPanel(m.costPanel)
+	}
+	if m.metricsPanel != nil {
+		syncPanel(m.metricsPanel)
+	}
+	if m.historyPanel != nil {
+		syncPanel(m.historyPanel)
+	}
+	if m.filesPanel != nil {
+		syncPanel(m.filesPanel)
+	}
+	if m.cassPanel != nil {
+		syncPanel(m.cassPanel)
+	}
+	if m.workflowPanel != nil {
+		syncPanel(m.workflowPanel)
+	}
+	if m.quotaPanel != nil {
+		syncPanel(m.quotaPanel)
+	}
+	if m.rateLimitPanel != nil {
+		syncPanel(m.rateLimitPanel)
+	}
+	if m.accountsPanel != nil {
+		syncPanel(m.accountsPanel)
+	}
+	if m.pipelinesPanel != nil {
+		syncPanel(m.pipelinesPanel)
+	}
+	if m.approvalsPanel != nil {
+		syncPanel(m.approvalsPanel)
+	}
+	if m.worktreesPanel != nil {
+		syncPanel(m.worktreesPanel)
+	}
+	if m.mailInboxPanel != nil {
+		syncPanel(m.mailInboxPanel)
+	}
+	if m.timelinePanel != nil {
+		syncPanel(m.timelinePanel)
 	}
 }
 
@@ -2412,6 +2422,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case panels.ReplayMsg:
 		// Handle replay request from history panel
 		return m, m.executeReplay(msg.Entry)
+
+	case panels.TimelineSelectMsg:
+		m.selectPaneByTimelineAgent(msg.AgentID)
+		m.healthMessage = fmt.Sprintf("Timeline: %s (%s @ %s)", msg.AgentID, msg.State, msg.Time.Format("15:04:05"))
+		if m.toasts != nil {
+			m.toasts.Push(components.Toast{
+				ID:      "timeline-select",
+				Message: m.healthMessage,
+				Level:   components.ToastInfo,
+			})
+		}
+		return m, nil
+
+	case panels.MarkerSelectMsg:
+		m.selectPaneByTimelineAgent(msg.Marker.AgentID)
+		summary := fmt.Sprintf("Marker [%s] %s @ %s", msg.Marker.Type, msg.Marker.AgentID, msg.Marker.Timestamp.Format("15:04:05"))
+		if trimmed := strings.TrimSpace(msg.Marker.Message); trimmed != "" {
+			summary += ": " + trimmed
+		}
+		m.healthMessage = summary
+		if m.toasts != nil {
+			m.toasts.Push(components.Toast{
+				ID:      "timeline-marker-select",
+				Message: summary,
+				Level:   components.ToastInfo,
+			})
+		}
+		return m, nil
 
 	case dashboardReplayResultMsg:
 		if msg.Err != nil {
@@ -4025,7 +4063,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.historyPanel != nil && m.historyPanel.IsPreviewOpen() &&
 			(m.focusedPanel == PanelHistory ||
 				(m.focusedPanel == PanelSidebar && m.sidebarActivePanelID() == m.historyPanel.Config().ID)) {
+			if !m.historyPanel.IsFocused() {
+				m.historyPanel.Focus()
+			}
 			_, cmd := m.historyPanel.Update(msg)
+			return m, cmd
+		}
+
+		// When the timeline panel's marker detail overlay is open inside the
+		// sidebar, route keys directly to it before popupMode Esc / sidebar J/K /
+		// global toggles so Esc/q dismiss the overlay instead of exiting.
+		if m.timelinePanel != nil && m.timelinePanel.IsOverlayOpen() &&
+			m.focusedPanel == PanelSidebar && m.sidebarActivePanelID() == m.timelinePanel.Config().ID {
+			if !m.timelinePanel.IsFocused() {
+				m.timelinePanel.Focus()
+			}
+			_, cmd := m.timelinePanel.Update(msg)
 			return m, cmd
 		}
 
@@ -4613,6 +4666,7 @@ func (m *Model) cycleFocus(dir int) {
 	}
 
 	m.focusedPanel = current.Panel
+	m.syncSidebarPanelFocusState()
 	m.syncFocusAnimations()
 	if previous != m.focusedPanel {
 		logFocusf("focus: %s -> %s", panelIDString(previous), current.ID)
