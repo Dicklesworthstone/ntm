@@ -205,7 +205,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		}
 		le.executor.persistState()
 
-		if ctx.Err() != nil && !completedAllSteps {
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			result.Status = StatusCancelled
 			result.FinishedAt = time.Now()
 			return result
@@ -358,7 +358,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		}
 		le.executor.persistState()
 
-		if ctx.Err() != nil && !completedAllSteps {
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			result.Status = StatusCancelled
 			result.FinishedAt = time.Now()
 			return result
@@ -500,7 +500,7 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			}
 		}
 
-		if ctx.Err() != nil && !completedAllSteps {
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			le.popLoopVars(scope)
 			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 			le.executor.persistState()
@@ -688,7 +688,7 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		}
 		le.executor.persistState()
 
-		if ctx.Err() != nil && !completedAllSteps {
+		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			result.Status = StatusCancelled
 			result.FinishedAt = time.Now()
 			return result
@@ -833,6 +833,15 @@ func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
 	sub.SetDefaults(le.executor.defaults)
 	sub.SetMaxDepth(le.executor.limits.MaxSubstitutionDepth)
 	return sub.SubstituteStrict(le.executor.substituteRuntimeVariables(expr))
+}
+
+func iterationHasCancelledStep(results []StepResult) bool {
+	for _, r := range results {
+		if r.Status == StatusCancelled {
+			return true
+		}
+	}
+	return false
 }
 
 // executeIteration executes a single loop iteration (all nested steps).
