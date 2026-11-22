@@ -175,9 +175,17 @@ func TestPaneAgentAlive(t *testing.T) {
 		}
 	})
 
+	shellBin := "sh"
+	if _, err := os.Stat("/bin/sh"); err == nil {
+		// Use the real POSIX shell directly so user PATH shims (e.g. a
+		// `#!/usr/bin/env bash` wrapper) cannot briefly appear as `env`
+		// before exec'ing `sh`.
+		shellBin = "/bin/sh"
+	}
+
 	t.Run("shell root without a child is not a running agent", func(t *testing.T) {
 		// `read` is a builtin, so the shell waits on its stdin with no child.
-		shell := startProcess(t, "sh", "-c", "read line")
+		shell := startProcess(t, shellBin, "-c", "read line")
 		if PaneAgentAlive(shell.Process.Pid) {
 			t.Fatalf("PaneAgentAlive(%d) = true for a childless shell; an agent that exited back to its shell must read as dead", shell.Process.Pid)
 		}
@@ -185,7 +193,7 @@ func TestPaneAgentAlive(t *testing.T) {
 
 	t.Run("shell root with a living child", func(t *testing.T) {
 		// The trailing `:` keeps the shell from exec'ing sleep in its place.
-		shell := startProcess(t, "sh", "-c", "sleep 30; :")
+		shell := startProcess(t, shellBin, "-c", "sleep 30; :")
 		deadline := time.Now().Add(5 * time.Second)
 		for !PaneAgentAlive(shell.Process.Pid) {
 			if time.Now().After(deadline) {
