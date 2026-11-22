@@ -119,8 +119,9 @@ describe('Wave 14 Session Intel Support & Commands (adopt, redact, context)', ()
         resetVscodeMock();
     });
 
-    it('supports all 12 adopt pane types, window.pane specs, normalizers, and markdown formatters', () => {
-        assert.equal(SUPPORTED_ADOPT_HARNESSES.length, 12);
+    it('supports all 13 adopt pane types (12 harnesses + user), window.pane specs, normalizers, and markdown formatters', () => {
+        assert.equal(SUPPORTED_ADOPT_HARNESSES.length, 13);
+        assert.ok(SUPPORTED_ADOPT_HARNESSES.includes('pi'));
         assert.equal(ADOPT_MODE_OPTIONS.length, 4);
         assert.equal(REDACT_MODE_OPTIONS.length, 3);
         assert.equal(CONTEXT_LINES_OPTIONS.length, 3);

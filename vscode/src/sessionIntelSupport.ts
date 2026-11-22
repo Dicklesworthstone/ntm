@@ -11,6 +11,7 @@ export type AdoptHarness =
     | 'aider'
     | 'oc'
     | 'omp'
+    | 'pi'
     | 'ollama'
     | 'user';
 
@@ -25,6 +26,7 @@ export const SUPPORTED_ADOPT_HARNESSES: readonly AdoptHarness[] = [
     'aider',
     'oc',
     'omp',
+    'pi',
     'ollama',
     'user',
 ] as const;

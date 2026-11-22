@@ -131,6 +131,11 @@ export const SPAWN_HARNESS_OPTIONS: readonly SpawnHarnessQuickPickItem[] = [
     { label: 'Grok (grok)', harness: 'grok', description: '--grok=<count>' },
     { label: 'OpenCode (oc)', harness: 'oc', description: '--oc=<count>' },
     { label: 'Pi (pi)', harness: 'pi', description: '--pi=<count>' },
+    { label: 'Gemini (gmi)', harness: 'gmi', description: '--gmi=<count>' },
+    { label: 'Cursor (cursor)', harness: 'cursor', description: '--cursor=<count>' },
+    { label: 'Windsurf (windsurf)', harness: 'windsurf', description: '--windsurf=<count>' },
+    { label: 'Aider (aider)', harness: 'aider', description: '--aider=<count>' },
+    { label: 'Ollama (ollama)', harness: 'ollama', description: '--ollama=<count>' },
     {
         label: 'Custom Preset / Flags...',
         harness: 'custom',
@@ -148,6 +153,10 @@ export const SEND_TARGET_OPTIONS: readonly SendTargetQuickPickItem[] = [
     { label: 'OpenCode (--oc)', target: 'oc', description: 'Target OpenCode panes' },
     { label: 'Pi (--pi)', target: 'pi', description: 'Target Pi panes' },
     { label: 'Gemini (--gmi)', target: 'gmi', description: 'Target Gemini panes' },
+    { label: 'Cursor (--cursor)', target: 'cursor', description: 'Target Cursor panes' },
+    { label: 'Windsurf (--windsurf)', target: 'windsurf', description: 'Target Windsurf panes' },
+    { label: 'Aider (--aider)', target: 'aider', description: 'Target Aider panes' },
+    { label: 'Ollama (--ollama)', target: 'ollama', description: 'Target Ollama panes' },
 ];
 
 export interface EnsemblePresetQuickPickItem extends vscode.QuickPickItem {

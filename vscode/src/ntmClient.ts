@@ -169,6 +169,11 @@ export const SUPPORTED_SPAWN_HARNESSES = [
     'grok',
     'oc',
     'pi',
+    'gmi',
+    'cursor',
+    'windsurf',
+    'aider',
+    'ollama',
 ] as const;
 
 export const SUPPORTED_SEND_HARNESSES = [
@@ -180,6 +185,10 @@ export const SUPPORTED_SEND_HARNESSES = [
     'oc',
     'pi',
     'gmi',
+    'cursor',
+    'windsurf',
+    'aider',
+    'ollama',
 ] as const;
 
 export type SpawnHarness = typeof SUPPORTED_SPAWN_HARNESSES[number];
