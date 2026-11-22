@@ -119,6 +119,8 @@ type RequestParams struct {
 
 type actorProvenanceContextKey struct{}
 
+type slbVerifiedContextKey struct{}
+
 // WithActorProvenance attaches explicit actor provenance (such as HTTP auth
 // principal or local daemon request origin) to ctx for Request and Approve.
 func WithActorProvenance(ctx context.Context, provenance string) context.Context {
@@ -173,15 +175,15 @@ func parseActorProvenance(raw string) map[string]string {
 	return out
 }
 
-func slbActorProvenanceConflict(requestedProv, approverProv string) bool {
+func slbActorProvenanceConflict(requestedProv, approverProv string, slbVerified bool) bool {
 	req := parseActorProvenance(requestedProv)
 	if len(req) == 0 {
 		return false
 	}
-	app := parseActorProvenance(approverProv)
-	if app["slb_verified"] == "1" {
+	if slbVerified {
 		return false
 	}
+	app := parseActorProvenance(approverProv)
 	if req["auth"] != "" && app["auth"] != "" {
 		return req["auth"] == app["auth"] && req["principal"] != "" && req["principal"] == app["principal"]
 	}
@@ -461,7 +463,12 @@ func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) 
 		return false
 	}
 	if status.Status == "approved" {
-		err = e.Approve(WithActorProvenance(ctx, "slb_verified=1;reviewer="+sanitizeProvenanceValue(deciding.Reviewer)), approval.ID, "slb:"+deciding.Reviewer)
+		verifiedCtx := context.WithValue(
+			WithActorProvenance(ctx, "slb_verified=1;reviewer="+sanitizeProvenanceValue(deciding.Reviewer)),
+			slbVerifiedContextKey{},
+			true,
+		)
+		err = e.Approve(verifiedCtx, approval.ID, "slb:"+deciding.Reviewer)
 	} else {
 		err = e.Deny(ctx, approval.ID, "slb:"+deciding.Reviewer, deciding.Comments)
 	}
@@ -539,10 +546,10 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return fmt.Errorf("%s is not an authorized approver", approverID)
 	}
 	approverProv := resolveActorProvenance(ctx, "")
-	if strings.HasPrefix(approverID, "slb:") && (ctx == nil || ctx.Value(actorProvenanceContextKey{}) == nil) {
-		approverProv = "slb_verified=1;reviewer=" + sanitizeProvenanceValue(strings.TrimPrefix(approverID, "slb:"))
-	}
-	if approval.RequiresSLB && (approverID == approval.RequestedBy || slbActorProvenanceConflict(approval.RequestedProvenance, approverProv)) {
+	slbVerified := ctx != nil && ctx.Value(slbVerifiedContextKey{}) == true
+	sameActor := strings.TrimSpace(approverID) == strings.TrimSpace(approval.RequestedBy) ||
+		strings.TrimPrefix(strings.TrimSpace(approverID), "slb:") == strings.TrimPrefix(strings.TrimSpace(approval.RequestedBy), "slb:")
+	if approval.RequiresSLB && (sameActor || slbActorProvenanceConflict(approval.RequestedProvenance, approverProv, slbVerified)) {
 		return ErrSLBSelfApproval
 	}
 

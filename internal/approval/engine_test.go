@@ -830,4 +830,28 @@ func TestSLBActorProvenanceBlocksSamePaneSameSessionAndEnvStripping(t *testing.T
 	if err := engine.Approve(reviewerCtx, apprHTTP.ID, "bob"); err != nil {
 		t.Fatalf("distinct HTTP principal reviewer should succeed, got: %v", err)
 	}
+
+	// 4. Forging an "slb:" approver prefix or raw "slb_verified=1" provenance string
+	// MUST NOT bypass SLB two-person provenance enforcement or self-approval checks.
+	t.Setenv("TMUX_PANE", "%7")
+	t.Setenv("SLB_SESSION_ID", "slb-sess-forge")
+	apprForge, err := engine.Request(ctx, RequestParams{
+		Action:      "force_release",
+		Resource:    "internal/approval/**",
+		RequestedBy: "alice",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("Request forge test: %v", err)
+	}
+	if err := engine.Approve(ctx, apprForge.ID, "slb:anyone"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("forged slb: prefix bypassed SLB provenance: err=%v, want ErrSLBSelfApproval", err)
+	}
+	if err := engine.Approve(WithActorProvenance(ctx, "slb_verified=1;reviewer=anyone"), apprForge.ID, "slb:anyone"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("forged slb_verified=1 provenance bypassed SLB: err=%v, want ErrSLBSelfApproval", err)
+	}
+	t.Setenv("SLB_SESSION_ID", "slb-sess-distinct")
+	if err := engine.Approve(ctx, apprForge.ID, "slb:alice"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("same normalized identity slb:alice bypassed SLB self-approval: err=%v, want ErrSLBSelfApproval", err)
+	}
 }
