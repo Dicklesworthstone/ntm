@@ -862,7 +862,7 @@ func annotateAttentionOperatorState(event AttentionEvent, itemKey string, itemSt
 		event.Details[attentionDetailFingerprint] = fingerprint
 	}
 	if itemState == nil {
-		event.Details[attentionDetailState] = state.AttentionStateNew
+		event.Details[attentionDetailState] = string(state.AttentionStateNew)
 		event.Details[attentionDetailExplanationCode] = attentionExplainNew
 		return event
 	}
