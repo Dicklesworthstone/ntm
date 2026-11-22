@@ -92,3 +92,16 @@ func BenchmarkDetectProgress(b *testing.B) {
 		detectProgress(output, ActivityActive, nil)
 	}
 }
+
+func TestDetectProgressDeterministicTieBreak(t *testing.T) {
+	t.Parallel()
+	// Matches multiple stages with equal match counts; order must never vary.
+	output := "Starting analysis\nEditing main.go\nAll done\nI'm stuck"
+	first := detectProgress(output, ActivityActive, nil)
+	for i := 0; i < 50; i++ {
+		got := detectProgress(output, ActivityActive, nil)
+		if got.Stage != first.Stage {
+			t.Fatalf("iteration %d: detectProgress stage = %v, want deterministic %v", i, got.Stage, first.Stage)
+		}
+	}
+}

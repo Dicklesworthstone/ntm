@@ -641,11 +641,12 @@ func detectProgress(output string, activity ActivityLevel, issues []Issue) *Prog
 		}
 	}
 
-	// Find stage with highest score
+	// Find stage with highest score using deterministic stage order on ties.
 	bestStage := StageUnknown
 	bestScore := 0.0
 
-	for stage, score := range stageScores {
+	for _, stage := range []ProgressStage{StageStarting, StageWorking, StageFinishing, StageStuck} {
+		score := stageScores[stage]
 		if score > bestScore {
 			bestScore = score
 			bestStage = stage
