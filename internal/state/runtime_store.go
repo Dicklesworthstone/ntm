@@ -3444,34 +3444,6 @@ func (s *Store) GetSendOperation(operationID, sessionName string) (*SendOperatio
 	return s.getSendOperationLocked(operationID, sessionName)
 }
 
-// GetSendOperationsByID returns every session's record for an operation ID,
-// newest first. Receipt queries use this because the caller may not know
-// (or care) which session a historic operation ran in.
-func (s *Store) GetSendOperationsByID(operationID string) ([]SendOperation, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rows, err := s.db.Query(`SELECT `+sendOperationSelectColumns+`
-		FROM send_operations WHERE operation_id = ?
-		ORDER BY created_at DESC`,
-		operationID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("get send operations: %w", err)
-	}
-	defer rows.Close()
-
-	var ops []SendOperation
-	for rows.Next() {
-		op, err := scanSendOperation(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan send operation: %w", err)
-		}
-		ops = append(ops, *op)
-	}
-	return ops, rows.Err()
-}
-
 // ErrSendOperationDispatched reports that an operation already crossed the
 // dispatch boundary (dispatch_started_at IS NOT NULL), so NTM cannot cancel it
 // without risking lying about input already delivered to a pane.

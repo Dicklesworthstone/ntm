@@ -193,7 +193,7 @@ func TestClaimSendOperationLifecycle(t *testing.T) {
 	if got.PayloadSHA256 != started.PayloadSHA256 || got.PayloadBytes != started.PayloadBytes || !slices.Equal(got.Targets, started.Targets) || got.DispatchStartedAt == nil || !got.DispatchStartedAt.Equal(*started.DispatchStartedAt) {
 		t.Fatalf("completed receipt changed frozen delivery metadata: %+v", got)
 	}
-	byID, err := store.GetSendOperationsByID("op-1")
+	byID, _, err := store.GetRobotRequestRecords("op-1", "")
 	if err != nil || len(byID) != 1 || !slices.Equal(byID[0].Targets, started.Targets) || byID[0].DispatchStartedAt == nil {
 		t.Fatalf("receipt listing lost delivery metadata: %+v, %v", byID, err)
 	}
@@ -249,9 +249,9 @@ func TestClaimSendOperationRecordsKind(t *testing.T) {
 		t.Fatalf("cross-kind claim overwrote the original row: %+v", existing)
 	}
 
-	ops, err := store.GetSendOperationsByID("op-int")
+	ops, _, err := store.GetRobotRequestRecords("op-int", "")
 	if err != nil || len(ops) != 1 || ops[0].Kind != OperationKindInterrupt {
-		t.Fatalf("GetSendOperationsByID(op-int) = (%+v, %v), want one interrupt row", ops, err)
+		t.Fatalf("GetRobotRequestRecords(op-int) = (%+v, %v), want one interrupt row", ops, err)
 	}
 }
 
@@ -453,7 +453,7 @@ func TestClaimSendOperationSessionScoped(t *testing.T) {
 		t.Fatalf("session B claim = (claimed=%v, err=%v), want independent fresh claim", claimedB, err)
 	}
 
-	ops, err := store.GetSendOperationsByID("step-1")
+	ops, _, err := store.GetRobotRequestRecords("step-1", "")
 	if err != nil {
 		t.Fatalf("get by ID error = %v", err)
 	}
