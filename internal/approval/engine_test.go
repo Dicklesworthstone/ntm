@@ -851,6 +851,7 @@ func TestSLBActorProvenanceBlocksSamePaneSameSessionAndEnvStripping(t *testing.T
 	if err := engine.Approve(WithActorProvenance(ctx, "slb_verified=1;reviewer=anyone"), apprForge.ID, "slb:anyone"); !errors.Is(err, ErrSLBSelfApproval) {
 		t.Fatalf("forged slb_verified=1 provenance bypassed SLB: err=%v, want ErrSLBSelfApproval", err)
 	}
+	t.Setenv("TMUX_PANE", "%8")
 	t.Setenv("SLB_SESSION_ID", "slb-sess-distinct")
 	for _, spoof := range []string{"slb:alice", "SLB:Alice", "slb:slb:alice", "  ALICE  ", "", "slb:"} {
 		if err := engine.Approve(ctx, apprForge.ID, spoof); !errors.Is(err, ErrSLBSelfApproval) {
@@ -863,5 +864,11 @@ func TestSLBActorProvenanceBlocksSamePaneSameSessionAndEnvStripping(t *testing.T
 	localHTTPCtx := WithActorProvenance(ctx, fmt.Sprintf("http_local=1;uid=%d", os.Getuid()))
 	if err := engine.Approve(localHTTPCtx, apprForge.ID, "bob"); !errors.Is(err, ErrSLBSelfApproval) {
 		t.Fatalf("unauthenticated local HTTP bypassed pane/SLB provenance: err=%v, want ErrSLBSelfApproval", err)
+	}
+
+	// Distinct pane + distinct SLB session + distinct normalized identity succeeds
+	// (proving step 4 actually tested normalizeActorIdentity rather than pane conflict).
+	if err := engine.Approve(ctx, apprForge.ID, "bob"); err != nil {
+		t.Fatalf("distinct pane/session/actor bob should succeed, got: %v", err)
 	}
 }

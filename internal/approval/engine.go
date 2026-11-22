@@ -557,7 +557,7 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 	slbVerified := ctx != nil && ctx.Value(slbVerifiedContextKey{}) == true
 	normApprover := normalizeActorIdentity(approverID)
 	normRequester := normalizeActorIdentity(approval.RequestedBy)
-	sameActor := normApprover == "" || normApprover == normRequester
+	sameActor := normRequester == "" || normApprover == "" || normApprover == normRequester
 	if approval.RequiresSLB && (sameActor || slbActorProvenanceConflict(approval.RequestedProvenance, approverProv, slbVerified)) {
 		return ErrSLBSelfApproval
 	}
