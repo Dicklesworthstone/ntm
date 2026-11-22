@@ -436,6 +436,37 @@ func TestAllocationCalculator_CustomAllocations(t *testing.T) {
 	}
 }
 
+func TestAllocationCalculator_NilConfigAndAgyAllocation(t *testing.T) {
+	// Nil config must never panic and must stay consistent with Tier 3 defaults.
+	nilCalc := NewAllocationCalculator(nil)
+	proj := ProjectBeadCount{Path: "/dp/nilcfg", Name: "nilcfg", OpenBeads: 500}
+	nilAlloc := nilCalc.CalculateProjectAllocation(proj)
+	if nilAlloc.Project.Tier != 3 || nilAlloc.TotalAgents == 0 {
+		t.Fatalf("unexpected nil-config allocation: %+v", nilAlloc)
+	}
+	nilPlan := nilCalc.GenerateSwarmPlan("/dp", []ProjectBeadCount{proj})
+	if nilPlan == nil || nilPlan.TotalAgents != nilAlloc.TotalAgents {
+		t.Fatalf("unexpected nil-config plan: %+v", nilPlan)
+	}
+
+	// Agy allocations must flow through tier spec, totals, and planWithSuccessfulSessions.
+	cfg := testSwarmConfig()
+	cfg.Tier1Allocation = config.AllocationSpec{CC: 2, Cod: 1, Gmi: 1, Agy: 3}
+	ac := NewAllocationCalculator(cfg)
+	plan := ac.GenerateSwarmPlan("/dp", []ProjectBeadCount{proj})
+	if plan.TotalAgy != 3 || plan.TotalAgents != 7 {
+		t.Fatalf("TotalAgy=%d TotalAgents=%d, want 3 and 7", plan.TotalAgy, plan.TotalAgents)
+	}
+	results := make([]CreateSessionResult, 0, len(plan.Sessions))
+	for _, s := range plan.Sessions {
+		results = append(results, CreateSessionResult{SessionName: s.Name})
+	}
+	filtered := planWithSuccessfulSessions(plan, &OrchestrationResult{Sessions: results})
+	if filtered.TotalAgy != 3 || filtered.TotalAgents != 7 {
+		t.Fatalf("filtered plan lost Agy totals: TotalAgy=%d TotalAgents=%d", filtered.TotalAgy, filtered.TotalAgents)
+	}
+}
+
 func TestAllocationCalculator_PanesPerSessionOverride(t *testing.T) {
 	// Test that PanesPerSession > 0 uses manual override
 	cfg := testSwarmConfig()

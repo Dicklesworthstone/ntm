@@ -254,6 +254,26 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+func TestHandoffValidateAllTwelveBuiltInHarnesses(t *testing.T) {
+	validTypes := []string{
+		"cc", "claude", "cod", "codex", "gmi", "gemini",
+		"agy", "antigravity", "grok", "omp", "pi", "oc", "opencode",
+		"cursor", "windsurf", "aider", "ollama",
+	}
+	for _, agentType := range validTypes {
+		h := &Handoff{Goal: "ship", Now: "verify", AgentType: agentType}
+		if errs := h.Validate(); len(errs) != 0 {
+			t.Errorf("Validate() rejected built-in harness %q: %v", agentType, errs)
+		}
+	}
+	for _, invalid := range []string{"user", "bogus-harness"} {
+		h := &Handoff{Goal: "ship", Now: "verify", AgentType: invalid}
+		if errs := h.Validate(); len(errs) == 0 {
+			t.Errorf("Validate() accepted invalid agent_type %q", invalid)
+		}
+	}
+}
+
 func TestSetDefaults(t *testing.T) {
 	h := &Handoff{
 		Goal: "Test",

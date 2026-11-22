@@ -234,3 +234,63 @@ func TestRunGCCompactsAuditDecisionLogAndGetDecisionHistoryFilters(t *testing.T)
 		t.Fatalf("remaining window = [%s..%s], want [item-11..item-07]", remaining[0].EntityID, remaining[4].EntityID)
 	}
 }
+
+func TestRuntimeStore_GetRecentAttentionEventsAndDedupLookup(t *testing.T) {
+	store := testStore(t)
+
+	now := time.Now().UTC()
+	for i := 1; i <= 125; i++ {
+		sess := "alpha"
+		if i%2 == 0 {
+			sess = "beta"
+		}
+		dedup := fmt.Sprintf("key-%03d", i)
+		if i == 121 {
+			dedup = "repeated-key"
+		}
+		if i == 125 {
+			dedup = "repeated-key"
+		}
+		_, err := store.AppendAttentionEvent(&StoredAttentionEvent{
+			Ts:            now.Add(time.Duration(i) * time.Second),
+			SessionName:   sess,
+			Pane:          "%1",
+			Category:      "agent",
+			EventType:     "agent.error",
+			Source:        "test",
+			Actionability: ActionabilityActionRequired,
+			Severity:      SeverityWarning,
+			Summary:       fmt.Sprintf("event %d", i),
+			DedupKey:      dedup,
+			DedupCount:    1,
+		})
+		if err != nil {
+			t.Fatalf("AppendAttentionEvent(%d): %v", i, err)
+		}
+	}
+
+	recent, err := store.GetRecentAttentionEvents(5, "")
+	if err != nil {
+		t.Fatalf("GetRecentAttentionEvents(all): %v", err)
+	}
+	if len(recent) != 5 || recent[0].Cursor != 125 || recent[4].Cursor != 121 {
+		t.Fatalf("unexpected recent tail: len=%d first=%d last=%d", len(recent), recent[0].Cursor, recent[len(recent)-1].Cursor)
+	}
+
+	alphaRecent, err := store.GetRecentAttentionEvents(3, "alpha")
+	if err != nil {
+		t.Fatalf("GetRecentAttentionEvents(alpha): %v", err)
+	}
+	if len(alphaRecent) != 3 || alphaRecent[0].Cursor != 125 || alphaRecent[1].Cursor != 123 || alphaRecent[2].Cursor != 121 {
+		t.Fatalf("unexpected alpha tail: %+v", alphaRecent)
+	}
+
+	latest, err := store.GetLatestAttentionEventByDedupKey("repeated-key")
+	if err != nil || latest == nil || latest.Cursor != 125 {
+		t.Fatalf("GetLatestAttentionEventByDedupKey = %+v, %v; want cursor 125", latest, err)
+	}
+	missing, err := store.GetLatestAttentionEventByDedupKey("nonexistent-key")
+	if err != nil || missing != nil {
+		t.Fatalf("missing dedup key = %+v, %v; want nil, nil", missing, err)
+	}
+}

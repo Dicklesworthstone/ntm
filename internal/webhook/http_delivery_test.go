@@ -214,3 +214,32 @@ func TestWebhookDeliveryCancellationAndTransportErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestWebhookSSRFPolicyRejectsMetadataAndUnspecified(t *testing.T) {
+	t.Parallel()
+	blocked := []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"https://metadata.google.internal/computeMetadata/v1/",
+		"http://metadata.goog/",
+		"http://0.0.0.0:8080/hook",
+		"http://[::]:8080/hook",
+		"file:///etc/passwd",
+	}
+	mgr := NewManager(ManagerConfig{})
+	for _, rawURL := range blocked {
+		if err := ValidateWebhookTargetURL(rawURL, true); err == nil {
+			t.Errorf("ValidateWebhookTargetURL(%q) unexpectedly succeeded", rawURL)
+		}
+		if _, err := DeliverJSON(context.Background(), nil, rawURL, "", []byte(`{}`), nil); err == nil {
+			t.Errorf("DeliverJSON(%q) unexpectedly succeeded", rawURL)
+		}
+		if err := mgr.Register(WebhookConfig{
+			ID:      "ssrf-test",
+			Name:    "SSRF Test",
+			URL:     rawURL,
+			Enabled: true,
+		}); err == nil {
+			t.Errorf("WebhookManager.Register(%q) unexpectedly succeeded", rawURL)
+		}
+	}
+}

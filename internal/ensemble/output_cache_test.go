@@ -239,6 +239,53 @@ func TestModeOutputCache_LoggerSafe(t *testing.T) {
 	}
 }
 
+func TestModeOutputCache_HonorsCacheDirAndClearEvictsMemory(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	customDir := t.TempDir()
+
+	cache, err := NewModeOutputCache(projectDir, ModeOutputCacheConfig{
+		Enabled:    true,
+		TTL:        time.Minute,
+		CacheDir:   customDir,
+		MaxEntries: 10,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewModeOutputCache: %v", err)
+	}
+	if cache.dir != customDir {
+		t.Fatalf("cache.dir = %q, want %q", cache.dir, customDir)
+	}
+
+	mode := sampleMode(t)
+	fp, err := BuildModeOutputFingerprint("ctx-clear", mode, ModeOutputConfig{
+		Question:      "clear memory check",
+		AgentType:     "pi",
+		SchemaVersion: SchemaVersion,
+	})
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	out := &ModeOutput{
+		ModeID:      mode.ID,
+		Thesis:      "Before clear",
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	if err := cache.Put(fp, out); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if hit := cache.Lookup(fp); !hit.Hit || hit.Reason != "memory" {
+		t.Fatalf("expected memory hit before Clear, got %+v", hit)
+	}
+	if removed := cache.Clear(); removed != 1 {
+		t.Fatalf("Clear removed %d disk files, want 1", removed)
+	}
+	if after := cache.Lookup(fp); after.Hit {
+		t.Fatalf("expected cache miss after Clear, got stale hit: %+v", after)
+	}
+}
+
 func TestModeOutputCache_Clear(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
