@@ -24744,41 +24744,6 @@
           "key"
         ]
       },
-      "AggregationBuckets": {
-        "type": "object",
-        "properties": {
-          "buckets": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AggregationBucket"
-            }
-          },
-          "other_count": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "buckets",
-          "other_count"
-        ]
-      },
-      "Aggregations": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "$ref": "#/components/schemas/AggregationBuckets"
-          },
-          "date": {
-            "$ref": "#/components/schemas/AggregationBuckets"
-          },
-          "match_type": {
-            "$ref": "#/components/schemas/AggregationBuckets"
-          },
-          "workspace": {
-            "$ref": "#/components/schemas/AggregationBuckets"
-          }
-        }
-      },
       "AlertInfo": {
         "type": "object",
         "properties": {
@@ -28226,23 +28191,27 @@
       "CASSSearchEnvelopeResponse": {
         "type": "object",
         "properties": {
-          "_meta": {
-            "$ref": "#/components/schemas/Meta"
-          },
           "aggregations": {
-            "$ref": "#/components/schemas/Aggregations"
+            "type": "object",
+            "additionalProperties": true
           },
           "count": {
             "type": "integer"
           },
+          "has_more": {
+            "type": "boolean"
+          },
           "hits": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SearchHit"
+              "$ref": "#/components/schemas/CASSSearchHitRecord"
             }
           },
           "limit": {
             "type": "integer"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CASSSearchMetaRecord"
           },
           "offset": {
             "type": "integer"
@@ -28251,17 +28220,13 @@
             "type": "string"
           },
           "request_id": {
-            "type": "string",
-            "description": "Unique request correlation identifier."
+            "type": "string"
           },
           "success": {
-            "type": "boolean",
-            "description": "Whether the operation succeeded."
+            "type": "boolean"
           },
           "timestamp": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC3339 response timestamp."
+            "type": "string"
           },
           "total_matches": {
             "type": "integer"
@@ -28269,6 +28234,7 @@
         },
         "required": [
           "count",
+          "has_more",
           "hits",
           "limit",
           "offset",
@@ -28276,6 +28242,79 @@
           "success",
           "timestamp",
           "total_matches"
+        ]
+      },
+      "CASSSearchHitRecord": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "line_number": {
+            "type": "integer"
+          },
+          "match_type": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "match_type",
+          "score",
+          "snippet",
+          "source_path",
+          "title",
+          "workspace"
+        ]
+      },
+      "CASSSearchMetaRecord": {
+        "type": "object",
+        "properties": {
+          "index_size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "took_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string"
+          },
+          "wildcard_fallback": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "index_size",
+          "took_ms"
         ]
       },
       "CASSSearchRequest": {
@@ -36977,68 +37016,40 @@
       "MailContactRespondEnvelopeResponse": {
         "type": "object",
         "properties": {
-          "approved": {
+          "accepted": {
             "type": "boolean"
           },
-          "created_ts": {
-            "type": "string",
-            "format": "date-time"
-          },
           "expires_ts": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "from": {
             "type": "string"
           },
           "from_agent": {
             "type": "string"
           },
-          "from_project": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "reason": {
-            "type": "string"
+          "link": {
+            "$ref": "#/components/schemas/ContactLink"
           },
           "request_id": {
-            "type": "string",
-            "description": "Unique request correlation identifier."
+            "type": "string"
           },
           "status": {
             "type": "string"
           },
           "success": {
-            "type": "boolean",
-            "description": "Whether the operation succeeded."
+            "type": "boolean"
           },
           "timestamp": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC3339 response timestamp."
-          },
-          "to": {
             "type": "string"
           },
           "to_agent": {
             "type": "string"
-          },
-          "to_project": {
-            "type": "string"
-          },
-          "updated": {
-            "type": "integer"
-          },
-          "updated_ts": {
-            "type": "string",
-            "format": "date-time"
           }
         },
         "required": [
+          "accepted",
+          "from_agent",
           "success",
-          "timestamp"
+          "timestamp",
+          "to_agent"
         ]
       },
       "MailContactsEnvelopeResponse": {
@@ -38169,39 +38180,6 @@
         },
         "required": [
           "project"
-        ]
-      },
-      "Meta": {
-        "type": "object",
-        "properties": {
-          "elapsed_ms": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "index_size": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "next_cursor": {
-            "type": "string"
-          },
-          "took_ms": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "version": {
-            "type": "string"
-          },
-          "wildcard_fallback": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "elapsed_ms",
-          "index_size",
-          "took_ms",
-          "version",
-          "wildcard_fallback"
         ]
       },
       "MetricsExportEnvelopeResponse": {
@@ -39888,32 +39866,6 @@
           "name"
         ]
       },
-      "ParseError": {
-        "type": "object",
-        "properties": {
-          "column": {
-            "type": "integer"
-          },
-          "field": {
-            "type": "string"
-          },
-          "file": {
-            "type": "string"
-          },
-          "hint": {
-            "type": "string"
-          },
-          "line": {
-            "type": "integer"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ]
-      },
       "PathItem": {
         "type": "object",
         "properties": {
@@ -40486,8 +40438,17 @@
       "PipelineValidateEnvelopeResponse": {
         "type": "object",
         "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineValidationIssue"
+            }
+          },
           "request_id": {
             "type": "string"
+          },
+          "step_count": {
+            "type": "integer"
           },
           "success": {
             "type": "boolean"
@@ -40498,15 +40459,24 @@
           "valid": {
             "type": "boolean"
           },
-          "validation": {
-            "$ref": "#/components/schemas/PipelineValidationResult"
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineValidationIssue"
+            }
+          },
+          "workflow_id": {
+            "type": "string"
           }
         },
         "required": [
+          "errors",
+          "step_count",
           "success",
           "timestamp",
           "valid",
-          "validation"
+          "warnings",
+          "workflow_id"
         ]
       },
       "PipelineValidateRequest": {
@@ -40520,27 +40490,22 @@
           }
         }
       },
-      "PipelineValidationResult": {
+      "PipelineValidationIssue": {
         "type": "object",
         "properties": {
-          "errors": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ParseError"
-            }
+          "field": {
+            "type": "string"
           },
-          "valid": {
-            "type": "boolean"
+          "hint": {
+            "type": "string"
           },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ParseError"
-            }
+          "message": {
+            "type": "string"
           }
         },
         "required": [
-          "valid"
+          "field",
+          "message"
         ]
       },
       "PipelinesListEnvelopeResponse": {
@@ -45459,54 +45424,6 @@
           "relaxed_threshold"
         ]
       },
-      "SearchHit": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "line_number": {
-            "type": "integer"
-          },
-          "match_type": {
-            "type": "string"
-          },
-          "score": {
-            "type": "number"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "snippet": {
-            "type": "string"
-          },
-          "source_path": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "workspace": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent",
-          "match_type",
-          "score",
-          "snippet",
-          "source_path",
-          "title",
-          "workspace"
-        ]
-      },
       "SecurityScheme": {
         "type": "object",
         "properties": {
@@ -50225,6 +50142,15 @@
               "type": "string"
             }
           },
+          "fallback_count": {
+            "type": "integer"
+          },
+          "fifo_dir": {
+            "type": "string"
+          },
+          "pipe_pane_count": {
+            "type": "integer"
+          },
           "request_id": {
             "type": "string"
           },
@@ -50233,14 +50159,13 @@
           },
           "timestamp": {
             "type": "string"
-          },
-          "total_lines": {
-            "type": "integer",
-            "format": "int64"
           }
         },
         "required": [
+          "active_streams",
           "active_targets",
+          "fallback_count",
+          "pipe_pane_count",
           "success",
           "timestamp"
         ]

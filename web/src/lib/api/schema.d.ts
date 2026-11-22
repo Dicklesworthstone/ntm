@@ -5718,16 +5718,6 @@ export interface components {
             count: number;
             key: string;
         };
-        AggregationBuckets: {
-            buckets: components["schemas"]["AggregationBucket"][];
-            other_count: number;
-        };
-        Aggregations: {
-            agent?: components["schemas"]["AggregationBuckets"];
-            date?: components["schemas"]["AggregationBuckets"];
-            match_type?: components["schemas"]["AggregationBuckets"];
-            workspace?: components["schemas"]["AggregationBuckets"];
-        };
         AlertInfo: {
             /** @description Bead i d */
             bead_id?: string;
@@ -6856,23 +6846,42 @@ export interface components {
             workspace: string;
         };
         CASSSearchEnvelopeResponse: {
-            _meta?: components["schemas"]["Meta"];
-            aggregations?: components["schemas"]["Aggregations"];
+            aggregations?: {
+                [key: string]: unknown;
+            };
             count: number;
-            hits: components["schemas"]["SearchHit"][];
+            has_more: boolean;
+            hits: components["schemas"]["CASSSearchHitRecord"][];
             limit: number;
+            meta?: components["schemas"]["CASSSearchMetaRecord"];
             offset: number;
             query: string;
-            /** @description Unique request correlation identifier. */
             request_id?: string;
-            /** @description Whether the operation succeeded. */
             success: boolean;
-            /**
-             * Format: date-time
-             * @description RFC3339 response timestamp.
-             */
             timestamp: string;
             total_matches: number;
+        };
+        CASSSearchHitRecord: {
+            agent: string;
+            content?: string;
+            created_at?: string;
+            line_number?: number;
+            match_type: string;
+            score: number;
+            session_id?: string;
+            snippet: string;
+            source_path: string;
+            title: string;
+            workspace: string;
+        };
+        CASSSearchMetaRecord: {
+            /** Format: int64 */
+            index_size: number;
+            next_cursor?: string;
+            /** Format: int64 */
+            took_ms: number;
+            version?: string;
+            wildcard_fallback?: boolean;
         };
         CASSSearchRequest: {
             agent?: string;
@@ -9634,32 +9643,15 @@ export interface components {
             timestamp: string;
         };
         MailContactRespondEnvelopeResponse: {
-            approved?: boolean;
-            /** Format: date-time */
-            created_ts?: string;
-            /** Format: date-time */
+            accepted: boolean;
             expires_ts?: string;
-            from?: string;
-            from_agent?: string;
-            from_project?: string;
-            id?: number;
-            reason?: string;
-            /** @description Unique request correlation identifier. */
+            from_agent: string;
+            link?: components["schemas"]["ContactLink"];
             request_id?: string;
             status?: string;
-            /** @description Whether the operation succeeded. */
             success: boolean;
-            /**
-             * Format: date-time
-             * @description RFC3339 response timestamp.
-             */
             timestamp: string;
-            to?: string;
-            to_agent?: string;
-            to_project?: string;
-            updated?: number;
-            /** Format: date-time */
-            updated_ts?: string;
+            to_agent: string;
         };
         MailContactsEnvelopeResponse: {
             contacts: components["schemas"]["ContactLink"][];
@@ -9974,17 +9966,6 @@ export interface components {
         MessageDelivery: {
             payload?: components["schemas"]["Message"];
             project: string;
-        };
-        Meta: {
-            /** Format: int64 */
-            elapsed_ms: number;
-            /** Format: int64 */
-            index_size: number;
-            next_cursor?: string;
-            /** Format: int64 */
-            took_ms: number;
-            version: string;
-            wildcard_fallback: boolean;
         };
         MetricsExportEnvelopeResponse: {
             api_call_counts: {
@@ -10481,14 +10462,6 @@ export interface components {
             required?: boolean;
             schema?: components["schemas"]["Schema"];
         };
-        ParseError: {
-            column?: number;
-            field?: string;
-            file?: string;
-            hint?: string;
-            line?: number;
-            message: string;
-        };
         PathItem: {
             delete?: components["schemas"]["Operation"];
             get?: components["schemas"]["Operation"];
@@ -10650,20 +10623,23 @@ export interface components {
             timestamp: string;
         };
         PipelineValidateEnvelopeResponse: {
+            errors: components["schemas"]["PipelineValidationIssue"][];
             request_id?: string;
+            step_count: number;
             success: boolean;
             timestamp: string;
             valid: boolean;
-            validation: components["schemas"]["PipelineValidationResult"];
+            warnings: components["schemas"]["PipelineValidationIssue"][];
+            workflow_id: string;
         };
         PipelineValidateRequest: {
             workflow_content?: string;
             workflow_file?: string;
         };
-        PipelineValidationResult: {
-            errors?: components["schemas"]["ParseError"][];
-            valid: boolean;
-            warnings?: components["schemas"]["ParseError"][];
+        PipelineValidationIssue: {
+            field: string;
+            hint?: string;
+            message: string;
         };
         PipelinesListEnvelopeResponse: {
             count: number;
@@ -12196,20 +12172,6 @@ export interface components {
             relaxed_constraints: string[];
             relaxed_score: number;
             relaxed_threshold: number;
-        };
-        SearchHit: {
-            agent: string;
-            content?: string;
-            /** Format: date-time */
-            created_at?: string;
-            line_number?: number;
-            match_type: string;
-            score: number;
-            session_id?: string;
-            snippet: string;
-            source_path: string;
-            title: string;
-            workspace: string;
         };
         SecurityScheme: {
             bearerFormat?: string;
@@ -13803,13 +13765,14 @@ export interface components {
             timestamp: string;
         };
         StreamingStatsEnvelopeResponse: {
-            active_streams?: number;
+            active_streams: number;
             active_targets: string[];
+            fallback_count: number;
+            fifo_dir?: string;
+            pipe_pane_count: number;
             request_id?: string;
             success: boolean;
             timestamp: string;
-            /** Format: int64 */
-            total_lines?: number;
         };
         StructuredError: {
             /** @description Code */

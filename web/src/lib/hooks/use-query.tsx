@@ -86,6 +86,7 @@ export const DEFAULT_WS_TOPICS = [
   "mail:*",
   "reservations:*",
   "pipelines:*",
+  "workflows:*",
   "approvals:*",
   "accounts:*",
   "attention",
@@ -265,9 +266,17 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
     queryClient.invalidateQueries({ queryKey: ["bugs"] });
   }
 
-  // Pipeline events
+  // Pipeline & managed workflow events
   if (topic.startsWith("pipelines:") || event_type.startsWith("pipeline.")) {
     queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+  }
+  if (
+    topic === "workflows" ||
+    topic.startsWith("workflows:") ||
+    event_type.startsWith("workflow.")
+  ) {
+    queryClient.invalidateQueries({ queryKey: ["workflows"] });
+    queryClient.invalidateQueries({ queryKey: ["workflow-live-status"] });
   }
 
   // Safety / approvals events

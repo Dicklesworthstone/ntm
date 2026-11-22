@@ -561,10 +561,64 @@ type PipelineRecoveryEnvelopeResponse struct {
 	Replaced   bool                                      `json:"replaced,omitempty"`
 }
 
+type PipelineValidationIssue struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
+}
+
 type PipelineValidateEnvelopeResponse struct {
 	APIResponse
 	Valid      bool                      `json:"valid"`
-	Validation pipeline.ValidationResult `json:"validation"`
+	Errors     []PipelineValidationIssue `json:"errors"`
+	Warnings   []PipelineValidationIssue `json:"warnings"`
+	WorkflowID string                    `json:"workflow_id"`
+	StepCount  int                       `json:"step_count"`
+}
+
+type MailContactRespondEnvelopeResponse struct {
+	APIResponse
+	ToAgent   string                 `json:"to_agent"`
+	FromAgent string                 `json:"from_agent"`
+	Accepted  bool                   `json:"accepted"`
+	Status    string                 `json:"status,omitempty"`
+	Link      *agentmail.ContactLink `json:"link,omitempty"`
+	ExpiresTS string                 `json:"expires_ts,omitempty"`
+}
+
+type CASSSearchHitRecord struct {
+	SourcePath string  `json:"source_path"`
+	Agent      string  `json:"agent"`
+	Workspace  string  `json:"workspace"`
+	Title      string  `json:"title"`
+	Score      float64 `json:"score"`
+	Snippet    string  `json:"snippet"`
+	MatchType  string  `json:"match_type"`
+	LineNumber *int    `json:"line_number,omitempty"`
+	Content    string  `json:"content,omitempty"`
+	SessionID  string  `json:"session_id,omitempty"`
+	CreatedAt  string  `json:"created_at,omitempty"`
+}
+
+type CASSSearchMetaRecord struct {
+	TookMs           int64  `json:"took_ms"`
+	IndexSize        int64  `json:"index_size"`
+	Version          string `json:"version,omitempty"`
+	WildcardFallback bool   `json:"wildcard_fallback,omitempty"`
+	NextCursor       string `json:"next_cursor,omitempty"`
+}
+
+type CASSSearchEnvelopeResponse struct {
+	APIResponse
+	Query        string                `json:"query"`
+	Limit        int                   `json:"limit"`
+	Offset       int                   `json:"offset"`
+	Count        int                   `json:"count"`
+	TotalMatches int                   `json:"total_matches"`
+	Hits         []CASSSearchHitRecord `json:"hits"`
+	HasMore      bool                  `json:"has_more"`
+	Meta         *CASSSearchMetaRecord `json:"meta,omitempty"`
+	Aggregations map[string]any        `json:"aggregations,omitempty"`
 }
 
 type PipelineTemplatesEnvelopeResponse struct {
@@ -744,8 +798,10 @@ type PaneStreamEnvelopeResponse struct {
 
 type StreamingStatsEnvelopeResponse struct {
 	APIResponse
-	ActiveStreams int      `json:"active_streams,omitempty"`
-	TotalLines    int64    `json:"total_lines,omitempty"`
+	ActiveStreams int      `json:"active_streams"`
+	PipePaneCount int      `json:"pipe_pane_count"`
+	FallbackCount int      `json:"fallback_count"`
+	FIFODir       string   `json:"fifo_dir,omitempty"`
 	ActiveTargets []string `json:"active_targets"`
 }
 
@@ -945,7 +1001,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	// CASS & Memory
 	"handleCASSStatus":          {Response: CASSStatusResponse{}, Envelope: true},
 	"handleCASSCapabilities":    {ComponentName: "CASSCapabilitiesEnvelopeResponse", Response: cass.Capabilities{}, Envelope: true},
-	"handleCASSSearch":          {ComponentName: "CASSSearchEnvelopeResponse", Response: cass.SearchResponse{}, Envelope: true, Request: CASSSearchRequest{}, RequestReq: true},
+	"handleCASSSearch":          {Response: CASSSearchEnvelopeResponse{}, Envelope: true, Request: CASSSearchRequest{}, RequestReq: true},
 	"handleCASSInsights":        {Response: CASSInsightsEnvelopeResponse{}, Envelope: true},
 	"handleCASSTimeline":        {Response: CASSTimelineEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "since", Type: "string", Description: "Filter timeline since duration or date."}, {Name: "agent", Type: "string", Description: "Filter by agent."}, {Name: "workspace", Type: "string", Description: "Filter by workspace."}, {Name: "limit", Type: "integer", Description: "Maximum timeline entries."}}},
 	"handleCASSPreview":         {Response: CASSPreviewEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "path", Type: "string", Description: "Document source path to preview.", Required: true}}},
@@ -984,7 +1040,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleThreadSummary":           {ComponentName: "MailThreadSummaryEnvelopeResponse", Response: agentmail.ThreadSummaryResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "include_examples", Type: "boolean", Description: "Include example messages."}, {Name: "llm_mode", Type: "boolean", Description: "Enable LLM summarization."}}},
 	"handleListContacts":            {Response: MailContactsEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "agent_name", Type: "string", Description: "Agent whose contacts to list."}}},
 	"handleRequestContact":          {ComponentName: "MailContactLinkEnvelopeResponse", Response: agentmail.ContactLink{}, Envelope: true, Request: ContactRequestBody{}, RequestReq: true},
-	"handleRespondContact":          {ComponentName: "MailContactRespondEnvelopeResponse", Response: agentmail.ContactLink{}, Envelope: true, Request: ContactRespondRequest{}, RequestReq: true},
+	"handleRespondContact":          {Response: MailContactRespondEnvelopeResponse{}, Envelope: true, Request: ContactRespondRequest{}, RequestReq: true},
 	"handleSetContactPolicy":        {ComponentName: "MailContactPolicyEnvelopeResponse", Response: agentmail.ContactPolicyResult{}, Envelope: true, Request: SetContactPolicyRequest{}, RequestReq: true},
 	"handleListReservations":        {Response: ReservationsListEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "agent_name", Type: "string", Description: "Filter reservations by agent."}}},
 	"handleReservePaths":            {ComponentName: "ReservePathsEnvelopeResponse", Response: agentmail.ReservationResult{}, Envelope: true, Request: ReservePathsRequest{}, RequestReq: true},

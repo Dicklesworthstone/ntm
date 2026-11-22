@@ -278,8 +278,13 @@ export class NtmWebSocket {
     this.clearTimers();
     this.rejectPendingAcks("WebSocket disconnected");
     if (this.ws) {
-      this.ws.close(1000, "Client disconnect");
+      const staleSocket = this.ws;
+      staleSocket.onopen = null;
+      staleSocket.onclose = null;
+      staleSocket.onerror = null;
+      staleSocket.onmessage = null;
       this.ws = null;
+      staleSocket.close(1000, "Client disconnect");
     }
     this.setState("disconnected");
     this.subscriptions.clear();
@@ -379,9 +384,11 @@ export class NtmWebSocket {
   }
 
   private setupEventListeners(): void {
-    if (!this.ws) return;
+    const socket = this.ws;
+    if (!socket) return;
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
       if (process.env.NODE_ENV === "development") {
         console.log("[WS] Connected");
       }
@@ -391,7 +398,8 @@ export class NtmWebSocket {
       this.resubscribeAll();
     };
 
-    this.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (this.ws !== socket) return;
       if (process.env.NODE_ENV === "development") {
         console.log("[WS] Disconnected:", event.code, event.reason);
       }
@@ -407,11 +415,13 @@ export class NtmWebSocket {
       }
     };
 
-    this.ws.onerror = (event) => {
+    socket.onerror = (event) => {
+      if (this.ws !== socket) return;
       console.error("[WS] Error:", event);
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return;
       this.handleMessage(event.data);
     };
   }
