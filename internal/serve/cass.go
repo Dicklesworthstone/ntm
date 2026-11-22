@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -773,12 +774,90 @@ func (s *Server) checkMemoryDaemonMatching(port int, sessionID string) *MemoryDa
 	return info
 }
 
-func (s *Server) waitForMemoryDaemon(port int, sessionID string, timeout time.Duration) *MemoryDaemonInfo {
+func isSafeMemorySessionID(sessionID string) bool {
+	if sessionID == "" || len(sessionID) > 128 || sessionID == "." || sessionID == ".." || strings.Contains(sessionID, "..") {
+		return false
+	}
+	for _, r := range sessionID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isValidMemoryPrivacyAgent(agent string) bool {
+	if agent == "" || len(agent) > 128 || strings.HasPrefix(agent, "-") {
+		return false
+	}
+	for _, r := range agent {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Server) writeMemoryDaemonPIDFile(sessionID string, pid, port int) error {
+	if !isSafeMemorySessionID(sessionID) || pid <= 0 || port <= 0 || port > 65535 {
+		return errors.New("invalid memory daemon pid file metadata")
+	}
+	pidsDir := filepath.Join(s.projectDirSnapshot(), ".ntm", "pids")
+	if err := os.MkdirAll(pidsDir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(cm.PIDFileInfo{
+		PID:       pid,
+		Port:      port,
+		StartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	pidPath := filepath.Join(pidsDir, fmt.Sprintf("cm-%s.pid", sessionID))
+	tmpPath := fmt.Sprintf("%s.tmp.%d", pidPath, time.Now().UnixNano())
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, pidPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func probeMemoryDaemonPort(port int) bool {
+	if port <= 0 || port > 65535 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func (s *Server) waitForMemoryDaemon(port int, sessionID string, spawnedPID int, timeout time.Duration) *MemoryDaemonInfo {
 	deadline := time.Now().Add(timeout)
 	for {
 		info := s.checkMemoryDaemonMatching(port, sessionID)
 		if info.State == DaemonStateRunning {
 			return info
+		}
+		// Production `cm serve --port <port>` does not write `.ntm/pids/cm-<session>.pid`
+		// itself (only `internal/supervisor` writes those files). When our own
+		// spawned child is alive and listening on the requested port, persist
+		// its PID file so status/stop/crash-cleanup work end-to-end.
+		if spawnedPID > 0 && process.IsAlive(spawnedPID) && probeMemoryDaemonPort(port) {
+			if err := s.writeMemoryDaemonPIDFile(sessionID, spawnedPID, port); err == nil {
+				info = s.checkMemoryDaemonMatching(port, sessionID)
+				if info.State == DaemonStateRunning {
+					return info
+				}
+			}
 		}
 
 		remaining := time.Until(deadline)
@@ -803,7 +882,7 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if daemon is already running
+	// Check if daemon is already running or starting
 	daemonInfo := s.checkMemoryDaemon()
 	if daemonInfo.State == DaemonStateRunning {
 		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning,
@@ -814,26 +893,41 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 			}, reqID)
 		return
 	}
-
-	var req MemoryDaemonRequest
-	if r.Body != nil && r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-				"Invalid request body", nil, reqID)
-			return
-		}
+	if current := memoryStore.GetDaemonInfo(); current != nil && current.State == DaemonStateStarting {
+		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning,
+			"Memory daemon is already starting", map[string]interface{}{
+				"port":       current.Port,
+				"session_id": current.SessionID,
+			}, reqID)
+		return
 	}
 
-	// Default port
+	var req MemoryDaemonRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"Invalid request body", nil, reqID)
+		return
+	}
+
+	// Validate & default port
 	port := req.Port
 	if port == 0 {
 		port = 8200
 	}
+	if port < 1 || port > 65535 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"port must be between 1 and 65535", nil, reqID)
+		return
+	}
 
-	// Generate session ID if not provided
-	sessionID := req.SessionID
+	// Validate or generate session ID (prevent path traversal into .ntm/pids)
+	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("rest-%d", time.Now().Unix())
+	} else if !isSafeMemorySessionID(sessionID) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"invalid session_id: must contain only letters, digits, '.', '-', or '_'", nil, reqID)
+		return
 	}
 
 	slog.Info("starting memory daemon", "request_id", reqID, "port", port, "session_id", sessionID)
@@ -894,11 +988,12 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 		return
 	}
 
+	spawnedPID := cmd.Process.Pid
 	go s.watchMemoryDaemonExit(cmd, sessionID)
 
 	// Wait for the exact daemon requested. A one-shot check is racy while the
 	// child initializes and a broad PID-file scan can misattribute another daemon.
-	daemonInfo := s.waitForMemoryDaemon(port, sessionID, memoryDaemonStartupTimeout)
+	daemonInfo := s.waitForMemoryDaemon(port, sessionID, spawnedPID, memoryDaemonStartupTimeout)
 	if daemonInfo.State == DaemonStateRunning {
 		memoryStore.SetDaemonInfo(daemonInfo)
 		s.publishMemoryEvent("memory.daemon.started", map[string]interface{}{
@@ -907,7 +1002,11 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 			"session_id": daemonInfo.SessionID,
 		})
 	} else {
-		slog.Warn("memory daemon may have failed to start", "port", port, "stderr", stderr.String())
+		slog.Warn("memory daemon may have failed to start", "port", port, "pid", spawnedPID, "stderr", stderr.String())
+		// Terminate the spawned child on startup timeout so failed starts never
+		// leak orphaned `cm serve` processes holding ports.
+		_ = stopMemoryDaemonProcess(spawnedPID, 500*time.Millisecond)
+		_ = s.removeMemoryDaemonPIDFileIfMatches(sessionID, spawnedPID)
 		memoryStore.SetDaemonInfo(&MemoryDaemonInfo{State: DaemonStateStopped})
 		s.publishMemoryEvent("memory.daemon.failed", map[string]interface{}{
 			"error": "daemon did not start successfully",
@@ -997,7 +1096,7 @@ func (s *Server) watchMemoryDaemonExit(cmd *exec.Cmd, sessionID string) {
 }
 
 func (s *Server) removeMemoryDaemonPIDFileIfMatches(sessionID string, pid int) bool {
-	if sessionID == "" || pid <= 0 {
+	if !isSafeMemorySessionID(sessionID) || pid <= 0 {
 		return false
 	}
 
@@ -1328,6 +1427,21 @@ func (s *Server) handleMemoryPrivacyUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Validate agent names before forwarding to `cm privacy enable` so
+	// caller-supplied entries cannot inject CLI flags (leading '-').
+	validatedAgents := make([]string, 0, len(req.Agents))
+	if req.Enabled {
+		for _, rawAgent := range req.Agents {
+			agentName := strings.TrimSpace(rawAgent)
+			if !isValidMemoryPrivacyAgent(agentName) {
+				writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+					fmt.Sprintf("invalid agent name %q: must not begin with '-' or contain special characters", rawAgent), nil, reqID)
+				return
+			}
+			validatedAgents = append(validatedAgents, agentName)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -1335,7 +1449,7 @@ func (s *Server) handleMemoryPrivacyUpdate(w http.ResponseWriter, r *http.Reques
 	var cmd *exec.Cmd
 	if req.Enabled {
 		args := []string{"privacy", "enable", "--json"}
-		args = append(args, req.Agents...)
+		args = append(args, validatedAgents...)
 		cmd = exec.CommandContext(ctx, "cm", args...)
 		cmd.WaitDelay = 2 * time.Second
 	} else {
