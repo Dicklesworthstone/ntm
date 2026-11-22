@@ -385,6 +385,37 @@ func TestBackgroundWorkerDeadlineClosesAuthorizationPipe(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerDeadlineDoesNotDeadlockOnBlockingFD(t *testing.T) {
+	t.Parallel()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	// Calling Fd() switches the pipe into blocking (non-pollable) mode,
+	// mirroring inherited os.Stdin in a real background worker process.
+	blockingReader := os.NewFile(reader.Fd(), "blocking-stdin")
+	defer blockingReader.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- awaitBackgroundAuthorization(ctx, blockingReader, "unused")
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected deadline on blocking FD, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = writer.Close()
+		t.Fatal("awaitBackgroundAuthorization deadlocked on non-pollable blocking FD")
+	}
+	// Release the blocked goroutine by closing writer now that timeout returned.
+	_ = writer.Close()
+}
+
 func TestBackgroundRequestAndLogPermissions(t *testing.T) {
 	t.Parallel()
 	root := backgroundFixture(t, false)

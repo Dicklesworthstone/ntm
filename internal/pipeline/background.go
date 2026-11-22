@@ -640,15 +640,22 @@ func awaitBackgroundAuthorization(ctx context.Context, input io.ReadCloser, toke
 		}
 		return ctx.Err()
 	case <-ctx.Done():
+		deadlineSet := false
 		if f, ok := input.(*os.File); ok {
-			_ = f.SetReadDeadline(time.Now())
+			deadlineSet = f.SetReadDeadline(time.Now()) == nil
 		}
-		closeInput()
-		// Wait for the reader goroutine to exit Read so Go's internal/poll
-		// drops the last FD reference and issues kernel close(fd) before
-		// returning (preventing a concurrent launcher write from succeeding
-		// on a still-open pipe after timeout).
-		<-result
+		// When the underlying file supports Go's netpoller deadlines (e.g.
+		// os.Pipe), wait for the reader goroutine to exit Read first so
+		// closeInput() closes the kernel FD synchronously with no concurrent
+		// reader. For non-pollable inherited FDs (e.g. blocking os.Stdin) or
+		// custom io.ReadClosers where SetReadDeadline fails, close immediately
+		// without blocking on <-result so timeout never deadlocks.
+		if deadlineSet {
+			<-result
+			closeInput()
+		} else {
+			closeInput()
+		}
 		return ctx.Err()
 	}
 }

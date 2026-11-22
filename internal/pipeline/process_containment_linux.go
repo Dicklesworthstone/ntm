@@ -1091,7 +1091,7 @@ func readSubreaperDirectChildren() []int {
 	return pids
 }
 
-func parsePPidFromProcStatus(data []byte) (int, bool) {
+func parsePPidFromProcStatus(data []byte, truncated bool) (int, bool) {
 	var rest []byte
 	if bytes.HasPrefix(data, []byte("PPid:")) {
 		rest = data[len("PPid:"):]
@@ -1102,6 +1102,9 @@ func parsePPidFromProcStatus(data []byte) (int, bool) {
 	}
 	if nl := bytes.IndexByte(rest, '\n'); nl >= 0 {
 		rest = rest[:nl]
+	} else if truncated {
+		// PPid line may have been cut off mid-number at the 1KB buffer boundary.
+		return 0, false
 	}
 	rest = bytes.TrimSpace(rest)
 	if len(rest) == 0 {
@@ -1142,11 +1145,11 @@ func readSubreaperChildrenFromProcStatus(procRoot string, parentPID int) []int {
 		if rErr != nil || n <= 0 {
 			continue
 		}
-		ppid, ok := parsePPidFromProcStatus(buf[:n])
+		ppid, ok := parsePPidFromProcStatus(buf[:n], n == len(buf))
 		if !ok && n == len(buf) {
 			// Very long process names or unusual status layouts can push PPid past 1KB.
 			if full, fErr := os.ReadFile(statusPath); fErr == nil {
-				ppid, ok = parsePPidFromProcStatus(full)
+				ppid, ok = parsePPidFromProcStatus(full, false)
 			}
 		}
 		if ok && ppid == parentPID {

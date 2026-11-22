@@ -197,7 +197,9 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		// reconstruct outputs from iterations that completed before the
 		// interruption — without this, a mid-loop resume would silently
 		// drop pre-resume entries when storeCollected runs at the end.
-		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
+		if loop.Collect != "" && len(iterResult) > 0 &&
+			iterResult[len(iterResult)-1].Status != StatusCancelled &&
+			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -351,7 +353,9 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		}
 
 		// Collect output if configured
-		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
+		if loop.Collect != "" && len(iterResult) > 0 &&
+			iterResult[len(iterResult)-1].Status != StatusCancelled &&
+			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -496,21 +500,6 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
-		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
-			lastResult := iterResult[len(iterResult)-1]
-			var collectedValue interface{}
-			if lastResult.ParsedData != nil {
-				collectedValue = lastResult.ParsedData
-			} else if lastResult.Output != "" {
-				collectedValue = lastResult.Output
-			}
-			if collectedValue != nil {
-				result.Collected = append(result.Collected, collectedValue)
-				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
-				le.executor.persistState()
-			}
-		}
-
 		if shouldBreak {
 			le.popLoopVars(scope)
 			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
@@ -518,6 +507,19 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 				result.Error = iterResult[len(iterResult)-1].Error
 			} else {
 				result.BreakReason = "break statement"
+				if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
+					lastResult := iterResult[len(iterResult)-1]
+					var collectedValue interface{}
+					if lastResult.ParsedData != nil {
+						collectedValue = lastResult.ParsedData
+					} else if lastResult.Output != "" {
+						collectedValue = lastResult.Output
+					}
+					if collectedValue != nil {
+						result.Collected = append(result.Collected, collectedValue)
+						le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
+					}
+				}
 			}
 			le.executor.persistState()
 			break
@@ -544,6 +546,21 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 
 		if shouldCompleteForeachIteration(ctx, iterResult, false, completedAllSteps) {
 			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
+		}
+		if loop.Collect != "" && len(iterResult) > 0 &&
+			iterResult[len(iterResult)-1].Status != StatusCancelled &&
+			iterResult[len(iterResult)-1].Status != StatusFailed {
+			lastResult := iterResult[len(iterResult)-1]
+			var collectedValue interface{}
+			if lastResult.ParsedData != nil {
+				collectedValue = lastResult.ParsedData
+			} else if lastResult.Output != "" {
+				collectedValue = lastResult.Output
+			}
+			if collectedValue != nil {
+				result.Collected = append(result.Collected, collectedValue)
+				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
+			}
 		}
 		le.executor.persistState()
 
@@ -682,7 +699,9 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		}
 
 		// Collect output if configured
-		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
+		if loop.Collect != "" && len(iterResult) > 0 &&
+			iterResult[len(iterResult)-1].Status != StatusCancelled &&
+			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
