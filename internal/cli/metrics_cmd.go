@@ -94,9 +94,12 @@ Examples:
   ntm metrics compare before-refactor  # Compare against saved snapshot`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := "baseline"
+			name := strings.TrimSpace(baselineName)
 			if len(args) > 0 {
 				name = args[0]
+			}
+			if name == "" {
+				name = "baseline"
 			}
 			return runMetricsCompare(sessionID, name)
 		},

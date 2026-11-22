@@ -267,7 +267,7 @@ func TestWaitCommandKeepsUnreadableTargetsPending(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installWaitCommandTmux(t, "%41")
-			args := []string{"wait-project", "--until=idle", "--timeout=250ms", "--poll=30s", "--json"}
+			args := []string{"wait-project", "--until=idle", "--timeout=200ms", "--poll=30s", "--json"}
 			cmd, out, diagnostics := waitCommandHarness(t, append(args, tc.flags...)...)
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()

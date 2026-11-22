@@ -46,7 +46,9 @@ func TestRemoteProcessOperationsCLIRefuseBeforePaneObservation(t *testing.T) {
 		{name: "exit-cli", args: []string{"--robot-exit-cli=remote-fixture"}},
 		{name: "exit-relaunch", args: []string{"--robot-exit-cli=remote-fixture", "--relaunch"}},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			const localScript = `#!/bin/sh
 set -eu

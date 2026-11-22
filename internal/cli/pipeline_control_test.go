@@ -160,7 +160,7 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 // enough evidence to continue without submitting the original work again.
 func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain bool) *pipeline.ExecutionState {
 	t.Helper()
-	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}}
+	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 150 * time.Millisecond}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
 		if err := os.WriteFile(path, []byte("Work on this template request"), 0600); err != nil {

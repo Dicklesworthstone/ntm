@@ -65,12 +65,12 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 
 	oldClient := tmux.DefaultClient
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 25 * time.Millisecond
+	fastClient.MaxSendDelay = 5 * time.Millisecond
 	tmux.DefaultClient = fastClient
 	oldLeadPoll := ensemble.DefaultLeadPollInterval
 	oldCollectorPoll := ensemble.DefaultOutputCollectorPollInterval
-	ensemble.DefaultLeadPollInterval = 50 * time.Millisecond
-	ensemble.DefaultOutputCollectorPollInterval = 50 * time.Millisecond
+	ensemble.DefaultLeadPollInterval = 15 * time.Millisecond
+	ensemble.DefaultOutputCollectorPollInterval = 15 * time.Millisecond
 	t.Cleanup(func() {
 		tmux.DefaultClient = oldClient
 		ensemble.DefaultLeadPollInterval = oldLeadPoll

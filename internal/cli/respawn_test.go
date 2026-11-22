@@ -229,7 +229,9 @@ func TestRestartEnvironmentCLIRecoveryPreflight(t *testing.T) {
 	const secret = "ntm-cli-recovery-secret-marker"
 	for _, surface := range []string{"human", "robot"} {
 		for _, mode := range []string{"ordinary-dry", "missing-dry", "missing-real", "partial-dry", "complete-dry", "complete-real"} {
+			surface, mode := surface, mode
 			t.Run(surface+"/"+mode, func(t *testing.T) {
+				t.Parallel()
 				root := t.TempDir()
 				binary := filepath.Join(root, "tmux")
 				const script = `#!/bin/sh
