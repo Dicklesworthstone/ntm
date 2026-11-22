@@ -1,14 +1,18 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -492,7 +496,7 @@ func waitCommandLeaderExit(ctx context.Context, process *os.Process) error {
 
 func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
 	return waitCommandGroupObservation(ctx, pgid, func() (bool, error) {
-		return commandGroupHasLiveMembers(pgid)
+		return commandGroupHasLiveMembersContext(ctx, pgid)
 	})
 }
 
@@ -509,34 +513,262 @@ func groupSignalFoundOnlyZombies(int) bool {
 // already been reparented by the time the command leader exits.
 // A quiet result requires a complete, valid census containing the unreaped
 // leader in its expected group. Missing evidence must not authorize replay.
-func readDirUnsorted(path string) ([]os.DirEntry, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := f.ReadDir(-1)
-	_ = f.Close()
-	return entries, err
+type procCensusScratch struct {
+	statBuf []byte
+	dentBuf []byte
+}
+
+var procCensusScratchPool = sync.Pool{
+	New: func() any {
+		return &procCensusScratch{
+			statBuf: make([]byte, 32768),
+			dentBuf: make([]byte, 65536),
+		}
+	},
 }
 
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
-	const maxBirthRaceImmediateRetries = 12
-	inspector := commandGroupInspector{
-		readDir: readDirUnsorted,
-		readFile: func(path string) ([]byte, error) {
-			if strings.HasPrefix(path, "/proc/") && strings.HasSuffix(path, "/stat") && path != "/proc/stat" {
-				commandGroupProcStatOpens.Add(1)
-			}
-			return os.ReadFile(path)
-		},
-		getpgid: syscall.Getpgid,
+	// Bound bare (no-context) calls so test hooks calling commandGroupHasLiveMembers
+	// directly never overshoot short grace/settlement deadlines (even under -race).
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	return commandGroupHasLiveMembersContext(ctx, pgid)
+}
+
+func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, error) {
+	if pgid <= 1 {
+		return false, fmt.Errorf("inspect command process group: invalid group ID %d", pgid)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Verify procfs mount identity & PID namespace before starting retries and
+	// re-verify after the winning quiet census (strictly covering the whole
+	// observation interval).
+	mountBefore, err := readCommandProcfsVisibility(os.ReadFile)
+	if err != nil {
+		return false, err
+	}
+	statFD, err := unix.Open("/proc/stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, fmt.Errorf("inspect command process birth counter: %w", err)
+	}
+	defer func() { _ = unix.Close(statFD) }()
+
+	// Pooled scratch buffers keep the birthsBefore..birthsAfter critical window
+	// allocation-free and avoid Go scheduler entersyscall/exitsyscall parks on
+	// every PID via RawSyscall(SYS_GETPGID), cutting the birth-race window by
+	// an order of magnitude on busy multi-core hosts without relaxing any
+	// census or mount-visibility invariant.
+	scratch := procCensusScratchPool.Get().(*procCensusScratch)
+	defer procCensusScratchPool.Put(scratch)
+
+	const maxBirthRaceImmediateRetries = 64
 	for attempt := 0; ; attempt++ {
-		alive, err := inspectCommandGroup(pgid, inspector)
-		if !errors.Is(err, errCommandGroupBirthRace) || attempt >= maxBirthRaceImmediateRetries {
+		if attempt > 0 && ctx.Err() != nil {
+			return false, errCommandGroupBirthRace
+		}
+		alive, err := inspectCommandGroupLive(pgid, statFD, mountBefore, &scratch.statBuf, &scratch.dentBuf)
+		if !errors.Is(err, errCommandGroupBirthRace) {
 			return alive, err
 		}
+		if ctx.Err() != nil || attempt >= maxBirthRaceImmediateRetries {
+			return false, errCommandGroupBirthRace
+		}
 	}
+}
+
+func preadAllAtZero(fd int, buf *[]byte) ([]byte, error) {
+	if cap(*buf) < 32768 {
+		*buf = make([]byte, 32768)
+	} else {
+		*buf = (*buf)[:cap(*buf)]
+	}
+	total := 0
+	for {
+		if total == len(*buf) {
+			grown := make([]byte, len(*buf)*2)
+			copy(grown, *buf)
+			*buf = grown
+		}
+		n, err := unix.Pread(fd, (*buf)[total:], int64(total))
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return nil, err
+		}
+		if n == 0 {
+			return (*buf)[:total], nil
+		}
+		total += n
+	}
+}
+
+func readCommandProcessBirthsFD(statFD int, buf *[]byte) (uint64, error) {
+	data, err := preadAllAtZero(statFD, buf)
+	if err != nil {
+		return 0, fmt.Errorf("inspect command process birth counter: %w", err)
+	}
+	return parseCommandProcessBirths(data)
+}
+
+func parsePositiveProcPID(name []byte) (int, bool) {
+	if len(name) == 0 || name[0] < '1' || name[0] > '9' {
+		return 0, false
+	}
+	pid := 0
+	for _, b := range name {
+		if b < '0' || b > '9' {
+			return 0, false
+		}
+		d := int(b - '0')
+		if pid > (math.MaxInt-d)/10 {
+			return 0, false
+		}
+		pid = pid*10 + d
+	}
+	return pid, pid > 0
+}
+
+func inspectCommandGroupLive(pgid int, statFD int, mountBefore string, statBuf, dentBuf *[]byte) (bool, error) {
+	birthsBefore, err := readCommandProcessBirthsFD(statFD, statBuf)
+	if err != nil {
+		return false, err
+	}
+	dirFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, fmt.Errorf("inspect command process group: %w", err)
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+
+	buf := *dentBuf
+	if len(buf) < 65536 {
+		buf = make([]byte, 65536)
+		*dentBuf = buf
+	}
+
+	leaderSeen, alive := false, false
+	for {
+		n, err := unix.Getdents(dirFD, buf)
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return false, fmt.Errorf("inspect command process group: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+		for off := 0; off < n; {
+			// Linux getdents64 ABI layout (arch-independent):
+			// d_ino [0:8], d_off [8:16], d_reclen [16:18], d_type [18], d_name [19:reclen].
+			if off+19 > n {
+				return false, errors.New("inspect command process group: malformed procfs directory entry")
+			}
+			reclen := int(binary.NativeEndian.Uint16(buf[off+16 : off+18]))
+			if reclen < 19 || off+reclen > n {
+				return false, errors.New("inspect command process group: malformed procfs directory record length")
+			}
+			dtype := buf[off+18]
+			nameBytes := buf[off+19 : off+reclen]
+			off += reclen
+			nul := bytes.IndexByte(nameBytes, 0)
+			if nul < 0 {
+				return false, errors.New("inspect command process group: unterminated procfs directory entry")
+			}
+			nameBytes = nameBytes[:nul]
+			pid, ok := parsePositiveProcPID(nameBytes)
+			if !ok {
+				continue
+			}
+			if dtype != syscall.DT_DIR {
+				if dtype != syscall.DT_UNKNOWN {
+					continue
+				}
+				info, statErr := os.Stat("/proc/" + strconv.Itoa(pid))
+				if statErr != nil || !info.IsDir() {
+					continue
+				}
+			}
+
+			// getpgid(2) is a pure non-blocking kernel RCU lookup; RawSyscall
+			// avoids runtime entersyscall/exitsyscall scheduler parks across
+			// ~1,000+ host PIDs inside the birth-counter window.
+			r1, _, errno := unix.RawSyscall(unix.SYS_GETPGID, uintptr(pid), 0, 0)
+			if errno == syscall.ESRCH {
+				continue
+			}
+			var groupErr error
+			if errno == 0 {
+				group := int(r1)
+				if group < 0 {
+					return false, fmt.Errorf("inspect process %d: invalid kernel process group %d", pid, group)
+				}
+				if pid == pgid && group != pgid {
+					return false, errors.New("inspect command process group: leader changed process group")
+				}
+				if group != pgid {
+					continue
+				}
+			} else {
+				// Preserve LSM/seccomp fallback to procfs stat validation.
+				groupErr = fmt.Errorf("inspect process %d group: %w", pid, errno)
+			}
+
+			pidStr := strconv.Itoa(pid)
+			commandGroupProcStatOpens.Add(1)
+			data, readErr := os.ReadFile("/proc/" + pidStr + "/stat")
+			if readErr != nil {
+				if groupErr == nil && (errors.Is(readErr, os.ErrNotExist) || errors.Is(readErr, syscall.ESRCH)) {
+					continue
+				}
+				return false, errors.Join(groupErr, fmt.Errorf("inspect process %s: %w", pidStr, readErr))
+			}
+			group, processState, parseErr := parseCommandGroupStat(data, pid)
+			if parseErr != nil {
+				return false, errors.Join(groupErr, parseErr)
+			}
+			if pid == pgid {
+				if group != pgid {
+					return false, errors.New("inspect command process group: leader changed process group")
+				}
+				leaderSeen = true
+			}
+			if group == pgid {
+				if processState != "Z" && processState != "X" {
+					alive = true
+				} else {
+					threads, threadErr := commandGroupStatThreads(data, pid)
+					if threadErr != nil {
+						return false, errors.Join(groupErr, threadErr)
+					}
+					alive = alive || threads > 1
+				}
+			}
+		}
+	}
+	if !leaderSeen {
+		return false, errors.New("inspect command process group: unreaped leader missing from procfs")
+	}
+	if alive {
+		return true, nil
+	}
+	birthsAfter, err := readCommandProcessBirthsFD(statFD, statBuf)
+	if err != nil {
+		return false, err
+	}
+	if birthsBefore != birthsAfter {
+		return false, errCommandGroupBirthRace
+	}
+	mountAfter, err := readCommandProcfsVisibility(os.ReadFile)
+	if err != nil {
+		return false, err
+	}
+	if mountBefore != mountAfter {
+		return false, errCommandGroupMountRace
+	}
+	return false, nil
 }
 
 // Keep the observation operations local to each census. Besides making the
@@ -769,16 +1001,42 @@ func readCommandProcessBirths(readFile func(string) ([]byte, error)) (uint64, er
 	if err != nil {
 		return 0, fmt.Errorf("inspect command process birth counter: %w", err)
 	}
+	return parseCommandProcessBirths(data)
+}
+
+func parseCommandProcessBirths(data []byte) (uint64, error) {
 	var births uint64
 	found := false
-	for _, line := range strings.SplitAfter(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != "processes" {
+	// Scan line-by-line on the raw byte slice so huge non-matching rows (like
+	// multi-KB `intr` and per-CPU rows on many-core hosts) incur zero string
+	// splits or allocations inside the birth-counter race window.
+	for rest := data; len(rest) > 0; {
+		nl := bytes.IndexByte(rest, '\n')
+		var line []byte
+		hasNL := false
+		if nl >= 0 {
+			line = rest[:nl+1]
+			rest = rest[nl+1:]
+			hasNL = true
+		} else {
+			line = rest
+			rest = nil
+		}
+		trimmed := bytes.TrimLeft(line, " \t\r")
+		if len(trimmed) < len("processes") || !bytes.HasPrefix(trimmed, []byte("processes")) {
 			continue
 		}
-		if found || len(fields) != 2 || !strings.HasSuffix(line, "\n") {
+		if len(trimmed) > len("processes") {
+			next := trimmed[len("processes")]
+			if next != ' ' && next != '\t' && next != '\n' && next != '\r' {
+				continue
+			}
+		}
+		fields := strings.Fields(string(trimmed))
+		if found || len(fields) != 2 || !hasNL {
 			return 0, errors.New("inspect command process birth counter: malformed processes row")
 		}
+		var err error
 		births, err = strconv.ParseUint(fields[1], 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("inspect command process birth counter: %w", err)

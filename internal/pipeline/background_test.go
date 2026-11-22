@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -394,10 +395,22 @@ func TestBackgroundWorkerDeadlineDoesNotDeadlockOnBlockingFD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Close()
-	// Calling Fd() switches the pipe into blocking (non-pollable) mode,
-	// mirroring inherited os.Stdin in a real background worker process.
-	blockingReader := os.NewFile(reader.Fd(), "blocking-stdin")
+	// Calling Fd() switches the pipe's open file description into blocking
+	// (non-pollable) mode, mirroring inherited os.Stdin in a real background
+	// worker process. Duplicate onto an independent descriptor and close reader
+	// immediately so only blockingReader owns its kernel FD (avoiding GC
+	// finalizer double-close of a reused FD across sibling parallel tests).
+	dupFD, err := syscall.Dup(int(reader.Fd()))
+	if err != nil {
+		_ = reader.Close()
+		t.Fatalf("dup blocking pipe fd: %v", err)
+	}
+	_ = reader.Close()
+	blockingReader := os.NewFile(uintptr(dupFD), "blocking-stdin")
 	defer blockingReader.Close()
+	if err := blockingReader.SetReadDeadline(time.Now()); err == nil {
+		t.Fatal("expected blocking pipe FD to reject SetReadDeadline")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

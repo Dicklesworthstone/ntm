@@ -783,11 +783,12 @@ func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *te
 			phase := 0 // Only the target command's waiter accesses these fields.
 			var firstSettlementCheck time.Time
 			announcedRecovery := false
-			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(probeCtx context.Context, pgid int) (bool, error) {
 				if int64(pgid) != target.Load() {
 					return commandGroupHasLiveMembers(pgid)
 				}
-				if phase < 2 {
+				settlementBudget, _ := probeCtx.Value(commandSettlementBudgetContextKey{}).(bool)
+				if !settlementBudget && phase < 2 {
 					alive, err := commandGroupHasLiveMembers(pgid)
 					if err != nil || alive {
 						return alive, err
