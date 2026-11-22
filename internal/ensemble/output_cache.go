@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,9 +134,14 @@ type ModeOutputCacheStats struct {
 	TTL        time.Duration `json:"ttl"`
 }
 
-// NewModeOutputCache creates a cache rooted under the project directory.
+// NewModeOutputCache creates a cache rooted under cfg.CacheDir (when set) or
+// the project directory's default cache path.
 func NewModeOutputCache(projectDir string, cfg ModeOutputCacheConfig, logger *slog.Logger) (*ModeOutputCache, error) {
-	return NewModeOutputCacheWithDir(defaultModeOutputCacheDir(projectDir), cfg, logger)
+	dir := strings.TrimSpace(cfg.CacheDir)
+	if dir == "" {
+		dir = defaultModeOutputCacheDir(projectDir)
+	}
+	return NewModeOutputCacheWithDir(dir, cfg, logger)
 }
 
 // NewModeOutputCacheWithDir creates a cache rooted in a specific directory (test override).
@@ -267,10 +273,15 @@ func (c *ModeOutputCache) Put(fingerprint ModeOutputFingerprint, output *ModeOut
 	return nil
 }
 
-// Clear removes all cached outputs. Returns number removed.
+// Clear removes all cached outputs from both memory and disk. Returns number removed from disk.
 func (c *ModeOutputCache) Clear() int {
 	if c == nil {
 		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.mem != nil {
+		c.mem.Clear()
 	}
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {

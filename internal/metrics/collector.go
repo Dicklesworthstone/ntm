@@ -485,7 +485,7 @@ func (c *Collector) querySnapshot(name string) (string, error) {
 	err := db.QueryRow(`
 		SELECT snapshot_data FROM metric_snapshots
 		WHERE session_id = ? AND snapshot_name = ?
-		ORDER BY created_at DESC LIMIT 1`,
+		ORDER BY created_at DESC, id DESC LIMIT 1`,
 		c.sessionID, name).Scan(&data)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("snapshot not found: %s", name)

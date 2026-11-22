@@ -665,7 +665,7 @@ func detectProgress(output string, activity ActivityLevel, issues []Issue) *Prog
 // hasErrorIssue checks if any issue indicates an error (crash, auth, network)
 func hasErrorIssue(issues []Issue) bool {
 	for _, issue := range issues {
-		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "network_error" || issue.Type == "interactive_gate" {
+		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "network_error" || issue.Type == "interactive_gate" || issue.Type == "trust_prompt" {
 			return true
 		}
 	}

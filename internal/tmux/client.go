@@ -838,6 +838,10 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		switch ClassifyCommandError(err).Kind {
+		case CommandErrorPaneNotFound, CommandErrorSessionNotFound, CommandErrorNoServer:
+			return fmt.Errorf("cannot observe guarded pane ownership: %w", ErrPaneIdentityChanged)
+		}
 		return errors.New("cannot observe guarded pane ownership")
 	}
 	if len(recorded) < 2 || len(recorded) > 258 || recorded[0] != '[' || recorded[len(recorded)-1] != ']' {

@@ -318,11 +318,12 @@ func (w *Watcher) addRecursive(root string) error {
 			}
 
 			if err := w.fsWatcher.Add(path); err != nil {
-				// Report error but continue
-				if w.errorHandler != nil {
-					w.errorHandler(fmt.Errorf("watching %s: %w", path, err))
-				}
+				// Report error outside lock so handler callbacks (e.g., Close/Add) cannot deadlock.
+				errHandler := w.errorHandler
 				w.mu.Unlock()
+				if errHandler != nil {
+					errHandler(fmt.Errorf("watching %s: %w", path, err))
+				}
 				return nil
 			}
 			w.watchedPaths[path] = true

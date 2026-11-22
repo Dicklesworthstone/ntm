@@ -84,6 +84,14 @@ func (c *Cache) SetWithTTL(key string, value interface{}, ttl time.Duration) {
 	}
 }
 
+// Clear removes all entries from the cache without stopping its cleanup loop.
+func (c *Cache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	clear(c.entries)
+}
+
 // cleanupLoop periodically removes expired entries
 func (c *Cache) cleanupLoop() {
 	defer c.cleanupWg.Done()
