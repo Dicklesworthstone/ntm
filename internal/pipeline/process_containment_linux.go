@@ -502,6 +502,7 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 
 	leaderExitedBeforeSignal = leaderExitedBeforeSignal || leaderExitedFast(handle.pidfd, cmd.Process.Pid)
 	result = commandCleanupResult{
+		Err:                      waitErr,
 		Cancelled:                true,
 		SignalSent:               "SIGTERM",
 		leaderExitedBeforeSignal: leaderExitedBeforeSignal,
@@ -515,7 +516,7 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
 	graceErr := waitCgroupPopulatedZero(graceCtx, handle.leafDir)
 	graceCancel()
-	if graceErr != nil && !errors.Is(graceErr, context.DeadlineExceeded) {
+	if graceErr != nil && graceErr != context.DeadlineExceeded {
 		result.Err = errors.Join(result.Err, fmt.Errorf("observe cgroup during SIGTERM grace period: %w", graceErr))
 	}
 
@@ -525,9 +526,12 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 		killErr = nil
 	}
 
-	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+	settleCtx, settleCancel := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
 	quietErr := waitCgroupPopulatedZero(settleCtx, handle.leafDir)
 	settleCancel()
+	if killErr == nil {
+		quietErr = reconcileCgroupSettlement(ctx, handle.leafDir, quietErr)
+	}
 
 	if killErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("kill cgroup command group: %w", killErr))
@@ -550,11 +554,78 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 	return result
 }
 
-// waitCgroupPopulatedZero watches `<leafDir>/cgroup.events` with inotify
+type commandCgroupObservationTestHookKey struct{}
+
+// waitCgroupPopulatedZero retains ownership when inotify or cgroup inspection
+// fails. Unknown evidence cannot end healthy supervision or shorten SIGTERM's
+// grace period. Only failed observations are retried on a timer; the ordinary
+// live path remains event-driven until quiescence or caller cancellation.
+func waitCgroupPopulatedZero(ctx context.Context, leafDir string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	observe := observeCgroupPopulatedZero
+	if hook, ok := ctx.Value(commandCgroupObservationTestHookKey{}).(func(context.Context, string) error); ok && hook != nil {
+		observe = hook
+	}
+	var observationErr error
+	interrupted := func() error {
+		if observationErr != nil {
+			return errors.Join(ctx.Err(), fmt.Errorf("cgroup observation failed: %w", observationErr))
+		}
+		return ctx.Err()
+	}
+	for {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		err := observe(ctx, leafDir)
+		if err == nil {
+			settlementBudget, _ := ctx.Value(commandSettlementBudgetContextKey{}).(bool)
+			if settlementBudget || ctx.Err() == nil {
+				return nil
+			}
+			return ctx.Err()
+		}
+		// A working event watch that ends at its own deadline has recovered
+		// from prior inspection failures. Wrapped errors retain their cause.
+		observationErr = err
+		if err == ctx.Err() {
+			observationErr = nil
+		}
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		retry := time.NewTimer(commandGroupPollInterval)
+		select {
+		case <-ctx.Done():
+			retry.Stop()
+			return interrupted()
+		case <-retry.C:
+		}
+	}
+}
+
+// Keep the original leader and cgroup through a bounded read-only recovery
+// after a successful final signal. A transient observation outage must not
+// discard the only remaining evidence that makes a command safe to resume.
+func reconcileCgroupSettlement(ctx context.Context, leafDir string, observationErr error) error {
+	if observationErr == nil || observationErr == context.DeadlineExceeded {
+		return observationErr
+	}
+	recovery, cancel := withCommandSettlementBudget(ctx, commandSettlementRecoveryTimeout)
+	defer cancel()
+	if err := waitCgroupPopulatedZero(recovery, leafDir); err != nil {
+		return errors.Join(observationErr, fmt.Errorf("cgroup settlement recovery exhausted: %w", err))
+	}
+	return nil
+}
+
+// observeCgroupPopulatedZero watches `<leafDir>/cgroup.events` with inotify
 // (IN_MODIFY) and wakes immediately via poll(2) + eventfd(2) on either
 // `populated 0` or ctx.Done(), performing zero timer polling and zero
 // /proc/<pid>/stat opens.
-func waitCgroupPopulatedZero(ctx context.Context, leafDir string) error {
+func observeCgroupPopulatedZero(ctx context.Context, leafDir string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -708,6 +779,60 @@ func signalPIDViaPIDFD(pid int, sig unix.Signal) error {
 	return sErr
 }
 
+type cgroupProcessSignalOps struct {
+	readMembers func(string) ([]int, error)
+	openPidfd   func(int, int) (int, error)
+	signalPidfd func(int, unix.Signal, *unix.Siginfo, int) error
+	closePidfd  func(int) error
+}
+
+func signalCgroupProcess(leafDir string, pid int, sig unix.Signal) (bool, error) {
+	return signalCgroupProcessWithOps(leafDir, pid, sig, cgroupProcessSignalOps{
+		readMembers: readCgroupProcs,
+		openPidfd:   unix.PidfdOpen,
+		signalPidfd: unix.PidfdSendSignal,
+		closePidfd:  unix.Close,
+	})
+}
+
+// cgroup.procs only supplies candidates: a descendant can exit and its PID
+// can be reused before pidfd_open. Bind the handle first, then establish fresh
+// cgroup membership before signaling. If the PID is recycled after that check,
+// pidfd_send_signal still addresses the original process (or returns ESRCH).
+// Unlike the subreaper's locked, unreaped children, these candidates do not
+// have pinned numeric identities, so an unavailable pidfd is not permission
+// to fall back to kill(pid).
+func signalCgroupProcessWithOps(leafDir string, pid int, sig unix.Signal, ops cgroupProcessSignalOps) (bool, error) {
+	if pid <= 1 || strings.TrimSpace(leafDir) == "" {
+		return false, fmt.Errorf("signal cgroup process: invalid member %d of %q", pid, leafDir)
+	}
+	fd, err := ops.openPidfd(pid, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open cgroup process handle %d: %w", pid, err)
+	}
+	defer ops.closePidfd(fd)
+	members, err := ops.readMembers(leafDir)
+	if err != nil {
+		return false, fmt.Errorf("recheck cgroup process %d membership: %w", pid, err)
+	}
+	for _, member := range members {
+		if member != pid {
+			continue
+		}
+		if err := ops.signalPidfd(fd, sig, nil, 0); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return false, nil
+			}
+			return false, fmt.Errorf("signal cgroup process handle %d: %w", pid, err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // signalCgroupAndProcessGroup sends sig to the command's process group first,
 // then signals any escaped processes (e.g. setsid/setpgid) recorded in
 // `<leafDir>/cgroup.procs` without double-signaling existing PGID members.
@@ -730,9 +855,9 @@ func signalCgroupAndProcessGroup(cmd *exec.Cmd, leafDir string, sig syscall.Sign
 				continue
 			}
 		}
-		if err := signalPIDViaPIDFD(pid, unix.Signal(sig)); err != nil {
+		if signaled, err := signalCgroupProcess(leafDir, pid, unix.Signal(sig)); err != nil {
 			sigErrs = errors.Join(sigErrs, err)
-		} else {
+		} else if signaled {
 			escapedSignaled++
 		}
 	}
@@ -761,9 +886,9 @@ func forceKillCgroupLeaf(cmd *exec.Cmd, leafDir string) (int, error) {
 				break
 			}
 			for _, pid := range pids {
-				if kErr := signalPIDViaPIDFD(pid, unix.SIGKILL); kErr != nil {
+				if signaled, kErr := signalCgroupProcess(leafDir, pid, unix.SIGKILL); kErr != nil {
 					lastErr = errors.Join(lastErr, kErr)
-				} else {
+				} else if signaled {
 					totalKilled++
 				}
 			}

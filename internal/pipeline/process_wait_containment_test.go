@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const testSetsidHelperEnv = "NTM_TEST_SETSID_HELPER_MODE"
@@ -1229,5 +1231,326 @@ func TestContainmentStructuredDiagnostics(t *testing.T) {
 		if !strings.Contains(logged, field) {
 			t.Fatalf("expected structured slog.Debug diagnostic %s in %s", field, logged)
 		}
+	}
+}
+
+func TestCgroupObservationRetriesAndPreservesFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		failure error
+		recover bool
+		live    bool
+	}{
+		{name: "transient read failure", failure: syscall.EACCES, recover: true},
+		{name: "observer cancellation is not caller cancellation", failure: context.Canceled, recover: true},
+		{name: "healthy watch replaces prior failure", failure: syscall.EIO, recover: true, live: true},
+		{name: "permanent uncertainty", failure: syscall.EMFILE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			leaf := t.TempDir()
+			eventsPath := filepath.Join(leaf, "cgroup.events")
+			if err := os.WriteFile(eventsPath, []byte("populated 1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			watching := make(chan struct{})
+			calls := 0
+			ctx = context.WithValue(ctx, commandCgroupObservationTestHookKey{}, func(observationCtx context.Context, observedLeaf string) error {
+				calls++
+				if observedLeaf != leaf {
+					t.Errorf("observer changed cgroup identity: %q", observedLeaf)
+				}
+				if calls <= 2 || !tc.recover {
+					return tc.failure
+				}
+				if calls == 3 {
+					close(watching)
+				}
+				// Exercise the production inotify watcher after recovery,
+				// including its initial read when the update races registration.
+				return observeCgroupPopulatedZero(observationCtx, observedLeaf)
+			})
+			done := make(chan error, 1)
+			go func() { done <- waitCgroupPopulatedZero(ctx, leaf) }()
+			if tc.recover {
+				select {
+				case <-watching:
+				case err := <-done:
+					t.Fatalf("observer abandoned the live cgroup: %v", err)
+				}
+				if !tc.live {
+					// Change only the value byte. Avoid a truncate/write gap
+					// that would introduce an unrelated malformed-file race.
+					file, err := os.OpenFile(eventsPath, os.O_WRONLY, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, writeErr := file.WriteAt([]byte("0"), 10)
+					closeErr := file.Close()
+					if err := errors.Join(writeErr, closeErr); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := <-done
+			if calls < 3 {
+				t.Fatalf("cgroup inspection was not retried: calls=%d err=%v", calls, err)
+			}
+			switch {
+			case tc.recover && !tc.live:
+				if err != nil {
+					t.Fatalf("recovered cgroup failed to settle: %v", err)
+				}
+			case tc.live:
+				if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, tc.failure) {
+					t.Fatalf("healthy event watch retained a recovered inspection error: %v", err)
+				}
+			default:
+				if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, tc.failure) {
+					t.Fatalf("uncertain cgroup lost its deadline or observation failure: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCgroupObservationFailureKeepsHealthyCommandAndOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cmd := exec.Command("/bin/sh", "-c", `trap 'printf interrupted; exit 1' TERM
+printf ready > ready
+while [ ! -f release ]; do sleep 0.01; done
+printf completed
+printf effect > effect
+`)
+	capture := newCappedWriter(128)
+	cmd.Dir, cmd.Stdout, cmd.Stderr = dir, capture, capture
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cancelCommandProcessGroup(cmd)
+			_ = cmd.Wait()
+		}
+	})
+	awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	calls := 0
+	ctx = context.WithValue(ctx, commandCgroupObservationTestHookKey{}, func(observationCtx context.Context, _ string) error {
+		calls++
+		if calls <= 4 {
+			if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != errCommandLeaderRunning {
+				t.Errorf("observation failure stopped healthy work: %v", err)
+			}
+			return syscall.EMFILE
+		}
+		if err := os.WriteFile(filepath.Join(dir, "release"), []byte("finish"), 0o600); err != nil {
+			return err
+		}
+		return waitCommandLeaderExit(observationCtx, cmd.Process)
+	})
+	// The command, output pipes, and signals are real. Only the cgroup
+	// event source is injected so the lifecycle test needs no delegation.
+	result := waitCommandWithCgroupV2(ctx, cmd, &linuxContainmentHandle{
+		tier: ContainmentTierCgroupV2, leafDir: dir, pidfd: -1,
+	})
+	if !result.Settled || result.Cancelled || result.SignalSent != "" || result.Err != nil || calls < 5 ||
+		capture.String() != "completed" || !capture.outputCaptureComplete() {
+		t.Fatalf("observation failure disrupted healthy work: result=%+v calls=%d output=%q", result, calls, capture.String())
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "effect" {
+		t.Fatalf("healthy command did not finish its side effect: %q %v", data, err)
+	}
+}
+
+func TestCgroupObservationFailurePreservesGraceAndSettlementOwnership(t *testing.T) {
+	t.Parallel()
+	for _, recover := range []bool{true, false} {
+		t.Run(fmt.Sprintf("settlement_recovers_%t", recover), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			cmd := startGroupTestCommand(t, dir, `trap '' TERM
+printf ready > ready
+exec sleep 30
+`)
+			awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+			fault := errors.New("injected cgroup event observation failure")
+			var firstSettlementContext context.Context
+			recoveryObserved := false
+			ctx, cancel := context.WithCancel(context.Background())
+			ctx = context.WithValue(ctx, commandCgroupObservationTestHookKey{}, func(observationCtx context.Context, _ string) error {
+				if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil {
+					if err != errCommandLeaderRunning {
+						return err
+					}
+					return fault
+				}
+				if firstSettlementContext == nil {
+					firstSettlementContext = observationCtx
+				}
+				if observationCtx != firstSettlementContext {
+					recoveryObserved = true
+					if recover {
+						return nil
+					}
+				}
+				return fault
+			})
+			cancel()
+			started := time.Now()
+			result := waitCommandWithCgroupV2(ctx, cmd, &linuxContainmentHandle{
+				tier: ContainmentTierCgroupV2, leafDir: dir, pidfd: -1,
+			})
+			elapsed := time.Since(started)
+			if elapsed < commandCancelGracePeriod+commandPipeDrainTimeout ||
+				elapsed > commandCancelGracePeriod+commandPipeDrainTimeout+commandSettlementRecoveryTimeout+3*time.Second {
+				t.Fatalf("failed observation changed the full grace/recovery budget: elapsed=%v result=%+v", elapsed, result)
+			}
+			if !recoveryObserved || !result.Cancelled || result.Settled != recover || result.SignalSent != "SIGTERM,SIGKILL" ||
+				!errors.Is(result.Err, context.Canceled) || !errors.Is(result.Err, fault) ||
+				!strings.Contains(result.Err.Error(), "SIGTERM grace period") || cmd.ProcessState == nil {
+				t.Fatalf("cgroup cleanup lost uncertainty, grace, or settlement ownership: recovery=%t result=%+v", recoveryObserved, result)
+			}
+			if !recover && !strings.Contains(result.Err.Error(), "cgroup settlement recovery exhausted") {
+				t.Fatalf("permanent uncertainty was not retained for operator recovery: %+v", result)
+			}
+		})
+	}
+}
+
+func TestCgroupSignalChecksMembershipAfterOpeningHandle(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		members     []int
+		openErr     error
+		readErr     error
+		signalErr   error
+		wantErr     error
+		wantSignal  bool
+		wantSuccess bool
+	}{
+		{name: "owned member", members: []int{41, 42}, wantSignal: true, wantSuccess: true},
+		{name: "PID recycled outside cgroup", members: []int{41, 43}},
+		{name: "process already exited", openErr: syscall.ESRCH},
+		{name: "pidfd unsupported", openErr: syscall.ENOSYS, wantErr: syscall.ENOSYS},
+		{name: "pidfd denied", openErr: syscall.EPERM, wantErr: syscall.EPERM},
+		{name: "membership unknown", readErr: syscall.EACCES, wantErr: syscall.EACCES},
+		{name: "member exits after identity check", members: []int{42}, signalErr: syscall.ESRCH, wantSignal: true},
+		{name: "signal denied", members: []int{42}, signalErr: syscall.EPERM, wantErr: syscall.EPERM, wantSignal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opened, inspected, signaled, closed := false, false, false, false
+			ops := cgroupProcessSignalOps{
+				openPidfd: func(pid, flags int) (int, error) {
+					if pid != 42 || flags != 0 || inspected {
+						t.Fatalf("wrong identity acquisition order: pid=%d flags=%d inspected=%t", pid, flags, inspected)
+					}
+					opened = true
+					return 71, tc.openErr
+				},
+				readMembers: func(leaf string) ([]int, error) {
+					if !opened || leaf != "/owned-cgroup" || signaled {
+						t.Fatalf("membership was not inspected with a bound handle: opened=%t leaf=%q signaled=%t", opened, leaf, signaled)
+					}
+					inspected = true
+					return tc.members, tc.readErr
+				},
+				signalPidfd: func(fd int, sig unix.Signal, _ *unix.Siginfo, flags int) error {
+					if !inspected || fd != 71 || sig != unix.SIGTERM || flags != 0 {
+						t.Fatalf("signal was not bound to the verified handle: inspected=%t fd=%d sig=%d flags=%d", inspected, fd, sig, flags)
+					}
+					signaled = true
+					return tc.signalErr
+				},
+				closePidfd: func(fd int) error {
+					if fd != 71 || closed {
+						t.Fatalf("wrong handle release: fd=%d closed=%t", fd, closed)
+					}
+					closed = true
+					return nil
+				},
+			}
+			success, err := signalCgroupProcessWithOps("/owned-cgroup", 42, unix.SIGTERM, ops)
+			if !errors.Is(err, tc.wantErr) || success != tc.wantSuccess || signaled != tc.wantSignal || closed != (tc.openErr == nil) {
+				t.Fatalf("unsafe cgroup signal outcome: success=%t signal=%t closed=%t err=%v", success, signaled, closed, err)
+			}
+		})
+	}
+}
+
+func TestCgroupSignalLeavesStaleCandidateAlive(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// This test owns its unreaped direct child even on a host that
+		// restricts pidfd syscalls, so cleanup can use the pinned PID.
+		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+	probeFD, err := unix.PidfdOpen(cmd.Process.Pid, 0)
+	if errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EPERM) {
+		t.Skipf("real pidfd delivery unavailable on host: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeErr := unix.PidfdSendSignal(probeFD, 0, nil, 0)
+	_ = unix.Close(probeFD)
+	if errors.Is(probeErr, syscall.ENOSYS) || errors.Is(probeErr, syscall.EPERM) {
+		t.Skipf("real pidfd delivery unavailable on host: %v", probeErr)
+	}
+	if probeErr != nil {
+		t.Fatal(probeErr)
+	}
+	leaf := t.TempDir()
+	procs := filepath.Join(leaf, "cgroup.procs")
+	if err := os.WriteFile(procs, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ops := cgroupProcessSignalOps{
+		readMembers: readCgroupProcs,
+		openPidfd: func(pid, flags int) (int, error) {
+			fd, err := unix.PidfdOpen(pid, flags)
+			if err == nil {
+				// Model stale enumeration: the process bound by the handle
+				// no longer belongs to the owned cgroup at inspection.
+				if writeErr := os.WriteFile(procs, nil, 0o600); writeErr != nil {
+					_ = unix.Close(fd)
+					return -1, writeErr
+				}
+			}
+			return fd, err
+		},
+		signalPidfd: unix.PidfdSendSignal,
+		closePidfd:  unix.Close,
+	}
+	if signaled, err := signalCgroupProcessWithOps(leaf, cmd.Process.Pid, unix.SIGKILL, ops); err != nil || signaled {
+		t.Fatalf("stale cgroup candidate was signaled: signaled=%t err=%v", signaled, err)
+	}
+	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != errCommandLeaderRunning {
+		t.Fatalf("unrelated live process did not survive stale cgroup membership: %v", err)
+	}
+	// Also exercise real delivery to a freshly verified member.
+	if err := os.WriteFile(procs, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if signaled, err := signalCgroupProcess(leaf, cmd.Process.Pid, unix.SIGTERM); err != nil || !signaled {
+		t.Fatalf("verified cgroup member was not signaled: signaled=%t err=%v", signaled, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitCommandLeaderExit(ctx, cmd.Process); err != nil {
+		t.Fatalf("verified member did not receive its termination signal: %v", err)
 	}
 }
