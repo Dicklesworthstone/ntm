@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path"
@@ -65,8 +66,16 @@ func (c *WebhookConfig) ValidateConfig() error {
 	if parsed.Host == "" {
 		return fmt.Errorf("invalid url %q: missing host", urlStr)
 	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host == "metadata.google.internal" || host == "metadata.goog" {
+		return fmt.Errorf("invalid url host %q: blocked by SSRF policy", parsed.Hostname())
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+			return fmt.Errorf("invalid url IP %q: blocked by SSRF policy", ip.String())
+		}
+	}
 	if scheme == "http" {
-		host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 		switch host {
 		case "localhost", "127.0.0.1", "::1":
 			// Allow insecure localhost webhooks for development.
@@ -105,7 +114,7 @@ func (c *WebhookConfig) ValidateConfig() error {
 
 	for _, t := range c.Filter.AgentType {
 		if !isValidWebhookAgentType(t) {
-			return fmt.Errorf("invalid filter.agent_type %q (supported: claude, codex, gemini, cursor, windsurf, aider, ollama)", strings.TrimSpace(t))
+			return fmt.Errorf("invalid filter.agent_type %q (supported: claude, codex, gemini, antigravity, grok, omp, pi, opencode, cursor, windsurf, aider, ollama)", strings.TrimSpace(t))
 		}
 	}
 
@@ -301,19 +310,8 @@ func isValidWebhookFormatter(format string) bool {
 	}
 }
 func isValidWebhookAgentType(agentType string) bool {
-	switch agent.AgentType(agentType).Canonical() {
-	case agent.AgentTypeClaudeCode,
-		agent.AgentTypeCodex,
-		agent.AgentTypeGemini,
-		agent.AgentTypeOmp,
-		agent.AgentTypeCursor,
-		agent.AgentTypeWindsurf,
-		agent.AgentTypeAider,
-		agent.AgentTypeOllama:
-		return true
-	default:
-		return false
-	}
+	canonical := agent.AgentType(agentType).Canonical()
+	return canonical.IsValid() && canonical != agent.AgentTypeUser
 }
 
 func isValidWebhookSeverity(severity string) bool {

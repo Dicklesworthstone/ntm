@@ -4496,18 +4496,21 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "cc = %d\n", cfg.Swarm.Tier1Allocation.CC)
 	fmt.Fprintf(w, "cod = %d\n", cfg.Swarm.Tier1Allocation.Cod)
 	fmt.Fprintf(w, "gmi = %d\n", cfg.Swarm.Tier1Allocation.Gmi)
+	fmt.Fprintf(w, "agy = %d\n", cfg.Swarm.Tier1Allocation.Agy)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[swarm.tier2_allocation]")
 	fmt.Fprintf(w, "cc = %d\n", cfg.Swarm.Tier2Allocation.CC)
 	fmt.Fprintf(w, "cod = %d\n", cfg.Swarm.Tier2Allocation.Cod)
 	fmt.Fprintf(w, "gmi = %d\n", cfg.Swarm.Tier2Allocation.Gmi)
+	fmt.Fprintf(w, "agy = %d\n", cfg.Swarm.Tier2Allocation.Agy)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[swarm.tier3_allocation]")
 	fmt.Fprintf(w, "cc = %d\n", cfg.Swarm.Tier3Allocation.CC)
 	fmt.Fprintf(w, "cod = %d\n", cfg.Swarm.Tier3Allocation.Cod)
 	fmt.Fprintf(w, "gmi = %d\n", cfg.Swarm.Tier3Allocation.Gmi)
+	fmt.Fprintf(w, "agy = %d\n", cfg.Swarm.Tier3Allocation.Agy)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[ensemble]")

@@ -19,7 +19,7 @@ type SwarmConfig struct {
 	Tier1Threshold int `toml:"tier1_threshold"` // Default: 400
 	Tier2Threshold int `toml:"tier2_threshold"` // Default: 100
 
-	// Allocation per tier: {cc, cod, gmi}
+	// Allocation per tier: {cc, cod, gmi, agy}
 	Tier1Allocation AllocationSpec `toml:"tier1_allocation"`
 	Tier2Allocation AllocationSpec `toml:"tier2_allocation"`
 	Tier3Allocation AllocationSpec `toml:"tier3_allocation"`
@@ -50,11 +50,12 @@ type AllocationSpec struct {
 	CC  int `toml:"cc"`  // Claude Code agents
 	Cod int `toml:"cod"` // Codex agents
 	Gmi int `toml:"gmi"` // Gemini agents
+	Agy int `toml:"agy"` // Antigravity agents
 }
 
 // Total returns the total number of agents in this allocation.
 func (a AllocationSpec) Total() int {
-	return a.CC + a.Cod + a.Gmi
+	return a.CC + a.Cod + a.Gmi + a.Agy
 }
 
 // DefaultSwarmConfig returns SwarmConfig with sensible defaults.
@@ -149,6 +150,9 @@ func validateAllocationSpec(name string, spec AllocationSpec) error {
 	}
 	if spec.Gmi < 0 {
 		return fmt.Errorf("%s.gmi must be non-negative, got %d", name, spec.Gmi)
+	}
+	if spec.Agy < 0 {
+		return fmt.Errorf("%s.agy must be non-negative, got %d", name, spec.Agy)
 	}
 	return nil
 }
