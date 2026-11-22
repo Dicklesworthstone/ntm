@@ -221,6 +221,27 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func parseRoleArrayClaim(raw interface{}) Role {
+	maxRole := RoleNone
+	switch roles := raw.(type) {
+	case []interface{}:
+		for _, r := range roles {
+			if roleStr, ok := r.(string); ok {
+				if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
+					maxRole = parsed
+				}
+			}
+		}
+	case []string:
+		for _, roleStr := range roles {
+			if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
+				maxRole = parsed
+			}
+		}
+	}
+	return maxRole
+}
+
 // extractRoleFromClaims determines the user's role from auth claims.
 func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	// For local mode without auth, grant admin access
@@ -235,44 +256,39 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	}
 
 	// Check standard claim locations for role (explicit claims fail closed to
-	// RoleNone on "none", empty arrays, or unrecognized role values).
+	// RoleNone on "none", null, non-string/non-array, empty arrays, or
+	// unrecognized role values).
 	// 1. "role" claim (direct)
-	if role, ok := claims["role"].(string); ok {
-		return ParseRole(role)
+	if raw, exists := claims["role"]; exists {
+		if role, ok := raw.(string); ok {
+			return ParseRole(role)
+		}
+		return RoleNone
 	}
 
 	// 2. "roles" claim (array)
-	if roles, ok := claims["roles"].([]interface{}); ok {
-		maxRole := RoleNone
-		for _, r := range roles {
-			if roleStr, ok := r.(string); ok {
-				if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
-					maxRole = parsed
-				}
-			}
-		}
-		return maxRole
+	if raw, exists := claims["roles"]; exists {
+		return parseRoleArrayClaim(raw)
 	}
 
 	// 3. Custom claim path (e.g., "ntm_role" or "https://ntm.dev/role")
 	for _, key := range []string{"ntm_role", "https://ntm.dev/role", "user_role"} {
-		if role, ok := claims[key].(string); ok {
-			return ParseRole(role)
+		if raw, exists := claims[key]; exists {
+			if role, ok := raw.(string); ok {
+				return ParseRole(role)
+			}
+			return RoleNone
 		}
 	}
 
 	// 4. Check realm_access.roles (Keycloak format)
-	if realmAccess, ok := claims["realm_access"].(map[string]interface{}); ok {
-		if roles, ok := realmAccess["roles"].([]interface{}); ok {
-			maxRole := RoleNone
-			for _, r := range roles {
-				if roleStr, ok := r.(string); ok {
-					if parsed := ParseRole(roleStr); roleHierarchy(parsed) > roleHierarchy(maxRole) {
-						maxRole = parsed
-					}
-				}
-			}
-			return maxRole
+	if raw, exists := claims["realm_access"]; exists {
+		realmAccess, ok := raw.(map[string]interface{})
+		if !ok {
+			return RoleNone
+		}
+		if rolesRaw, hasRoles := realmAccess["roles"]; hasRoles {
+			return parseRoleArrayClaim(rolesRaw)
 		}
 	}
 
