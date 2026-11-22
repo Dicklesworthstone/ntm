@@ -708,3 +708,89 @@ func TestJsonEscape(t *testing.T) {
 		})
 	}
 }
+
+func TestWebhookSSRFAndRedirectProtection(t *testing.T) {
+	t.Parallel()
+
+	blockedURLs := []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://metadata.google.internal/computeMetadata/v1/",
+		"http://metadata.google.internal./computeMetadata/v1/",
+		"http://[fd00:ec2::254]/latest/meta-data/",
+		"http://[fd00:ec2::254%25eth0]/latest/meta-data/",
+		"http://[fe80::1%25eth0]/",
+		"http://100.100.100.200/latest/meta-data/",
+		"http://0.0.0.0:8080/hook",
+		"file:///etc/passwd",
+	}
+	for _, rawURL := range blockedURLs {
+		t.Run(rawURL, func(t *testing.T) {
+			n := New(Config{
+				Enabled: true,
+				Events:  []string{string(EventAgentError)},
+				Webhook: WebhookConfig{Enabled: true, URL: rawURL},
+			})
+			if err := n.sendWebhook(Event{Type: EventAgentError, Message: "test"}); err == nil {
+				t.Fatalf("sendWebhook(%q) succeeded, expected SSRF/scheme rejection", rawURL)
+			}
+		})
+	}
+
+	t.Run("redirect refused without following", func(t *testing.T) {
+		followed := false
+		dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			followed = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer dst.Close()
+
+		src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, dst.URL, http.StatusFound)
+		}))
+		defer src.Close()
+
+		n := New(Config{
+			Enabled: true,
+			Events:  []string{string(EventAgentError)},
+			Webhook: WebhookConfig{Enabled: true, URL: src.URL},
+		})
+		err := n.sendWebhook(Event{Type: EventAgentError, Message: "redirect test"})
+		if err == nil {
+			t.Fatal("expected error for 302 redirect response")
+		}
+		if followed {
+			t.Fatal("webhook client followed redirect to secondary target")
+		}
+	})
+
+	t.Run("default template emits RFC3339 timestamp", func(t *testing.T) {
+		var gotTimestamp string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			gotTimestamp, _ = payload["timestamp"].(string)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		wantTime := time.Date(2026, 11, 22, 12, 34, 56, 0, time.UTC)
+		cfg := DefaultConfig()
+		cfg.Events = []string{string(EventAgentError)}
+		cfg.Desktop.Enabled = false
+		cfg.FileBox.Enabled = false
+		cfg.Primary = ""
+		cfg.Fallback = ""
+		cfg.Webhook.Enabled = true
+		cfg.Webhook.URL = ts.URL
+
+		n := New(cfg)
+		if err := n.Notify(Event{Type: EventAgentError, Message: "ts", Timestamp: wantTime}); err != nil {
+			t.Fatalf("Notify: %v", err)
+		}
+		if gotTimestamp != wantTime.Format(time.RFC3339) {
+			t.Fatalf("timestamp = %q, want %q", gotTimestamp, wantTime.Format(time.RFC3339))
+		}
+	})
+}

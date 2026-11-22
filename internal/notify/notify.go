@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,7 +124,7 @@ func DefaultConfig() Config {
 		Webhook: WebhookConfig{
 			Enabled:  false,
 			Method:   "POST",
-			Template: `{"event":"{{.Type}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{.Timestamp}}","details":{{jsonMap .Details}}}`,
+			Template: `{"event":"{{jsonEscape (printf "%s" .Type)}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{rfc3339 .Timestamp}}","details":{{jsonMap .Details}}}`,
 		},
 		Shell: ShellConfig{
 			Enabled:  false,
@@ -211,7 +215,19 @@ func New(cfg Config) *Notifier {
 		config:     cfg,
 		enabledSet: make(map[EventType]bool),
 		channels:   make(map[ChannelName]bool),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				Proxy:               nil,
+				DialContext:         safeNotifyDialContext(true),
+				MaxIdleConns:        20,
+				MaxIdleConnsPerHost: 5,
+				IdleConnTimeout:     60 * time.Second,
+			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 
 	// Build set of enabled events
@@ -495,19 +511,112 @@ func jsonMap(details map[string]string) string {
 	return string(b)
 }
 
+var notifyBlockedMetadataIPs = []net.IP{
+	net.ParseIP("fd00:ec2::254"),   // AWS IMDSv2 IPv6 endpoint
+	net.ParseIP("100.100.100.200"), // Alibaba Cloud metadata endpoint
+}
+
+func validateNotifyWebhookURL(rawURL string, allowLoopback bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported webhook URL scheme %q (only http and https are allowed)", parsed.Scheme)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return errors.New("webhook URL missing host")
+	}
+	lowerHost := strings.TrimRight(strings.ToLower(host), ".")
+	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
+		return fmt.Errorf("webhook target %q blocked by SSRF policy", host)
+	}
+	if !allowLoopback && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost")) {
+		return fmt.Errorf("webhook loopback target %q blocked by SSRF policy", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if err := validateNotifyWebhookIP(net.IP(addr.AsSlice()), allowLoopback); err != nil {
+			return err
+		}
+	} else if ip := net.ParseIP(host); ip != nil {
+		if err := validateNotifyWebhookIP(ip, allowLoopback); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNotifyWebhookIP(ip net.IP, allowLoopback bool) error {
+	if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+	}
+	for _, blocked := range notifyBlockedMetadataIPs {
+		if blocked != nil && ip.Equal(blocked) {
+			return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+		}
+	}
+	if !allowLoopback && ip.IsLoopback() {
+		return fmt.Errorf("webhook loopback IP %s blocked by SSRF policy", ip.String())
+	}
+	return nil
+}
+
+func safeNotifyDialContext(allowLoopback bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	return func(dctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(dctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses resolved for webhook host %q", host)
+		}
+		for _, ipAddr := range ips {
+			if err := validateNotifyWebhookIP(ipAddr.IP, allowLoopback); err != nil {
+				return nil, err
+			}
+		}
+		var lastErr error
+		for _, ipAddr := range ips {
+			conn, dialErr := dialer.DialContext(dctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
+	}
+}
+
 // sendWebhook sends a webhook notification
 func (n *Notifier) sendWebhook(event Event) error {
+	if err := validateNotifyWebhookURL(n.config.Webhook.URL, true); err != nil {
+		return err
+	}
+
 	// Parse and execute template with JSON escape function
 	tmplStr := n.config.Webhook.Template
 	if tmplStr == "" {
 		// Default JSON template using jsonEscape for user-controlled fields
-		tmplStr = `{"event":"{{.Type}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{.Timestamp}}","details":{{jsonMap .Details}}}`
+		tmplStr = `{"event":"{{jsonEscape (printf "%s" .Type)}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{rfc3339 .Timestamp}}","details":{{jsonMap .Details}}}`
 	}
 
 	funcMap := template.FuncMap{
 		"jsonEscape": jsonEscape,
 		"detail":     detailValue,
 		"jsonMap":    jsonMap,
+		"rfc3339": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.UTC().Format(time.RFC3339)
+		},
 	}
 
 	tmpl, err := template.New("webhook").Funcs(funcMap).Parse(tmplStr)
@@ -537,17 +646,22 @@ func (n *Notifier) sendWebhook(event Event) error {
 		req.Header.Set(k, v)
 	}
 
-	// Send request
-	resp, err := n.httpClient.Do(req)
+	// Send request (never follow redirects that could forward credentials or hit metadata IPs)
+	clientCopy := *n.httpClient
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := clientCopy.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	return nil
 }
