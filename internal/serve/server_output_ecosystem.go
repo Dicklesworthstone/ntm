@@ -406,6 +406,13 @@ func (s *Server) handleConfigValidatePostV1(w http.ResponseWriter, r *http.Reque
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
 		return
 	}
+	if req.Fix {
+		if rc := RoleFromContext(r.Context()); rc != nil && !rc.Role.HasPermission(PermSystemConfig) {
+			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+				"config validation with fix=true requires admin permission (system:config)", nil, reqID)
+			return
+		}
+	}
 	projectDir, ok := s.resolvePersistenceProjectDir(w, r, req.ProjectDir, reqID)
 	if !ok {
 		return

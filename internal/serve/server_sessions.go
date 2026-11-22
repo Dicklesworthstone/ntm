@@ -161,18 +161,23 @@ func (s *Server) projectionStore() *state.Store {
 
 // handleRobotStatus handles /api/robot/status - proxies to robot status.
 func (s *Server) robotPaginationOptions() robot.PaginationOptions {
+	projectDir := s.projectDirSnapshot()
 	if store := s.projectionStore(); store != nil {
 		return robot.PaginationOptions{
 			Store:         store,
 			ExplicitStore: true,
+			ProjectDir:    projectDir,
 		}
 	}
 	if s.robotRuntime != nil {
-		return s.robotRuntime.PaginationOptions(0, 0)
+		opts := s.robotRuntime.PaginationOptions(0, 0)
+		opts.ProjectDir = projectDir
+		return opts
 	}
 	return robot.PaginationOptions{
 		Store:         nil,
 		ExplicitStore: true,
+		ProjectDir:    projectDir,
 	}
 }
 
@@ -383,6 +388,10 @@ func (s *Server) handleSessionEventsRouteV1(w http.ResponseWriter, r *http.Reque
 // handleSessionEventsV1 handles GET /api/v1/sessions/{id}/events.
 func (s *Server) handleSessionEventsV1(w http.ResponseWriter, r *http.Request, sessionID string) {
 	reqID := requestIDFromContext(r.Context())
+
+	if sessionID != "" && !validateSessionParam(w, sessionID, reqID) {
+		return
+	}
 
 	if s.eventBus == nil {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail, "event bus not available", nil, reqID)
@@ -767,7 +776,8 @@ func (s *Server) handleCreateSessionV1(w http.ResponseWriter, r *http.Request) {
 		"panes":   req.Panes,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		statusCode, errCode := kernelSessionErrorHTTP(err)
+		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
 		return
 	}
 
@@ -793,7 +803,8 @@ func (s *Server) handleSessionStatusV1(w http.ResponseWriter, r *http.Request) {
 		"session": sessionID,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		statusCode, errCode := kernelSessionErrorHTTP(err)
+		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
 		return
 	}
 
@@ -819,7 +830,8 @@ func (s *Server) handleSessionAttachV1(w http.ResponseWriter, r *http.Request) {
 		"session": sessionID,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		statusCode, errCode := kernelSessionErrorHTTP(err)
+		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
 		return
 	}
 
@@ -857,7 +869,8 @@ func (s *Server) handleSessionZoomV1(w http.ResponseWriter, r *http.Request) {
 		"pane":    req.Pane,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		statusCode, errCode := kernelSessionErrorHTTP(err)
+		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
 		return
 	}
 
@@ -883,7 +896,8 @@ func (s *Server) handleSessionViewV1(w http.ResponseWriter, r *http.Request) {
 		"session": sessionID,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		statusCode, errCode := kernelSessionErrorHTTP(err)
+		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
 		return
 	}
 
