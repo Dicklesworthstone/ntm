@@ -193,7 +193,7 @@ func loadOrDefaultAt(projectPolicyPath string) (*Policy, error) {
 // DefaultPolicy returns a sensible default policy for destructive command protection.
 func DefaultPolicy() *Policy {
 	const gitOpts = `(?:\s+(?:-[Cc]\s+\S+|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)|--no-pager|-p|--paginate|--bare|--no-replace-objects))*`
-	const rmRF = `rm\s+(?:-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[a-zA-Z]*|(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*f[a-zA-Z]*|--force)|(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive))`
+	const rmRF = `rm(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[a-zA-Z]*|(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*f[a-zA-Z]*|--force)|(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?:\s+-[^\s]+)*\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive))`
 	p := &Policy{
 		Version: 1,
 		// Automation defaults
@@ -215,7 +215,7 @@ func DefaultPolicy() *Policy {
 			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|['")]|$)`, Reason: "Force push can overwrite remote history"},
 			{Pattern: `git` + gitOpts + `\s+push(\s+.*?)?\s(\+|:\+)`, Reason: "Force push via +refspec can overwrite remote history"},
 			{Pattern: rmRF + `(?:\s+-[^\s]*)*\s+(/|~|\*|\.|\.\.)(/|\s|['")]|$)`, Reason: "Critical recursive deletion"},
-			{Pattern: `git` + gitOpts + `\s+branch(\s+.*?)?\s(-D|-[a-zA-Z]*(?:d[a-zA-Z]*f|f[a-zA-Z]*d)[a-zA-Z]*|(--delete|-d)\s+.*(-f|--force)|(-f|--force)\s+.*(--delete|-d))(\s|['")]|$)`, Reason: "Force delete branch loses unmerged work"},
+			{Pattern: `git` + gitOpts + `\s+branch(\s+.*?)?\s(-[a-zA-Z]*D[a-zA-Z]*|-[a-zA-Z]*(?:d[a-zA-Z]*f|f[a-zA-Z]*d)[a-zA-Z]*|(--delete|-d)\s+.*(-f|--force)|(-f|--force)\s+.*(--delete|-d))(\s|['")]|$)`, Reason: "Force delete branch loses unmerged work"},
 			{Pattern: `git` + gitOpts + `\s+stash\s+(drop|clear)(\s|['")]|$)`, Reason: "Losing stashed work"},
 		},
 		// Approval required - potentially dangerous commands
@@ -339,8 +339,9 @@ func splitShellSubcommandsDepth(command string, depth int) []string {
 			continue
 		}
 		// Command substitutions $(...) and `...` are evaluated both unquoted
-		// and inside double quotes.
-		if ch == '$' && i+1 < n && command[i+1] == '(' {
+		// and inside double quotes; process substitutions <(...) and >(...)
+		// are evaluated when unquoted.
+		if (ch == '$' || (!inDouble && (ch == '<' || ch == '>'))) && i+1 < n && command[i+1] == '(' {
 			end := findMatchingParen(command, i+1)
 			if end > i+1 {
 				inner := command[i+2 : end]
@@ -355,7 +356,7 @@ func splitShellSubcommandsDepth(command string, depth int) []string {
 		if ch == '`' {
 			end := findMatchingBacktick(command, i)
 			if end > i {
-				inner := command[i+1 : end]
+				inner := unescapeBacktickBody(command[i+1 : end])
 				if depth < 8 {
 					nested = append(nested, splitShellSubcommandsDepth(inner, depth+1)...)
 				}
@@ -480,6 +481,14 @@ func findMatchingParen(s string, openIdx int) int {
 			inSingle = true
 		case '"':
 			inDouble = true
+		case '#':
+			// POSIX shell treats '#' as a comment start when at the start of a word;
+			// skip through newline so quotes inside comments cannot desync matching.
+			if i == openIdx+1 || s[i-1] == ' ' || s[i-1] == '\t' || s[i-1] == '\n' || s[i-1] == ';' || s[i-1] == '|' || s[i-1] == '&' || s[i-1] == '(' {
+				for i < len(s) && s[i] != '\n' {
+					i++
+				}
+			}
 		case '(':
 			depth++
 		case ')':
@@ -511,20 +520,107 @@ func findMatchingBacktick(s string, openIdx int) int {
 	return -1
 }
 
-func (p *Policy) checkSingle(cmd, fullCmd string) *Match {
-	// Check allowed first (explicit allowlist takes precedence per subcommand)
-	for _, rule := range p.Allowed {
-		if rule.regex != nil && rule.regex.MatchString(cmd) {
-			// Guard against `git push --force-with-lease --force` (or `-f`),
-			// where git honors the unconditional --force flag.
-			if strings.Contains(rule.Pattern, "force-with-lease") && gitPushUnconditionalForceRE.MatchString(cmd) {
+// unescapeBacktickBody applies POSIX backtick backslash removal (\`, \$, \\)
+// before recursively analyzing nested command substitutions.
+func unescapeBacktickBody(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '`', '$', '\\':
+				b.WriteByte(s[i+1])
+				i++
 				continue
 			}
-			return &Match{
-				Action:  ActionAllow,
-				Pattern: rule.Pattern,
-				Reason:  rule.Reason,
-				Command: fullCmd,
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// hasShellSubstitution reports whether cmd contains unquoted or double-quoted
+// command/process substitution tokens ($(, `, <(, >(). Allowed rules must not
+// short-circuit a subcommand carrying embedded shell execution.
+func hasShellSubstitution(cmd string) bool {
+	inSingle := false
+	inANSIC := false
+	inDouble := false
+	escaped := false
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		if inANSIC {
+			if ch == '\\' && i+1 < len(cmd) {
+				i++
+				continue
+			}
+			if ch == '\'' {
+				inANSIC = false
+			}
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '`' {
+			return true
+		}
+		if ch == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+			return true
+		}
+		if !inDouble && (ch == '<' || ch == '>') && i+1 < len(cmd) && cmd[i+1] == '(' {
+			return true
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		if ch == '$' && i+1 < len(cmd) && cmd[i+1] == '\'' {
+			inANSIC = true
+			i++
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		}
+	}
+	return false
+}
+
+func (p *Policy) checkSingle(cmd, fullCmd string) *Match {
+	// Check allowed first (explicit allowlist takes precedence per subcommand),
+	// unless the subcommand embeds command/process substitution that could hide
+	// destructive shell code (e.g. case pattern ')' or unbalanced quotes).
+	if !hasShellSubstitution(cmd) {
+		for _, rule := range p.Allowed {
+			if rule.regex != nil && rule.regex.MatchString(cmd) {
+				// Guard against `git push --force-with-lease --force` (or `-f`),
+				// where git honors the unconditional --force flag.
+				if strings.Contains(rule.Pattern, "force-with-lease") && gitPushUnconditionalForceRE.MatchString(cmd) {
+					continue
+				}
+				return &Match{
+					Action:  ActionAllow,
+					Pattern: rule.Pattern,
+					Reason:  rule.Reason,
+					Command: fullCmd,
+				}
 			}
 		}
 	}

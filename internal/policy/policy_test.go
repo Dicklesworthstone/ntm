@@ -992,6 +992,8 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 		{"rm -r -v -f /", "rm -r -v -f /"},
 		{"rm -rf -- /", "rm -rf -- /"},
 		{"rm -rf --no-preserve-root /", "rm -rf --no-preserve-root /"},
+		{"rm --no-preserve-root -rf /", "rm --no-preserve-root -rf /"},
+		{"rm -v -rf /", "rm -v -rf /"},
 		{"rm --recursive --force /", "rm --recursive --force /"},
 		{"git -C repo reset --hard", "git -C /tmp/repo reset --hard HEAD"},
 		{"git -c core.hooksPath=/dev/null push --force", "git -c core.hooksPath=/dev/null push --force"},
@@ -1000,6 +1002,9 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 		{"git branch -d --force", "git branch -d --force main"},
 		{"git branch -df", "git branch -df main"},
 		{"git branch -fd", "git branch -fd main"},
+		{"git branch -Df", "git branch -Df main"},
+		{"git branch -rD", "git branch -rD origin/main"},
+		{"git branch -qD", "git branch -qD main"},
 		{"pipeline containing blocked command", "git reset --soft HEAD~1 | git clean -fd"},
 		{"newline separated blocked command", "git reset --soft HEAD~1\nrm -rf ~"},
 		{"async & separator after allowed push", "git push --force-with-lease origin main & git reset --hard HEAD~1"},
@@ -1008,7 +1013,11 @@ func TestCheck_CompoundBypassAndFlagPermutations(t *testing.T) {
 		{"command substitution $(...) inside allowed reset", "git reset --soft $(rm -rf /)"},
 		{"command substitution $(...) inside allowed push", "git push --force-with-lease origin $(git reset --hard)"},
 		{"double-quoted command substitution", `git push --force-with-lease origin "$(rm -rf /)"`},
+		{"comment with quote inside double-quoted $(...)", "git reset --soft \"$(echo # '\nrm -rf /)\""},
+		{"case pattern inside $(...)", "git reset --soft $(case x in x) rm -rf / ;; esac)"},
+		{"process substitution <(...) inside allowed reset", "git reset --soft <(rm -rf /)"},
 		{"backtick command substitution inside allowed reset", "git reset --soft `rm -rf /`"},
+		{"nested escaped backticks inside allowed reset", "git reset --soft `git reset --soft \\`rm -rf /\\``"},
 	}
 
 	for _, tc := range blocked {
