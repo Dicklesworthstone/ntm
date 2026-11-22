@@ -4913,3 +4913,103 @@ func TestAttentionFeed_EphemeralDoesNotAdvanceDurableCursor(t *testing.T) {
 		t.Fatalf("event at cursor %d unreachable from advertised cursor %d (replayed %d events)", second.Cursor, first.Cursor, len(events))
 	}
 }
+
+func TestAttentionJournal_ReplayRecentReturnsNewestTailBeyond100(t *testing.T) {
+	t.Parallel()
+
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       500,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	defer feed.Stop()
+
+	for i := 1; i <= 150; i++ {
+		sess := "alpha"
+		if i%2 == 0 {
+			sess = "beta"
+		}
+		feed.Append(AttentionEvent{
+			Session:       sess,
+			Category:      EventCategoryAlert,
+			Actionability: ActionabilityActionRequired,
+			Severity:      SeverityWarning,
+			Summary:       fmt.Sprintf("event-%d", i),
+		})
+	}
+
+	// Verify ReplayRecent returns the newest 10 events across >100 entries (not oldest 100!).
+	recent, newest, err := feed.ReplayRecent(10, "")
+	if err != nil {
+		t.Fatalf("ReplayRecent failed: %v", err)
+	}
+	if newest != 150 {
+		t.Fatalf("newest cursor = %d, want 150", newest)
+	}
+	if len(recent) != 10 {
+		t.Fatalf("len(recent) = %d, want 10", len(recent))
+	}
+	if recent[0].Cursor != 141 || recent[9].Cursor != 150 {
+		t.Fatalf("recent cursors = [%d..%d], want [141..150]", recent[0].Cursor, recent[9].Cursor)
+	}
+
+	// Verify session-filtered ReplayRecent returns newest 5 events for "alpha" (odd cursors 141..149).
+	alphaRecent, _, err := feed.ReplayRecent(5, "alpha")
+	if err != nil {
+		t.Fatalf("ReplayRecent(alpha) failed: %v", err)
+	}
+	if len(alphaRecent) != 5 {
+		t.Fatalf("len(alphaRecent) = %d, want 5", len(alphaRecent))
+	}
+	if alphaRecent[0].Cursor != 141 || alphaRecent[4].Cursor != 149 {
+		t.Fatalf("alphaRecent cursors = [%d..%d], want [141..149]", alphaRecent[0].Cursor, alphaRecent[4].Cursor)
+	}
+}
+
+func TestBuildEventsOutput_TailModeNoFalseHasMore(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       200,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	defer feed.Stop()
+	prev := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(prev)
+
+	for i := 1; i <= 15; i++ {
+		cat := EventCategoryPane
+		if i > 12 {
+			cat = EventCategoryAlert
+		}
+		feed.Append(AttentionEvent{
+			Session:       "proj",
+			Category:      cat,
+			Actionability: ActionabilityActionRequired,
+			Severity:      SeverityWarning,
+			Summary:       fmt.Sprintf("ev-%d", i),
+		})
+	}
+
+	out, status := BuildEventsOutput(EventsOptions{
+		Tail:           true,
+		Order:          "desc",
+		Limit:          10,
+		CategoryFilter: []string{string(EventCategoryAlert)},
+	})
+	if status != 200 || !out.Success {
+		t.Fatalf("BuildEventsOutput tail failed: status=%d err=%s", status, out.Error)
+	}
+	if len(out.Events) != 3 {
+		t.Fatalf("len(out.Events) = %d, want 3", len(out.Events))
+	}
+	if out.Events[0].Cursor != 15 || out.Events[2].Cursor != 13 {
+		t.Fatalf("desc order cursors = [%d,%d,%d], want [15,14,13]", out.Events[0].Cursor, out.Events[1].Cursor, out.Events[2].Cursor)
+	}
+	if out.HasMore {
+		t.Fatal("HasMore = true, want false when all matching events fit within fetch window and limit")
+	}
+	if out.NextCursor != 15 {
+		t.Fatalf("NextCursor = %d, want 15", out.NextCursor)
+	}
+}

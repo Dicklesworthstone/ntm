@@ -175,6 +175,8 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 		replayTarget    *HistoricalReplayTarget
 		boundedness     *HistoricalBoundedness
 		incidentSummary *SnapshotIncident
+		tailMode        bool
+		tailFetchLimit  int
 	)
 
 	switch {
@@ -272,10 +274,12 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 			Truncated:        reconstruction != nil && reconstruction.Partial,
 		}
 	case opts.Tail && opts.SinceCursor == 0:
+		tailMode = true
 		fetchLimit := limit*4 + 1
 		if fetchLimit > 4001 {
 			fetchLimit = 4001
 		}
+		tailFetchLimit = fetchLimit
 		events, newestCursor, err = feed.ReplayRecent(fetchLimit, opts.Session)
 		if err != nil {
 			return EventsOutput{
@@ -316,10 +320,15 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 
 	// Determine if there are more events. This must be judged on the replayed
 	// page, not the filtered subset: a page whose every event was filtered out
-	// still means more of the feed remains.
+	// still means more of the feed remains. In tail mode we over-fetch up to
+	// tailFetchLimit to absorb client-side filters, so hasMore only reflects
+	// hitting that fetch cap or having more matching events than limit.
 	hasMore := len(events) > limit
+	if tailMode {
+		hasMore = len(events) >= tailFetchLimit
+	}
 	if len(filtered) > limit {
-		if opts.Tail && opts.SinceCursor == 0 {
+		if tailMode {
 			filtered = filtered[len(filtered)-limit:]
 		} else {
 			filtered = filtered[:limit]
@@ -343,7 +352,7 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 	case newestCursor > 0:
 		nextCursor = newestCursor
 	}
-	if opts.Tail && opts.SinceCursor == 0 && newestCursor > nextCursor {
+	if tailMode && newestCursor > nextCursor {
 		nextCursor = newestCursor
 	}
 	if strings.EqualFold(strings.TrimSpace(opts.Order), "desc") && len(filtered) > 1 {

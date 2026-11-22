@@ -1040,7 +1040,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 		})
 		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), true)
-		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
+		if ctx.Err() == nil && obsLookup == paneFound && obs.Dead && obs.PID == original.PID {
 			exitErr = nil
 			exited = true
 		}

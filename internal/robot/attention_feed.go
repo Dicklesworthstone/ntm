@@ -257,6 +257,36 @@ func (j *AttentionJournal) Replay(sinceCursor int64, limit int) ([]AttentionEven
 	return events, j.newest, nil
 }
 
+// ReplayRecent returns up to limit newest retained events with cursor >= minCursor,
+// optionally filtered by session, in ascending cursor order.
+func (j *AttentionJournal) ReplayRecent(minCursor int64, limit int, session string) ([]AttentionEvent, int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.replayRequests.Add(1)
+	j.pruneLocked(time.Now())
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	events := make([]AttentionEvent, 0, minInt(limit, len(j.entries)))
+	for i := len(j.entries) - 1; i >= 0 && len(events) < limit; i-- {
+		ev := j.entries[i].event
+		if ev.Cursor < minCursor {
+			break
+		}
+		if session != "" && ev.Session != session {
+			continue
+		}
+		events = append(events, cloneAttentionEvent(ev))
+	}
+	for i, k := 0, len(events)-1; i < k; i, k = i+1, k-1 {
+		events[i], events[k] = events[k], events[i]
+	}
+	return events, j.newest
+}
+
 // Stats returns current journal statistics.
 func (j *AttentionJournal) Stats() JournalStats {
 	j.mu.Lock()
@@ -1026,14 +1056,9 @@ func (f *AttentionFeed) ReplayRecent(limit int, session string) ([]AttentionEven
 			events := f.hydrateStoredAttentionEvents(storedAsc)
 			newestCursor := maxCursor(window.NewestCursor, f.cursor.Current())
 			if tailStart := f.ephemeralFromCursor.Load(); tailStart > 0 {
-				tail, journalCursor, tailErr := f.journal.Replay(tailStart-1, 0)
-				if tailErr == nil && len(tail) > 0 {
-					for _, ev := range f.hydrateReplayEvents(tail) {
-						if session != "" && ev.Session != session {
-							continue
-						}
-						events = append(events, ev)
-					}
+				tail, journalCursor := f.journal.ReplayRecent(tailStart, limit, session)
+				if len(tail) > 0 {
+					events = append(events, f.hydrateReplayEvents(tail)...)
 					if len(events) > limit {
 						events = events[len(events)-limit:]
 					}
@@ -1047,23 +1072,8 @@ func (f *AttentionFeed) ReplayRecent(limit int, session string) ([]AttentionEven
 		}
 	}
 
-	all, newestCursor, err := f.journal.Replay(0, 0)
-	if err != nil {
-		return nil, 0, err
-	}
-	events := f.hydrateReplayEvents(all)
-	if session != "" {
-		filtered := make([]AttentionEvent, 0, len(events))
-		for _, ev := range events {
-			if ev.Session == session {
-				filtered = append(filtered, ev)
-			}
-		}
-		events = filtered
-	}
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
+	recent, newestCursor := f.journal.ReplayRecent(0, limit, session)
+	events := f.hydrateReplayEvents(recent)
 	return events, newestCursor, nil
 }
 
@@ -3555,6 +3565,19 @@ func (f *AttentionFeed) hydrateStoredAttentionEvents(storedEvents []state.Stored
 		events = append(events, event)
 	}
 	return events
+}
+
+// HydrateEvent clones and annotates a single attention event with its durable
+// operator state (muted/snoozed/pinned/resurfaced) when a store is attached.
+func (f *AttentionFeed) HydrateEvent(event AttentionEvent) AttentionEvent {
+	if f == nil || f.store == nil {
+		return event
+	}
+	hydrated := f.hydrateReplayEvents([]AttentionEvent{cloneAttentionEvent(event)})
+	if len(hydrated) == 0 {
+		return event
+	}
+	return hydrated[0]
 }
 
 func (f *AttentionFeed) hydrateReplayEvents(events []AttentionEvent) []AttentionEvent {

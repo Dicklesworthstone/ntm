@@ -673,7 +673,9 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 		sinceCursorProvided = true
 	}
 
+	tailProvided := false
 	if rawTail := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tail"))); rawTail != "" {
+		tailProvided = true
 		switch rawTail {
 		case "true", "1":
 			opts.Tail = true
@@ -690,7 +692,7 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		opts.Order = rawOrder
-		if rawOrder == "desc" && !sinceCursorProvided {
+		if rawOrder == "desc" && !sinceCursorProvided && !tailProvided {
 			opts.Tail = true
 		}
 	}
