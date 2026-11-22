@@ -62,11 +62,16 @@ interface SessionAgentsResponse extends ApiEnvelope {
 const SPAWN_COUNT_FIELDS = [
   { key: "cc_count", label: "Claude Code (cc)" },
   { key: "cod_count", label: "Codex (cod)" },
+  { key: "gmi_count", label: "Gemini (gmi)" },
   { key: "agy_count", label: "Antigravity (agy)" },
   { key: "grok_count", label: "Grok (grok)" },
   { key: "omp_count", label: "Oh My Pi (omp)" },
+  { key: "pi_count", label: "Pi Agent (pi)" },
   { key: "oc_count", label: "OpenCode (oc)" },
-  { key: "gmi_count", label: "Gemini (gmi)" },
+  { key: "cursor_count", label: "Cursor (cursor)" },
+  { key: "windsurf_count", label: "Windsurf (windsurf)" },
+  { key: "aider_count", label: "Aider (aider)" },
+  { key: "ollama_count", label: "Ollama (ollama)" },
 ] as const;
 
 type SpawnCountKey = (typeof SPAWN_COUNT_FIELDS)[number]["key"];
@@ -75,11 +80,16 @@ const CONTROL_AGENT_TYPES = [
   { value: "all", label: "All Agents (all)" },
   { value: "cc", label: "Claude Code (cc)" },
   { value: "cod", label: "Codex (cod)" },
+  { value: "gmi", label: "Gemini (gmi)" },
   { value: "agy", label: "Antigravity (agy)" },
   { value: "grok", label: "Grok (grok)" },
   { value: "omp", label: "Oh My Pi (omp)" },
+  { value: "pi", label: "Pi Agent (pi)" },
   { value: "oc", label: "OpenCode (oc)" },
-  { value: "gmi", label: "Gemini (gmi)" },
+  { value: "cursor", label: "Cursor (cursor)" },
+  { value: "windsurf", label: "Windsurf (windsurf)" },
+  { value: "aider", label: "Aider (aider)" },
+  { value: "ollama", label: "Ollama (ollama)" },
 ] as const;
 
 const STATUS_CLASSES: Record<string, string> = {
@@ -93,11 +103,16 @@ const STATUS_CLASSES: Record<string, string> = {
 const INITIAL_SPAWN_COUNTS: Record<SpawnCountKey, number> = {
   cc_count: 0,
   cod_count: 0,
+  gmi_count: 0,
   agy_count: 0,
   grok_count: 0,
   omp_count: 0,
+  pi_count: 0,
   oc_count: 0,
-  gmi_count: 0,
+  cursor_count: 0,
+  windsurf_count: 0,
+  aider_count: 0,
+  ollama_count: 0,
 };
 
 export default function AgentsPage() {

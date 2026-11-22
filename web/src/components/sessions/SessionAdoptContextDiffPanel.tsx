@@ -30,6 +30,7 @@ const ADOPT_HARNESS_OPTIONS = [
   { key: "aider", label: "Aider" },
   { key: "oc", label: "OpenCode (oc)" },
   { key: "omp", label: "Oh My Pi (omp)" },
+  { key: "pi", label: "Pi Agent (pi)" },
   { key: "ollama", label: "Ollama" },
   { key: "user", label: "User Shell" },
 ] as const;

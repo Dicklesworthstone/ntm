@@ -20,7 +20,7 @@ import {
 } from "@/lib/api/client";
 
 const HARNESS_FILTER_OPTIONS = [
-  { value: "", label: "All 11 Harnesses" },
+  { value: "", label: "All 12 Harnesses" },
   { value: "cc", label: "Claude (cc)" },
   { value: "cod", label: "Codex (cod)" },
   { value: "gmi", label: "Gemini (gmi)" },
@@ -31,6 +31,7 @@ const HARNESS_FILTER_OPTIONS = [
   { value: "aider", label: "Aider" },
   { value: "oc", label: "OpenCode (oc)" },
   { value: "omp", label: "Oh My Pi (omp)" },
+  { value: "pi", label: "Pi Agent (pi)" },
   { value: "ollama", label: "Ollama" },
 ] as const;
 

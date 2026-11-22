@@ -5,6 +5,10 @@ export const AGENT_TYPE_LABELS: Record<string, string> = {
   agy: "Antigravity",
   grok: "Grok",
   omp: "Oh My Pi",
+  pi: "Pi Agent",
   oc: "OpenCode",
+  cursor: "Cursor",
+  windsurf: "Windsurf",
+  aider: "Aider",
   ollama: "Ollama",
 };

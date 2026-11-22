@@ -59,9 +59,7 @@ export function SessionLifecycleControls({
   const encodedSession = encodeURIComponent(sessionId);
 
   const [healthRequested, setHealthRequested] = useState(false);
-  const [controllerHarness, setControllerHarness] = useState<
-    "cc" | "cod" | "agy"
-  >("cc");
+  const [controllerHarness, setControllerHarness] = useState<string>("cc");
   const [paneIndexInput, setPaneIndexInput] = useState("1");
   const [paneTitleInput, setPaneTitleInput] = useState("");
   const [confirmKill, setConfirmKill] = useState(false);
@@ -111,6 +109,12 @@ export function SessionLifecycleControls({
         message: `Launched ${res.agent_type || controllerHarness} controller in pane ${res.pane_id || res.pane_index}.`,
       });
       void queryClient.invalidateQueries({
+        queryKey: ["session-panes", sessionId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["sessions", sessionId],
+      });
+      void queryClient.invalidateQueries({
         queryKey: ["sessions", sessionId, "panes"],
       });
     },
@@ -136,6 +140,12 @@ export function SessionLifecycleControls({
       onNotice?.({
         type: "success",
         message: `Updated pane ${vars.paneIdx} title to "${vars.title}".`,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["session-panes", sessionId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["sessions", sessionId],
       });
       void queryClient.invalidateQueries({
         queryKey: ["sessions", sessionId, "panes"],
@@ -218,14 +228,21 @@ export function SessionLifecycleControls({
             <select
               aria-label="Controller Harness"
               value={controllerHarness}
-              onChange={(e) =>
-                setControllerHarness(e.target.value as "cc" | "cod" | "agy")
-              }
+              onChange={(e) => setControllerHarness(e.target.value)}
               className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1.5 text-xs text-gray-900 dark:text-white"
             >
               <option value="cc">cc</option>
               <option value="cod">cod</option>
+              <option value="gmi">gmi</option>
               <option value="agy">agy</option>
+              <option value="grok">grok</option>
+              <option value="omp">omp</option>
+              <option value="pi">pi</option>
+              <option value="oc">oc</option>
+              <option value="cursor">cursor</option>
+              <option value="windsurf">windsurf</option>
+              <option value="aider">aider</option>
+              <option value="ollama">ollama</option>
             </select>
             <button
               type="button"

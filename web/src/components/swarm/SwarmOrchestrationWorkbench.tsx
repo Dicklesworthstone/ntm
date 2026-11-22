@@ -165,7 +165,7 @@ export function SwarmOrchestrationWorkbench({
         body: JSON.stringify({
           session: routeSession.trim(),
           strategy: routeStrategy,
-          type: routeAgentType.trim() || undefined,
+          agent_type: routeAgentType.trim() || undefined,
           prompt: promptDraft.trim() || undefined,
         }),
       }),
@@ -415,8 +415,8 @@ export function SwarmOrchestrationWorkbench({
                 aria-label="Route Harness Filter"
                 value={routeAgentType}
                 onChange={(e) => setRouteAgentType(e.target.value)}
-                placeholder="cc/cod/agy"
-                className="w-20 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+                placeholder="cc/cod/agy/grok/omp/pi/oc"
+                className="w-28 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
               />
               <button
                 type="button"
