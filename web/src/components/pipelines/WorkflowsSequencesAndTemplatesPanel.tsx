@@ -207,6 +207,8 @@ export function WorkflowsSequencesAndTemplatesPanel() {
         session: activeSession,
         projectDir: activeProjectDir,
       };
+      wfRefreshSeqRef.current += 1;
+      setWfStatusRefreshing(false);
       setWfGateToken("");
     }
   }, [activeSession, activeProjectDir]);
@@ -312,11 +314,16 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       return typedPost("/api/v1/workflows/{name}/run", {
         params: { path: { name } },
         body,
-      }).then((res) => ({
-        res,
-        targetSession,
-        trimmedDir,
-      }));
+      }).then(
+        (res) => ({
+          res,
+          targetSession,
+          trimmedDir,
+        }),
+        (err) => {
+          throw { err, targetSession, trimmedDir };
+        }
+      );
     },
     onSuccess: ({ res, targetSession, trimmedDir }, name) => {
       if (!res.dry_run) {
@@ -351,8 +358,29 @@ export function WorkflowsSequencesAndTemplatesPanel() {
         );
       }
     },
-    onError: (err) => {
-      setWfControlMsg(`Run workflow failed: ${formatApiErrorMessage(err)}`);
+    onError: (wrapped: unknown) => {
+      const scoped =
+        wrapped &&
+        typeof wrapped === "object" &&
+        "targetSession" in wrapped &&
+        "trimmedDir" in wrapped &&
+        "err" in wrapped
+          ? (wrapped as {
+              err: unknown;
+              targetSession: string;
+              trimmedDir: string;
+            })
+          : null;
+      if (
+        scoped &&
+        (wfActiveInputRef.current.session !== scoped.targetSession ||
+          wfActiveInputRef.current.projectDir !== scoped.trimmedDir)
+      ) {
+        return;
+      }
+      setWfControlMsg(
+        `Run workflow failed: ${formatApiErrorMessage(scoped ? scoped.err : wrapped)}`
+      );
     },
   });
 
@@ -363,18 +391,26 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       const rawIdx = wfTransitionIdx.trim();
       const parsedIdx = Number(rawIdx);
       if (rawIdx === "" || !Number.isInteger(parsedIdx) || parsedIdx < 0) {
-        throw new Error("Transition index must be a non-negative integer.");
+        throw {
+          err: new Error("Transition index must be a non-negative integer."),
+          targetSession,
+          trimmedDir,
+        };
       }
-      const res = await typedPost("/api/v1/workflows/{name}/trigger", {
-        params: { path: { name: targetSession } },
-        body: {
-          token: wfGateToken.trim(),
-          transition: parsedIdx,
-          reason: wfReason.trim(),
-          ...(trimmedDir ? { project_dir: trimmedDir } : {}),
-        },
-      });
-      return { res, targetSession, trimmedDir };
+      try {
+        const res = await typedPost("/api/v1/workflows/{name}/trigger", {
+          params: { path: { name: targetSession } },
+          body: {
+            token: wfGateToken.trim(),
+            transition: parsedIdx,
+            reason: wfReason.trim(),
+            ...(trimmedDir ? { project_dir: trimmedDir } : {}),
+          },
+        });
+        return { res, targetSession, trimmedDir };
+      } catch (err) {
+        throw { err, targetSession, trimmedDir };
+      }
     },
     onSuccess: ({ res, targetSession, trimmedDir }) => {
       void queryClient.invalidateQueries({
@@ -394,8 +430,29 @@ export function WorkflowsSequencesAndTemplatesPanel() {
         );
       }
     },
-    onError: (err) => {
-      setWfControlMsg(`Trigger gate failed: ${formatApiErrorMessage(err)}`);
+    onError: (wrapped: unknown) => {
+      const scoped =
+        wrapped &&
+        typeof wrapped === "object" &&
+        "targetSession" in wrapped &&
+        "trimmedDir" in wrapped &&
+        "err" in wrapped
+          ? (wrapped as {
+              err: unknown;
+              targetSession: string;
+              trimmedDir: string;
+            })
+          : null;
+      if (
+        scoped &&
+        (wfActiveInputRef.current.session !== scoped.targetSession ||
+          wfActiveInputRef.current.projectDir !== scoped.trimmedDir)
+      ) {
+        return;
+      }
+      setWfControlMsg(
+        `Trigger gate failed: ${formatApiErrorMessage(scoped ? scoped.err : wrapped)}`
+      );
     },
   });
 
@@ -409,7 +466,12 @@ export function WorkflowsSequencesAndTemplatesPanel() {
           reason: wfReason.trim() || "Stopped via Web Cockpit",
           ...(trimmedDir ? { project_dir: trimmedDir } : {}),
         },
-      }).then((res) => ({ res, targetSession, trimmedDir }));
+      }).then(
+        (res) => ({ res, targetSession, trimmedDir }),
+        (err) => {
+          throw { err, targetSession, trimmedDir };
+        }
+      );
     },
     onSuccess: ({ res, targetSession, trimmedDir }) => {
       queryClient.setQueryData(
@@ -448,8 +510,29 @@ export function WorkflowsSequencesAndTemplatesPanel() {
         }
       }
     },
-    onError: (err) => {
-      setWfControlMsg(`Stop workflow failed: ${formatApiErrorMessage(err)}`);
+    onError: (wrapped: unknown) => {
+      const scoped =
+        wrapped &&
+        typeof wrapped === "object" &&
+        "targetSession" in wrapped &&
+        "trimmedDir" in wrapped &&
+        "err" in wrapped
+          ? (wrapped as {
+              err: unknown;
+              targetSession: string;
+              trimmedDir: string;
+            })
+          : null;
+      if (
+        scoped &&
+        (wfActiveInputRef.current.session !== scoped.targetSession ||
+          wfActiveInputRef.current.projectDir !== scoped.trimmedDir)
+      ) {
+        return;
+      }
+      setWfControlMsg(
+        `Stop workflow failed: ${formatApiErrorMessage(scoped ? scoped.err : wrapped)}`
+      );
     },
   });
 
