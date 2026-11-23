@@ -203,15 +203,16 @@ func TestNoNewPlaceholders(t *testing.T) {
 
 	var hits []placeholderHit
 
-	err := filepath.Walk(internalDir, func(path string, info os.FileInfo, err error) error {
+	webuiDist := filepath.ToSlash(filepath.Join(repoRoot, "internal", "webui", "dist"))
+	err := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		// Skip directories
-		if info.IsDir() {
-			// Skip third_party if it exists
-			if info.Name() == "third_party" {
+		if d.IsDir() {
+			// Skip third_party and built webui static assets (contain no .go sources)
+			if d.Name() == "third_party" || filepath.ToSlash(path) == webuiDist {
 				return filepath.SkipDir
 			}
 			return nil
