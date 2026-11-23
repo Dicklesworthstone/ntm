@@ -383,10 +383,11 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 	}
 
 	// Pi coding agent keeps its horizontal-rule composer visible at all times;
-	// the live braille spinner embedded in the top rule is the authoritative
-	// working signal and must beat idle chrome.
+	// the live braille spinner embedded in the top rule (or declared plugin
+	// working pattern for alternate Pi versions/overrides) is authoritative and
+	// must beat idle chrome.
 	if state.Type == AgentTypePi {
-		if ParsePiComposer(output).Working {
+		if rawIsWorking {
 			state.IsWorking = true
 			state.IsIdle = false
 			if len(state.WorkIndicators) == 0 {
@@ -440,6 +441,26 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 
 // detectRateLimit checks if the agent hit an API usage limit.
 // We scan recent output (last 50 lines) to avoid stale errors triggering state.
+func piLiveChromePresent(output string, agentType AgentType) bool {
+	trimmed := trimTrailingBlankLines(output)
+	if HasTrailingShellExitPrompt(trimmed) || TrustDialogVisible(trimmed) {
+		return false
+	}
+	if ParsePiComposer(output).Found {
+		return true
+	}
+	if pp, ok := LookupPluginPatterns(agentType); ok && pp.Declared() {
+		if PluginActivelyWorking(output, agentType, 0) {
+			return true
+		}
+		lastLines := util.GetLastNLines(trimmed, 5)
+		if idle, declared := PluginIdlePromptShowing(lastLines, agentType); declared && idle {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 50)
 
@@ -469,9 +490,13 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		// rate limits must not park the pane (see the omp pattern notes).
 		return false
 	case AgentTypePi:
-		// Pi has no dedicated rate-limit chrome matcher; transcript mentions of
-		// rate limits must not fall through to the legacy multi-agent union.
-		return false
+		// Never park a Pi pane whose composer is live on screen just because
+		// transcript prose mentions rate limits. When the composer is absent
+		// (e.g. Pi exited or failed with an API 429), match explicit limit lines.
+		if piLiveChromePresent(output, agentType) {
+			return false
+		}
+		return matchAny(recentOutput, piRateLimitPatterns)
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccRateLimitPatterns) ||
@@ -519,8 +544,15 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		// transcript keywords would keep a finished omp pane "working".
 		return OmpActivelyWorking(output, 0)
 	case AgentTypePi:
-		// Pi's top-rule braille spinner is the authoritative working signal.
-		return ParsePiComposer(output).Working
+		// Pi's top-rule braille spinner is authoritative; fall back to declared
+		// plugin working patterns for alternate Pi versions or user overrides.
+		if c := ParsePiComposer(output); c.Found {
+			return c.Working
+		}
+		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Working) > 0 {
+			return PluginActivelyWorking(output, agentType, 0)
+		}
+		return false
 	default:
 		// A registered plugin with declared Working patterns is authoritative
 		// for its own type; the generic union below is for truly unknown types.
@@ -641,8 +673,18 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
 			return false
 		}
-		c := ParsePiComposer(output)
-		return c.Found && !c.Working
+		if c := ParsePiComposer(output); c.Found {
+			return !c.Working
+		}
+		if pp, ok := LookupPluginPatterns(agentType); ok && pp.Declared() {
+			if PluginActivelyWorking(output, agentType, 0) {
+				return false
+			}
+			if idle, declared := PluginIdlePromptShowing(lastLines, agentType); declared {
+				return idle
+			}
+		}
+		return false
 	default:
 		// A registered plugin with declared readiness patterns: its Working
 		// patterns veto idle, its Idle patterns decide; with no Idle patterns
@@ -718,7 +760,10 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
 			return PluginErrorShowing(recentOutput, agentType)
 		}
-		return false
+		if piLiveChromePresent(output, agentType) {
+			return false
+		}
+		return matchAny(recentOutput, piErrorPatterns)
 	default:
 		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
 			return PluginErrorShowing(recentOutput, agentType)
@@ -760,8 +805,13 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		return collectMatches(recentOutput, ocRateLimitPatterns)
 	case AgentTypeGrok:
 		return collectMatches(recentOutput, grokRateLimitPatterns)
-	case AgentTypeOmp, AgentTypePi:
+	case AgentTypeOmp:
 		return nil
+	case AgentTypePi:
+		if piLiveChromePresent(output, agentType) {
+			return nil
+		}
+		return collectMatches(recentOutput, piRateLimitPatterns)
 	default:
 		// Collect from all for unknown type
 		matches := collectMatches(recentOutput, ccRateLimitPatterns)
@@ -824,7 +874,11 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		}
 		return matches
 	case AgentTypePi:
-		if ParsePiComposer(output).Working {
+		if HasTrailingShellExitPrompt(output) {
+			return nil
+		}
+		c := ParsePiComposer(output)
+		if c.Working || (!c.Found && PluginActivelyWorking(output, agentType, 0)) {
 			return []string{"pi_live_spinner"}
 		}
 		return nil

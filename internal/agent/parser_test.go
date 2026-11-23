@@ -1825,3 +1825,105 @@ func TestCodexActivelyWorkingUsesOnlyStructuralLiveTailMarkers(t *testing.T) {
 		})
 	}
 }
+
+func TestParser_PiDetectionMetricsAndState(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+
+	t.Run("idle pi composer with context gauge and rate limit prose", func(t *testing.T) {
+		t.Parallel()
+		// Transcript prose mentioning "rate limit" must never park a pi pane.
+		out := strings.Join([]string{
+			"pi v0.67.6",
+			"Discussed rate limit retry backoff in handler.",
+			"────────────────────",
+			"",
+			"────────────────────",
+			"~/proj (main)",
+			"↑1.2k ↓400 12.5%/200k $0.04",
+		}, "\n")
+		st, err := p.Parse(out)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if st.Type != AgentTypePi {
+			t.Fatalf("Type = %v, want %v", st.Type, AgentTypePi)
+		}
+		if !st.IsIdle || st.IsWorking || st.IsRateLimited || st.IsInError {
+			t.Fatalf("state = idle:%v working:%v rateLimited:%v error:%v, want idle-only",
+				st.IsIdle, st.IsWorking, st.IsRateLimited, st.IsInError)
+		}
+		if st.ContextRemaining == nil || *st.ContextRemaining != 87.5 {
+			t.Fatalf("ContextRemaining = %v, want 87.5", st.ContextRemaining)
+		}
+		pct, win, ok := PiContextUsage(out)
+		if !ok || pct != 12.5 || win != 200000 {
+			t.Fatalf("PiContextUsage = (%v, %v, %v), want (12.5, 200000, true)", pct, win, ok)
+		}
+	})
+
+	t.Run("working pi composer spinner wins over chrome", func(t *testing.T) {
+		t.Parallel()
+		out := strings.Join([]string{
+			"── ⠋ Thinking... ───",
+			"",
+			"────────────────────",
+			"~/proj",
+			"↑2k ?/200k",
+		}, "\n")
+		st, err := p.ParseWithHint(out, AgentTypePi)
+		if err != nil {
+			t.Fatalf("ParseWithHint: %v", err)
+		}
+		if !st.IsWorking || st.IsIdle {
+			t.Fatalf("state = working:%v idle:%v, want working=true idle=false", st.IsWorking, st.IsIdle)
+		}
+		if st.ContextRemaining != nil {
+			t.Fatalf("ContextRemaining = %v, want nil for unknown gauge ?/200k", *st.ContextRemaining)
+		}
+	})
+
+	t.Run("pi exited to shell prompt is neither idle nor working", func(t *testing.T) {
+		t.Parallel()
+		for _, prompt := range []string{"user@host:~/proj$ ", "root@host:~/proj# "} {
+			out := strings.Join([]string{
+				"── ⠋ Thinking... ───",
+				"",
+				"────────────────────",
+				"~/proj",
+				"↑1k 5%/200k",
+				prompt,
+			}, "\n")
+			st, err := p.ParseWithHint(out, AgentTypePi)
+			if err != nil {
+				t.Fatalf("ParseWithHint(%q): %v", prompt, err)
+			}
+			if st.IsIdle || st.IsWorking || len(st.WorkIndicators) != 0 {
+				t.Fatalf("exited shell %q state = idle:%v working:%v indicators:%v, want none", prompt, st.IsIdle, st.IsWorking, st.WorkIndicators)
+			}
+			if st.ContextRemaining != nil {
+				t.Fatalf("exited shell %q retained stale ContextRemaining=%v", prompt, *st.ContextRemaining)
+			}
+		}
+	})
+}
+
+func TestParser_PiWorkingExitedToShellNotMisclassifiedWithShippedPlugin(t *testing.T) {
+	registerShippedPiForTest(t)
+	p := NewParser()
+	out := strings.Join([]string{
+		"── ⠋ Thinking... ───",
+		"",
+		"────────────────────",
+		"~/proj",
+		"↑1k 5%/200k",
+		"user@host:~/proj$ ",
+	}, "\n")
+	st, err := p.ParseWithHint(out, AgentTypePi)
+	if err != nil {
+		t.Fatalf("ParseWithHint: %v", err)
+	}
+	if st.IsWorking || st.IsIdle || len(st.WorkIndicators) != 0 {
+		t.Fatalf("exited working pi with plugin = working:%v idle:%v indicators:%v, want all false/empty", st.IsWorking, st.IsIdle, st.WorkIndicators)
+	}
+}

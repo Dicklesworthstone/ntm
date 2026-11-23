@@ -1335,6 +1335,21 @@ var (
 	piVersionBanner     = regexp.MustCompile(`(?i)^(?:▀▀█|pi)\s+v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
 	piShellLaunch       = regexp.MustCompile(`^.*[$%❯>#]\s+(?:cd\s+.+\s+&&\s+)?(?:exec\s+)?(?:[^\s]+/)?pi(?:\s|$)`)
 	piUserShellPromptRe = regexp.MustCompile(`^(?:[\w@:.~\-/\[\]()]+\s*)?[$%>]\s*$|^(?:[\w@:.~\-/\[\]()]+\s*)?❯\s*$`)
+
+	// Unframed Pi crash/error/rate-limit lines (only matched when Pi's
+	// bottom-anchored composer is absent so transcript prose never parks a live pane).
+	piRateLimitPatterns = []string{
+		"429 too many requests",
+		"rate limit exceeded",
+		"too many requests",
+		"quota exceeded",
+	}
+	piErrorPatterns = []string{
+		"error:",
+		"api error",
+		"authentication failed",
+		"connection refused",
+	}
 )
 
 const (
@@ -1418,7 +1433,7 @@ func ParsePiComposerLines(lines []string) PiComposer {
 
 func isPiUserShellPrompt(line string) bool {
 	trimmed := strings.TrimSpace(stripANSICodes(line))
-	return trimmed != "" && piUserShellPromptRe.MatchString(trimmed)
+	return trimmed != "" && (piUserShellPromptRe.MatchString(trimmed) || trailingShellExitPromptRe.MatchString(trimmed))
 }
 
 func piRuleWidth(line string, top bool) int {
