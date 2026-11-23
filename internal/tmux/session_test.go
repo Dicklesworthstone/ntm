@@ -2669,6 +2669,30 @@ func TestNeedsBufferSend(t *testing.T) {
 			content:   "test\ndata",
 			want:      false,
 		},
+		{
+			name:      "pi single line",
+			agentType: AgentPi,
+			content:   "hello",
+			want:      false,
+		},
+		{
+			name:      "pi with newline",
+			agentType: AgentPi,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "grok single line",
+			agentType: AgentGrok,
+			content:   "hello",
+			want:      false,
+		},
+		{
+			name:      "grok with newline",
+			agentType: AgentGrok,
+			content:   "line1\nline2",
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3632,8 +3656,56 @@ func TestValidatePanePersistentShellRejectsFailedObservation(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	pane := Pane{ID: "%99", PID: os.Getpid(), Type: AgentCodex, Command: "sh"}
-	err := NewClient("").ValidatePanePersistentShellContext(t.Context(), pane)
-	if err == nil || !strings.Contains(err.Error(), "process snapshot") {
+	if err := NewClient("").ValidatePanePersistentShellContext(t.Context(), pane); err == nil || !strings.Contains(err.Error(), "process snapshot") {
 		t.Fatalf("failed process observation was not reported: %v", err)
+	}
+}
+
+func TestPiComposerHoldsPayload_ScrolledAndPasteToken(t *testing.T) {
+	t.Parallel()
+	msg := "first line of long prompt\nmiddle line\nfinal trailing line here"
+	scrolled := strings.Join([]string{
+		"── ↑ 2 more ────────",
+		"final trailing line here",
+		"────────────────────",
+		"~/proj",
+		"↑1k 5%/200k",
+	}, "\n")
+	if !piComposerHoldsPayload(scrolled, msg) {
+		t.Fatal("piComposerHoldsPayload(scrolled) = false, want true when trailing line remains visible")
+	}
+
+	wrappedSingle := strings.Repeat("alpha ", 40) + "final trailing phrase at cursor"
+	scrolledWrapped := strings.Join([]string{
+		"── ↑ 3 more ────────",
+		"final trailing phrase at cursor",
+		"────────────────────",
+		"~/proj",
+		"↑1k 5%/200k",
+	}, "\n")
+	if !piComposerHoldsPayload(scrolledWrapped, wrappedSingle) {
+		t.Fatal("piComposerHoldsPayload(scrolled wrapped single line) = false, want true when trailing tail remains visible")
+	}
+
+	pasted := strings.Join([]string{
+		"────────────────────",
+		"[paste #1 12 lines]",
+		"────────────────────",
+		"~/proj",
+		"↑1k 5%/200k",
+	}, "\n")
+	if !piComposerHoldsPayload(pasted, msg) {
+		t.Fatal("piComposerHoldsPayload(paste token) = false, want true for collapsed paste token")
+	}
+
+	empty := strings.Join([]string{
+		"────────────────────",
+		"",
+		"────────────────────",
+		"~/proj",
+		"↑1k 5%/200k",
+	}, "\n")
+	if piComposerHoldsPayload(empty, msg) {
+		t.Fatal("piComposerHoldsPayload(empty) = true, want false")
 	}
 }

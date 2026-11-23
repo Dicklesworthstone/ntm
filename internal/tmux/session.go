@@ -2520,11 +2520,13 @@ func needsBufferSend(agentType AgentType, content string) bool {
 		// Use buffer for Codex when content contains newlines or is large (>512 chars)
 		// This avoids the "[Pasted Content N chars]" truncation and auto-execute issues
 		return strings.Contains(content, "\n") || len(content) > 512
-	case AgentOmp:
-		// omp honours bracketed paste: a pasted newline stays in the draft
-		// (large pastes collapse into a "#N" token) and only the protocol's
-		// Enter submits — verified live. Typed newlines would not survive
-		// send-keys -l, so multi-line prompts go through the buffer.
+	case AgentOmp, AgentPi:
+		// omp/pi honour bracketed paste: a pasted newline stays in the draft
+		// and only the protocol's Enter submits. Typed newlines would not
+		// survive send-keys -l, so multi-line prompts go through the buffer.
+		return strings.Contains(content, "\n")
+	case AgentGrok:
+		// Multi-line prompts lose newlines under send-keys -l on tmux 3.6+.
 		return strings.Contains(content, "\n")
 	case AgentOpencode:
 		// OpenCode's TUI does not reliably take typed bursts: send-keys -l of
@@ -3807,6 +3809,86 @@ func (c *Client) VerifyOmpSubmissionContext(ctx context.Context, target, message
 // VerifyOmpSubmissionContext verifies omp prompt submission (default client).
 func VerifyOmpSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
 	return DefaultClient.VerifyOmpSubmissionContext(ctx, target, message, paneWidth)
+}
+
+func piComposerHoldsPayload(capture, message string) bool {
+	composer := agent.ParsePiComposer(capture)
+	if !composer.Found || composer.Draft == "" {
+		return false
+	}
+	draft := strings.Join(strings.Fields(composer.Draft), " ")
+	if strings.Contains(draft, "[paste #") || strings.Contains(draft, "[Pasted ") {
+		return true
+	}
+	var firstSnippet, lastSnippet string
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if firstSnippet == "" {
+			if len(runes) > 32 {
+				firstSnippet = strings.TrimSpace(string(runes[:32]))
+			} else {
+				firstSnippet = line
+			}
+		}
+		if len(runes) > 32 {
+			lastSnippet = strings.TrimSpace(string(runes[len(runes)-32:]))
+		} else {
+			lastSnippet = line
+		}
+	}
+	if firstSnippet != "" && strings.Contains(draft, firstSnippet) {
+		return true
+	}
+	return lastSnippet != "" && strings.Contains(draft, lastSnippet)
+}
+
+// VerifyPiSubmissionContext confirms that a prompt delivered to a Pi pane
+// actually left the composer, rescuing a stranded draft with one extra Enter
+// (dismissing any open completion menu first).
+func (c *Client) VerifyPiSubmissionContext(ctx context.Context, target, message string, _ int) (bool, bool, error) {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+		return false, false, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture pi pane for submission verification: %w", err)
+	}
+	if !piComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+	if agent.ParsePiComposer(capture).CompletionRows > 0 {
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Escape"); err != nil {
+			return false, true, fmt.Errorf("dismiss pi completion menu: %w", err)
+		}
+		if err := c.waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+			return false, true, err
+		}
+	}
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
+		return false, true, fmt.Errorf("send rescue Enter to pi pane: %w", err)
+	}
+	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+			return false, true, err
+		}
+		capture, err = c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return false, true, fmt.Errorf("capture pi pane after rescue Enter: %w", err)
+		}
+		if !piComposerHoldsPayload(capture, message) {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
+// VerifyPiSubmissionContext verifies Pi prompt submission (default client).
+func VerifyPiSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	return DefaultClient.VerifyPiSubmissionContext(ctx, target, message, paneWidth)
 }
 
 // VerifyCodexSubmissionContext confirms that a prompt delivered to a codex

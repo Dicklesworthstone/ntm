@@ -553,6 +553,9 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 	case tmux.AgentOmp:
 		kind = "omp"
 		confirmed, rescued, err = tmux.VerifyOmpSubmissionContext(ctx, target, message, paneWidth)
+	case tmux.AgentPi:
+		kind = "pi"
+		confirmed, rescued, err = tmux.VerifyPiSubmissionContext(ctx, target, message, paneWidth)
 	case tmux.AgentOpencode:
 		kind = "opencode"
 		confirmed, rescued, err = tmux.VerifyOpencodeSubmissionContext(ctx, target, message, paneWidth)
