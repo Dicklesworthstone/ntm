@@ -8,6 +8,37 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func TestMatcherAssignRankedTasksPreservesCallerOrderAndEligibility(t *testing.T) {
+	t.Parallel()
+	m := &Matcher{matrix: NewCapabilityMatrix(), config: DefaultMatcherConfig()}
+	beads := []Bead{
+		{ID: "ranked-first", Priority: 3, TaskType: TaskDocs},
+		{ID: "later-higher-score", Priority: 0, TaskType: TaskRefactor},
+	}
+	agents := []Agent{
+		{ID: "busy", AgentType: tmux.AgentGemini},
+		{ID: "full", AgentType: tmux.AgentClaude, Idle: true, ContextUsage: .95},
+		{ID: "available", AgentType: tmux.AgentClaude, Idle: true},
+	}
+	beforeBeads, beforeAgents := append([]Bead(nil), beads...), append([]Agent(nil), agents...)
+	got := m.AssignRankedTasks(beads, agents)
+	if len(got) != 1 || got[0].Bead.ID != "ranked-first" || got[0].Agent.ID != "available" || got[0].Score != .85 {
+		t.Fatalf("ranked assignment reordered caller work or bypassed availability: %+v", got)
+	}
+	if !reflect.DeepEqual(beads, beforeBeads) || !reflect.DeepEqual(agents, beforeAgents) {
+		t.Fatal("ranked assignment mutated caller inputs")
+	}
+	// Preserving external ranking does not relax the normal suitability gate.
+	m.matrix.base[tmux.AgentClaude][TaskDocs] = .1
+	got = m.AssignRankedTasks(beads, agents)
+	if len(got) != 1 || got[0].Bead.ID != "later-higher-score" || got[0].Agent.ID != "available" {
+		t.Fatalf("ranked assignment admitted an unsuitable pair: %+v", got)
+	}
+	if got := m.AssignRankedTasks(beads, nil); len(got) != 0 {
+		t.Fatalf("ranked assignment invented worker capacity: %+v", got)
+	}
+}
+
 func TestMatcherPriorityBatchKeepsSpecialistCapacity(t *testing.T) {
 	for _, strategy := range []Strategy{StrategyQuality, StrategyDependency} {
 		t.Run(string(strategy), func(t *testing.T) {
