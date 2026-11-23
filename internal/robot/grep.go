@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -15,6 +16,12 @@ const (
 
 	GrepSchemaID      = grepSchemaID
 	GrepSchemaVersion = grepSchemaVersion
+
+	// Hard upper bounds protecting memory and CPU against unbounded scrollback queries.
+	MaxScrollbackLines        = 10000
+	MaxScrollbackContextLines = 50
+	MaxScrollbackPatternBytes = 4096
+	MaxGrepMatches            = 5000
 )
 
 // GrepMatch represents a single regex match in captured tmux pane output.
@@ -62,6 +69,7 @@ type GrepOutput struct {
 	CaseInsensitive bool        `json:"case_insensitive,omitempty"`
 	InvertMatch     bool        `json:"invert_match,omitempty"`
 	ListOnly        bool        `json:"list_only,omitempty"`
+	Truncated       bool        `json:"truncated,omitempty"`
 	Warnings        []string    `json:"warnings,omitempty"`
 }
 
@@ -69,6 +77,9 @@ type GrepOutput struct {
 func CompileGrepRegex(pattern string, caseInsensitive bool) (*regexp.Regexp, error) {
 	if strings.TrimSpace(pattern) == "" {
 		return nil, fmt.Errorf("grep pattern is required")
+	}
+	if len(pattern) > MaxScrollbackPatternBytes {
+		return nil, fmt.Errorf("grep pattern exceeds maximum length (%d bytes)", MaxScrollbackPatternBytes)
 	}
 	rePattern := pattern
 	if caseInsensitive {
@@ -81,8 +92,16 @@ func CompileGrepRegex(pattern string, caseInsensitive bool) (*regexp.Regexp, err
 	return re, nil
 }
 
-// GetGrep searches pane scrollback buffers with regular expressions across 11 agent harnesses.
+// GetGrep searches pane scrollback buffers with regular expressions across all built-in harnesses.
 func GetGrep(opts GrepOptions) (*GrepOutput, error) {
+	return GetGrepContext(context.Background(), opts)
+}
+
+// GetGrepContext searches pane scrollback buffers respecting ctx cancellation and bounded limits.
+func GetGrepContext(ctx context.Context, opts GrepOptions) (*GrepOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := &GrepOutput{
 		RobotResponse:   NewRobotResponse(true),
 		SchemaID:        grepSchemaID,
@@ -109,8 +128,12 @@ func GetGrep(opts GrepOptions) (*GrepOutput, error) {
 
 	var sessions []string
 	if opts.AllSessions {
-		sessionList, err := tmux.ListSessions()
+		sessionList, err := tmux.ListSessionsContext(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while listing tmux sessions")
+				return out, nil
+			}
 			out.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Verify the tmux server is reachable")
 			return out, nil
 		}
@@ -128,7 +151,16 @@ func GetGrep(opts GrepOptions) (*GrepOutput, error) {
 			)
 			return out, nil
 		}
-		if !tmux.SessionExists(out.Session) {
+		exists, err := tmux.SessionExistsContext(ctx, out.Session)
+		if err != nil {
+			if ctx.Err() != nil {
+				out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while checking session")
+				return out, nil
+			}
+			out.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Verify the tmux server is reachable")
+			return out, nil
+		}
+		if !exists {
 			out.RobotResponse = NewErrorResponse(
 				fmt.Errorf("session %q not found", out.Session),
 				ErrCodeSessionNotFound,
@@ -142,6 +174,8 @@ func GetGrep(opts GrepOptions) (*GrepOutput, error) {
 	maxLines := opts.MaxLines
 	if maxLines <= 0 {
 		maxLines = 1000
+	} else if maxLines > MaxScrollbackLines {
+		maxLines = MaxScrollbackLines
 	}
 	beforeCount := opts.BeforeLines
 	afterCount := opts.AfterLines
@@ -149,24 +183,51 @@ func GetGrep(opts GrepOptions) (*GrepOutput, error) {
 		beforeCount = opts.ContextLines
 		afterCount = opts.ContextLines
 	}
+	if beforeCount < 0 {
+		beforeCount = 0
+	} else if beforeCount > MaxScrollbackContextLines {
+		beforeCount = MaxScrollbackContextLines
+	}
+	if afterCount < 0 {
+		afterCount = 0
+	} else if afterCount > MaxScrollbackContextLines {
+		afterCount = MaxScrollbackContextLines
+	}
 
 	wantedTypes := normalizedAgentTypeFilter(opts.AgentTypes)
 	matchingPaneSet := make(map[string]struct{})
 
+sessionLoop:
 	for _, sess := range sessions {
-		panes, err := tmux.GetPanes(sess)
+		if err := ctx.Err(); err != nil {
+			out.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Request cancelled or timed out while searching scrollback")
+			return out, nil
+		}
+		panes, err := tmux.GetPanesContext(ctx, sess)
 		if err != nil {
+			if ctx.Err() != nil {
+				out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while listing panes")
+				return out, nil
+			}
 			out.Warnings = append(out.Warnings, fmt.Sprintf("failed to list panes for %s: %v", sess, err))
 			continue
 		}
 
 		for _, pane := range panes {
+			if err := ctx.Err(); err != nil {
+				out.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Request cancelled or timed out while searching panes")
+				return out, nil
+			}
 			if pane.IsServicePane() && !opts.IncludeAllPanes && len(wantedTypes) == 0 {
 				continue
 			}
 
-			captured, err := tmux.CapturePaneOutput(pane.ID, maxLines)
+			captured, err := tmux.CapturePaneOutputContext(ctx, pane.ID, maxLines)
 			if err != nil {
+				if ctx.Err() != nil {
+					out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while capturing pane output")
+					return out, nil
+				}
 				out.Warnings = append(out.Warnings, fmt.Sprintf("failed to capture pane %s/%s: %v", sess, pane.Title, err))
 				continue
 			}
@@ -214,6 +275,11 @@ func GetGrep(opts GrepOptions) (*GrepOutput, error) {
 				matchingPaneSet[paneKey] = struct{}{}
 				if opts.ListOnly {
 					continue
+				}
+				if len(out.Matches) >= MaxGrepMatches {
+					out.Truncated = true
+					out.Warnings = append(out.Warnings, fmt.Sprintf("results truncated at %d matches", MaxGrepMatches))
+					break sessionLoop
 				}
 
 				var ctxLines []string

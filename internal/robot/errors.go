@@ -3,12 +3,15 @@
 package robot
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+const MaxErrorEntries = 5000
 
 // =============================================================================
 // Robot Errors Command
@@ -51,9 +54,10 @@ type ErrorsSummary struct {
 // ErrorsOutput is the response for --robot-errors.
 type ErrorsOutput struct {
 	RobotResponse
-	Session string        `json:"session"`
-	Errors  []ErrorEntry  `json:"errors"`
-	Summary ErrorsSummary `json:"summary"`
+	Session   string        `json:"session"`
+	Errors    []ErrorEntry  `json:"errors"`
+	Summary   ErrorsSummary `json:"summary"`
+	Truncated bool          `json:"truncated,omitempty"`
 }
 
 // ErrorPatternMatcher defines a compiled error regex and its normalized category.
@@ -156,6 +160,14 @@ func detectErrorsPaneAgentType(pane tmux.Pane, paneOutput string) string {
 // GetErrors returns filtered error lines from session panes.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
+	return GetErrorsContext(context.Background(), opts)
+}
+
+// GetErrorsContext returns filtered error lines respecting ctx cancellation and bounded limits.
+func GetErrorsContext(ctx context.Context, opts ErrorsOptions) (*ErrorsOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	output := &ErrorsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
@@ -177,7 +189,16 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 		return output, nil
 	}
 
-	if !tmux.SessionExists(opts.Session) {
+	exists, err := tmux.SessionExistsContext(ctx, opts.Session)
+	if err != nil {
+		if ctx.Err() != nil {
+			output.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while checking session")
+			return output, nil
+		}
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux server state")
+		return output, nil
+	}
+	if !exists {
 		output.RobotResponse = NewErrorResponse(
 			nil,
 			ErrCodeSessionNotFound,
@@ -188,8 +209,12 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 	}
 
 	// Get panes
-	panes, err := tmux.GetPanes(opts.Session)
+	panes, err := tmux.GetPanesContext(ctx, opts.Session)
 	if err != nil {
+		if ctx.Err() != nil {
+			output.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while listing panes")
+			return output, nil
+		}
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
@@ -199,12 +224,16 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 		return output, nil
 	}
 
-	// Set defaults
+	// Set defaults and enforce upper bounds.
 	if opts.Lines <= 0 {
 		opts.Lines = 1000
+	} else if opts.Lines > MaxScrollbackLines {
+		opts.Lines = MaxScrollbackLines
 	}
 	if opts.Context <= 0 {
 		opts.Context = 2
+	} else if opts.Context > MaxScrollbackContextLines {
+		opts.Context = MaxScrollbackContextLines
 	}
 
 	// Resolve the pane filter through the shared N / W.P / %N resolver used by
@@ -228,7 +257,12 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 	}
 
 	// Process each pane
+paneLoop:
 	for _, pane := range panes {
+		if err := ctx.Err(); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Request cancelled or timed out while scanning errors")
+			return output, nil
+		}
 		// Apply pane filter
 		if paneFilter != nil {
 			if _, ok := paneFilter[pane.Ref().StableKey()]; !ok {
@@ -244,8 +278,12 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 		}
 
 		// Capture pane output before filtering so enhanced detection can use it.
-		paneOutput, err := tmux.CapturePaneOutput(pane.ID, opts.Lines)
+		paneOutput, err := tmux.CapturePaneOutputContext(ctx, pane.ID, opts.Lines)
 		if err != nil {
+			if ctx.Err() != nil {
+				output.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while capturing pane output")
+				return output, nil
+			}
 			continue
 		}
 
@@ -266,6 +304,10 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 			isError, matchType := isRobotErrorLine(line)
 			if !isError {
 				continue
+			}
+			if len(output.Errors) >= MaxErrorEntries {
+				output.Truncated = true
+				break paneLoop
 			}
 
 			// Build context. The start index must be clamped, not filtered by the

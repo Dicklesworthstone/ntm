@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -41,6 +42,14 @@ type ExtractOutput struct {
 
 // GetExtract parses fenced Markdown code blocks and file-path hints from session pane scrollback.
 func GetExtract(opts ExtractOptions) (*ExtractOutput, error) {
+	return GetExtractContext(context.Background(), opts)
+}
+
+// GetExtractContext parses fenced code blocks respecting ctx cancellation and bounded scrollback limits.
+func GetExtractContext(ctx context.Context, opts ExtractOptions) (*ExtractOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sessionName := strings.TrimSpace(opts.Session)
 	paneSpec := strings.TrimSpace(opts.Pane)
 	lang := strings.TrimSpace(opts.Language)
@@ -76,7 +85,16 @@ func GetExtract(opts ExtractOptions) (*ExtractOutput, error) {
 		)
 		return out, nil
 	}
-	if !tmux.SessionExists(sessionName) {
+	exists, err := tmux.SessionExistsContext(ctx, sessionName)
+	if err != nil {
+		if ctx.Err() != nil {
+			out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while checking session")
+			return out, nil
+		}
+		out.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Verify tmux server availability")
+		return out, nil
+	}
+	if !exists {
 		out.RobotResponse = NewErrorResponse(
 			fmt.Errorf("session '%s' does not exist", sessionName),
 			ErrCodeSessionNotFound,
@@ -85,8 +103,12 @@ func GetExtract(opts ExtractOptions) (*ExtractOutput, error) {
 		return out, nil
 	}
 
-	panes, err := tmux.GetPanes(sessionName)
+	panes, err := tmux.GetPanesContext(ctx, sessionName)
 	if err != nil {
+		if ctx.Err() != nil {
+			out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while listing panes")
+			return out, nil
+		}
 		out.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to get panes: %w", err),
 			ErrCodeInternalError,
@@ -130,6 +152,8 @@ func GetExtract(opts ExtractOptions) (*ExtractOutput, error) {
 	lines := opts.Lines
 	if lines <= 0 {
 		lines = 500
+	} else if lines > MaxScrollbackLines {
+		lines = MaxScrollbackLines
 	}
 
 	parser := codeblock.NewParser()
@@ -138,8 +162,16 @@ func GetExtract(opts ExtractOptions) (*ExtractOutput, error) {
 	}
 
 	for _, pane := range targetPanes {
-		captured, err := tmux.CapturePaneOutput(pane.ID, lines)
+		if err := ctx.Err(); err != nil {
+			out.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Request cancelled or timed out while extracting code blocks")
+			return out, nil
+		}
+		captured, err := tmux.CapturePaneOutputContext(ctx, pane.ID, lines)
 		if err != nil {
+			if ctx.Err() != nil {
+				out.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Request cancelled or timed out while capturing pane output")
+				return out, nil
+			}
 			continue
 		}
 		out.PanesScanned++
