@@ -3665,7 +3665,6 @@ func TestHandlePatchAutoRotateConfigV1_CooldownTooLow(t *testing.T) {
 }
 
 func TestHandlePatchAutoRotateConfigV1_ValidUpdate(t *testing.T) {
-	restoreAccountStateAfter(t)
 	srv, _ := setupTestServer(t)
 
 	rec := httptest.NewRecorder()
@@ -6810,24 +6809,18 @@ func TestHandlePolicyAutomationUpdateV1_NoChanges(t *testing.T) {
 // --- handleAccountHistoryV1: limit truncation + reverse order ---
 
 func TestHandleAccountHistoryV1_LimitTruncation(t *testing.T) {
-	restoreAccountStateAfter(t)
-	// Pre-fill history with 5 events
-	accountState.mu.Lock()
-	accountState.history = []AccountRotationEvent{
+	s, _ := setupTestServer(t)
+	// Pre-fill server-local history with 5 events
+	state := s.getAccountsState()
+	state.mu.Lock()
+	state.history = []AccountRotationEvent{
 		{Timestamp: "2025-01-01T00:00:00Z", Provider: "claude", NewAccount: "a1"},
 		{Timestamp: "2025-01-02T00:00:00Z", Provider: "claude", NewAccount: "a2"},
 		{Timestamp: "2025-01-03T00:00:00Z", Provider: "claude", NewAccount: "a3"},
 		{Timestamp: "2025-01-04T00:00:00Z", Provider: "claude", NewAccount: "a4"},
 		{Timestamp: "2025-01-05T00:00:00Z", Provider: "claude", NewAccount: "a5"},
 	}
-	accountState.mu.Unlock()
-	defer func() {
-		accountState.mu.Lock()
-		accountState.history = make([]AccountRotationEvent, 0)
-		accountState.mu.Unlock()
-	}()
-
-	s, _ := setupTestServer(t)
+	state.mu.Unlock()
 
 	// Request with limit=2 — should get most recent 2 in reverse order
 	rec := httptest.NewRecorder()
@@ -11388,9 +11381,13 @@ func TestHandleRestoreCheckpoint_WithDryRunOptions(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	// Create fake checkpoint
+	// Create fake checkpoint inside the server's configured project directory.
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rs-dry", "cp-dry")
-	metadata := `{"version":1,"id":"cp-dry","name":"dry-run","session_name":"rs-dry","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	workDirJSON, err := json.Marshal(s.projectDir)
+	if err != nil {
+		t.Fatalf("marshal projectDir: %v", err)
+	}
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dry","name":"dry-run","session_name":"rs-dry","working_dir":%s,"created_at":"2025-01-01T00:00:00Z","pane_count":1}`, workDirJSON)
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()

@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -41,20 +43,50 @@ type AccountRotationEvent struct {
 	Error           string `json:"error,omitempty"`
 }
 
-// accountsState holds runtime state for accounts endpoints.
+// accountsState holds per-server runtime state for accounts endpoints.
 type accountsState struct {
 	mu      sync.RWMutex
 	config  AccountsConfig
 	history []AccountRotationEvent
 }
 
-var accountState = &accountsState{
-	config: AccountsConfig{
-		AutoRotateEnabled:         false,
-		AutoRotateCooldownSeconds: 300,
-		AutoRotateOnRateLimit:     true,
-	},
-	history: make([]AccountRotationEvent, 0),
+func (s *Server) getAccountsState() *accountsState {
+	s.accountsOnce.Do(func() {
+		cfg := AccountsConfig{
+			AutoRotateEnabled:         false,
+			AutoRotateCooldownSeconds: 300,
+			AutoRotateOnRateLimit:     true,
+		}
+		if projectDir := strings.TrimSpace(s.projectDirSnapshot()); projectDir != "" {
+			var loaded *config.Config
+			if s.recoveryConfig != nil {
+				if c, err := s.recoveryConfig(projectDir); err == nil {
+					loaded = c
+				}
+			} else if c, err := config.LoadMerged(projectDir, ""); err == nil {
+				loaded = c
+			}
+			if loaded != nil {
+				cfg.AutoRotateEnabled = loaded.Integrations.CAAM.AutoFailover || loaded.Resilience.RateLimit.AutoRotate
+			}
+		}
+		s.accounts = &accountsState{
+			config:  cfg,
+			history: make([]AccountRotationEvent, 0),
+		}
+	})
+	return s.accounts
+}
+
+func accountRobotErrorStatus(errorCode string) int {
+	switch errorCode {
+	case robot.ErrCodeDependencyMissing:
+		return http.StatusServiceUnavailable
+	case robot.ErrCodeInvalidFlag:
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // registerAccountsRoutes registers account management routes.
@@ -101,11 +133,7 @@ func (s *Server) handleListAccountsV1(w http.ResponseWriter, r *http.Request) {
 
 	// Check if robot mode returned an error
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"hint": output.Hint,
 		}, reqID)
 		return
@@ -128,11 +156,7 @@ func (s *Server) handleAccountStatusV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"hint": output.Hint,
 		}, reqID)
 		return
@@ -155,11 +179,7 @@ func (s *Server) handleActiveAccountsV1(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"hint": output.Hint,
 		}, reqID)
 		return
@@ -190,11 +210,7 @@ func (s *Server) handleAccountQuotaV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"hint": output.Hint,
 		}, reqID)
 		return
@@ -234,13 +250,14 @@ func (s *Server) handleAccountQuotaV1(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/accounts/auto-rotate
 func (s *Server) handleGetAutoRotateConfigV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	state := s.getAccountsState()
 
-	accountState.mu.RLock()
-	config := accountState.config
-	accountState.mu.RUnlock()
+	state.mu.RLock()
+	cfg := state.config
+	state.mu.RUnlock()
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"config": config,
+		"config": cfg,
 	}, reqID)
 }
 
@@ -264,28 +281,29 @@ func (s *Server) handlePatchAutoRotateConfigV1(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	accountState.mu.Lock()
+	state := s.getAccountsState()
+	state.mu.Lock()
 	if patch.AutoRotateEnabled != nil {
-		accountState.config.AutoRotateEnabled = *patch.AutoRotateEnabled
+		state.config.AutoRotateEnabled = *patch.AutoRotateEnabled
 	}
 	if patch.AutoRotateCooldownSeconds != nil {
-		accountState.config.AutoRotateCooldownSeconds = *patch.AutoRotateCooldownSeconds
+		state.config.AutoRotateCooldownSeconds = *patch.AutoRotateCooldownSeconds
 	}
 	if patch.AutoRotateOnRateLimit != nil {
-		accountState.config.AutoRotateOnRateLimit = *patch.AutoRotateOnRateLimit
+		state.config.AutoRotateOnRateLimit = *patch.AutoRotateOnRateLimit
 	}
-	config := accountState.config
-	accountState.mu.Unlock()
+	cfg := state.config
+	state.mu.Unlock()
 
 	log.Printf("REST: accounts auto-rotate config updated enabled=%v cooldown_seconds=%d on_rate_limit=%v request_id=%s",
-		config.AutoRotateEnabled,
-		config.AutoRotateCooldownSeconds,
-		config.AutoRotateOnRateLimit,
+		cfg.AutoRotateEnabled,
+		cfg.AutoRotateCooldownSeconds,
+		cfg.AutoRotateOnRateLimit,
 		reqID,
 	)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"config": config,
+		"config": cfg,
 	}, reqID)
 }
 
@@ -306,10 +324,11 @@ func (s *Server) handleAccountHistoryV1(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	accountState.mu.RLock()
-	history := append([]AccountRotationEvent(nil), accountState.history...)
+	state := s.getAccountsState()
+	state.mu.RLock()
+	history := append([]AccountRotationEvent(nil), state.history...)
 	total := len(history)
-	accountState.mu.RUnlock()
+	state.mu.RUnlock()
 
 	// Return most recent events first, limited
 	if len(history) > limit {
@@ -358,6 +377,13 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+	if !output.Success && output.ErrorCode == robot.ErrCodeInvalidFlag {
+		writeErrorResponse(w, http.StatusBadRequest, output.ErrorCode, output.Error, map[string]interface{}{
+			"switch": output.Switch,
+			"hint":   output.Hint,
+		}, reqID)
+		return
+	}
 
 	// Record in history
 	event := AccountRotationEvent{
@@ -371,13 +397,14 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 		Error:           output.Switch.Error,
 	}
 
-	accountState.mu.Lock()
-	accountState.history = append(accountState.history, event)
+	state := s.getAccountsState()
+	state.mu.Lock()
+	state.history = append(state.history, event)
 	// Keep only last 1000 events
-	if len(accountState.history) > 1000 {
-		accountState.history = accountState.history[len(accountState.history)-1000:]
+	if len(state.history) > 1000 {
+		state.history = state.history[len(state.history)-1000:]
 	}
-	accountState.mu.Unlock()
+	state.mu.Unlock()
 
 	// Publish WebSocket event for rotation
 	if s.wsHub != nil {
@@ -402,11 +429,7 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 	logAccountQuotaSnapshot(reqID, req.Provider)
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"switch": output.Switch,
 			"hint":   output.Hint,
 		}, reqID)
@@ -439,11 +462,7 @@ func (s *Server) handleListAccountsByProviderV1(w http.ResponseWriter, r *http.R
 	}
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"hint": output.Hint,
 		}, reqID)
 		return
@@ -488,6 +507,13 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+	if !output.Success && output.ErrorCode == robot.ErrCodeInvalidFlag {
+		writeErrorResponse(w, http.StatusBadRequest, output.ErrorCode, output.Error, map[string]interface{}{
+			"switch": output.Switch,
+			"hint":   output.Hint,
+		}, reqID)
+		return
+	}
 
 	// Record in history
 	event := AccountRotationEvent{
@@ -501,12 +527,13 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 		Error:           output.Switch.Error,
 	}
 
-	accountState.mu.Lock()
-	accountState.history = append(accountState.history, event)
-	if len(accountState.history) > 1000 {
-		accountState.history = accountState.history[len(accountState.history)-1000:]
+	state := s.getAccountsState()
+	state.mu.Lock()
+	state.history = append(state.history, event)
+	if len(state.history) > 1000 {
+		state.history = state.history[len(state.history)-1000:]
 	}
-	accountState.mu.Unlock()
+	state.mu.Unlock()
 
 	// Publish WebSocket event for rotation
 	if s.wsHub != nil {
@@ -531,11 +558,7 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 	logAccountQuotaSnapshot(reqID, provider)
 
 	if !output.Success {
-		statusCode := http.StatusInternalServerError
-		if output.ErrorCode == robot.ErrCodeDependencyMissing {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeErrorResponse(w, statusCode, output.ErrorCode, output.Error, map[string]interface{}{
+		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
 			"switch": output.Switch,
 			"hint":   output.Hint,
 		}, reqID)

@@ -56,6 +56,10 @@ type Server struct {
 	approvalEng     *approvalpkg.Engine
 	approvalEngOnce sync.Once
 
+	// accounts holds per-server runtime state for /api/v1/accounts endpoints.
+	accounts     *accountsState
+	accountsOnce sync.Once
+
 	// SSE clients
 	sseClients   map[chan events.BusEvent]struct{}
 	sseClientsMu sync.RWMutex

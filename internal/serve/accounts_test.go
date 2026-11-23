@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
@@ -106,34 +107,8 @@ func TestAutoRotateConfigGet(t *testing.T) {
 	}
 }
 
-// restoreAccountStateAfter puts the process-global accounts config and history
-// back when the test ends. Every test that changes them must call it, or a
-// later test (and every -count=N rerun) sees the leftover config instead of
-// the defaults TestAutoRotateConfigGet pins.
-func restoreAccountStateAfter(t *testing.T) {
-	t.Helper()
-	accountState.mu.Lock()
-	config, history := accountState.config, append([]AccountRotationEvent(nil), accountState.history...)
-	accountState.mu.Unlock()
-	t.Cleanup(func() {
-		accountState.mu.Lock()
-		accountState.config, accountState.history = config, history
-		accountState.mu.Unlock()
-	})
-}
-
 // TestAutoRotateConfigPatch tests updating auto-rotate configuration.
 func TestAutoRotateConfigPatch(t *testing.T) {
-	restoreAccountStateAfter(t)
-	// Reset state
-	accountState.mu.Lock()
-	accountState.config = AccountsConfig{
-		AutoRotateEnabled:         false,
-		AutoRotateCooldownSeconds: 300,
-		AutoRotateOnRateLimit:     true,
-	}
-	accountState.mu.Unlock()
-
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -173,24 +148,16 @@ func TestAutoRotateConfigPatch(t *testing.T) {
 	if resp.Config.AutoRotateCooldownSeconds != 600 {
 		t.Errorf("expected cooldown 600, got %d", resp.Config.AutoRotateCooldownSeconds)
 	}
+
+	// Per-server isolation: a second Server must still observe defaults.
+	s2 := &Server{auth: AuthConfig{Mode: AuthModeLocal}, wsHub: NewWSHub()}
+	if s2.getAccountsState().config.AutoRotateEnabled || s2.getAccountsState().config.AutoRotateCooldownSeconds != 300 {
+		t.Fatalf("account config leaked across servers: %+v", s2.getAccountsState().config)
+	}
 }
 
 // TestAutoRotateConfigPatchValidation tests validation of auto-rotate config.
 func TestAutoRotateConfigPatchValidation(t *testing.T) {
-	accountState.mu.Lock()
-	original := accountState.config
-	accountState.config = AccountsConfig{
-		AutoRotateEnabled:         false,
-		AutoRotateCooldownSeconds: 300,
-		AutoRotateOnRateLimit:     true,
-	}
-	accountState.mu.Unlock()
-	t.Cleanup(func() {
-		accountState.mu.Lock()
-		accountState.config = original
-		accountState.mu.Unlock()
-	})
-
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -214,22 +181,17 @@ func TestAutoRotateConfigPatchValidation(t *testing.T) {
 		t.Errorf("expected 400 for invalid cooldown, got %d", w.Code)
 	}
 
-	accountState.mu.RLock()
-	config := accountState.config
-	accountState.mu.RUnlock()
-	if config.AutoRotateEnabled || config.AutoRotateCooldownSeconds != 300 || !config.AutoRotateOnRateLimit {
-		t.Fatalf("invalid patch mutated config: %+v", config)
+	state := s.getAccountsState()
+	state.mu.RLock()
+	cfg := state.config
+	state.mu.RUnlock()
+	if cfg.AutoRotateEnabled || cfg.AutoRotateCooldownSeconds != 300 || !cfg.AutoRotateOnRateLimit {
+		t.Fatalf("invalid patch mutated config: %+v", cfg)
 	}
 }
 
 // TestAccountsHistoryEmpty tests empty history response.
 func TestAccountsHistoryEmpty(t *testing.T) {
-	restoreAccountStateAfter(t)
-	// Reset history
-	accountState.mu.Lock()
-	accountState.history = make([]AccountRotationEvent, 0)
-	accountState.mu.Unlock()
-
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -573,5 +535,59 @@ exit 2
 
 	if got := getActive(t); got != "claude-b" {
 		t.Fatalf("expected post-rotate active=claude-b, got %q", got)
+	}
+}
+
+func TestAccountsInvalidFlagReturns400AndCAAMConfigSeeding(t *testing.T) {
+	s := &Server{
+		auth:       AuthConfig{Mode: AuthModeLocal},
+		wsHub:      NewWSHub(),
+		projectDir: t.TempDir(),
+		recoveryConfig: func(string) (*config.Config, error) {
+			cfg := config.Default()
+			cfg.Integrations.CAAM.AutoFailover = true
+			return cfg, nil
+		},
+	}
+
+	r := chi.NewRouter()
+	r.Use(s.requestIDMiddlewareFunc)
+	r.Use(s.rbacMiddleware)
+	r.Route("/api/v1", func(r chi.Router) {
+		s.registerAccountsRoutes(r)
+	})
+
+	// Seeded from CAAM.AutoFailover = true.
+	cfgRec := httptest.NewRecorder()
+	r.ServeHTTP(cfgRec, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/auto-rotate", nil))
+	if cfgRec.Code != http.StatusOK {
+		t.Fatalf("auto-rotate GET status=%d body=%s", cfgRec.Code, cfgRec.Body.String())
+	}
+	var cfgResp struct {
+		Config AccountsConfig `json:"config"`
+	}
+	if err := json.Unmarshal(cfgRec.Body.Bytes(), &cfgResp); err != nil {
+		t.Fatalf("decode auto-rotate: %v", err)
+	}
+	if !cfgResp.Config.AutoRotateEnabled {
+		t.Fatal("expected AutoRotateEnabled=true when CAAM.AutoFailover=true")
+	}
+
+	// Leading-dash / invalid provider returns 400 INVALID_FLAG without polluting rotation history.
+	rotRec := httptest.NewRecorder()
+	rotReq := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/rotate", bytes.NewReader([]byte(`{"provider":"--help"}`)))
+	rotReq.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rotRec, rotReq)
+	if rotRec.Code != http.StatusBadRequest {
+		t.Fatalf("rotate invalid provider status=%d, want 400; body=%s", rotRec.Code, rotRec.Body.String())
+	}
+	if len(s.getAccountsState().history) != 0 {
+		t.Fatalf("invalid provider polluted rotation history: %+v", s.getAccountsState().history)
+	}
+
+	listRec := httptest.NewRecorder()
+	r.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/--help", nil))
+	if listRec.Code != http.StatusBadRequest {
+		t.Fatalf("list invalid provider status=%d, want 400; body=%s", listRec.Code, listRec.Body.String())
 	}
 }
