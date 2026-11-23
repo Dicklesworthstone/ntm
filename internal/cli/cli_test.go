@@ -490,7 +490,7 @@ func resetFlags() {
 		for _, flagName := range []string{
 			"robot-scale", "scale-cc", "scale-cod", "scale-gmi", "scale-agy",
 			"scale-ollama", "scale-cursor", "scale-windsurf", "scale-aider",
-			"scale-grok", "scale-omp", "scale-oc",
+			"scale-grok", "scale-omp", "scale-pi", "scale-oc",
 			"robot-rebalance", "rebalance-apply", "rebalance-threshold",
 			"rebalance-geometry", "rebalance-geometry-tolerance",
 			"robot-review-queue", "review-dispatch", "review-idle-threshold", "review-commits",
@@ -581,7 +581,7 @@ func resetRobotExtFlags() {
 		for _, flagName := range []string{
 			"robot-adopt", "adopt-cc", "adopt-cod", "adopt-gmi", "adopt-agy",
 			"adopt-grok", "adopt-cursor", "adopt-windsurf", "adopt-aider",
-			"adopt-oc", "adopt-omp", "adopt-ollama", "adopt-user",
+			"adopt-oc", "adopt-omp", "adopt-pi", "adopt-ollama", "adopt-user",
 			"adopt-by-window", "adopt-auto-name",
 			"robot-redact", "redact-file",
 			"robot-hooks", "hooks-action", "hooks-type", "hooks-fail-on-warning",

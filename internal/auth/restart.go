@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -271,11 +272,24 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	case tmux.AgentAider:
 		agentCmdTemplate, agentType = o.cfg.Agents.Aider, "aider"
 	case tmux.AgentOpencode:
-		agentCmdTemplate, agentType = o.cfg.Agents.Opencode, "oc"
+		tmpl := o.cfg.Agents.Opencode
+		if strings.TrimSpace(tmpl) == "" {
+			tmpl = config.DefaultOpencodeCommand
+		}
+		agentCmdTemplate, agentType = tmpl, "oc"
 	case tmux.AgentOmp:
 		agentCmdTemplate, agentType = config.OmpCommandOrDefault(o.cfg.Agents.Omp), "omp"
 	case tmux.AgentPi:
-		agentCmdTemplate, agentType = plugins.ShippedPiPlugin().Command, "pi"
+		tmpl := plugins.ShippedPiPlugin().Command
+		if loadedPlugins, err := plugins.LoadAgentPluginsWithDefaults(filepath.Join(filepath.Dir(config.DefaultPath()), "agents")); err == nil {
+			for _, p := range loadedPlugins {
+				if (strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi")) && strings.TrimSpace(p.Command) != "" {
+					tmpl = p.Command
+					break
+				}
+			}
+		}
+		agentCmdTemplate, agentType = tmpl, "pi"
 	default:
 		// No usable agent type recorded — fall back to the auth provider name.
 		switch prov.Name() {

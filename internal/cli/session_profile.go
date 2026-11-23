@@ -23,12 +23,14 @@ type SessionProfile struct {
 	Cod       int    `toml:"cod,omitempty" json:"cod,omitempty"`
 	Gmi       int    `toml:"gmi,omitempty" json:"gmi,omitempty"`
 	Agy       int    `toml:"agy,omitempty" json:"agy,omitempty"`
+	Grok      int    `toml:"grok,omitempty" json:"grok,omitempty"`
 	Ollama    int    `toml:"ollama,omitempty" json:"ollama,omitempty"`
 	Cursor    int    `toml:"cursor,omitempty" json:"cursor,omitempty"`
 	Windsurf  int    `toml:"windsurf,omitempty" json:"windsurf,omitempty"`
 	Aider     int    `toml:"aider,omitempty" json:"aider,omitempty"`
 	Opencode  int    `toml:"oc,omitempty" json:"oc,omitempty"`
 	Omp       int    `toml:"omp,omitempty" json:"omp,omitempty"`
+	Pi        int    `toml:"pi,omitempty" json:"pi,omitempty"`
 	UserPane  *bool  `toml:"user_pane,omitempty" json:"user_pane,omitempty"`
 	Prompt    string `toml:"prompt,omitempty" json:"prompt,omitempty"`
 	InitFile  string `toml:"init_file,omitempty" json:"init_file,omitempty"`
@@ -72,12 +74,14 @@ func (p SessionProfile) Validate() error {
 		"cod":      p.Cod,
 		"gmi":      p.Gmi,
 		"agy":      p.Agy,
+		"grok":     p.Grok,
 		"ollama":   p.Ollama,
 		"cursor":   p.Cursor,
 		"windsurf": p.Windsurf,
 		"aider":    p.Aider,
 		"oc":       p.Opencode,
 		"omp":      p.Omp,
+		"pi":       p.Pi,
 	}
 	for name, count := range counts {
 		if count < 0 {
@@ -299,11 +303,11 @@ func newSessionProfileCmd() *cobra.Command {
 
 func newSessionProfileSaveCmd() *cobra.Command {
 	var (
-		cc, cod, gmi, agy, ollamaCount int
-		cursorCount, wsCount           int
-		aiderCount, ompCount           int
-		userPane, safety, wt           bool
-		prompt, initFile               string
+		cc, cod, gmi, agy, grokCount, ollamaCount int
+		cursorCount, wsCount                      int
+		aiderCount, ocCount, ompCount, piCount    int
+		userPane, safety, wt                      bool
+		prompt, initFile                          string
 	)
 
 	cmd := &cobra.Command{
@@ -313,23 +317,18 @@ func newSessionProfileSaveCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
 			cfg := SessionProfile{
-				CC:     cc,
-				Cod:    cod,
-				Gmi:    gmi,
-				Agy:    agy,
-				Ollama: ollamaCount,
-			}
-			if cursorCount > 0 {
-				cfg.Cursor = cursorCount
-			}
-			if wsCount > 0 {
-				cfg.Windsurf = wsCount
-			}
-			if aiderCount > 0 {
-				cfg.Aider = aiderCount
-			}
-			if ompCount > 0 {
-				cfg.Omp = ompCount
+				CC:       cc,
+				Cod:      cod,
+				Gmi:      gmi,
+				Agy:      agy,
+				Grok:     grokCount,
+				Ollama:   ollamaCount,
+				Cursor:   cursorCount,
+				Windsurf: wsCount,
+				Aider:    aiderCount,
+				Opencode: ocCount,
+				Omp:      ompCount,
+				Pi:       piCount,
 			}
 			if prompt != "" {
 				cfg.Prompt = prompt
@@ -358,11 +357,14 @@ func newSessionProfileSaveCmd() *cobra.Command {
 	cmd.Flags().IntVar(&cod, "cod", 0, "Number of Codex agents")
 	cmd.Flags().IntVar(&gmi, "gmi", 0, "Number of Gemini agents")
 	cmd.Flags().IntVar(&agy, "agy", 0, "Number of Antigravity agents")
+	cmd.Flags().IntVar(&grokCount, "grok", 0, "Number of Grok Build agents")
 	cmd.Flags().IntVar(&ollamaCount, "ollama", 0, "Number of Ollama agents")
 	cmd.Flags().IntVar(&cursorCount, "cursor", 0, "Number of Cursor agents")
 	cmd.Flags().IntVar(&wsCount, "windsurf", 0, "Number of Windsurf agents")
 	cmd.Flags().IntVar(&aiderCount, "aider", 0, "Number of Aider agents")
+	cmd.Flags().IntVar(&ocCount, "oc", 0, "Number of OpenCode agents")
 	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents")
+	cmd.Flags().IntVar(&piCount, "pi", 0, "Number of Pi agents")
 	cmd.Flags().BoolVar(&userPane, "user-pane", false, "Include user pane")
 	cmd.Flags().BoolVar(&safety, "safety", false, "Enable safety mode")
 	cmd.Flags().BoolVar(&wt, "worktrees", false, "Enable git worktree isolation")
@@ -462,32 +464,36 @@ func printSessionProfileShow(name string) error {
 // ApplySessionProfileToSpawnOptions merges a loaded profile into SpawnOptions.
 // Explicit flags override profile values (non-zero values in opts win).
 func ApplySessionProfileToSpawnOptions(opts *SpawnOptions, profile *SessionProfile) {
-	if opts.CCCount == 0 && profile.CC > 0 {
-		opts.CCCount = profile.CC
+	if opts == nil || profile == nil {
+		return
 	}
-	if opts.CodCount == 0 && profile.Cod > 0 {
-		opts.CodCount = profile.Cod
+	hasExplicitAgents := len(opts.Agents) > 0
+	if hasExplicitAgents {
+		recomputeSpawnAgentCounts(opts)
 	}
-	if opts.GmiCount == 0 && profile.Gmi > 0 {
-		opts.GmiCount = profile.Gmi
+	var addedSpecs AgentSpecs
+	applyCount := func(dst *int, profileCount int, agentType AgentType) {
+		if *dst == 0 && profileCount > 0 {
+			*dst = profileCount
+			if hasExplicitAgents {
+				addedSpecs = append(addedSpecs, AgentSpec{Type: agentType, Count: profileCount})
+			}
+		}
 	}
-	if opts.AgyCount == 0 && profile.Agy > 0 {
-		opts.AgyCount = profile.Agy
-	}
-	if opts.OllamaCount == 0 && profile.Ollama > 0 {
-		opts.OllamaCount = profile.Ollama
-	}
-	if opts.CursorCount == 0 && profile.Cursor > 0 {
-		opts.CursorCount = profile.Cursor
-	}
-	if opts.WindsurfCount == 0 && profile.Windsurf > 0 {
-		opts.WindsurfCount = profile.Windsurf
-	}
-	if opts.AiderCount == 0 && profile.Aider > 0 {
-		opts.AiderCount = profile.Aider
-	}
-	if opts.OmpCount == 0 && profile.Omp > 0 {
-		opts.OmpCount = profile.Omp
+	applyCount(&opts.CCCount, profile.CC, AgentTypeClaude)
+	applyCount(&opts.CodCount, profile.Cod, AgentTypeCodex)
+	applyCount(&opts.GmiCount, profile.Gmi, AgentTypeGemini)
+	applyCount(&opts.AgyCount, profile.Agy, AgentTypeAntigravity)
+	applyCount(&opts.GrokCount, profile.Grok, AgentTypeGrok)
+	applyCount(&opts.OllamaCount, profile.Ollama, AgentTypeOllama)
+	applyCount(&opts.CursorCount, profile.Cursor, AgentTypeCursor)
+	applyCount(&opts.WindsurfCount, profile.Windsurf, AgentTypeWindsurf)
+	applyCount(&opts.AiderCount, profile.Aider, AgentTypeAider)
+	applyCount(&opts.OpencodeCount, profile.Opencode, AgentTypeOpencode)
+	applyCount(&opts.OmpCount, profile.Omp, AgentTypeOmp)
+	applyCount(&opts.PiCount, profile.Pi, AgentTypePi)
+	if len(addedSpecs) > 0 {
+		opts.Agents = append(opts.Agents, addedSpecs.Flatten()...)
 	}
 	if profile.UserPane != nil && *profile.UserPane {
 		opts.UserPane = true

@@ -26,6 +26,7 @@ type SpawnWizardResult struct {
 	AiderCount    int
 	OpencodeCount int
 	OmpCount      int
+	PiCount       int
 	OllamaCount   int
 	Recipe        string // empty = no recipe
 	Template      string // empty = no template
@@ -60,6 +61,7 @@ func wizardAgentSpecs(result SpawnWizardResult) AgentSpecs {
 		{agentType: AgentTypeAider, count: result.AiderCount},
 		{agentType: AgentTypeOpencode, count: result.OpencodeCount},
 		{agentType: AgentTypeOmp, count: result.OmpCount},
+		{agentType: AgentTypePi, count: result.PiCount},
 		{agentType: AgentTypeOllama, count: result.OllamaCount},
 	}
 	for _, entry := range counts {
@@ -83,6 +85,7 @@ func spawnWizardResultFromCounts(counts map[string]int) SpawnWizardResult {
 		AiderCount:    counts["aider"],
 		OpencodeCount: counts["oc"],
 		OmpCount:      counts["omp"],
+		PiCount:       counts["pi"],
 		OllamaCount:   counts["ollama"],
 	}
 }
@@ -101,6 +104,7 @@ func formatWizardAgentCountSummary(counts map[string]int) string {
 		{key: "aider"},
 		{key: "oc"},
 		{key: "omp"},
+		{key: "pi"},
 		{key: "ollama"},
 	}
 	parts := make([]string, 0, len(entries))
@@ -158,7 +162,7 @@ func runSpawnWizard(sessionName string) (SpawnWizardResult, error) {
 func runManualWizard(sessionName string) (SpawnWizardResult, error) {
 	var result SpawnWizardResult
 
-	var ccStr, codStr, gmiStr, agyStr, grokStr, ompStr string
+	var ccStr, codStr, gmiStr, agyStr, grokStr, ompStr, piStr string
 	var autoRestart bool
 
 	agentForm := huh.NewForm(
@@ -199,6 +203,12 @@ func runManualWizard(sessionName string) (SpawnWizardResult, error) {
 				Placeholder("0").
 				Value(&ompStr).
 				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Pi agents (pi)").
+				Description("Number of Pi agents to launch").
+				Placeholder("0").
+				Value(&piStr).
+				Validate(validateAgentCount),
 		).Title("Agent Configuration"),
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -218,16 +228,17 @@ func runManualWizard(sessionName string) (SpawnWizardResult, error) {
 	result.AgyCount = parseCount(agyStr)
 	result.GrokCount = parseCount(grokStr)
 	result.OmpCount = parseCount(ompStr)
+	result.PiCount = parseCount(piStr)
 	result.AutoRestart = autoRestart
 
-	total := result.CCCount + result.CodCount + result.GmiCount + result.AgyCount + result.GrokCount + result.OmpCount
+	total := result.CCCount + result.CodCount + result.GmiCount + result.AgyCount + result.GrokCount + result.OmpCount + result.PiCount
 	if total == 0 {
 		return result, fmt.Errorf("no agents specified — at least one agent is required")
 	}
 
 	// Confirmation
-	summary := fmt.Sprintf("Spawn %d agent(s) in session %q:\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d, Grok Build: %d, Oh My Pi: %d",
-		total, sessionName, result.CCCount, result.CodCount, result.GmiCount, result.AgyCount, result.GrokCount, result.OmpCount)
+	summary := fmt.Sprintf("Spawn %d agent(s) in session %q:\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d, Grok Build: %d, Oh My Pi: %d, Pi: %d",
+		total, sessionName, result.CCCount, result.CodCount, result.GmiCount, result.AgyCount, result.GrokCount, result.OmpCount, result.PiCount)
 	if result.AutoRestart {
 		summary += "\n  Auto-restart: enabled"
 	}

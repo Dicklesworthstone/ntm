@@ -447,7 +447,7 @@ func isSupportedReviewWorkAgentType(agentType agent.AgentType) bool {
 	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini,
 		agent.AgentTypeAntigravity, agent.AgentTypeGrok, agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf, agent.AgentTypeAider, agent.AgentTypeOpencode,
-		agent.AgentTypeOmp, agent.AgentTypeOllama:
+		agent.AgentTypeOmp, agent.AgentTypePi, agent.AgentTypeOllama:
 		return true
 	default:
 		return false

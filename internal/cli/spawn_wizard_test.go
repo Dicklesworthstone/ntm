@@ -47,17 +47,17 @@ func TestParseCount(t *testing.T) {
 }
 
 func TestSpawnWizardGrokCountProjection(t *testing.T) {
-	result := spawnWizardResultFromCounts(map[string]int{"grok": 3})
-	if result.GrokCount != 3 {
-		t.Fatalf("GrokCount = %d, want 3", result.GrokCount)
+	result := spawnWizardResultFromCounts(map[string]int{"grok": 3, "pi": 2})
+	if result.GrokCount != 3 || result.PiCount != 2 {
+		t.Fatalf("GrokCount=%d PiCount=%d, want 3 and 2", result.GrokCount, result.PiCount)
 	}
 
 	specs := wizardAgentSpecs(result)
-	if len(specs) != 1 || specs[0] != (AgentSpec{Type: AgentTypeGrok, Count: 3}) {
-		t.Fatalf("wizardAgentSpecs() = %+v, want Grok x3", specs)
+	if len(specs) != 2 || specs[0] != (AgentSpec{Type: AgentTypeGrok, Count: 3}) || specs[1] != (AgentSpec{Type: AgentTypePi, Count: 2}) {
+		t.Fatalf("wizardAgentSpecs() = %+v, want Grok x3 and Pi x2", specs)
 	}
 
-	if got := formatWizardAgentCountSummary(map[string]int{"cc": 1, "grok": 3}); got != "cc:1 grok:3" {
-		t.Fatalf("formatWizardAgentCountSummary() = %q, want %q", got, "cc:1 grok:3")
+	if got := formatWizardAgentCountSummary(map[string]int{"cc": 1, "grok": 3, "pi": 2}); got != "cc:1 grok:3 pi:2" {
+		t.Fatalf("formatWizardAgentCountSummary() = %q, want %q", got, "cc:1 grok:3 pi:2")
 	}
 }

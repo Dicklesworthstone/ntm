@@ -689,7 +689,7 @@ func isSupportedWorkAgentType(agentType agentpkg.AgentType) bool {
 	case agentpkg.AgentTypeClaudeCode, agentpkg.AgentTypeCodex, agentpkg.AgentTypeGemini,
 		agentpkg.AgentTypeAntigravity, agentpkg.AgentTypeGrok, agentpkg.AgentTypeCursor,
 		agentpkg.AgentTypeWindsurf, agentpkg.AgentTypeAider, agentpkg.AgentTypeOpencode,
-		agentpkg.AgentTypeOmp, agentpkg.AgentTypeOllama:
+		agentpkg.AgentTypeOmp, agentpkg.AgentTypePi, agentpkg.AgentTypeOllama:
 		return true
 	default:
 		return false

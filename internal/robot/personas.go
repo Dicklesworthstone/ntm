@@ -145,9 +145,9 @@ func personasCapabilityCommand() RobotCommandInfo {
 		Flag:        "--robot-personas",
 		Category:    "spawn",
 		Summary:     "List agent personas and profile sets.",
-		Description: "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering.",
+		Description: "List built-in, user, and project agent personas and profile sets with 12-harness alias and tag filtering.",
 		Parameters: []RobotParameter{
-			{Name: "personas-agent", Flag: "--personas-agent", Type: "string", Required: false, Description: "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)"},
+			{Name: "personas-agent", Flag: "--personas-agent", Type: "string", Required: false, Description: "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama)"},
 			{Name: "personas-tag", Flag: "--personas-tag", Type: "string", Required: false, Description: "Filter personas by tag"},
 			{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory for .ntm/personas.toml overrides (defaults to CWD)"},
 		},

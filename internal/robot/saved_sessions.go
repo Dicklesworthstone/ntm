@@ -339,7 +339,7 @@ func savedSessionsCapabilityCommand() RobotCommandInfo {
 		Flag:        "--robot-saved-sessions",
 		Category:    "state",
 		Summary:     "Manage saved session snapshots.",
-		Description: "List, inspect (with 11-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots.",
+		Description: "List, inspect (with 12-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots.",
 		Parameters: []RobotParameter{
 			{Name: "saved-action", Flag: "--saved-action", Type: "string", Required: false, Default: "list", Description: "Action: list (default), show, save, archive, or unarchive"},
 			{Name: "saved-name", Flag: "--saved-name", Type: "string", Required: false, Description: "Saved snapshot name for show/archive/unarchive, or custom destination name for save"},

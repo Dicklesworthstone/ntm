@@ -105,7 +105,7 @@ Examples:
 	return cmd
 }
 
-// AgentFilter specifies which agent types to target across all 11 built-in harnesses.
+// AgentFilter specifies which agent types to target across all 12 built-in harnesses.
 type AgentFilter struct {
 	All         bool
 	Claude      bool
@@ -117,6 +117,7 @@ type AgentFilter struct {
 	Windsurf    bool
 	Aider       bool
 	Omp         bool
+	Pi          bool
 	Opencode    bool
 	Ollama      bool
 }
@@ -132,12 +133,13 @@ func bindAgentFilterFlags(cmd *cobra.Command, filter *AgentFilter, descFmt strin
 	cmd.Flags().BoolVar(&filter.Aider, "aider", false, fmt.Sprintf(descFmt, "Aider"))
 	cmd.Flags().BoolVar(&filter.Opencode, "oc", false, fmt.Sprintf(descFmt, "OpenCode (oc)"))
 	cmd.Flags().BoolVar(&filter.Omp, "omp", false, fmt.Sprintf(descFmt, "Oh My Pi (omp)"))
+	cmd.Flags().BoolVar(&filter.Pi, "pi", false, fmt.Sprintf(descFmt, "Pi Coding Agent (pi)"))
 	cmd.Flags().BoolVar(&filter.Ollama, "ollama", false, fmt.Sprintf(descFmt, "Ollama"))
 }
 
 func (f AgentFilter) IsEmpty() bool {
 	return !f.All && !f.Claude && !f.Codex && !f.Gemini && !f.Antigravity &&
-		!f.Grok && !f.Cursor && !f.Windsurf && !f.Aider && !f.Omp && !f.Opencode && !f.Ollama
+		!f.Grok && !f.Cursor && !f.Windsurf && !f.Aider && !f.Omp && !f.Pi && !f.Opencode && !f.Ollama
 }
 
 func (f AgentFilter) SelectedTypes() []string {
@@ -172,6 +174,9 @@ func (f AgentFilter) SelectedTypes() []string {
 	if f.Omp {
 		types = append(types, "omp")
 	}
+	if f.Pi {
+		types = append(types, "pi")
+	}
 	if f.Ollama {
 		types = append(types, "ollama")
 	}
@@ -201,6 +206,8 @@ func (f AgentFilter) Matches(agentType tmux.AgentType) bool {
 		return f.Aider
 	case tmux.AgentOmp:
 		return f.Omp
+	case tmux.AgentPi:
+		return f.Pi
 	case tmux.AgentOpencode:
 		return f.Opencode
 	case tmux.AgentOllama:

@@ -349,6 +349,27 @@ func TestSessionProfileCRUD(t *testing.T) {
 		}
 	})
 
+	t.Run("save command flags support grok oc and pi", func(t *testing.T) {
+		cmd := newSessionProfileSaveCmd()
+		cmd.SetArgs([]string{"all12", "--cc=1", "--grok=2", "--oc=3", "--pi=4"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("profile save --grok --oc --pi failed: %v", err)
+		}
+		loaded, err := LoadSessionProfile("all12")
+		if err != nil {
+			t.Fatalf("load all12: %v", err)
+		}
+		if loaded.CC != 1 || loaded.Grok != 2 || loaded.Opencode != 3 || loaded.Pi != 4 {
+			t.Fatalf("loaded profile = %+v, want CC=1 Grok=2 Opencode=3 Pi=4", loaded)
+		}
+		if err := (SessionProfile{Pi: -1}).Validate(); err == nil {
+			t.Fatal("expected negative pi count validation error")
+		}
+		if err := (SessionProfile{Grok: -1}).Validate(); err == nil {
+			t.Fatal("expected negative grok count validation error")
+		}
+	})
+
 	t.Run("delete not found", func(t *testing.T) {
 		err := DeleteSessionProfile("ghost")
 		if err == nil {
@@ -550,6 +571,39 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 
 		if opts.InitPrompt != "" {
 			t.Errorf("InitPrompt: want empty, got %q", opts.InitPrompt)
+		}
+	})
+
+	t.Run("applies grok oc and pi and merges with explicit Agents without wiping profile defaults", func(t *testing.T) {
+		profile := &SessionProfile{
+			CC:       2,
+			Cod:      5,
+			Grok:     1,
+			Opencode: 2,
+			Omp:      1,
+			Pi:       3,
+		}
+		opts := &SpawnOptions{
+			Agents: (AgentSpecs{{Type: AgentTypeCodex, Count: 1, Model: "gpt-5"}}).Flatten(),
+		}
+		normalizeSpawnOptions(opts)
+		ApplySessionProfileToSpawnOptions(opts, profile)
+		normalizeSpawnOptions(opts)
+
+		if opts.CodCount != 1 {
+			t.Fatalf("CodCount = %d, want explicit flag override 1", opts.CodCount)
+		}
+		if opts.CCCount != 2 || opts.GrokCount != 1 || opts.OpencodeCount != 2 || opts.OmpCount != 1 || opts.PiCount != 3 {
+			t.Fatalf("profile counts lost after normalizeSpawnOptions: %+v", opts)
+		}
+		if spawnPiCount(*opts) != 3 {
+			t.Fatalf("spawnPiCount = %d, want 3", spawnPiCount(*opts))
+		}
+		if len(opts.Agents) != 10 {
+			t.Fatalf("len(opts.Agents) = %d, want 10 (1 cod + 2 cc + 1 grok + 2 oc + 1 omp + 3 pi)", len(opts.Agents))
+		}
+		if opts.Agents[0].Type != AgentTypeCodex || opts.Agents[0].Model != "gpt-5" {
+			t.Fatalf("explicit codex spec mutated: %+v", opts.Agents[0])
 		}
 	})
 }

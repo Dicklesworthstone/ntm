@@ -478,6 +478,9 @@ func runListPaged(tags []string, project string, limit, offset int) error {
 				if s.AgentCounts.Omp > 0 {
 					parts = append(parts, fmt.Sprintf("%d OMP", s.AgentCounts.Omp))
 				}
+				if s.AgentCounts.Pi > 0 {
+					parts = append(parts, fmt.Sprintf("%d Pi", s.AgentCounts.Pi))
+				}
 				if s.AgentCounts.Opencode > 0 {
 					parts = append(parts, fmt.Sprintf("%d OC", s.AgentCounts.Opencode))
 				}
@@ -1185,6 +1188,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	agyCount := counts.Antigravity
 	grokCount := counts.Grok
 	ompCount := counts.Omp
+	piCount := counts.Pi
 	opencodeCount := counts.Opencode
 	ollamaCount := counts.Ollama
 	cursorCount := counts.Cursor
@@ -1491,6 +1495,10 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		ompColorKey, ompIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentOmp}, t, ic)
 		fmt.Fprintf(w, "    %s%s OMP%s     %s%d instance(s)%s\n", color(ompColorKey), ompIcon, reset, text, ompCount, reset)
 	}
+	if piCount > 0 {
+		piColorKey, piIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentPi}, t, ic)
+		fmt.Fprintf(w, "    %s%s Pi%s      %s%d instance(s)%s\n", color(piColorKey), piIcon, reset, text, piCount, reset)
+	}
 	if opencodeCount > 0 {
 		ocColorKey, ocIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentOpencode}, t, ic)
 		fmt.Fprintf(w, "    %s%s OpenCode%s %s%d instance(s)%s\n", color(ocColorKey), ocIcon, reset, text, opencodeCount, reset)
@@ -1519,7 +1527,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		fmt.Fprintf(w, "    %s%s Other%s   %s%d pane(s)%s\n", color(otherColorKey), otherIcon, reset, text, otherCount, reset)
 	}
 
-	totalAgents := ccCount + codCount + gmiCount + agyCount + grokCount + ompCount + opencodeCount + ollamaCount + cursorCount + windsurfCount + aiderCount + otherCount
+	totalAgents := ccCount + codCount + gmiCount + agyCount + grokCount + ompCount + piCount + opencodeCount + ollamaCount + cursorCount + windsurfCount + aiderCount + otherCount
 	if totalAgents == 0 {
 		fmt.Fprintf(w, "    %sNo agents running%s\n", overlay, reset)
 	}

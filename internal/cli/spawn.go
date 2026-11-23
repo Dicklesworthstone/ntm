@@ -356,6 +356,8 @@ func canonicalSpawnAgentType(raw string) (AgentType, bool) {
 		return AgentTypeOpencode, true
 	case agentpkg.AgentTypeOmp:
 		return AgentTypeOmp, true
+	case agentpkg.AgentTypePi:
+		return AgentTypePi, true
 	case agentpkg.AgentTypeOllama:
 		return AgentTypeOllama, true
 	default:
@@ -378,6 +380,7 @@ func orderedSpawnAgentTypes() []AgentType {
 		AgentTypeAider,
 		AgentTypeOpencode,
 		AgentTypeOmp,
+		AgentTypePi,
 		AgentTypeOllama,
 	}
 }
@@ -625,6 +628,7 @@ func recomputeSpawnAgentCounts(opts *SpawnOptions) {
 	opts.AiderCount = 0
 	opts.OpencodeCount = 0
 	opts.OmpCount = 0
+	opts.PiCount = 0
 	opts.OllamaCount = 0
 
 	for _, agent := range opts.Agents {
@@ -649,6 +653,8 @@ func recomputeSpawnAgentCounts(opts *SpawnOptions) {
 			opts.OpencodeCount++
 		case AgentTypeOmp:
 			opts.OmpCount++
+		case AgentTypePi:
+			opts.PiCount++
 		case AgentTypeOllama:
 			opts.OllamaCount++
 		}
@@ -675,6 +681,7 @@ func populateSpawnAgentsFromCounts(opts *SpawnOptions) {
 		{agentType: AgentTypeAider, count: opts.AiderCount},
 		{agentType: AgentTypeOpencode, count: opts.OpencodeCount},
 		{agentType: AgentTypeOmp, count: opts.OmpCount},
+		{agentType: AgentTypePi, count: opts.PiCount},
 		{agentType: AgentTypeOllama, count: opts.OllamaCount},
 	}
 	for _, entry := range legacyCounts {
@@ -846,7 +853,7 @@ func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.Ag
 	for _, agent := range agents {
 		switch agent.Type {
 		case AgentTypeClaude, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok,
-			AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeOmp:
+			AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeOmp, AgentTypePi:
 			continue
 		default:
 			if _, ok := pluginMap[string(agent.Type)]; !ok {
@@ -915,6 +922,12 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 		// `omp --auto-approve` with --model/--thinking/--append-system-prompt
 		// injected only when requested; `[agents] omp = "..."` overrides.
 		return config.OmpCommandOrDefault(cfg.Agents.Omp), nil, nil
+	case AgentTypePi:
+		if p, ok := pluginMap[string(agentType)]; ok {
+			return p.Command, p.Env, nil
+		}
+		shipped := plugins.ShippedPiPlugin()
+		return shipped.Command, shipped.Env, nil
 	default:
 		if p, ok := pluginMap[string(agentType)]; ok {
 			return p.Command, p.Env, nil
@@ -1135,7 +1148,7 @@ func sortPanesForAssignment(panes []tmux.Pane) {
 }
 
 func legacySpawnTotalAgentCount(opts SpawnOptions) int {
-	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount + opts.OpencodeCount + opts.OmpCount + opts.OllamaCount
+	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount + opts.OpencodeCount + opts.OmpCount + opts.PiCount + opts.OllamaCount
 }
 
 func spawnPiCount(opts SpawnOptions) int {
@@ -1144,6 +1157,9 @@ func spawnPiCount(opts SpawnOptions) int {
 		if tmux.AgentType(spec.Type).Canonical() == tmux.AgentPi {
 			count++
 		}
+	}
+	if count == 0 && opts.PiCount > 0 {
+		return opts.PiCount
 	}
 	return count
 }
@@ -1296,6 +1312,7 @@ type SpawnOptions struct {
 	AiderCount         int
 	OpencodeCount      int
 	OmpCount           int
+	PiCount            int
 	OllamaCount        int
 	UserPane           bool
 	AutoRestart        bool

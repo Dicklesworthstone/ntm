@@ -330,6 +330,8 @@ func normalizeRecipeAgentType(raw string) (string, error) {
 		return string(agentpkg.AgentTypeOpencode), nil
 	case agentpkg.AgentTypeOmp:
 		return string(agentpkg.AgentTypeOmp), nil
+	case agentpkg.AgentTypePi:
+		return string(agentpkg.AgentTypePi), nil
 	case agentpkg.AgentTypeOllama:
 		return string(agentpkg.AgentTypeOllama), nil
 	default:
