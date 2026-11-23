@@ -1329,6 +1329,7 @@ var (
 	piWorkingRule       = regexp.MustCompile(`^─{2,} [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: .*)? ─+$`)
 	piNarrowWorkingRule = regexp.MustCompile(`^─{1,3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]─*$`)
 	piContextGauge      = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?%|\?)/[0-9]+(?:\.[0-9]+)?[kKMG]?$`)
+	piContextGaugeParts = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)%/([0-9]+(?:\.[0-9]+)?)([kKMG])?$`)
 	piUsageToken        = regexp.MustCompile(`^(?:[↑↓RW][0-9]+(?:\.[0-9]+)?[kKMG]?|CH[0-9]+(?:\.[0-9]+)?%|\$[0-9]+(?:\.[0-9]+)?)$`)
 	piWindowsPath       = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 	piVersionBanner     = regexp.MustCompile(`(?i)^(?:▀▀█|pi)\s+v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
@@ -1346,6 +1347,7 @@ type PiComposer struct {
 	Found           bool
 	Working         bool
 	Draft           string
+	StatsLine       string
 	CompletionRows  int
 	TopLine         int
 	TranscriptStart int
@@ -1399,6 +1401,7 @@ func ParsePiComposerLines(lines []string) PiComposer {
 					Found:           true,
 					Working:         piWorkingRule.MatchString(topStripped) || piNarrowWorkingRule.MatchString(topStripped),
 					Draft:           strings.TrimSpace(strings.Join(draftRows, "\n")),
+					StatsLine:       strings.TrimSpace(stripANSICodes(lines[footer+1])),
 					CompletionRows:  compRows,
 					TopLine:         top,
 					TranscriptStart: piTranscriptStart(lines[:top]),
@@ -1500,6 +1503,49 @@ func piTranscriptStart(lines []string) int {
 		return header
 	}
 	return 0
+}
+
+// PiContextUsage extracts the used context percentage and window token budget
+// from a pi pane's bottom-anchored footer stats row (e.g. "12.5%/200k").
+// Unknown percentages ("?/200k") return ok=false.
+func PiContextUsage(output string) (usedPct float64, windowTokens int64, ok bool) {
+	c := ParsePiComposer(output)
+	if !c.Found || c.StatsLine == "" {
+		return 0, 0, false
+	}
+	for _, field := range strings.Fields(c.StatsLine) {
+		m := piContextGaugeParts.FindStringSubmatch(field)
+		if m == nil {
+			continue
+		}
+		pct, err := strconv.ParseFloat(m[1], 64)
+		if err != nil || pct < 0 || pct > 100 {
+			return 0, 0, false
+		}
+		if size, err := strconv.ParseFloat(m[2], 64); err == nil && size > 0 {
+			multiplier := 1.0
+			switch strings.ToLower(m[3]) {
+			case "k":
+				multiplier = 1000.0
+			case "m":
+				multiplier = 1000000.0
+			case "g":
+				multiplier = 1000000000.0
+			}
+			windowTokens = int64(size * multiplier)
+		}
+		return pct, windowTokens, true
+	}
+	return 0, 0, false
+}
+
+func hasPiVersionBanner(output string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n"), "\n") {
+		if piVersionBanner.MatchString(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Ollama (ollama) patterns.

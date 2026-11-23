@@ -93,6 +93,12 @@ func (p *parserImpl) DetectAgentType(output string) AgentType {
 		return AgentTypeOmp
 	}
 
+	// Pi coding agent (pi): welcome banner ("pi v0.67.6" / "▀▀█ v...") or its
+	// bottom-anchored horizontal-rule composer and cwd/stats footer.
+	if hasPiVersionBanner(output) || ParsePiComposer(output).Found {
+		return AgentTypePi
+	}
+
 	// Antigravity patterns (checked before Gemini so an agy pane is not
 	// misclassified as the legacy Gemini CLI; the two share other signatures).
 	if agyHeaderPattern.MatchString(output) {
@@ -235,6 +241,17 @@ func (p *parserImpl) extractMetrics(output string, state *AgentState) {
 			}
 		}
 
+	case AgentTypePi:
+		// pi renders a "<pct>%/<window>" context gauge in its bottom footer
+		// stats row: the percentage is context USED, so remaining is 100-used.
+		if usedPct, _, ok := PiContextUsage(output); ok {
+			remaining := 100 - usedPct
+			state.ContextRemaining = &remaining
+			if remaining < p.config.ContextLowThreshold {
+				state.IsContextLow = true
+			}
+		}
+
 	case AgentTypeOpencode:
 		// OpenCode renders a live session sidebar ("Context" / "<N> tokens" /
 		// "<P>% used") in wide panes once a session is active.
@@ -365,6 +382,28 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		return
 	}
 
+	// Pi coding agent keeps its horizontal-rule composer visible at all times;
+	// the live braille spinner embedded in the top rule is the authoritative
+	// working signal and must beat idle chrome.
+	if state.Type == AgentTypePi {
+		if ParsePiComposer(output).Working {
+			state.IsWorking = true
+			state.IsIdle = false
+			if len(state.WorkIndicators) == 0 {
+				state.WorkIndicators = []string{"pi_live_spinner"}
+			}
+			state.IsInError = p.detectError(output, state.Type)
+			return
+		}
+		if state.IsIdle {
+			state.IsWorking = false
+		} else {
+			state.IsWorking = rawIsWorking
+		}
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
 	// Antigravity keeps its composer/footer visible during work. The live
 	// "esc to cancel" hint is authoritative and must beat the prompt chrome.
 	if state.Type == AgentTypeAntigravity {
@@ -429,6 +468,10 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		// No omp rate-limit frame has been captured; transcript mentions of
 		// rate limits must not park the pane (see the omp pattern notes).
 		return false
+	case AgentTypePi:
+		// Pi has no dedicated rate-limit chrome matcher; transcript mentions of
+		// rate limits must not fall through to the legacy multi-agent union.
+		return false
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccRateLimitPatterns) ||
@@ -475,6 +518,9 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		// The composer-anchored in-flight signals are authoritative; loose
 		// transcript keywords would keep a finished omp pane "working".
 		return OmpActivelyWorking(output, 0)
+	case AgentTypePi:
+		// Pi's top-rule braille spinner is the authoritative working signal.
+		return ParsePiComposer(output).Working
 	default:
 		// A registered plugin with declared Working patterns is authoritative
 		// for its own type; the generic union below is for truly unknown types.
@@ -591,6 +637,12 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// for ~1s after launch and its composer appears in the same frame as
 		// the banner, so only a visible, quiet composer box is idle evidence.
 		return OmpIdlePromptShowing(output)
+	case AgentTypePi:
+		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+			return false
+		}
+		c := ParsePiComposer(output)
+		return c.Found && !c.Working
 	default:
 		// A registered plugin with declared readiness patterns: its Working
 		// patterns veto idle, its Idle patterns decide; with no Idle patterns
@@ -662,6 +714,11 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 			return true
 		}
 		return matchAny(recentOutput, ompErrorPatterns)
+	case AgentTypePi:
+		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
+			return PluginErrorShowing(recentOutput, agentType)
+		}
+		return false
 	default:
 		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
 			return PluginErrorShowing(recentOutput, agentType)
@@ -703,7 +760,7 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		return collectMatches(recentOutput, ocRateLimitPatterns)
 	case AgentTypeGrok:
 		return collectMatches(recentOutput, grokRateLimitPatterns)
-	case AgentTypeOmp:
+	case AgentTypeOmp, AgentTypePi:
 		return nil
 	default:
 		// Collect from all for unknown type
@@ -766,6 +823,11 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 			matches = []string{"omp_live_spinner"}
 		}
 		return matches
+	case AgentTypePi:
+		if ParsePiComposer(output).Working {
+			return []string{"pi_live_spinner"}
+		}
+		return nil
 	default:
 		matches := collectMatches(recentOutput, ccWorkingPatterns)
 		matches = append(matches, collectMatches(recentOutput, codWorkingPatterns)...)
