@@ -469,6 +469,57 @@ func TestPrepareAcceptsGrokInMixedBatch(t *testing.T) {
 	}
 }
 
+func TestPlanTargetsExcludesServicePanesUnlessExplicitlySelected(t *testing.T) {
+	t.Parallel()
+	panes := []tmux.Pane{
+		testPane("%1", 0, 0, tmux.AgentUser, ""),
+		testPane("%2", 0, 1, tmux.AgentClaude, ""),
+		{ID: "%3", WindowIndex: 0, Index: 2, Type: tmux.AgentClaude, Title: "proj__svc_cm", Service: "cm"},
+	}
+
+	// Broadcast (including --all / IncludeUser) must skip service panes.
+	targets, err := PlanTargets(Request{
+		Session:     "proj",
+		Panes:       panes,
+		IncludeUser: true,
+		Message:     "work",
+	})
+	if err != nil {
+		t.Fatalf("PlanTargets(broadcast) error = %v", err)
+	}
+	if len(targets) != 2 || targets[0].Ref.ID != "%1" || targets[1].Ref.ID != "%2" {
+		t.Fatalf("broadcast targets = %+v, want only %%1 and %%2 (excluding service pane %%3)", targets)
+	}
+
+	// Type filter must also exclude service panes.
+	targets, err = PlanTargets(Request{
+		Session:      "proj",
+		Panes:        panes,
+		AgentFilters: []AgentFilter{{Type: tmux.AgentClaude}},
+		Message:      "work",
+	})
+	if err != nil {
+		t.Fatalf("PlanTargets(claude filter) error = %v", err)
+	}
+	if len(targets) != 1 || targets[0].Ref.ID != "%2" {
+		t.Fatalf("claude targets = %+v, want only %%2", targets)
+	}
+
+	// Explicit selector targeting the service pane ID is honored.
+	targets, err = PlanTargets(Request{
+		Session:   "proj",
+		Panes:     panes,
+		Selectors: []string{"%3"},
+		Message:   "work",
+	})
+	if err != nil {
+		t.Fatalf("PlanTargets(explicit selector) error = %v", err)
+	}
+	if len(targets) != 1 || targets[0].Ref.ID != "%3" {
+		t.Fatalf("explicit targets = %+v, want %%3", targets)
+	}
+}
+
 func TestDefaultProtocolPlannerCharacterization(t *testing.T) {
 	t.Parallel()
 	panes := []tmux.Pane{

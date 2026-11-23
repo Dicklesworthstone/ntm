@@ -80,17 +80,18 @@ func TestSelectReplayTargetsAndCanonicalKeys(t *testing.T) {
 		{ID: "%3", WindowIndex: 1, Index: 0, Type: tmux.AgentCodex},
 		{ID: "%4", WindowIndex: 1, Index: 1, Type: tmux.AgentGemini},
 		{ID: "%5", WindowIndex: 1, Index: 2, Type: tmux.AgentAntigravity},
+		{ID: "%6", WindowIndex: 1, Index: 3, Type: tmux.AgentClaude, Service: "cm"},
 	}
 	tests := []struct {
 		name                   string
 		cc, cod, gmi, agy, all bool
 		want                   []string
 	}{
-		{name: "default excludes user", want: []string{"0.1", "1.0", "1.1", "1.2"}},
-		{name: "claude", cc: true, want: []string{"0.1"}},
+		{name: "default excludes user and service", want: []string{"0.1", "1.0", "1.1", "1.2"}},
+		{name: "claude excludes service", cc: true, want: []string{"0.1"}},
 		{name: "codex and gemini", cod: true, gmi: true, want: []string{"1.0", "1.1"}},
 		{name: "antigravity", agy: true, want: []string{"1.2"}},
-		{name: "all includes user", all: true, want: []string{"0.0", "0.1", "1.0", "1.1", "1.2"}},
+		{name: "all includes user but excludes service", all: true, want: []string{"0.0", "0.1", "1.0", "1.1", "1.2"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

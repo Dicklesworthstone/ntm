@@ -109,7 +109,10 @@ func selectReplayTargets(panes []tmux.Pane, targetCC, targetCod, targetGmi, targ
 	targets := make([]tmux.Pane, 0, len(panes))
 	noFilter := !targetCC && !targetCod && !targetGmi && !targetAgy && !targetAll
 	for _, pane := range panes {
-		if targetAll || (noFilter && pane.Type != tmux.AgentUser) {
+		if pane.IsServicePane() {
+			continue
+		}
+		if targetAll || (noFilter && pane.Type.Canonical() != tmux.AgentUser) {
 			targets = append(targets, pane)
 			continue
 		}

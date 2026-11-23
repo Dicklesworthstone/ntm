@@ -1017,13 +1017,17 @@ func PlanTargets(req Request) ([]Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	explicitPolicy := len(req.Selectors) > 0 || len(filters) > 0 || len(tags) > 0
+	explicitSelector := len(req.Selectors) > 0
+	explicitPolicy := explicitSelector || len(filters) > 0 || len(tags) > 0
 
 	targets := make([]Target, 0, len(selected))
 	seen := make(map[string]struct{}, len(selected))
 	for _, pane := range selected {
 		stableKey := pane.Ref().StableKey()
 		if _, skip := excluded[stableKey]; skip {
+			continue
+		}
+		if !explicitSelector && pane.IsServicePane() {
 			continue
 		}
 		if len(filters) > 0 && !matchesAgentFilters(pane, filters) {

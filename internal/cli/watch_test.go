@@ -92,6 +92,30 @@ func TestAncillaryDispatchCancellationPreventsPostReturnEnter(t *testing.T) {
 	}
 }
 
+func TestSelectWatchCommandTargetsExcludesServiceAndImplicitUserPanes(t *testing.T) {
+	t.Parallel()
+	panes := []tmux.Pane{
+		{ID: "%1", WindowIndex: 0, Index: 0, Type: tmux.AgentUser, Title: "proj__user_0"},
+		{ID: "%2", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "proj__cc_1"},
+		{ID: "%3", WindowIndex: 0, Index: 2, Type: tmux.AgentClaude, Title: "proj__svc_cm", Service: "cm"},
+	}
+
+	got := selectWatchCommandTargets(panes, watchOptions{})
+	if len(got) != 1 || got[0].ID != "%2" {
+		t.Fatalf("default watch command targets = %+v, want only %%2", got)
+	}
+
+	gotExplicitUser := selectWatchCommandTargets(panes, watchOptions{filterPane: "%1"})
+	if len(gotExplicitUser) != 1 || gotExplicitUser[0].ID != "%1" {
+		t.Fatalf("explicit user pane target = %+v, want %%1", gotExplicitUser)
+	}
+
+	gotExplicitService := selectWatchCommandTargets(panes, watchOptions{filterPane: "%3"})
+	if len(gotExplicitService) != 0 {
+		t.Fatalf("explicit service pane target = %+v, want empty (never inject into service pane)", gotExplicitService)
+	}
+}
+
 func TestParseWatchInterval(t *testing.T) {
 	t.Parallel()
 

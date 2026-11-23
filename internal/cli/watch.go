@@ -754,7 +754,7 @@ func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOpti
 				return
 			}
 
-			targets := filterPanes(panes, opts)
+			targets := selectWatchCommandTargets(panes, opts)
 			if len(targets) == 0 {
 				if IsJSONOutput() {
 					emitWatchJSONFrame(watchJSONFrame{Event: "dispatch_error", Session: session, Error: "no target agents found"})
@@ -833,12 +833,42 @@ func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOpti
 	return nil
 }
 
+func selectWatchCommandTargets(panes []tmux.Pane, opts watchOptions) []tmux.Pane {
+	candidates := filterPanes(panes, opts)
+	explicitPane := strings.TrimSpace(opts.filterPane) != ""
+	targets := make([]tmux.Pane, 0, len(candidates))
+	for _, p := range candidates {
+		if p.IsServicePane() {
+			continue
+		}
+		if !explicitPane && p.Type.Canonical() == tmux.AgentUser {
+			continue
+		}
+		targets = append(targets, p)
+	}
+	return targets
+}
+
 func dispatchWatchCommand(ctx context.Context, service *dispatchsvc.Service, session string, panes, targets []tmux.Pane, message string) (dispatchsvc.Result, error) {
+	includeUser := false
+	safeTargets := make([]tmux.Pane, 0, len(targets))
+	for _, p := range targets {
+		if p.IsServicePane() {
+			continue
+		}
+		if p.Type.Canonical() == tmux.AgentUser {
+			includeUser = true
+		}
+		safeTargets = append(safeTargets, p)
+	}
+	if len(safeTargets) == 0 {
+		return dispatchsvc.Result{}, fmt.Errorf("no target panes")
+	}
 	return service.Execute(ctx, dispatchsvc.Request{
 		Session:       session,
 		Panes:         panes,
-		Selectors:     shellDispatchSelectors(targets),
-		IncludeUser:   true,
+		Selectors:     shellDispatchSelectors(safeTargets),
+		IncludeUser:   includeUser,
 		Message:       message,
 		Submit:        true,
 		StopOnFailure: false,
