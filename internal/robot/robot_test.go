@@ -870,33 +870,48 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		out      *CASSInsightsOutput
 		settled  bool
 	)
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		var (
 			before    []cass.AggregationBucket
 			beforeErr error
 			err       error
 		)
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			before, beforeErr = readDirectBuckets()
-		}()
-		go func() {
-			defer wg.Done()
-			out, err = GetCASSInsights("30d")
-		}()
-		wg.Wait()
+		if attempt == 0 {
+			// Fast path: when the live cass index is idle, overlap the direct
+			// read and GetCASSInsights, and accept ONLY an exact match here.
+			// On any mismatch, fall back to strictly sequential bracketing
+			// (before -> out -> after) so t(before) < t(out) < t(after) holds.
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				before, beforeErr = readDirectBuckets()
+			}()
+			go func() {
+				defer wg.Done()
+				out, err = GetCASSInsights("30d")
+			}()
+			wg.Wait()
+			if beforeErr != nil {
+				t.Fatalf("cass search --aggregate (before): %v", beforeErr)
+			}
+			if err != nil || !out.Success || out.Period != "30d" {
+				t.Fatalf("GetCASSInsights = %+v, %v", out, err)
+			}
+			if bucketsEqual(before, out.Agents) {
+				expected = before
+				settled = true
+				break
+			}
+			continue
+		}
+		before, beforeErr = readDirectBuckets()
 		if beforeErr != nil {
 			t.Fatalf("cass search --aggregate (before): %v", beforeErr)
 		}
+		out, err = GetCASSInsights("30d")
 		if err != nil || !out.Success || out.Period != "30d" {
 			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
-		}
-		if bucketsEqual(before, out.Agents) {
-			expected = before
-			settled = true
-			break
 		}
 		after, afterErr := readDirectBuckets()
 		if afterErr != nil {
@@ -909,7 +924,7 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		}
 	}
 	if !settled {
-		t.Skip("live cass index mutated continuously across 4 consecutive snapshots")
+		t.Skip("live cass index mutated continuously across 4 sequential snapshots")
 	}
 	if len(out.Agents) != len(expected) {
 		t.Fatalf("agents = %+v, cass says %+v", out.Agents, expected)
@@ -942,92 +957,67 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 		return len(items)
 	}
 
-	type jfpListRes struct {
-		out *JFPListOutput
-		err error
-	}
-	type jfpSearchRes struct {
-		out *JFPSearchOutput
-		err error
-	}
-	type jfpSuggestRes struct {
-		out *JFPSuggestOutput
-		err error
-	}
-	type jfpExportRes struct {
-		out *JFPExportOutput
-		err error
-	}
-	type jfpUpdateRes struct {
-		out *JFPUpdateOutput
-		err error
-	}
-	listCh := make(chan jfpListRes, 1)
-	searchCh := make(chan jfpSearchRes, 1)
-	suggestCh := make(chan jfpSuggestRes, 1)
-	skillExportCh := make(chan jfpExportRes, 1)
-	mdExportCh := make(chan jfpExportRes, 1)
-	updateCh := make(chan jfpUpdateRes, 1)
+	var (
+		list        *JFPListOutput
+		listErr     error
+		search      *JFPSearchOutput
+		searchErr   error
+		suggest     *JFPSuggestOutput
+		suggestErr  error
+		skillExport *JFPExportOutput
+		skillErr    error
+		mdExport    *JFPExportOutput
+		mdErr       error
+	)
+	var wg sync.WaitGroup
+	wg.Add(5)
 	go func() {
-		out, err := GetJFPList(JFPListOptions{})
-		listCh <- jfpListRes{out, err}
+		defer wg.Done()
+		list, listErr = GetJFPList(JFPListOptions{})
 	}()
 	go func() {
-		out, err := GetJFPSearch("commit")
-		searchCh <- jfpSearchRes{out, err}
+		defer wg.Done()
+		search, searchErr = GetJFPSearch("commit")
 	}()
 	go func() {
-		out, err := GetJFPSuggest("write documentation")
-		suggestCh <- jfpSuggestRes{out, err}
+		defer wg.Done()
+		suggest, suggestErr = GetJFPSuggest("write documentation")
 	}()
 	go func() {
-		out, err := GetJFPExport("idea-wizard", "skill")
-		skillExportCh <- jfpExportRes{out, err}
+		defer wg.Done()
+		skillExport, skillErr = GetJFPExport("idea-wizard", "skill")
 	}()
 	go func() {
-		out, err := GetJFPExport("idea-wizard", "")
-		mdExportCh <- jfpExportRes{out, err}
+		defer wg.Done()
+		mdExport, mdErr = GetJFPExport("idea-wizard", "")
 	}()
-	go func() {
-		out, err := GetJFPUpdate()
-		updateCh <- jfpUpdateRes{out, err}
-	}()
+	// Join all concurrent read-only JFP calls before any fatal assertion or
+	// cache-mutating refresh so goroutines never race with GetJFPUpdate or
+	// outlive t.TempDir cleanup.
+	wg.Wait()
 
-	listRes := <-listCh
-	list, err := listRes.out, listRes.err
-	if err != nil || !list.Success || list.Count == 0 || list.Count != arrayLen(list.Prompts) {
-		t.Fatalf("GetJFPList = success:%t count:%d err:%q (%v)", list.Success, list.Count, list.Error, err)
+	if listErr != nil || list == nil || !list.Success || list.Count == 0 || list.Count != arrayLen(list.Prompts) {
+		t.Fatalf("GetJFPList = %+v (%v)", list, listErr)
 	}
-
-	searchRes := <-searchCh
-	search, err := searchRes.out, searchRes.err
-	if err != nil || !search.Success || search.Count == 0 || search.Count != arrayLen(search.Results) {
-		t.Fatalf("GetJFPSearch = success:%t count:%d err:%q (%v)", search.Success, search.Count, search.Error, err)
+	if searchErr != nil || search == nil || !search.Success || search.Count == 0 || search.Count != arrayLen(search.Results) {
+		t.Fatalf("GetJFPSearch = %+v (%v)", search, searchErr)
 	}
-
-	suggestRes := <-suggestCh
-	suggest, err := suggestRes.out, suggestRes.err
-	if err != nil || !suggest.Success {
-		t.Fatalf("GetJFPSuggest = success:%t err:%q (%v)", suggest.Success, suggest.Error, err)
+	if suggestErr != nil || suggest == nil || !suggest.Success {
+		t.Fatalf("GetJFPSuggest = %+v (%v)", suggest, suggestErr)
 	}
 	arrayLen(suggest.Suggestions)
-
-	skillRes := <-skillExportCh
-	skillExport, err := skillRes.out, skillRes.err
-	if err != nil || skillExport.Success || skillExport.ErrorCode != ErrCodeNotImplemented {
-		t.Fatalf("GetJFPExport(skill) = success:%t code:%q err:%q, want NOT_IMPLEMENTED", skillExport.Success, skillExport.ErrorCode, skillExport.Error)
+	if skillErr != nil || skillExport == nil || skillExport.Success || skillExport.ErrorCode != ErrCodeNotImplemented {
+		t.Fatalf("GetJFPExport(skill) = %+v (%v), want NOT_IMPLEMENTED", skillExport, skillErr)
 	}
-	mdRes := <-mdExportCh
-	mdExport, err := mdRes.out, mdRes.err
-	if err != nil || !mdExport.Success {
-		t.Fatalf("GetJFPExport(md) = success:%t err:%q (%v)", mdExport.Success, mdExport.Error, err)
+	if mdErr != nil || mdExport == nil || !mdExport.Success {
+		t.Fatalf("GetJFPExport(md) = %+v (%v)", mdExport, mdErr)
 	}
 
 	// Refresh may fail offline, but never as the retired `jfp update`.
-	updateRes := <-updateCh
-	update, err := updateRes.out, updateRes.err
-	if err != nil || strings.Contains(update.Error, "jsm") {
-		t.Fatalf("GetJFPUpdate = success:%t err:%q (%v), want jfp refresh", update.Success, update.Error, err)
+	// Run sequentially after read-only calls so XDG_CACHE_HOME is not raced.
+	update, err := GetJFPUpdate()
+	if err != nil || update == nil || strings.Contains(update.Error, "jsm") {
+		t.Fatalf("GetJFPUpdate = %+v (%v), want jfp refresh", update, err)
 	}
 }
 
