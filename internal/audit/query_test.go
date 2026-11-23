@@ -650,3 +650,33 @@ func newTestSearcher(auditDir string) *Searcher {
 		index:    newIndex(),
 	}
 }
+
+func TestSearcher_CanceledContextReturnsErrorAndTruncated(t *testing.T) {
+	auditDir, cleanup := setupTestAuditDir(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	writeTestEntries(t, auditDir, "cancel-session", now.Format("2006-01-02"), []AuditEntry{
+		{
+			Timestamp:   now,
+			SessionID:   "cancel-session",
+			EventType:   EventTypeCommand,
+			Actor:       ActorUser,
+			Target:      "pane-1",
+			SequenceNum: 1,
+			Checksum:    "chk-1",
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	searcher := newTestSearcher(auditDir)
+	result, err := searcher.SearchContext(ctx, Query{})
+	if err != context.Canceled {
+		t.Fatalf("SearchWithContext(canceled) err = %v, want context.Canceled", err)
+	}
+	if result == nil || !result.Truncated {
+		t.Fatalf("expected non-nil Truncated result on canceled context, got %+v", result)
+	}
+}
