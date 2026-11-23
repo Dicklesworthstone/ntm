@@ -218,9 +218,9 @@ func TestScanWithBeads(t *testing.T) {
 	}
 
 	bs := NewBeadScanner(tmpDir)
+	bs.brPath = filepath.Join(tmpDir, "missing-br")
 
 	// ScanProject should return 0 if br binary is not available
-	// (which is expected in test environment)
 	result, err := bs.ScanProject(context.Background(), proj)
 	if err != nil {
 		t.Fatal(err)
@@ -322,4 +322,68 @@ func TestScanContextCancellation(t *testing.T) {
 	// With cancelled context, we may get partial results
 	// The key is that it doesn't hang
 	_ = result
+}
+
+func TestCountBeadsSurfacesErrorsAndCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "proj")
+	beadsDir := filepath.Join(projDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("canceled context returns error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		bs := NewBeadScanner(tmpDir)
+		if _, err := bs.countBeads(ctx, projDir); err == nil {
+			t.Fatal("countBeads with canceled context returned nil error")
+		}
+	})
+
+	t.Run("non-zero br exit returns error", func(t *testing.T) {
+		fakeBr := filepath.Join(tmpDir, "fake-br-fail.sh")
+		if err := os.WriteFile(fakeBr, []byte("#!/bin/sh\necho 'db corrupt' >&2\nexit 2\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		bs := NewBeadScanner(tmpDir)
+		bs.brPath = fakeBr
+		if _, err := bs.countBeads(context.Background(), projDir); err == nil {
+			t.Fatal("countBeads swallowed non-zero br exit")
+		}
+		if _, err := bs.ScanProject(context.Background(), projDir); err == nil {
+			t.Fatal("ScanProject swallowed non-zero br exit")
+		}
+	})
+
+	t.Run("malformed JSON returns error", func(t *testing.T) {
+		fakeBr := filepath.Join(tmpDir, "fake-br-badjson.sh")
+		if err := os.WriteFile(fakeBr, []byte("#!/bin/sh\necho '{not-json'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		bs := NewBeadScanner(tmpDir)
+		bs.brPath = fakeBr
+		if _, err := bs.countBeads(context.Background(), projDir); err == nil {
+			t.Fatal("countBeads swallowed malformed JSON output")
+		}
+		if _, err := bs.ScanProject(context.Background(), projDir); err == nil {
+			t.Fatal("ScanProject swallowed malformed JSON output")
+		}
+	})
+
+	t.Run("empty JSON array returns zero without error", func(t *testing.T) {
+		fakeBr := filepath.Join(tmpDir, "fake-br-empty.sh")
+		if err := os.WriteFile(fakeBr, []byte("#!/bin/sh\necho '[]'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		bs := NewBeadScanner(tmpDir)
+		bs.brPath = fakeBr
+		got, err := bs.countBeads(context.Background(), projDir)
+		if err != nil || got != 0 {
+			t.Fatalf("countBeads([]) = (%d, %v), want (0, nil)", got, err)
+		}
+	})
 }

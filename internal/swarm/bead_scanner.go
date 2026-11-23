@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -133,11 +134,17 @@ func (bs *BeadScanner) ScanProject(ctx context.Context, projectPath string) (Pro
 
 	count, err := bs.countBeads(ctx, projectPath)
 	if err != nil {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		bs.Logger.Warn("[BeadScanner] Failed to count beads",
 			"project", projectPath,
 			"error", err)
-		// Return zero beads on error (not fatal)
-		return result, nil
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			// Degrade gracefully when the optional br CLI is not installed.
+			return result, nil
+		}
+		return result, err
 	}
 
 	bs.Logger.Debug("[BeadScanner] Bead count",
@@ -320,6 +327,9 @@ func (bs *BeadScanner) scanProjectsConcurrently(ctx context.Context, projectPath
 
 // countBeads runs `br list --status open --json` and parses the output.
 func (bs *BeadScanner) countBeads(ctx context.Context, projectPath string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	// Check if .beads directory exists
 	if !hasBeads(projectPath) {
 		// No beads directory or issues.jsonl means no beads
@@ -334,28 +344,35 @@ func (bs *BeadScanner) countBeads(ctx context.Context, projectPath string) (int,
 	// Capture output
 	output, err := cmd.Output()
 	if err != nil {
-		// If br is not found or fails, return 0 beads
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
 			bs.Logger.Debug("[BeadScanner] br command failed",
 				"project", projectPath,
 				"exit_code", exitErr.ExitCode(),
-				"stderr", string(exitErr.Stderr))
+				"stderr", stderr)
+			if stderr != "" {
+				return 0, fmt.Errorf("br list failed for %s (exit %d): %s: %w", projectPath, exitErr.ExitCode(), stderr, err)
+			}
+			return 0, fmt.Errorf("br list failed for %s (exit %d): %w", projectPath, exitErr.ExitCode(), err)
 		}
-		return 0, nil
+		return 0, fmt.Errorf("run %s list for %s: %w", bs.brPath, projectPath, err)
 	}
 
 	// Parse JSON output from br list --json.
-	issues, err := bv.UnmarshalBdList[json.RawMessage](string(output))
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return 0, nil
+	}
+	issues, err := bv.UnmarshalBdList[json.RawMessage](trimmed)
 	if err != nil {
-		// Try to handle case where output is empty or malformed
-		if len(output) == 0 || string(output) == "null" || string(output) == "[]" {
-			return 0, nil
-		}
 		bs.Logger.Debug("[BeadScanner] Failed to parse br output",
 			"project", projectPath,
-			"output", string(output),
+			"output", trimmed,
 			"error", err)
-		return 0, nil
+		return 0, fmt.Errorf("parse br output for %s: %w", projectPath, err)
 	}
 
 	return len(issues), nil
