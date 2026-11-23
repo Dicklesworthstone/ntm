@@ -92,19 +92,32 @@ type RuleSummary struct {
 	SLB     bool   `json:"slb,omitempty"`
 }
 
-func runPolicyShow(showAll bool) error {
-	home, err := os.UserHomeDir()
+func resolveActivePolicyPath() (string, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", fmt.Errorf("getting home directory: %w", homeErr)
+		}
+		return filepath.Join(home, ".ntm", "policy.yaml"), nil
 	}
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	path, _, err := policy.ResolveEffectivePathForProject(cwd)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
 
-	p, err := policy.LoadOrDefault()
+func runPolicyShow(showAll bool) error {
+	p, policyPath, isDefault, err := policy.LoadOrDefaultWithSource()
 	if err != nil {
 		return fmt.Errorf("loading policy: %w", err)
 	}
-
-	isDefault := !fileExists(policyPath)
+	if !isDefault && policyPath != "" && !filepath.IsAbs(policyPath) {
+		if absPath, absErr := filepath.Abs(policyPath); absErr == nil {
+			policyPath = absPath
+		}
+	}
 	blocked, approval, allowed := p.Stats()
 
 	// Count SLB rules
@@ -264,11 +277,11 @@ type PolicyValidateResponse struct {
 func runPolicyValidate(policyFile string) error {
 	// Determine policy file path
 	if policyFile == "" {
-		home, err := os.UserHomeDir()
+		resolved, err := resolveActivePolicyPath()
 		if err != nil {
-			return fmt.Errorf("getting home directory: %w", err)
+			return err
 		}
-		policyFile = filepath.Join(home, ".ntm", "policy.yaml")
+		policyFile = resolved
 	}
 
 	var errors []string
@@ -387,12 +400,10 @@ Use --force to skip the confirmation prompt.`,
 }
 
 func runPolicyReset(force bool) error {
-	home, err := os.UserHomeDir()
+	policyPath, err := resolveActivePolicyPath()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return err
 	}
-
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 	exists := fileExists(policyPath)
 
 	if !force && exists && !IsJSONOutput() {
@@ -449,12 +460,10 @@ Creates a default policy file if one doesn't exist.`,
 }
 
 func runPolicyEdit(cmd *cobra.Command, args []string) error {
-	home, err := os.UserHomeDir()
+	policyPath, err := resolveActivePolicyPath()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return err
 	}
-
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 
 	// Create default if doesn't exist
 	if !fileExists(policyPath) {
@@ -538,11 +547,10 @@ type AutomationResponse struct {
 }
 
 func runPolicyAutomation(cmd *cobra.Command, args []string) error {
-	home, err := os.UserHomeDir()
+	policyPath, err := resolveActivePolicyPath()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return err
 	}
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 
 	// Check if any flags were set
 	autoCommit, _ := cmd.Flags().GetBool("auto-commit")

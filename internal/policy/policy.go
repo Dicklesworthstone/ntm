@@ -156,7 +156,27 @@ func resolveEffectivePath(projectPolicyPath string) (path string, exists bool, e
 // LoadOrDefault loads the effective policy for the current working directory,
 // or returns the built-in policy when no configured policy exists.
 func LoadOrDefault() (*Policy, error) {
-	return loadOrDefaultAt(DefaultPolicyPath)
+	p, _, _, err := LoadOrDefaultWithSource()
+	return p, err
+}
+
+// LoadOrDefaultWithSource loads the effective policy for the current working
+// directory and reports the resolved policy path and whether the built-in
+// default policy was used (isDefault == true when neither ~/.ntm/policy.yaml
+// nor .ntm/policy.yaml exists).
+func LoadOrDefaultWithSource() (*Policy, string, bool, error) {
+	path, exists, err := resolveEffectivePath(DefaultPolicyPath)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !exists {
+		return DefaultPolicy(), path, true, nil
+	}
+	p, err := Load(path)
+	if err != nil {
+		return nil, path, false, err
+	}
+	return p, path, false, nil
 }
 
 // LoadForProject loads the policy for an explicitly identified local project.
@@ -192,8 +212,9 @@ func loadOrDefaultAt(projectPolicyPath string) (*Policy, error) {
 
 // DefaultPolicy returns a sensible default policy for destructive command protection.
 func DefaultPolicy() *Policy {
-	const gitOpts = `(?:\s+(?:-[Cc](?:\S+|\s+(?:"[^"]*"|'[^']*'|\S+))|--git-dir(?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--work-tree(?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--namespace(?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--config-env(?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--no-pager|-P|-p|--paginate|--bare|--no-replace-objects|--no-optional-locks|--literal-pathspecs|--icase-pathspecs|--noglob-pathspecs))*`
-	const rmArgNoDD = `(?:[^\s-]\S*|-[^\s-]\S*|--\S+)`
+	const shWord = `(?:[^\s"']|"[^"]*"|'[^']*')+`
+	const gitOpts = `(?:\s+(?:-[Cc]\s*` + shWord + `|--git-dir(?:=` + shWord + `|\s+` + shWord + `)|--work-tree(?:=` + shWord + `|\s+` + shWord + `)|--namespace(?:=` + shWord + `|\s+` + shWord + `)|--config-env(?:=` + shWord + `|\s+` + shWord + `)|--no-pager|-P|-p|--paginate|--bare|--no-replace-objects|--no-optional-locks|--literal-pathspecs|--icase-pathspecs|--noglob-pathspecs))*`
+	const rmArgNoDD = `(?:[^\s-]\S*|-(?:[^\s-]\S*)?|--\S+)`
 	const rmFlagR = `(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)`
 	const rmFlagF = `(?:-[a-zA-Z]*f[a-zA-Z]*|--force)`
 	const rmFlagRFCombined = `-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[a-zA-Z]*`
@@ -222,7 +243,7 @@ func DefaultPolicy() *Policy {
 		},
 		// Allowed patterns checked FIRST per subcommand - explicitly safe commands
 		Allowed: []Rule{
-			{Pattern: `^git` + gitOpts + `\s+push\s+.*--force-with-lease(\b|=)`, Reason: "Safe force push (prevents overwriting others' work)"},
+			{Pattern: `^git` + gitOpts + `\s+push(?:\s+.*?)?\s--force-with-lease(\b|=)`, Reason: "Safe force push (prevents overwriting others' work)"},
 			{Pattern: `^git` + gitOpts + `\s+reset\s+--soft(\s|$)`, Reason: "Soft reset preserves changes"},
 			{Pattern: `^git` + gitOpts + `\s+reset\s+HEAD~?\d*$`, Reason: "Mixed reset preserves working directory"},
 		},
@@ -343,7 +364,8 @@ func (p *Policy) compile() error {
 
 var (
 	gitPushUnconditionalForceRE = regexp.MustCompile(`\s(-[\w]*f[\w]*|--force|--no-force-with-lease)(\s|['")]|$)`)
-	gitPushOptionLeaseRE        = regexp.MustCompile(`\s(?:-o(?:=|\s*)|--push-option(?:=|\s+))['"]?--force-with-lease(\b|=)`)
+	gitPushForceRefspecRE       = regexp.MustCompile(`\s['"]?(?:\+|:\+)`)
+	gitPushOptionLeaseRE        = regexp.MustCompile(`\s(?:-o(?:=|\s*)|--push-option(?:=|\s+))(?:"[^"]*--force-with-lease[^"]*"|'[^']*--force-with-lease[^']*'|[^\s]*--force-with-lease)`)
 	gitResetHardRE              = regexp.MustCompile(`\s--hard(\s|['")]|$)`)
 	simpleWordQuoteRE           = regexp.MustCompile(`(^|[\s(])(?:'([^'\s\\$` + "`" + `;|&()]+)'|"([^"\s\\$` + "`" + `;|&()]+)")($|[\s)])`)
 )
@@ -726,6 +748,7 @@ func (p *Policy) checkSingle(cmd, fullCmd string) *Match {
 				// force or treats --force-with-lease as a push option value.
 				if strings.Contains(rule.Pattern, "force-with-lease") &&
 					(gitPushUnconditionalForceRE.MatchString(cmd) || gitPushUnconditionalForceRE.MatchString(norm) ||
+						gitPushForceRefspecRE.MatchString(cmd) || gitPushForceRefspecRE.MatchString(norm) ||
 						gitPushOptionLeaseRE.MatchString(cmd) || gitPushOptionLeaseRE.MatchString(norm)) {
 					continue
 				}
