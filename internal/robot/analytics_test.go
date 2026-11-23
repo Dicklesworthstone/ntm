@@ -395,3 +395,45 @@ func TestAnalyticsRegistryAndSchemaContract(t *testing.T) {
 		t.Fatalf("SchemaPaginationViolations: %v", violations)
 	}
 }
+
+func TestAnalyticsAndTokensCountPiAntigravityOpenCodeSpawns(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "events.jsonl")
+	now := time.Now().UTC()
+
+	ev := events.Event{
+		Timestamp: now.Add(-1 * time.Hour),
+		Type:      events.EventSessionCreate,
+		Session:   "pi-sess",
+		Data: map[string]any{
+			"pi_count":          2,
+			"antigravity_count": 3,
+			"opencode_count":    1,
+		},
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := GetAnalytics(context.Background(), AnalyticsOptions{
+		Days:    7,
+		LogPath: logPath,
+	})
+	if err != nil || !out.Success {
+		t.Fatalf("GetAnalytics = (%+v, %v)", out, err)
+	}
+	if out.AgentBreakdown["pi"].Count != 2 {
+		t.Fatalf("analytics pi count = %d, want 2 (breakdown=%+v)", out.AgentBreakdown["pi"].Count, out.AgentBreakdown)
+	}
+	if out.AgentBreakdown["antigravity"].Count != 3 {
+		t.Fatalf("analytics antigravity count = %d, want 3", out.AgentBreakdown["antigravity"].Count)
+	}
+	if out.AgentBreakdown["oc"].Count != 1 {
+		t.Fatalf("analytics oc count = %d, want 1", out.AgentBreakdown["oc"].Count)
+	}
+}

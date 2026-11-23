@@ -366,3 +366,40 @@ func TestReadTokenEvents_NormalizesGrokFilter(t *testing.T) {
 		t.Fatalf("matched target_types = %q, want grok", targets)
 	}
 }
+
+func TestAggregateTokenStats_CountsPiAntigravityAndOpenCodeSpawns(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	eventList := []events.Event{
+		{
+			Timestamp: now,
+			Type:      events.EventSessionCreate,
+			Session:   "multi-harness",
+			Data: map[string]interface{}{
+				"pi_count":          float64(2),
+				"antigravity_count": float64(3),
+				"opencode_count":    float64(4),
+			},
+		},
+		{
+			Timestamp: now,
+			Type:      events.EventSessionCreate,
+			Session:   "multi-harness-aliases",
+			Data: map[string]interface{}{
+				"agy_count": float64(1),
+				"oc_count":  float64(2),
+			},
+		},
+	}
+
+	out := aggregateTokenStats(eventList, 7, "", "agent")
+	if out.AgentStats["pi"].Spawned != 2 {
+		t.Fatalf("tokens pi spawned = %d, want 2 (agent_stats=%+v)", out.AgentStats["pi"].Spawned, out.AgentStats)
+	}
+	if out.AgentStats["antigravity"].Spawned != 4 {
+		t.Fatalf("tokens antigravity spawned = %d, want 4 (agent_stats=%+v)", out.AgentStats["antigravity"].Spawned, out.AgentStats)
+	}
+	if out.AgentStats["oc"].Spawned != 6 {
+		t.Fatalf("tokens oc spawned = %d, want 6 (agent_stats=%+v)", out.AgentStats["oc"].Spawned, out.AgentStats)
+	}
+}

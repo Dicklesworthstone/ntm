@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -870,12 +871,25 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		settled  bool
 	)
 	for attempt := 0; attempt < 4; attempt++ {
-		before, beforeErr := readDirectBuckets()
+		var (
+			before    []cass.AggregationBucket
+			beforeErr error
+			err       error
+		)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			before, beforeErr = readDirectBuckets()
+		}()
+		go func() {
+			defer wg.Done()
+			out, err = GetCASSInsights("30d")
+		}()
+		wg.Wait()
 		if beforeErr != nil {
 			t.Fatalf("cass search --aggregate (before): %v", beforeErr)
 		}
-		var err error
-		out, err = GetCASSInsights("30d")
 		if err != nil || !out.Success || out.Period != "30d" {
 			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
 		}
@@ -940,9 +954,20 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 		out *JFPSuggestOutput
 		err error
 	}
+	type jfpExportRes struct {
+		out *JFPExportOutput
+		err error
+	}
+	type jfpUpdateRes struct {
+		out *JFPUpdateOutput
+		err error
+	}
 	listCh := make(chan jfpListRes, 1)
 	searchCh := make(chan jfpSearchRes, 1)
 	suggestCh := make(chan jfpSuggestRes, 1)
+	skillExportCh := make(chan jfpExportRes, 1)
+	mdExportCh := make(chan jfpExportRes, 1)
+	updateCh := make(chan jfpUpdateRes, 1)
 	go func() {
 		out, err := GetJFPList(JFPListOptions{})
 		listCh <- jfpListRes{out, err}
@@ -954,6 +979,18 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 	go func() {
 		out, err := GetJFPSuggest("write documentation")
 		suggestCh <- jfpSuggestRes{out, err}
+	}()
+	go func() {
+		out, err := GetJFPExport("idea-wizard", "skill")
+		skillExportCh <- jfpExportRes{out, err}
+	}()
+	go func() {
+		out, err := GetJFPExport("idea-wizard", "")
+		mdExportCh <- jfpExportRes{out, err}
+	}()
+	go func() {
+		out, err := GetJFPUpdate()
+		updateCh <- jfpUpdateRes{out, err}
 	}()
 
 	listRes := <-listCh
@@ -975,17 +1012,20 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 	}
 	arrayLen(suggest.Suggestions)
 
-	skillExport, err := GetJFPExport("idea-wizard", "skill")
+	skillRes := <-skillExportCh
+	skillExport, err := skillRes.out, skillRes.err
 	if err != nil || skillExport.Success || skillExport.ErrorCode != ErrCodeNotImplemented {
 		t.Fatalf("GetJFPExport(skill) = success:%t code:%q err:%q, want NOT_IMPLEMENTED", skillExport.Success, skillExport.ErrorCode, skillExport.Error)
 	}
-	mdExport, err := GetJFPExport("idea-wizard", "")
+	mdRes := <-mdExportCh
+	mdExport, err := mdRes.out, mdRes.err
 	if err != nil || !mdExport.Success {
 		t.Fatalf("GetJFPExport(md) = success:%t err:%q (%v)", mdExport.Success, mdExport.Error, err)
 	}
 
 	// Refresh may fail offline, but never as the retired `jfp update`.
-	update, err := GetJFPUpdate()
+	updateRes := <-updateCh
+	update, err := updateRes.out, updateRes.err
 	if err != nil || strings.Contains(update.Error, "jsm") {
 		t.Fatalf("GetJFPUpdate = success:%t err:%q (%v), want jfp refresh", update.Success, update.Error, err)
 	}
@@ -4076,7 +4116,7 @@ esac
 	if err := RefreshNormalizedProjection(ctx, store, project, ""); err != nil {
 		t.Fatalf("RefreshNormalizedProjection: %v", err)
 	}
-	output, err := buildProjectionBackedSnapshot(store, config.Default(), PaginationOptions{}, newSnapshotOutput(config.Default()), nil, project)
+	output, err := buildProjectionBackedSnapshot(store, config.Default(), PaginationOptions{ProjectDir: project}, newSnapshotOutput(config.Default()), nil, project)
 	if err != nil {
 		t.Fatalf("buildProjectionBackedSnapshot: %v", err)
 	}
@@ -4111,7 +4151,8 @@ func TestSnapshotNeverServesUnverifiedRuntimeWorkRows(t *testing.T) {
 		return nil, &worksource.StaleError{Reason: "tracker changed during source capture"}
 	})
 
-	output, err := buildProjectionBackedSnapshot(store, config.Default(), PaginationOptions{}, newSnapshotOutput(config.Default()), nil, t.TempDir())
+	emptyDir := t.TempDir()
+	output, err := buildProjectionBackedSnapshot(store, config.Default(), PaginationOptions{ProjectDir: emptyDir}, newSnapshotOutput(config.Default()), nil, emptyDir)
 	if err != nil {
 		t.Fatalf("buildProjectionBackedSnapshot: %v", err)
 	}

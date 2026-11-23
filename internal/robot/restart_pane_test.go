@@ -2341,3 +2341,55 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 		}
 	})
 }
+
+func TestRestartAgentLaunchCommandWithOverride_PiAndOpenCode(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("NTM_CONFIG", "")
+
+	cfg := config.Default()
+
+	piCmd, err := restartAgentLaunchCommandWithOverride(cfg, "pi", "", restartLaunchOverride{
+		Model:  "claude-sonnet-4-6",
+		Effort: "high",
+	})
+	if err != nil {
+		t.Fatalf("restartAgentLaunchCommandWithOverride(pi): %v", err)
+	}
+	if !strings.Contains(piCmd, "--model") || !strings.Contains(piCmd, "claude-sonnet-4-6") || !strings.Contains(piCmd, "--thinking") || !strings.Contains(piCmd, "high") {
+		t.Fatalf("pi restart command = %q, want --model and --thinking", piCmd)
+	}
+
+	strippedPi, err := removeRestartScalarOverrides("pi --model old --thinking low --verbose", "pi", true, true)
+	if err != nil {
+		t.Fatalf("removeRestartScalarOverrides(pi): %v", err)
+	}
+	if strings.Contains(strippedPi, "old") || strings.Contains(strippedPi, "--thinking") || !strings.Contains(strippedPi, "--verbose") {
+		t.Fatalf("stripped pi command = %q, want old --model/--thinking removed and --verbose kept", strippedPi)
+	}
+
+	ocCmd, err := restartAgentLaunchCommandWithOverride(cfg, "oc", "", restartLaunchOverride{
+		Model: "anthropic/claude-sonnet-4-6",
+	})
+	if err != nil {
+		t.Fatalf("restartAgentLaunchCommandWithOverride(oc): %v", err)
+	}
+	if !strings.Contains(ocCmd, "anthropic/claude-sonnet-4-6") {
+		t.Fatalf("oc restart command = %q, want model override", ocCmd)
+	}
+
+	if _, err := restartAgentLaunchCommandWithOverride(cfg, "oc", "", restartLaunchOverride{
+		Model:  "anthropic/claude-sonnet-4-6",
+		Effort: "high",
+	}); err == nil || !strings.Contains(err.Error(), "no reasoning-effort flag") {
+		t.Fatalf("oc effort override err = %v, want reasoning-effort rejection", err)
+	}
+
+	strippedOC, err := removeRestartScalarOverrides("opencode -m old-model --continue", "oc", true, false)
+	if err != nil {
+		t.Fatalf("removeRestartScalarOverrides(oc): %v", err)
+	}
+	if strings.Contains(strippedOC, "old-model") || !strings.Contains(strippedOC, "--continue") {
+		t.Fatalf("stripped oc command = %q, want -m removed and --continue kept", strippedOC)
+	}
+}

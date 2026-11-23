@@ -137,6 +137,7 @@ func TestGetSuggestReadsInstalledBV(t *testing.T) {
 // --robot-file-beads decoded an invented files[] shape and returned success
 // with nothing in it; bv answers {file_path,total_beads,open_beads,closed_beads}.
 func TestGetFileBeadsReadsInstalledBV(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bv"); err != nil {
 		t.Skip("bv not installed")
 	}
@@ -160,9 +161,8 @@ func TestGetFileBeadsReadsInstalledBV(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	t.Chdir(dir)
 
-	out, err := GetFileBeads(FileBeadsOptions{FilePath: "app.go"})
+	out, err := GetFileBeads(FileBeadsOptions{FilePath: "app.go", ProjectDir: dir})
 	if err != nil || !out.Success || out.Beads == nil {
 		t.Fatalf("GetFileBeads = %+v, %v", out, err)
 	}

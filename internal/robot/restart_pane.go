@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
@@ -250,18 +251,24 @@ func restartOverrideAppendFlags(resolvedType string, override restartLaunchOverr
 		if needEffort && override.Effort != "" {
 			flags.WriteString(" --effort " + tmux.ShellQuote(override.Effort))
 		}
-	case "omp":
-		// omp takes --model (fuzzy-matched) and --thinking for the reasoning
-		// level; both are last-flag-wins in `omp --help` (omp v18.2.3).
+	case "omp", "pi":
+		// omp and pi take --model and --thinking for the reasoning level.
 		if needModel && override.Model != "" {
 			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
 		}
 		if needEffort && override.Effort != "" {
 			flags.WriteString(" --thinking " + tmux.ShellQuote(override.Effort))
 		}
+	case "oc":
+		if override.Effort != "" {
+			return "", fmt.Errorf("agent type %q has no reasoning-effort flag; use a model-only override", resolvedType)
+		}
+		if needModel && override.Model != "" {
+			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
+		}
 	default:
 		if override.Model != "" || override.Effort != "" {
-			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini, grok, omp", resolvedType)
+			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini, grok, omp, pi, oc", resolvedType)
 		}
 	}
 	return flags.String(), nil
@@ -2134,6 +2141,20 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 	return vars
 }
 
+func resolveRestartPiCommandTemplate() string {
+	agentsDir := filepath.Join(filepath.Dir(config.DefaultPath()), "agents")
+	if loaded, err := plugins.LoadAgentPluginsWithDefaults(agentsDir); err == nil {
+		for _, p := range loaded {
+			if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
+				if strings.TrimSpace(p.Command) != "" {
+					return p.Command
+				}
+			}
+		}
+	}
+	return plugins.ShippedPiPlugin().Command
+}
+
 // restartAgentLaunchCommandWithOverride resolves the command used to relaunch
 // an agent CLI in a respawned pane. It prefers the configured
 // (template-rendered) agent command — the same command robot-spawn delivers by
@@ -2182,6 +2203,9 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 		case "ollama":
 			tmpl = cfg.Agents.Ollama
 		}
+	}
+	if strings.TrimSpace(tmpl) == "" && resolved == "pi" {
+		tmpl = resolveRestartPiCommandTemplate()
 	}
 	appendArgs := func(cmd string) string {
 		if override.Args != "" {

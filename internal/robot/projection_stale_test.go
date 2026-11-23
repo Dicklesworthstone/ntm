@@ -8,7 +8,6 @@ package robot
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,7 +18,7 @@ import (
 
 func newProjectionTestStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
 	}
@@ -115,7 +114,7 @@ func TestProjectionStatusStaleRowsFallsBackWhenTmuxHasSessions(t *testing.T) {
 		return []tmux.Session{{Name: "alpha"}}, nil
 	})
 
-	_, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{})
+	_, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{ProjectDir: t.TempDir()})
 	if !errors.Is(err, errProjectionStaleEmpty) {
 		t.Fatalf("stale projection with live tmux sessions must return errProjectionStaleEmpty, got %v", err)
 	}
@@ -128,7 +127,7 @@ func TestProjectionStatusStaleRowsFallsBackWhenTmuxCheckFails(t *testing.T) {
 		return nil, errors.New("tmux unavailable")
 	})
 
-	_, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{})
+	_, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{ProjectDir: t.TempDir()})
 	if !errors.Is(err, errProjectionStaleEmpty) {
 		t.Fatalf("unverifiable empty projection must not be served as authoritative, got %v", err)
 	}
@@ -141,7 +140,7 @@ func TestProjectionStatusGenuinelyIdleServed(t *testing.T) {
 		return nil, nil
 	})
 
-	output, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{})
+	output, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{ProjectDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("confirmed-idle machine must serve the projection: %v", err)
 	}
@@ -159,7 +158,7 @@ func TestProjectionStatusFreshRowsServedWithoutLiveCheck(t *testing.T) {
 		return nil, nil
 	})
 
-	output, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{})
+	output, err := buildProjectionBackedStatus(store, config.Default(), PaginationOptions{ProjectDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("fresh projection must be served: %v", err)
 	}

@@ -254,7 +254,7 @@ func TestProjectionStatusIdlePanesAreNotReportedBusy(t *testing.T) {
 		t.Fatal("fresh projection must not trigger a live tmux check")
 		return nil, nil
 	})
-	output, err := buildProjectionBackedStatus(store, nil, PaginationOptions{})
+	output, err := buildProjectionBackedStatus(store, nil, PaginationOptions{ProjectDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("buildProjectionBackedStatus: %v", err)
 	}

@@ -779,7 +779,7 @@ exec /bin/sh -c "$command"
 				const cli = `#!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$NTM_CM_SCOPE_ROOT/cm-argv"
-if [ "$1" = context ] && [ "$4" = --workspace ] && [ "$5" = "$NTM_CM_SCOPE_TARGET" ]; then
+if [ "$1" = context ] && [ "$2" = --json ] && [ "$3" = "--workspace=$NTM_CM_SCOPE_TARGET" ] && [ "$4" = -- ]; then
   printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"target-rule","content":"TARGET_PROJECT_RULE"}]}}'
 else
   printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"wrong-rule","content":"CALLER_PROJECT_RULE"}]}}'
@@ -932,7 +932,7 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 		if info.SkippedReason != "" || info.Workspace != target || len(info.RulesInjected) != 1 || info.RulesInjected[0] != "target-rule" {
 			t.Fatalf("wrong memory receipt: %+v", info)
 		}
-		if mode == "cli" && !strings.Contains(string(argv), "--workspace\n"+target+"\n") {
+		if mode == "cli" && !strings.Contains(string(argv), "--workspace="+target+"\n") {
 			t.Fatalf("CM CLI lost target workspace: %s", argv)
 		}
 		wantOutcomes := int32(0)

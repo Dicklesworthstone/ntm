@@ -417,6 +417,14 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 		}
 		output.AgentStats[agent] = stats
 	}
+	for agent, spawned := range agentSpawns {
+		if _, exists := output.AgentStats[agent]; !exists && spawned > 0 {
+			output.AgentStats[agent] = AgentTokenStats{
+				Spawned: spawned,
+				Models:  agentModels[agent],
+			}
+		}
+	}
 
 	// Build model stats
 	for model, tokens := range modelTokens {
