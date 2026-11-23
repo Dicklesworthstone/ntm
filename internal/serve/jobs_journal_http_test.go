@@ -23,6 +23,14 @@ import (
 
 func newJournalHTTPServer(t *testing.T, path string, configure ...func(*Server)) (*Server, func()) {
 	t.Helper()
+	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, serveSchemaSnapshot(t), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store, err := state.Open(path)
 	if err != nil {
 		t.Fatal(err)

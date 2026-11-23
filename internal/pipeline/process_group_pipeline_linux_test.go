@@ -484,7 +484,7 @@ func TestWaitNoneExplicitTimeoutWithUnknownSettlementRefusesReplay(t *testing.T)
 	fault := errors.New("injected unknown background timeout settlement")
 	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(int) (bool, error) { return false, fault })
 	step := Step{ID: "sidecar", Wait: WaitNone, Timeout: Duration{Duration: time.Second},
-		Command: "printf 'once\\n' >> launches; trap 'printf shutdown; exit 0' TERM; while :; do sleep 0.01; done"}
+		Command: "printf 'once\\n' >> launches; trap 'printf shutdown; exit 0' TERM; sleep 30 & wait $!"}
 	workflow := Workflow{Name: "uncertain-timeout"}
 	result := e.executeCommand(ctx, &step, &workflow)
 	e.stateMu.Lock()
@@ -1488,7 +1488,7 @@ printf stopped > sidecar-stopped
 exit 0' TERM
 printf '%s' "$$" > sidecar-pid
 printf ready > sidecar-ready
-while :; do sleep 0.01; done
+sleep 30 & wait $!
 `)
 			cfg := DefaultExecutorConfig("fatal-post-hooks")
 			cfg.ProjectDir, cfg.RunID = root, "run-fatal-post-hooks"
@@ -1502,7 +1502,7 @@ while :; do sleep 0.01; done
 			}, PostPipelineSteps: []Step{
 				{ID: "post_release", Command: "printf started > post-started; " + release},
 				{ID: "post_sidecar", Wait: WaitNone, Command: "trap 'printf stopped > post-stopped; exit 0' TERM; " +
-					"printf ready > post-ready; while :; do sleep 0.01; done"},
+					"printf ready > post-ready; sleep 30 & wait $!"},
 				{ID: "post_ready", Command: "while [ ! -f post-ready ]; do sleep 0.01; done"},
 			}}
 			workflow.Settings.OnCancel = []Step{
