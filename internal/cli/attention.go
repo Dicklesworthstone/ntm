@@ -3,6 +3,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -627,6 +628,7 @@ func writeAttentionError(cmd *cobra.Command, err error, code string, emitJSON bo
 		_ = enc.Encode(payload)
 		cmd.SilenceErrors = true
 		cmd.SilenceUsage = true
+		return errors.Join(errJSONFailure, err)
 	}
 	return err
 }

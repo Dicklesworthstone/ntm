@@ -234,7 +234,10 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 			if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
 				return encodeErr
 			}
-			return cause
+			if cause != nil {
+				return errors.Join(errJSONFailure, cause)
+			}
+			return nil
 		}
 		if cause == nil {
 			fmt.Printf("workflow %s %s: stages %s, %d transition(s)\n",
