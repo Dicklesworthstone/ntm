@@ -25,7 +25,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = commandPipeDrainTimeout
+		cmd.WaitDelay = effectiveCommandPipeDrainTimeout()
 	}
 	// No group signals may follow this join: Cmd.Wait releases the pinned
 	// leader identity. Bound even a failed kill; an unkillable process must
@@ -33,7 +33,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	reap := func(result commandCleanupResult) commandCleanupResult {
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
-		timeout := commandPipeDrainTimeout
+		timeout := effectiveCommandPipeDrainTimeout()
 		if cmd.WaitDelay > 0 {
 			timeout += cmd.WaitDelay
 		}
@@ -64,7 +64,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		if errors.Is(killErr, os.ErrProcessDone) {
 			killErr = nil
 		}
-		settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
+		settle, stop := withCommandSettlementBudget(ctx, effectiveCommandPipeDrainTimeout())
 		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 		stop()
 		if killErr == nil {
@@ -74,7 +74,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
-	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandCancelGracePeriod())
 	graceErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
 	// A failed census must neither shorten the grace allowance nor disappear
@@ -91,7 +91,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
+	settle, stop := withCommandSettlementBudget(ctx, effectiveCommandPipeDrainTimeout())
 	quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr == nil {

@@ -3608,7 +3608,7 @@ func TestExecuteCommand_DryRunRejectsInvalidArgEnvName(t *testing.T) {
 // a short sleep can verify ≥1 heartbeat lands.
 func TestExecuteCommand_HeartbeatEmittedForLongRunningCommand(t *testing.T) {
 	prev := commandHeartbeatInterval
-	commandHeartbeatInterval = 100 * time.Millisecond
+	commandHeartbeatInterval = 20 * time.Millisecond
 	t.Cleanup(func() { commandHeartbeatInterval = prev })
 
 	var buf bytes.Buffer
@@ -3619,7 +3619,7 @@ func TestExecuteCommand_HeartbeatEmittedForLongRunningCommand(t *testing.T) {
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "long-runner",
-		Command: "sleep 0.4",
+		Command: "sleep 0.1",
 	}
 	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
 
@@ -3628,7 +3628,7 @@ func TestExecuteCommand_HeartbeatEmittedForLongRunningCommand(t *testing.T) {
 	}
 
 	if !strings.Contains(buf.String(), EventCommandHeartbeat) {
-		t.Fatalf("no %q event in slog stream — heartbeat goroutine did not fire during the 0.4s sleep\nlog:\n%s", EventCommandHeartbeat, buf.String())
+		t.Fatalf("no %q event in slog stream — heartbeat goroutine did not fire during the 0.1s sleep\nlog:\n%s", EventCommandHeartbeat, buf.String())
 	}
 }
 
@@ -3638,7 +3638,7 @@ func TestExecuteCommand_HeartbeatEmittedForLongRunningCommand(t *testing.T) {
 // for a legitimate in-flight heartbeat, so compare the count after return.
 func TestExecuteCommand_HeartbeatStopsAfterCommandCompletes(t *testing.T) {
 	prev := commandHeartbeatInterval
-	commandHeartbeatInterval = 50 * time.Millisecond
+	commandHeartbeatInterval = 15 * time.Millisecond
 	t.Cleanup(func() { commandHeartbeatInterval = prev })
 
 	var buf bytes.Buffer
@@ -3653,7 +3653,7 @@ func TestExecuteCommand_HeartbeatStopsAfterCommandCompletes(t *testing.T) {
 
 	// Wait long enough that an unbounded heartbeat goroutine would have
 	// fired several times.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 
 	heartbeatsAfterWait := strings.Count(buf.String(), EventCommandHeartbeat)
 	if heartbeatsAfterWait != heartbeatsAtCompletion {

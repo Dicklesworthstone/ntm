@@ -703,6 +703,10 @@ func escapedCommandOutputFixtureWithOutput(t *testing.T, root, stream string, ex
 	if err != nil {
 		t.Skip("setsid is required for escaped output fixtures")
 	}
+	readyFifo := filepath.Join(root, "ready.fifo")
+	if err := syscall.Mkfifo(readyFifo, 0600); err != nil {
+		t.Fatalf("mkfifo ready.fifo: %v", err)
+	}
 	fifoPath := filepath.Join(root, "release.fifo")
 	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
 		t.Fatalf("mkfifo release.fifo: %v", err)
@@ -712,6 +716,7 @@ stdout) exec 2>/dev/null ;;
 stderr) exec 1>/dev/null ;;
 esac
 printf '%s' "$$" > escaped.pid
+printf ready > ready.fifo
 if [ ! -f release ]; then
   read _ < release.fifo
 fi
@@ -763,7 +768,7 @@ printf done > escaped.done
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
 	script := fmt.Sprintf(`printf 'launch\n' >> selector.launches
 %s /bin/sh escaped.sh %s &
-while [ ! -s escaped.pid ]; do sleep 0.01; done
+read _ < ready.fifo
 printf '%%s' %s
 printf diagnostic >&2
 exit %d`, quote(setsid), quote(stream), quote(output), exitCode)

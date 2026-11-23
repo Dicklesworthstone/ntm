@@ -458,7 +458,7 @@ func leaderExitedFast(pidfd int, pid int) bool {
 func reapContainedLeader(cmd *exec.Cmd, leaderExitedBeforeSignal bool, result commandCleanupResult) commandCleanupResult {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	waitBudget := commandPipeDrainTimeout + cmd.WaitDelay
+	waitBudget := effectiveCommandPipeDrainTimeout() + cmd.WaitDelay
 	timer := time.NewTimer(waitBudget)
 	defer timer.Stop()
 	select {
@@ -481,7 +481,7 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
 	defer closeContainmentPIDFD(handle)
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = commandPipeDrainTimeout
+		cmd.WaitDelay = effectiveCommandPipeDrainTimeout()
 	}
 
 	leaderExitedBeforeSignal := leaderExitedFast(handle.pidfd, cmd.Process.Pid)
@@ -519,7 +519,7 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 		result.Err = errors.Join(result.Err, fmt.Errorf("terminate cgroup command group: %w", termErr))
 	}
 
-	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandCancelGracePeriod())
 	graceErr := waitCgroupPopulatedZero(graceCtx, handle.leafDir)
 	graceCancel()
 	if graceErr != nil && graceErr != context.DeadlineExceeded {
@@ -532,7 +532,7 @@ func waitCommandWithCgroupV2(ctx context.Context, cmd *exec.Cmd, handle *linuxCo
 		killErr = nil
 	}
 
-	settleCtx, settleCancel := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
+	settleCtx, settleCancel := withCommandSettlementBudget(ctx, effectiveCommandPipeDrainTimeout())
 	quietErr := waitCgroupPopulatedZero(settleCtx, handle.leafDir)
 	settleCancel()
 	if killErr == nil {
@@ -602,7 +602,7 @@ func waitCgroupPopulatedZero(ctx context.Context, leafDir string) error {
 		if ctx.Err() != nil {
 			return interrupted()
 		}
-		retry := time.NewTimer(commandGroupPollInterval)
+		retry := time.NewTimer(effectiveCommandGroupPollInterval())
 		select {
 		case <-ctx.Done():
 			retry.Stop()
@@ -619,7 +619,7 @@ func reconcileCgroupSettlement(ctx context.Context, leafDir string, observationE
 	if observationErr == nil || observationErr == context.DeadlineExceeded {
 		return observationErr
 	}
-	recovery, cancel := withCommandSettlementBudget(ctx, commandSettlementRecoveryTimeout)
+	recovery, cancel := withCommandSettlementBudget(ctx, effectiveCommandSettlementRecoveryTimeout())
 	defer cancel()
 	if err := waitCgroupPopulatedZero(recovery, leafDir); err != nil {
 		return errors.Join(observationErr, fmt.Errorf("cgroup settlement recovery exhausted: %w", err))
@@ -1006,7 +1006,7 @@ func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *l
 	}()
 	defer closeContainmentPIDFD(handle)
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = commandPipeDrainTimeout
+		cmd.WaitDelay = effectiveCommandPipeDrainTimeout()
 	}
 
 	leaderExitedBeforeSignal := leaderExitedFast(handle.pidfd, cmd.Process.Pid)
@@ -1047,7 +1047,7 @@ func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *l
 		result.Err = errors.Join(result.Err, fmt.Errorf("terminate subreaper group: %w", termErr))
 	}
 
-	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandCancelGracePeriod())
 	graceErr := waitPIDFDOrLeaderExit(graceCtx, handle.pidfd, cmd.Process)
 	graceCancel()
 	if graceErr != nil && !errors.Is(graceErr, context.DeadlineExceeded) {
@@ -1067,7 +1067,7 @@ func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *l
 			}
 			killErr = uErr
 		}
-		drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+		drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandPipeDrainTimeout())
 		_ = waitPIDFDOrLeaderExit(drainCtx, handle.pidfd, cmd.Process)
 		drainCancel()
 
@@ -1080,7 +1080,7 @@ func waitCommandWithSubreaperPIDFD(ctx context.Context, cmd *exec.Cmd, handle *l
 		}
 	}
 
-	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandPipeDrainTimeout())
 	quietErr := waitPIDFDOrLeaderExit(settleCtx, handle.pidfd, cmd.Process)
 	settleCancel()
 
@@ -1117,7 +1117,7 @@ func verifySubreaperSettlement(cmd *exec.Cmd, handle *linuxContainmentHandle, re
 		reject(nil)
 		return
 	}
-	if err := handle.settlement.SetReadDeadline(time.Now().Add(commandPipeDrainTimeout)); err != nil {
+	if err := handle.settlement.SetReadDeadline(time.Now().Add(effectiveCommandPipeDrainTimeout())); err != nil {
 		reject(err)
 		return
 	}

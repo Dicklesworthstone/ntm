@@ -75,8 +75,9 @@ func TestPaneLockDoesNotSerializeDifferentPanes(t *testing.T) {
 // pipeline waits for the owner, and on expiry reports a typed
 // not-dispatched reason rather than hanging or pasting.
 func TestPaneLockWaitsThenFailsTyped(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	const wait = 300 * time.Millisecond
+	const wait = 120 * time.Millisecond
 
 	owner := newLockExecutor(dir, wait)
 	waiter := newLockExecutor(dir, wait)

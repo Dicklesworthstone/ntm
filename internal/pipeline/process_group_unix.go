@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,37 +15,55 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"testing"
 	"time"
 )
 
+const (
+	defaultCommandCancelGracePeriod        = 5 * time.Second
+	defaultCommandPipeDrainTimeout         = time.Second
+	defaultCommandGroupPollInterval        = 50 * time.Millisecond
+	defaultCommandSettlementRecoveryBudget = 5 * time.Second
+
+	testCommandCancelGracePeriod        = 250 * time.Millisecond
+	testCommandPipeDrainTimeout         = 250 * time.Millisecond
+	testCommandGroupPollInterval        = 12 * time.Millisecond
+	testCommandSettlementRecoveryBudget = 350 * time.Millisecond
+)
+
 var (
-	commandCancelGracePeriod = 5 * time.Second
-	commandPipeDrainTimeout  = time.Second
-	commandGroupPollInterval = 50 * time.Millisecond
+	commandCancelGracePeriod = defaultCommandCancelGracePeriod
+	commandPipeDrainTimeout  = defaultCommandPipeDrainTimeout
+	commandGroupPollInterval = defaultCommandGroupPollInterval
 	// Keep the original, unreaped leader through a bounded read-only recovery
 	// when the post-kill census failed. Reaping after the first short outage
 	// would permanently discard the identity needed to certify settlement.
-	commandSettlementRecoveryTimeout = 5 * time.Second
+	commandSettlementRecoveryTimeout = defaultCommandSettlementRecoveryBudget
 )
 
-func init() {
-	// Tighten process-group cleanup/settlement windows inside any `go test`
-	// binary (including downstream packages such as internal/cli and
-	// internal/serve) while keeping production defaults (5s/1s/50ms/5s)
-	// unchanged in cmd/ntm. Every lifecycle test still exercises the full
-	// SIGTERM->grace->SIGKILL, pipe drain, and settlement-recovery choreography
-	// using these symbolic durations.
-	if isPipelineTestProcess() {
-		commandCancelGracePeriod = 250 * time.Millisecond
-		commandPipeDrainTimeout = 250 * time.Millisecond
-		commandGroupPollInterval = 12 * time.Millisecond
-		commandSettlementRecoveryTimeout = 350 * time.Millisecond
+func effectiveCommandTiming(current, prodDefault, testDefault time.Duration) time.Duration {
+	if current != prodDefault {
+		return current
 	}
+	if flag.Lookup("test.v") != nil {
+		return testDefault
+	}
+	return current
 }
 
-func isPipelineTestProcess() bool {
-	return testing.Testing()
+func effectiveCommandCancelGracePeriod() time.Duration {
+	return effectiveCommandTiming(commandCancelGracePeriod, defaultCommandCancelGracePeriod, testCommandCancelGracePeriod)
+}
+
+func effectiveCommandPipeDrainTimeout() time.Duration {
+	return effectiveCommandTiming(commandPipeDrainTimeout, defaultCommandPipeDrainTimeout, testCommandPipeDrainTimeout)
+}
+
+func effectiveCommandGroupPollInterval() time.Duration {
+	return effectiveCommandTiming(commandGroupPollInterval, defaultCommandGroupPollInterval, testCommandGroupPollInterval)
+}
+
+func effectiveCommandSettlementRecoveryTimeout() time.Duration {
+	return effectiveCommandTiming(commandSettlementRecoveryTimeout, defaultCommandSettlementRecoveryBudget, testCommandSettlementRecoveryBudget)
 }
 
 // Per-command fault injection keeps concurrent waiters independent. Cleanup
@@ -120,7 +139,7 @@ func configureCommandProcessGroup(cmd *exec.Cmd) {
 	// A descendant that deliberately leaves the group can still inherit
 	// its I/O. It must not hold cmd.Wait (and run ownership) forever.
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = commandPipeDrainTimeout
+		cmd.WaitDelay = effectiveCommandPipeDrainTimeout()
 	}
 }
 
@@ -206,7 +225,7 @@ func waitCommandGroupObservation(ctx context.Context, pgid int, observe func() (
 			observe = func() (bool, error) { return hook(ctx, pgid) }
 		}
 	}
-	ticker := time.NewTicker(commandGroupPollInterval)
+	ticker := time.NewTicker(effectiveCommandGroupPollInterval())
 	defer ticker.Stop()
 	var observationErr error
 	interrupted := func() error {
@@ -257,7 +276,7 @@ func reconcileCommandGroupSettlement(ctx context.Context, pgid int, observationE
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	recovery, cancel := withCommandSettlementBudget(ctx, commandSettlementRecoveryTimeout)
+	recovery, cancel := withCommandSettlementBudget(ctx, effectiveCommandSettlementRecoveryTimeout())
 	defer cancel()
 	if err := waitCommandGroupQuiescent(recovery, pgid); err != nil {
 		return errors.Join(observationErr, fmt.Errorf("command group settlement recovery exhausted: %w", err))
@@ -272,7 +291,8 @@ func observeCommandGroupWithPS(ctx context.Context, pgid int) (bool, error) {
 	if pgid <= 1 {
 		return false, fmt.Errorf("inspect command process group: invalid group ID %d", pgid)
 	}
-	probe, cancel := context.WithTimeout(ctx, commandPipeDrainTimeout)
+	drainTimeout := effectiveCommandPipeDrainTimeout()
+	probe, cancel := context.WithTimeout(ctx, drainTimeout)
 	defer cancel()
 	// BSD and AIX ps name this column "state"; Solaris and illumos use "s".
 	stateColumn := "state="
@@ -280,7 +300,7 @@ func observeCommandGroupWithPS(ctx context.Context, pgid int) (bool, error) {
 		stateColumn = "s="
 	}
 	cmd := exec.CommandContext(probe, "ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", stateColumn)
-	cmd.WaitDelay = commandPipeDrainTimeout
+	cmd.WaitDelay = drainTimeout
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("inspect command process group: %w", errors.Join(probe.Err(), err))
