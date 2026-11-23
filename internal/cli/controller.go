@@ -249,6 +249,7 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	// Resolve agent type to full name
 	var agentTypeFull string
 	var agentCmdTemplate string
+	var piPluginEnv map[string]string
 	switch robot.ResolveAgentType(agentType) {
 	case "claude":
 		agentTypeFull = "claude"
@@ -287,14 +288,20 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		agentCmdTemplate = config.OmpCommandOrDefault(cfg.Agents.Omp)
 	case "pi":
 		agentTypeFull = "pi"
-		agentCmdTemplate = plugins.ShippedPiPlugin().Command
+		shipped := plugins.ShippedPiPlugin()
+		agentCmdTemplate = shipped.Command
+		piPluginEnv = shipped.Env
 		if loaded, _ := plugins.LoadAgentPlugins(filepath.Join(selectedConfigDir(), "agents")); len(loaded) > 0 {
 			for _, p := range loaded {
 				if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
 					agentCmdTemplate = p.Command
+					piPluginEnv = p.Env
 					break
 				}
 			}
+		}
+		if err := tmux.ValidateLaunchEnvironment(piPluginEnv); err != nil {
+			return nil, fmt.Errorf("invalid pi plugin environment: %w", err)
 		}
 	case "ollama":
 		agentTypeFull = "ollama"
@@ -323,9 +330,12 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		return nil, fmt.Errorf("rendering agent command template: %w", err)
 	}
 	policy.LogClaudeHooksNotApplied("controller", agentCmd, vars.ClaudeSettings)
-	launchSpec, err := captureAgentLaunchSpec(AgentType(tmux.AgentType(agentTypeFull).Canonical()), agentCmd, "", "", "", "", "")
+	launchSpec, err := captureAgentLaunchSpec(AgentType(tmux.AgentType(agentTypeFull).Canonical()), agentCmd, "", "", "", "", "", piPluginEnv)
 	if err != nil {
 		return nil, fmt.Errorf("capture controller launch settings: %w", err)
+	}
+	if len(piPluginEnv) > 0 {
+		agentCmd = prependSpawnPaneEnv(agentCmd, piPluginEnv)
 	}
 
 	// Per-pane Claude credential isolation (GH#237, bd-4tz2d). Every path that
