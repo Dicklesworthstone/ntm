@@ -840,3 +840,46 @@ func TestMessageErrorHandling(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveDashboardEditorSpec_PreservesAllowlistedBinaries(t *testing.T) {
+	cases := []struct {
+		editor   string
+		wantBin  string
+		wantArgs []string
+	}{
+		{"nvim", "nvim", nil},
+		{"/usr/local/bin/cursor --wait", "cursor", []string{"-w"}},
+		{"subl", "subl", []string{"-w"}},
+		{"zed", "zed", []string{"--wait"}},
+		{"hx", "hx", nil},
+		{"nano", "nano", nil},
+		{"vim;rm -rf /", "vi", nil},
+		{"./custom-editor", "vi", nil},
+	}
+	for _, tc := range cases {
+		bin, args := resolveDashboardEditorSpec(tc.editor)
+		if bin != tc.wantBin || len(args) != len(tc.wantArgs) || (len(args) > 0 && args[0] != tc.wantArgs[0]) {
+			t.Errorf("resolveDashboardEditorSpec(%q) = (%q, %v), want (%q, %v)", tc.editor, bin, args, tc.wantBin, tc.wantArgs)
+		}
+	}
+}
+
+func TestNewDashboardAddAgentsCommand_SupportsAll12Harnesses(t *testing.T) {
+	cmd, err := newDashboardAddAgentsCommand(context.Background(), t.TempDir(), "myproj", panels.SpawnWizardResult{
+		CCCount:       1,
+		PiCount:       2,
+		CursorCount:   1,
+		WindsurfCount: 1,
+		AiderCount:    1,
+		OllamaCount:   1,
+	})
+	if err != nil {
+		t.Fatalf("newDashboardAddAgentsCommand error = %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	for _, want := range []string{"--cc=1", "--pi=2", "--cursor=1", "--windsurf=1", "--aider=1", "--ollama=1"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cmd.Args %q missing %q", joined, want)
+		}
+	}
+}

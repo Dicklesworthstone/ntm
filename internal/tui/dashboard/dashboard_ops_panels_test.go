@@ -665,4 +665,28 @@ func TestDashboardWaveF5ReliabilityAndParityFixes(t *testing.T) {
 			t.Fatal("workflow panel hijacked Enter while PanelPaneList was focused")
 		}
 	})
+
+	t.Run("WaveJ_split_view_and_readonly_panels_focus_routing", func(t *testing.T) {
+		// Split tier (140x40, past TierSplit hysteresis margin): PanelPaneList stays focusable even when Pipelines is open.
+		ms := testDashboardWithPanes(140, 40)
+		ms.showPipelinesPanel = true
+		ms.sidebarActivePanel = ms.pipelinesPanel.Config().ID
+		ms.focusedPanel = PanelPaneList
+		if got := ms.focusedOperationalPanelForKeys(); got != nil {
+			t.Fatalf("TierSplit with PanelPaneList focused returned %v, want nil", got.Config().ID)
+		}
+		ms.focusedPanel = PanelDetail
+		if got := ms.focusedOperationalPanelForKeys(); got != ms.pipelinesPanel {
+			t.Fatalf("TierSplit with PanelDetail focused returned %v, want pipelinesPanel", got)
+		}
+
+		// Non-interactive panels (quota/ratelimit/accounts) must never swallow keys.
+		mq := testDashboardWithPanes(140, 40)
+		mq.showQuotaPanel = true
+		mq.sidebarActivePanel = mq.quotaPanel.Config().ID
+		mq.focusedPanel = PanelDetail
+		if got := mq.focusedOperationalPanelForKeys(); got != nil {
+			t.Fatalf("non-interactive quota panel captured keys: %v", got.Config().ID)
+		}
+	})
 }

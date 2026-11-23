@@ -143,8 +143,8 @@ func TestDashboardSpawnWizardMinimalFlowRunsAddOnce(t *testing.T) {
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	// Seven count inputs pre-filled by Minimal; Enter through each.
-	for i := 0; i < 7; i++ {
+	// Twelve count inputs pre-filled by Minimal; Enter through each.
+	for i := 0; i < 12; i++ {
 		m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	}
 	if view := status.StripANSI(m.View()); !strings.Contains(view, "Spawn 1 agent(s)") {

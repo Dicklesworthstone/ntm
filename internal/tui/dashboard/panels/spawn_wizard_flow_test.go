@@ -121,20 +121,21 @@ func TestSpawnWizardEnterThroughCountsReachesConfirm(t *testing.T) {
 	sw.initCountsForm()
 	sw = pumpWizard(t, sw, sw.countsForm.Init(), 0)
 
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 12; i++ {
 		sw = pressWizard(t, sw, tea.KeyMsg{Type: tea.KeyEnter})
 	}
 
 	if sw.step != SpawnStepConfirm {
-		t.Fatalf("expected seven Enters to reach confirm step, got %v", sw.step)
+		t.Fatalf("expected twelve Enters to reach confirm step, got %v", sw.step)
 	}
 	view := sw.View()
 	if !strings.Contains(view, "Spawn 1 agent(s)") {
 		t.Fatalf("expected confirm summary for one agent, got:\n%s", view)
 	}
 	if !strings.Contains(view, "Claude: 1, Codex: 0, Gemini: 0, Antigravity: 0") ||
-		!strings.Contains(view, "Grok: 0, Omp: 0, OpenCode: 0") {
-		t.Fatalf("expected confirm summary to list all 7 harnesses, got:\n%s", view)
+		!strings.Contains(view, "Grok: 0, Omp: 0, Pi: 0, OpenCode: 0") ||
+		!strings.Contains(view, "Cursor: 0, Windsurf: 0, Aider: 0, Ollama: 0") {
+		t.Fatalf("expected confirm summary to list all 12 harnesses, got:\n%s", view)
 	}
 }
 
@@ -163,14 +164,14 @@ func TestSpawnWizardMultiHarnessManualAndPresetCounts(t *testing.T) {
 		}
 	})
 
-	t.Run("manual mode rejects all-zero counts across all seven harnesses", func(t *testing.T) {
+	t.Run("manual mode rejects all-zero counts across all twelve harnesses", func(t *testing.T) {
 		sw := NewSpawnWizard("test", 120, 40)
 		sw.configMethod = "manual"
 		sw.step = SpawnStepCounts
 		sw.initCountsForm()
 		sw = pumpWizard(t, sw, sw.countsForm.Init(), 0)
 
-		for i := 0; i < 7; i++ {
+		for i := 0; i < 12; i++ {
 			sw = pressWizard(t, sw, tea.KeyMsg{Type: tea.KeyEnter})
 		}
 
@@ -187,12 +188,13 @@ func TestSpawnWizardMultiHarnessManualAndPresetCounts(t *testing.T) {
 		sw.configMethod = "manual"
 		sw.grokStr = "2"
 		sw.ompStr = "1"
+		sw.piStr = "1"
 		sw.ocStr = "3"
 		sw.step = SpawnStepCounts
 		sw.initCountsForm()
 		sw = pumpWizard(t, sw, sw.countsForm.Init(), 0)
 
-		for i := 0; i < 7; i++ {
+		for i := 0; i < 12; i++ {
 			sw = pressWizard(t, sw, tea.KeyMsg{Type: tea.KeyEnter})
 		}
 
@@ -200,7 +202,7 @@ func TestSpawnWizardMultiHarnessManualAndPresetCounts(t *testing.T) {
 			t.Fatalf("expected manual multi-harness counts to advance to confirm, got %v (err=%v)", sw.step, sw.err)
 		}
 		confirmView := sw.View()
-		if !strings.Contains(confirmView, "Spawn 6 agent(s)") || !strings.Contains(confirmView, "Grok: 2, Omp: 1, OpenCode: 3") {
+		if !strings.Contains(confirmView, "Spawn 7 agent(s)") || !strings.Contains(confirmView, "Grok: 2, Omp: 1, Pi: 1, OpenCode: 3") {
 			t.Fatalf("unexpected confirm summary:\n%s", confirmView)
 		}
 
@@ -234,8 +236,8 @@ func TestSpawnWizardMultiHarnessManualAndPresetCounts(t *testing.T) {
 		if doneMsg.Cancelled || !doneMsg.Result.Confirmed {
 			t.Fatalf("expected confirmed wizard result, got %+v", doneMsg)
 		}
-		if doneMsg.Result.GrokCount != 2 || doneMsg.Result.OmpCount != 1 || doneMsg.Result.OcCount != 3 || doneMsg.Result.TotalCount() != 6 {
-			t.Fatalf("doneMsg.Result = %+v (total=%d), want grok=2 omp=1 oc=3 total=6", doneMsg.Result, doneMsg.Result.TotalCount())
+		if doneMsg.Result.GrokCount != 2 || doneMsg.Result.OmpCount != 1 || doneMsg.Result.PiCount != 1 || doneMsg.Result.OcCount != 3 || doneMsg.Result.TotalCount() != 7 {
+			t.Fatalf("doneMsg.Result = %+v (total=%d), want grok=2 omp=1 pi=1 oc=3 total=7", doneMsg.Result, doneMsg.Result.TotalCount())
 		}
 	})
 }
@@ -271,13 +273,13 @@ func TestSpawnWizardViewMultiHarnessTerminalSizes(t *testing.T) {
 				t.Fatalf("counts view height %d exceeded terminal height %d:\n%s", lines, sz.height, topView)
 			}
 
-			// Step down to the final OpenCode field to verify viewport scrolling renders cleanly.
-			for i := 0; i < 6; i++ {
+			// Step down to the final Ollama field to verify viewport scrolling renders cleanly.
+			for i := 0; i < 11; i++ {
 				sw = pressWizard(t, sw, tea.KeyMsg{Type: tea.KeyEnter})
 			}
 			bottomView := sw.View()
-			if !strings.Contains(bottomView, "OpenCode agents (oc)") {
-				t.Fatalf("expected scrolled counts view at %dx%d to display OpenCode input, got:\n%s", sz.width, sz.height, bottomView)
+			if !strings.Contains(bottomView, "Ollama agents (ollama)") {
+				t.Fatalf("expected scrolled counts view at %dx%d to display Ollama input, got:\n%s", sz.width, sz.height, bottomView)
 			}
 			if lines := strings.Count(bottomView, "\n") + 1; lines > sz.height {
 				t.Fatalf("scrolled counts view height %d exceeded terminal height %d:\n%s", lines, sz.height, bottomView)
@@ -289,7 +291,7 @@ func TestSpawnWizardViewMultiHarnessTerminalSizes(t *testing.T) {
 				t.Fatalf("expected confirm step at %dx%d, got %v", sz.width, sz.height, sw.step)
 			}
 			confirmView := sw.View()
-			if !strings.Contains(confirmView, "Grok: 1, Omp: 2, OpenCode: 1") {
+			if !strings.Contains(confirmView, "Grok: 1, Omp: 2, Pi: 0, OpenCode: 1") {
 				t.Fatalf("expected multi-harness confirm summary at %dx%d, got:\n%s", sz.width, sz.height, confirmView)
 			}
 			if lines := strings.Count(confirmView, "\n") + 1; lines > sz.height {
