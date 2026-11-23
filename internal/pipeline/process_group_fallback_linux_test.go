@@ -20,6 +20,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func init() {
+	commandLeaderObservationRetryTimeout = 120 * time.Millisecond
+}
+
 // Use real children and kernel failure injection. The seccomp filters apply
 // only inside a subprocess, never to the test runner or a developer's shell.
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {

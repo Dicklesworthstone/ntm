@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -702,16 +703,18 @@ func escapedCommandOutputFixtureWithOutput(t *testing.T, root, stream string, ex
 	if err != nil {
 		t.Skip("setsid is required for escaped output fixtures")
 	}
+	fifoPath := filepath.Join(root, "release.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatalf("mkfifo release.fifo: %v", err)
+	}
 	child := `case "$1" in
 stdout) exec 2>/dev/null ;;
 stderr) exec 1>/dev/null ;;
 esac
 printf '%s' "$$" > escaped.pid
-attempts=0
-while [ ! -f release ] && [ "$attempts" -lt 1000 ]; do
-  sleep 0.01
-  attempts=$((attempts + 1))
-done
+if [ ! -f release ]; then
+  read _ < release.fifo
+fi
 if [ -f release ]; then printf late > late-effect; fi
 printf done > escaped.done
 `
@@ -736,12 +739,20 @@ printf done > escaped.done
 		if err := os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600); err != nil {
 			t.Errorf("release escaped fixture: %v", err)
 		}
+		fifoSignaled := false
 		deadline := time.Now().Add(3 * time.Second)
 		for process != nil && time.Now().Before(deadline) {
 			if _, err := os.Stat(filepath.Join(root, "escaped.done")); err == nil {
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
+			if !fifoSignaled {
+				if f, err := os.OpenFile(fifoPath, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_, _ = f.WriteString("finish\n")
+					_ = f.Close()
+					fifoSignaled = true
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
 		if process != nil {
 			_ = process.Kill()

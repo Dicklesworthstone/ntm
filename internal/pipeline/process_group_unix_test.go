@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+func init() {
+	// Tighten process-group cleanup/settlement windows in pipeline package tests
+	// without importing "testing" in production code. Every lifecycle test still
+	// exercises the full SIGTERM->grace->SIGKILL, pipe drain, and recovery path.
+	commandCancelGracePeriod = 250 * time.Millisecond
+	commandPipeDrainTimeout = 250 * time.Millisecond
+	commandGroupPollInterval = 12 * time.Millisecond
+	commandSettlementRecoveryTimeout = 350 * time.Millisecond
+}
+
 func TestExecuteCommand_CancelKillsProcessGroupChild(t *testing.T) {
 	t.Parallel()
 	e := newCommandTestExecutor(t)
