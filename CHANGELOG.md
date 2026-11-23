@@ -13,7 +13,14 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+---
+
+## [1.39.0] - 2026-11-23 [GitHub Release]
+
 ### Added
+
+- **Pi (`pi`) 12th harness parity**: end-to-end support across `ntm scale --pi`, `sessions.scale` kernel, interactive spawn/profiles/copy/dashboard/robot counters, validated plugin command & environment launching/restarting, banner/composer/rate-limit detection, and OpenAPI schema parity.
+- **Go 1.26.11 & refreshed module stack**: upgraded Go toolchain (`go.mod`, `Dockerfile`, workflows, docs) to Go `1.26.11` (fixing `GO-2026-6859` in `net/http`, 0 `govulncheck` advisories) and refreshed direct Go modules (`x/ansi`, `chi/v5`, `go-runewidth`, `go-diff`, `gopsutil/v4`, `pflag`, `goldmark`, `x/sys`, `x/term`, `x/tools`).
 
 - **Declarative 12-harness capability registry** (`internal/agent/capabilities.go`): consolidates built-in harness metadata (`cc`, `cod`, `gmi`, `agy`, `grok`, `oc`, `omp`, `pi`, `cursor`, `windsurf`, `aider`, `ollama`) for delivery, composer readiness, context compaction/rotation, rate-limit tracking, graceful exit, session restore (fixing Grok launch command lookup), TUI icons, and `--robot-capabilities` discovery (`harnesses[]`).
 - **Encrypted support bundles & CLI encryption overrides**: `ntm support-bundle` supports AES-256-GCM `NTMENC1` atomic `0600` encryption when `[encryption] enabled = true` or `--encrypt` is passed, and `ntm support-bundle --verify` transparently decrypts and verifies encrypted `.zip`/`.tar.gz` bundles in memory against the configured keyring. Added global `--encrypt` and `--allow-plaintext` override flags (mutually exclusive). See `docs/ENCRYPTION_SPEC.md`.
@@ -24,6 +31,8 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ### Fixed
 
+- **Pipeline crash recovery, isolated parallel loop scopes, and `until`-loop resume** (`bd-eopms`, `bd-wuzk0`, `bd-z0vmn`): preserved configured stdout limits, merged stderr ordering, and truncation markers across step-reaper crash receipts; moved loop iteration bindings to context-local overlays so parallel branches never leak loop variables; checkpointed collected loop outputs atomically; recovered settled `until`-loop predicate decisions and retained continued-failure body checkpoints across resume; completed Linux `effectiveCommandTiming` migration in `internal/pipeline/process_wait_linux.go`.
+- **Bundle verification, webhook/notify retries, and project-scoped health/doctor**: bounded bundle verification reads by total entries (including directories) and bytes; applied configured `[retry.alerts]` webhook budgets via `notify.ApplyAlertRetryPolicy` and clamped retry delays to webhook ceilings; scoped health, doctor, model, and quota probes to the requested project directory; preserved existing agents when scale expansion fails; isolated `internal/session` real-tmux tests with `IsolateTmuxTestProcess`.
 - **Codex 0.170.0 context rotation & pane-identity readiness** (GH #380, GH #381): `internal/context/rotation.go` strips ANSI escapes and Codex `• ` bullet prefixes from `NTM_START_…` markers and authorizes prompt readiness strictly by pane identity rather than substring path matching.
 - **Oh My Pi (`omp`) `band` composer shape** (GH #342): `internal/agent/patterns.go` recognizes both closed `box` and Nov 18 `band` composer frames with actionable delivery diagnostics.
 - **Pure-Go TOON encoder & tabular struct flattening**: fixed delimiter/header formatting (`[N\t]:`) and `extractFields`/`getFieldValue` omitempty schema handling in `internal/robot/toon.go`.

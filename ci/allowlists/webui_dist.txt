@@ -31,3 +31,4 @@ stale_build_id:vwxB0Nh2K93dg7S4JFR9t	bd-rc-track-d-release-docs-3ho85.2	Historic
 stale_build_id:w_KA_1aXO9NfSiWMunVno	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:xc14wNR1hvJwmP6bar1Qa	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:yWtOeta8MOs_3U4nhjdhn	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:JfWdb6CTEfO9q-Wo4KOBx	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId from non-destructive rebuild awaiting Rule-1 deletion approval
