@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,6 +196,15 @@ func (s *Searcher) SearchContext(ctx context.Context, query Query) (*QueryResult
 		})
 
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				result.Truncated = true
+				result.TotalCount = len(result.Entries)
+				result.Duration = time.Since(startTime)
+				if ctx.Err() != nil {
+					return result, ctx.Err()
+				}
+				return result, err
+			}
 			// Log but don't fail on individual file errors
 			continue
 		}
