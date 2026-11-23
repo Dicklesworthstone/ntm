@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -102,7 +103,7 @@ func TestRunGitPullWithoutUpstreamIsFailure(t *testing.T) {
 	repo := initGitSyncTestRepo(t)
 	for _, dryRun := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pull", true: "dry-run"}[dryRun], func(t *testing.T) {
-			result := runGitPull(repo, dryRun)
+			result := runGitPull(context.Background(), repo, dryRun)
 			if result.Success {
 				t.Fatalf("runGitPull(dryRun=%v) success = true, want failure", dryRun)
 			}
@@ -117,7 +118,7 @@ func TestRunGitPullWithoutUpstreamIsFailure(t *testing.T) {
 }
 
 func TestRunGitPullFetchFailureIsFailure(t *testing.T) {
-	result := runGitPull(filepath.Join(t.TempDir(), "missing-repository"), false)
+	result := runGitPull(context.Background(), filepath.Join(t.TempDir(), "missing-repository"), false)
 	if result.Success || result.AlreadyUpToDate {
 		t.Fatalf("runGitPull result = %+v, want fetch failure", result)
 	}
@@ -127,7 +128,7 @@ func TestRunGitPullFetchFailureIsFailure(t *testing.T) {
 }
 
 func TestRunGitPushWithoutUpstreamIsFailure(t *testing.T) {
-	result := runGitPush(initGitSyncTestRepo(t), false, false)
+	result := runGitPush(context.Background(), initGitSyncTestRepo(t), false, false)
 	if result.Success {
 		t.Fatal("runGitPush success = true, want failure")
 	}
@@ -136,6 +137,19 @@ func TestRunGitPushWithoutUpstreamIsFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "upstream") {
 		t.Fatalf("runGitPush error = %q, want upstream failure", result.Error)
+	}
+}
+
+func TestRunGitPullAndPushHonorCanceledContext(t *testing.T) {
+	repo := initGitSyncTestRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if res := runGitPull(ctx, repo, false); res.Success {
+		t.Fatalf("runGitPull with canceled context succeeded: %+v", res)
+	}
+	if res := runGitPush(ctx, repo, false, false); res.Success {
+		t.Fatalf("runGitPush with canceled context succeeded: %+v", res)
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -90,16 +93,16 @@ Examples:
 			}
 
 			if dryRun {
+				ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+				defer cancel()
 				if !noGit {
-					ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-					defer cancel()
 					plan, err := checkpoint.PrepareGitRollback(ctx, storage, cp, workDir)
 					if err != nil {
 						return fmt.Errorf("rollback preflight: %w", err)
 					}
 					workDir = plan.WorkDir
 				}
-				return showRollbackPreview(cp, workDir, noStash, noGit)
+				return showRollbackPreview(ctx, cp, workDir, noStash, noGit)
 			}
 
 			// Safety check
@@ -121,7 +124,7 @@ Examples:
 				}
 			}
 
-			return performRollback(cp, workDir, noStash, noGit)
+			return performRollback(cmd.Context(), cp, liveSession, workDir, noStash, noGit)
 		},
 	}
 
@@ -149,7 +152,10 @@ func resolveRollbackSessions(session string, w io.Writer, requireLive bool) (str
 	return storageSession, liveSession, nil
 }
 
-func showRollbackPreview(cp *checkpoint.Checkpoint, workDir string, noStash, noGit bool) error {
+func showRollbackPreview(ctx context.Context, cp *checkpoint.Checkpoint, workDir string, noStash, noGit bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if jsonOutput {
 		preview := map[string]interface{}{
 			"dry_run":     true,
@@ -192,7 +198,7 @@ func showRollbackPreview(cp *checkpoint.Checkpoint, workDir string, noStash, noG
 	actionNum := 1
 	if !noGit && workDir != "" {
 		// Check current git state
-		dirty, err := hasUncommittedChanges(workDir)
+		dirty, err := hasUncommittedChanges(ctx, workDir)
 		if err != nil {
 			return fmt.Errorf("checking uncommitted changes: %w", err)
 		}
@@ -227,10 +233,14 @@ func showRollbackPreview(cp *checkpoint.Checkpoint, workDir string, noStash, noG
 	return nil
 }
 
-func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit bool) error {
+func performRollback(parentCtx context.Context, cp *checkpoint.Checkpoint, liveSession, workDir string, noStash, noGit bool) error {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	t := theme.Current()
 	var stashName string
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	var warnings []string
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer cancel()
 	var plan *checkpoint.GitRollbackPlan
 	if !noGit {
@@ -240,6 +250,7 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 			return fmt.Errorf("rollback preflight (no agents interrupted or files changed): %w", err)
 		}
 		workDir = plan.WorkDir
+		warnings = append(warnings, plan.Warnings...)
 		if !jsonOutput {
 			for _, warning := range plan.Warnings {
 				fmt.Printf("  Warning: %s\n", warning)
@@ -247,14 +258,33 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		}
 	}
 
-	// 1. Interrupt agents to stop them from writing to files during rollback
+	// 1. Interrupt agents to stop them from writing to files during rollback.
+	// Use the kernel handler directly instead of runInterrupt so --json mode
+	// never emits a second top-level JSON document onto stdout.
+	interruptSession := strings.TrimSpace(liveSession)
+	if interruptSession == "" {
+		interruptSession = strings.TrimSpace(cp.SessionName)
+	}
 	if !jsonOutput {
 		fmt.Println("Interrupting agents...")
 	}
-	// Interrupt all agents (no tags)
-	if err := runInterrupt(cp.SessionName, nil); err != nil {
+	var interruptErr error
+	if interruptSession != "" {
+		res, err := kernel.Run(ctx, "sessions.interrupt", SessionInterruptInput{Session: interruptSession})
+		if err != nil {
+			interruptErr = err
+		} else if resp, ok := res.(*output.InterruptResponse); ok && !resp.Success {
+			if strings.TrimSpace(resp.Error) != "" {
+				interruptErr = fmt.Errorf("%s", resp.Error)
+			} else {
+				interruptErr = fmt.Errorf("interrupt reported failure for session %q", interruptSession)
+			}
+		}
+	}
+	if interruptErr != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to interrupt agents in session %q: %v", interruptSession, interruptErr))
 		if !jsonOutput {
-			fmt.Printf("%s! Warning: failed to interrupt agents: %v%s\n", colorize(t.Warning), err, "\033[0m")
+			fmt.Printf("%s! Warning: failed to interrupt agents: %v%s\n", colorize(t.Warning), interruptErr, "\033[0m")
 		}
 	} else if !jsonOutput {
 		fmt.Printf("%s\u2713%s Agents interrupted\n", colorize(t.Success), "\033[0m")
@@ -263,13 +293,13 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 	if plan != nil {
 		// Stash current changes if needed
 		if !noStash {
-			dirty, err := hasUncommittedChanges(workDir)
+			dirty, err := hasUncommittedChanges(ctx, workDir)
 			if err != nil {
 				return fmt.Errorf("checking uncommitted changes before rollback: %w", err)
 			}
 			if dirty {
 				stashName = fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
-				if err := gitStash(workDir, stashName); err != nil {
+				if err := gitStash(ctx, workDir, stashName); err != nil {
 					return fmt.Errorf("stashing changes: %w", err)
 				}
 				if !jsonOutput {
@@ -279,7 +309,7 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		}
 
 		// Checkout the commit
-		if err := gitCheckout(workDir, plan.Commit); err != nil {
+		if err := gitCheckout(ctx, workDir, plan.Commit); err != nil {
 			return fmt.Errorf("checkout commit failed; inspect repository before retrying (stash %q was preserved): %w", stashName, err)
 		}
 		if !jsonOutput {
@@ -307,7 +337,9 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		}
 		if plan != nil {
 			result["git_commit"] = plan.Commit
-			result["warnings"] = plan.Warnings
+		}
+		if len(warnings) > 0 {
+			result["warnings"] = warnings
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
@@ -346,23 +378,49 @@ func getSessionWorkDir(session string) (string, error) {
 }
 
 // hasUncommittedChanges checks if there are uncommitted changes.
-func hasUncommittedChanges(dir string) (bool, error) {
-	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v1", "--untracked-files=all")
+func hasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain=v1", "--untracked-files=all")
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return false, fmt.Errorf("%w: %s", err, msg)
+		}
 		return false, err
 	}
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // gitStash creates a named stash.
-func gitStash(dir, name string) error {
-	cmd := exec.Command("git", "-C", dir, "stash", "push", "--include-untracked", "-m", name)
-	return cmd.Run()
+func gitStash(ctx context.Context, dir, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "stash", "push", "--include-untracked", "-m", name)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // gitCheckout checks out a specific commit.
-func gitCheckout(dir, commit string) error {
-	cmd := exec.Command("git", "-C", dir, "checkout", "--no-overwrite-ignore", commit)
-	return cmd.Run()
+func gitCheckout(ctx context.Context, dir, commit string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "--no-overwrite-ignore", commit)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }

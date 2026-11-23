@@ -112,6 +112,9 @@ type PushResult struct {
 }
 
 func runGitSync(ctx context.Context, session string, pullOnly, pushOnly, force, dryRun bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	session, workDir, err := resolveGitProjectDir(ctx, session)
 	if err != nil {
 		return err
@@ -124,15 +127,21 @@ func runGitSync(ctx context.Context, session string, pullOnly, pushOnly, force, 
 	}
 
 	// Check if git repo
-	cmd := exec.Command("git", "-C", workDir, "rev-parse", "--git-dir")
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--git-dir")
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		result.Success = false
 		result.Error = "not a git repository"
 		return outputGitSyncResult(result)
 	}
 
 	// Get current status first
-	gitInfo, _ := getGitInfo(workDir)
+	gitInfo, _ := getGitInfoContext(ctx, workDir)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	// Check for uncommitted changes that could cause conflicts
 	if gitInfo != nil && gitInfo.Dirty && !pushOnly {
@@ -145,7 +154,10 @@ func runGitSync(ctx context.Context, session string, pullOnly, pushOnly, force, 
 
 	// Pull phase
 	if !pushOnly {
-		result.PullResult = runGitPull(workDir, dryRun)
+		result.PullResult = runGitPull(ctx, workDir, dryRun)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if !result.PullResult.Success {
 			result.Success = false
 			result.HasConflict = len(result.PullResult.Conflicts) > 0
@@ -155,7 +167,10 @@ func runGitSync(ctx context.Context, session string, pullOnly, pushOnly, force, 
 
 	// Push phase (only if pull succeeded or we're doing push-only)
 	if !pullOnly && (result.PullResult == nil || result.PullResult.Success) {
-		result.PushResult = runGitPush(workDir, force, dryRun)
+		result.PushResult = runGitPush(ctx, workDir, force, dryRun)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if !result.PushResult.Success {
 			result.Success = false
 			result.Error = "push failed: " + result.PushResult.Error
@@ -165,12 +180,15 @@ func runGitSync(ctx context.Context, session string, pullOnly, pushOnly, force, 
 	return outputGitSyncResult(result)
 }
 
-func runGitPull(workDir string, dryRun bool) *PullResult {
+func runGitPull(ctx context.Context, workDir string, dryRun bool) *PullResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	result := &PullResult{Success: true}
 
 	if dryRun {
 		// Fetch to see what would be pulled
-		cmd := exec.Command("git", "-C", workDir, "fetch", "--dry-run")
+		cmd := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", "--dry-run")
 		if err := cmd.Run(); err != nil {
 			result.Success = false
 			result.Error = gitCommandFailure("fetch --dry-run failed", err)
@@ -178,7 +196,7 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 		}
 
 		// Check how far behind we are
-		cmd = exec.Command("git", "-C", workDir, "rev-list", "--count", "HEAD..@{u}")
+		cmd = exec.CommandContext(ctx, "git", "-C", workDir, "rev-list", "--count", "HEAD..@{u}")
 		out, err := cmd.Output()
 		if err != nil {
 			result.Success = false
@@ -198,15 +216,15 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 	}
 
 	// Fetch first
-	cmd := exec.Command("git", "-C", workDir, "fetch")
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "fetch")
 	if err := cmd.Run(); err != nil {
 		result.Success = false
-		result.Error = "fetch failed"
+		result.Error = gitCommandFailure("fetch failed", err)
 		return result
 	}
 
 	// Check if there are changes to pull
-	cmd = exec.Command("git", "-C", workDir, "rev-list", "--count", "HEAD..@{u}")
+	cmd = exec.CommandContext(ctx, "git", "-C", workDir, "rev-list", "--count", "HEAD..@{u}")
 	out, err := cmd.Output()
 	if err != nil {
 		result.Success = false
@@ -226,7 +244,7 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 	}
 
 	// Pull with rebase
-	cmd = exec.Command("git", "-C", workDir, "pull", "--rebase")
+	cmd = exec.CommandContext(ctx, "git", "-C", workDir, "pull", "--rebase")
 	pullOut, err := cmd.CombinedOutput()
 	pullStr := string(pullOut)
 
@@ -238,7 +256,11 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 			result.Error = "merge conflicts detected"
 		} else {
 			result.Success = false
-			result.Error = strings.TrimSpace(pullStr)
+			if trimmed := strings.TrimSpace(pullStr); trimmed != "" {
+				result.Error = trimmed
+			} else {
+				result.Error = gitCommandFailure("pull --rebase failed", err)
+			}
 		}
 	} else {
 		result.Merged = result.Behind
@@ -248,11 +270,14 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 	return result
 }
 
-func runGitPush(workDir string, force, dryRun bool) *PushResult {
+func runGitPush(ctx context.Context, workDir string, force, dryRun bool) *PushResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	result := &PushResult{Success: true}
 
 	// Get remote and branch
-	cmd := exec.Command("git", "-C", workDir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	out, err := cmd.Output()
 	if err != nil {
 		result.Success = false
@@ -269,7 +294,7 @@ func runGitPush(workDir string, force, dryRun bool) *PushResult {
 	result.Branch = parts[1]
 
 	// Check how far ahead we are
-	cmd = exec.Command("git", "-C", workDir, "rev-list", "--count", "@{u}..HEAD")
+	cmd = exec.CommandContext(ctx, "git", "-C", workDir, "rev-list", "--count", "@{u}..HEAD")
 	out, err = cmd.Output()
 	if err != nil {
 		result.Success = false
@@ -299,12 +324,16 @@ func runGitPush(workDir string, force, dryRun bool) *PushResult {
 		args = append(args, "--force-with-lease")
 	}
 
-	cmd = exec.Command("git", args...)
+	cmd = exec.CommandContext(ctx, "git", args...)
 	pushOut, err := cmd.CombinedOutput()
 
 	if err != nil {
 		result.Success = false
-		result.Error = strings.TrimSpace(string(pushOut))
+		if trimmed := strings.TrimSpace(string(pushOut)); trimmed != "" {
+			result.Error = trimmed
+		} else {
+			result.Error = gitCommandFailure("push failed", err)
+		}
 	} else {
 		result.Pushed = result.Ahead
 	}
@@ -579,41 +608,62 @@ func resolveGitProjectDir(ctx context.Context, session string) (string, string, 
 }
 
 func getGitInfo(dir string) (*GitInfo, error) {
+	return getGitInfoContext(context.Background(), dir)
+}
+
+func getGitInfoContext(ctx context.Context, dir string) (*GitInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Check if it's a git repo
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-dir")
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("not a git repository")
 	}
 
 	info := &GitInfo{}
 
 	// Get current branch
-	cmd = exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err == nil {
 		info.Branch = strings.TrimSpace(string(out))
+	} else if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	// Get commit hash
-	cmd = exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
 	out, err = cmd.Output()
 	if err == nil {
 		info.Commit = strings.TrimSpace(string(out))
 		if len(info.Commit) >= 7 {
 			info.CommitShort = info.Commit[:7]
 		}
+	} else if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	// Get status (porcelain v2 for machine parsing)
-	cmd = exec.Command("git", "-C", dir, "status", "--porcelain=v2", "--branch")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain=v2", "--branch")
 	out, err = cmd.Output()
 	if err == nil {
 		parseGitStatus(info, string(out))
+	} else if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	// Check if dirty
-	cmd = exec.Command("git", "-C", dir, "diff", "--quiet", "HEAD")
-	info.Dirty = cmd.Run() != nil
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "diff", "--quiet", "HEAD")
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		info.Dirty = true
+	}
 
 	return info, nil
 }

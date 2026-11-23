@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -91,7 +93,7 @@ func TestRollbackCorruptPatchNeverReportsSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := rollbackProbeGit(t, root, "status", "--porcelain")
-	out, err := rollbackProbeOutput(t, func() error { return performRollback(cp, root, false, false) })
+	out, err := rollbackProbeOutput(t, func() error { return performRollback(context.Background(), cp, cp.SessionName, root, false, false) })
 	if err == nil || strings.Contains(out, `"rolled_back":true`) || rollbackProbeGit(t, root, "status", "--porcelain") != before || rollbackProbeGit(t, root, "stash", "list") != "" {
 		t.Fatalf("corrupt rollback changed state or reported success: %s, %v", out, err)
 	}
@@ -103,9 +105,43 @@ func TestRollbackApplyFailurePreservesStashAndReturnsError(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'concurrent write\\n' > tracked.txt\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	out, err := rollbackProbeOutput(t, func() error { return performRollback(cp, root, false, false) })
+	out, err := rollbackProbeOutput(t, func() error { return performRollback(context.Background(), cp, cp.SessionName, root, false, false) })
 	if err == nil || !strings.Contains(err.Error(), "rollback incomplete") || strings.Contains(out, `"rolled_back":true`) || rollbackProbeGit(t, root, "stash", "list") == "" {
 		t.Fatalf("failed application lost stash or reported success: %s, %v", out, err)
+	}
+}
+
+func TestRollbackJSONEmitsSingleValidJSONDocument(t *testing.T) {
+	root, cp := rollbackProbe(t)
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("dirty-before-rollback\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := rollbackProbeOutput(t, func() error {
+		return performRollback(context.Background(), cp, "live-missing-session", root, false, false)
+	})
+	if err != nil {
+		t.Fatalf("performRollback returned error: %v (stdout=%q)", err, out)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("rollback --json emitted invalid/multi-document stdout: %v\nstdout=%q", err, out)
+	}
+	if payload["success"] != true || payload["rolled_back"] != true {
+		t.Fatalf("unexpected rollback JSON payload: %+v", payload)
+	}
+	warnings, _ := payload["warnings"].([]any)
+	foundLiveSessionWarning := false
+	for _, w := range warnings {
+		if s, ok := w.(string); ok && strings.Contains(s, "live-missing-session") {
+			foundLiveSessionWarning = true
+		}
+	}
+	if !foundLiveSessionWarning {
+		t.Fatalf("expected interrupt warning referencing liveSession %q, got warnings=%v", "live-missing-session", warnings)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "tracked.txt"))
+	if err != nil || string(got) != "saved\n" {
+		t.Fatalf("rollback did not restore tracked.txt: %q, %v", got, err)
 	}
 }
 
@@ -120,7 +156,7 @@ func TestRollbackCheckoutRefusesToOverwriteIgnoredWork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("private current work\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := gitCheckout(root, cp.Git.Commit); err == nil {
+	if err := gitCheckout(context.Background(), root, cp.Git.Commit); err == nil {
 		t.Fatal("checkout overwrote an ignored working file")
 	}
 	got, err := os.ReadFile(filepath.Join(root, "tracked.txt"))
