@@ -4,6 +4,7 @@ package ratelimit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -705,6 +706,53 @@ func TestDetectRateLimitForAgent_CodexAliases(t *testing.T) {
 		}
 		if detection.Source != detectionSourceOutput {
 			t.Fatalf("expected output detection source for alias %q, got %q", agentType, detection.Source)
+		}
+	}
+}
+
+func TestLoadFromDir_HandlesNullProviderStateAndNormalizesKeys(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ntmDir := filepath.Join(dir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"state":{"anthropic":null,"cc":{"current_delay":30000000000,"total_rate_limits":2}}}`
+	if err := os.WriteFile(filepath.Join(ntmDir, "rate_limits.json"), []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewRateLimitTracker(dir)
+	if err := tracker.LoadFromDir(dir); err != nil {
+		t.Fatalf("LoadFromDir with null provider state failed: %v", err)
+	}
+	st := tracker.GetProviderState("anthropic")
+	if st == nil || st.CurrentDelay != 30*time.Second || st.TotalRateLimits != 2 {
+		t.Fatalf("expected normalized anthropic state from cc key, got %+v", st)
+	}
+}
+
+func TestParseWaitSeconds_DoesNotOverflowMinutesMultiplier(t *testing.T) {
+	t.Parallel()
+	got := ParseWaitSeconds("retry after 999999999999999999 minutes")
+	if got <= 0 {
+		t.Fatalf("ParseWaitSeconds overflowed to %d", got)
+	}
+	if time.Duration(got)*time.Second <= 0 {
+		t.Fatalf("ParseWaitSeconds(%d) overflows time.Duration multiplication", got)
+	}
+}
+
+func TestExtractResetHint_TruncatesOnUTF8Boundary(t *testing.T) {
+	t.Parallel()
+	// Place multi-byte runes straddling maxResetHintLen (120 bytes).
+	input := "try again at " + strings.Repeat("é", 80)
+	got := ExtractResetHint(input)
+	if len(got) > maxResetHintLen {
+		t.Fatalf("ExtractResetHint len=%d exceeds %d", len(got), maxResetHintLen)
+	}
+	for i, r := range got {
+		if r == '\uFFFD' {
+			t.Fatalf("ExtractResetHint split UTF-8 rune at byte %d: %q", i, got)
 		}
 	}
 }

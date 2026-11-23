@@ -1407,6 +1407,10 @@ func resetBeyondHorizon(det ratelimit.RateLimitDetection, now time.Time, horizon
 		return true, "horizon_disabled"
 	}
 	if det.WaitSeconds > 0 {
+		const maxDurationSeconds = int64(^uint64(0)>>1) / int64(time.Second)
+		if int64(det.WaitSeconds) >= maxDurationSeconds {
+			return true, fmt.Sprintf("wait_%ds", det.WaitSeconds)
+		}
 		wait := time.Duration(det.WaitSeconds) * time.Second
 		return wait > horizon, fmt.Sprintf("wait_%ds", det.WaitSeconds)
 	}

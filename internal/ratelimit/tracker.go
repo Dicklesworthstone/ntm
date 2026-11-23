@@ -4,6 +4,7 @@ package ratelimit
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -353,22 +355,57 @@ func (t *RateLimitTracker) LoadFromDir(dir string) error {
 	defer t.mu.Unlock()
 
 	if pd.State != nil {
-		// Sanitize loaded state: reset corrupted delays and cooldowns
-		// that may have been persisted from a previous overflow bug.
-		for provider, ps := range pd.State {
+		// Sanitize loaded state: drop null entries, normalize keys, merge
+		// aliases deterministically, and reset corrupted delays/cooldowns
+		// that may have been persisted from an earlier overflow or hand-edited file.
+		rawKeys := make([]string, 0, len(pd.State))
+		for k := range pd.State {
+			rawKeys = append(rawKeys, k)
+		}
+		sort.Strings(rawKeys)
+
+		sanitized := make(map[string]*ProviderState, len(pd.State))
+		for _, rawProvider := range rawKeys {
+			ps := pd.State[rawProvider]
+			if ps == nil {
+				continue
+			}
+			provider := NormalizeProvider(rawProvider)
+			if provider == "" {
+				continue
+			}
 			if ps.CurrentDelay <= 0 || ps.CurrentDelay > time.Hour {
 				ps.CurrentDelay = getDefaultDelay(provider)
 			}
 			if !ps.CooldownUntil.IsZero() && ps.CooldownUntil.After(time.Now().Add(time.Hour)) {
 				ps.CooldownUntil = time.Time{}
 			}
+			if existing, ok := sanitized[provider]; ok {
+				existing.TotalRateLimits += ps.TotalRateLimits
+				existing.TotalSuccesses += ps.TotalSuccesses
+				if ps.CurrentDelay > existing.CurrentDelay {
+					existing.CurrentDelay = ps.CurrentDelay
+				}
+				if ps.LastRateLimit.After(existing.LastRateLimit) {
+					existing.LastRateLimit = ps.LastRateLimit
+				}
+				if ps.CooldownUntil.After(existing.CooldownUntil) {
+					existing.CooldownUntil = ps.CooldownUntil
+				}
+				continue
+			}
+			sanitized[provider] = ps
 		}
-		t.state = pd.State
+		t.state = sanitized
 	}
 
 	if pd.History != nil {
-		// Merge history instead of overwriting
-		for provider, events := range pd.History {
+		// Merge history instead of overwriting, normalizing alias keys.
+		for rawProvider, events := range pd.History {
+			provider := NormalizeProvider(rawProvider)
+			if provider == "" {
+				continue
+			}
 			existing := t.history[provider]
 			for _, newEv := range events {
 				// Simple deduplication: avoid adding if an event with same action
@@ -415,6 +452,9 @@ func (t *RateLimitTracker) SaveToDir(dir string) error {
 	}
 	// Deep copy to release lock early
 	for k, v := range t.state {
+		if v == nil {
+			continue
+		}
 		val := *v
 		pd.State[k] = &val
 	}
@@ -513,6 +553,10 @@ var exitCodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)status[:\s]+(\d+)`),
 }
 
+// maxWaitSeconds is the largest whole-second value representable as a positive
+// time.Duration without overflowing int64 nanoseconds.
+const maxWaitSeconds = math.MaxInt64 / int64(time.Second)
+
 // ParseWaitSeconds extracts a suggested wait time in seconds from output.
 // Returns 0 if no wait time is found.
 func ParseWaitSeconds(output string) int {
@@ -525,6 +569,10 @@ func ParseWaitSeconds(output string) int {
 		if matches := pattern.re.FindStringSubmatch(output); len(matches) > 1 {
 			seconds, err := strconv.Atoi(matches[1])
 			if err == nil && seconds > 0 {
+				limit := maxWaitSeconds / int64(pattern.multiplier)
+				if int64(seconds) >= limit {
+					return int(maxWaitSeconds)
+				}
 				return seconds * pattern.multiplier
 			}
 		}
@@ -609,7 +657,11 @@ func ExtractResetHint(content string) string {
 			m = strings.TrimSpace(m)
 			m = strings.TrimRight(m, " .,;:!")
 			if len(m) > maxResetHintLen {
-				m = strings.TrimSpace(m[:maxResetHintLen])
+				cut := maxResetHintLen
+				for cut > 0 && !utf8.RuneStart(m[cut]) {
+					cut--
+				}
+				m = strings.TrimSpace(m[:cut])
 			}
 			return m
 		}
