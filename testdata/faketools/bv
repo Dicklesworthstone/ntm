@@ -23,9 +23,11 @@ case "$MODE" in
         ;;
 esac
 
-# Normalize: strip leading dashes so both -robot-triage and --robot-triage match
+# Normalize: strip leading dashes and any inline =value so both
+# `--robot-forecast foo` and `--robot-forecast=foo` match.
 ARG="${1#-}"
 ARG="${ARG#-}"
+ARG="${ARG%%=*}"
 
 # Normal mode - check arguments
 case "$ARG" in

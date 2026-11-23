@@ -139,12 +139,21 @@ type GIILMetadata struct {
 
 // Download downloads an image from a share URL
 func (a *GIILAdapter) Download(ctx context.Context, shareURL, outputDir string) (*GIILMetadata, error) {
+	trimmedURL := strings.TrimSpace(shareURL)
+	if trimmedURL == "" || strings.HasPrefix(trimmedURL, "-") || strings.ContainsAny(trimmedURL, "\r\n\x00") {
+		return nil, fmt.Errorf("invalid giil share URL %q", shareURL)
+	}
+	trimmedDir := strings.TrimSpace(outputDir)
+	if trimmedDir != "" && (strings.HasPrefix(trimmedDir, "-") || strings.ContainsAny(trimmedDir, "\r\n\x00")) {
+		return nil, fmt.Errorf("invalid giil output directory %q", outputDir)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute) // Download can take time
 	defer cancel()
 
-	args := []string{shareURL, "--json", "--quiet"}
-	if outputDir != "" {
-		args = append(args, "--output", outputDir)
+	args := []string{trimmedURL, "--json", "--quiet"}
+	if trimmedDir != "" {
+		args = append(args, "--output", trimmedDir)
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)

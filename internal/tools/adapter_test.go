@@ -288,3 +288,56 @@ func TestJFPAdapter_FlagEqualsAndOptionTerminator(t *testing.T) {
 		t.Fatalf("Export argv = %q, want %q", got, want)
 	}
 }
+
+func TestBVAndGIILAdapterFlagInjectionSafety(t *testing.T) {
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+
+	bvScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\nprintf '{}'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte(bvScript), 0o755); err != nil {
+		t.Fatalf("write fake bv: %v", err)
+	}
+	giilScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\nprintf '{\"url\":\"https://example.com/a\"}'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "giil"), []byte(giilScript), 0o755); err != nil {
+		t.Fatalf("write fake giil: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	readArgs := func() []string {
+		t.Helper()
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("read args: %v", err)
+		}
+		trimmed := strings.TrimSuffix(string(raw), "\n")
+		if trimmed == "" {
+			return nil
+		}
+		return strings.Split(trimmed, "\n")
+	}
+
+	bvAdapter := NewBVAdapter()
+	if _, err := bvAdapter.GetSearchWithOptions(context.Background(), "", BVSearchOptions{Query: "--evil", Mode: "--hybrid"}); err != nil {
+		t.Fatalf("GetSearchWithOptions: %v", err)
+	}
+	if got, want := readArgs(), []string{"--robot-search", "--search=--evil", "--search-mode=--hybrid"}; !slices.Equal(got, want) {
+		t.Fatalf("GetSearchWithOptions argv = %q, want %q", got, want)
+	}
+	if _, err := bvAdapter.GetBurndown(context.Background(), "", "--evil-sprint"); err == nil {
+		t.Fatal("GetBurndown(--evil-sprint) succeeded, want rejection")
+	}
+	if _, err := bvAdapter.GetForecast(context.Background(), "", "--evil-target"); err != nil {
+		t.Fatalf("GetForecast: %v", err)
+	}
+	if got, want := readArgs(), []string{"--robot-forecast=--evil-target"}; !slices.Equal(got, want) {
+		t.Fatalf("GetForecast argv = %q, want %q", got, want)
+	}
+
+	giilAdapter := NewGIILAdapter()
+	if _, err := giilAdapter.Download(context.Background(), "--output=/tmp/evil", ""); err == nil {
+		t.Fatal("GIIL Download(--output=/tmp/evil) succeeded, want rejection")
+	}
+	if _, err := giilAdapter.Download(context.Background(), "https://example.com/share/1", "--evil-dir"); err == nil {
+		t.Fatal("GIIL Download with leading-dash outputDir succeeded, want rejection")
+	}
+}
