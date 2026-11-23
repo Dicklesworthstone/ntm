@@ -1,3 +1,5 @@
+//go:build unix
+
 package cli
 
 import (
@@ -18,6 +20,20 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func pipelineTestContext(parent context.Context, root string, asJSON bool, liveSession string) context.Context {
+	ctx := context.WithValue(parent, pipelineProjectDirKey{}, root)
+	ctx = context.WithValue(ctx, pipelineJSONOutputKey{}, asJSON)
+	if liveSession != "" {
+		ctx = context.WithValue(ctx, pipelineSessionResolverKey{}, func(session string, _ io.Writer) (SessionResolution, error) {
+			if strings.TrimSpace(session) != liveSession {
+				return SessionResolution{}, fmt.Errorf("session %q not found", session)
+			}
+			return SessionResolution{Session: liveSession}, nil
+		})
+	}
+	return ctx
+}
+
 func inPipelineControlProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -33,9 +49,8 @@ func inPipelineControlProject(t *testing.T) string {
 }
 
 func TestPipelineResumeRejectsLiveOwnerBeforeReadingState(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	owner, err := pipeline.AcquireRunControl(context.Background(), root, "run-held")
 	if err != nil {
 		t.Fatal(err)
@@ -48,23 +63,13 @@ func TestPipelineResumeRejectsLiveOwnerBeforeReadingState(t *testing.T) {
 	}
 
 	for _, asJSON := range []bool{false, true} {
-		jsonOutput = asJSON
 		cmd := newPipelineResumeCmd()
-		cmd.SetContext(context.Background())
-		read, write, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		previousStdout := os.Stdout
-		os.Stdout = write
+		var outBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(io.Discard)
+		cmd.SetContext(pipelineTestContext(context.Background(), root, asJSON, ""))
 		err = cmd.RunE(cmd, []string{"run-held"})
-		os.Stdout = previousStdout
-		_ = write.Close()
-		raw, readErr := io.ReadAll(read)
-		_ = read.Close()
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
+		raw := outBuf.Bytes()
 		if err == nil || !strings.Contains(err.Error(), "pipeline run has a live owner") {
 			t.Fatalf("resume read state or entered executor without ownership (json=%v): %v %s", asJSON, err, raw)
 		}
@@ -84,12 +89,12 @@ func TestPipelineResumeRejectsLiveOwnerBeforeReadingState(t *testing.T) {
 }
 
 func TestPipelineResumeMissingStateReleasesOwnership(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = false
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	cmd := newPipelineResumeCmd()
-	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetContext(pipelineTestContext(context.Background(), root, false, ""))
 	if err := cmd.RunE(cmd, []string{"run-missing"}); err == nil {
 		t.Fatal("missing state resumed")
 	}
@@ -249,6 +254,21 @@ func executePipelineRecoveryCommand(t *testing.T, args ...string) (string, error
 	return output.String(), err
 }
 
+func executePipelineRecoveryCommandIn(t *testing.T, root string, asJSON bool, args ...string) (string, error) {
+	t.Helper()
+	cmd := newPipelineCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(append([]string{"recover"}, args...))
+	ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, asJSON, ""), 10*time.Second)
+	defer cancel()
+	err := cmd.ExecuteContext(ctx)
+	return output.String(), err
+}
+
 func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *testing.T) {
 	for _, kind := range []string{"prompt", "template"} {
 		t.Run(kind, func(t *testing.T) {
@@ -313,12 +333,14 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 				t.Fatalf("same decision did not replay: %v %s", err, raw)
 			}
 			cmd := newPipelineResumeCmd()
+			var resumeOut bytes.Buffer
 			cmd.SetArgs([]string{prior.RunID})
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			raw, err = captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			err = cmd.ExecuteContext(ctx)
+			raw = resumeOut.String()
 			if err != nil {
 				t.Fatalf("resume accepted delivery: %v %s", err, raw)
 			}
@@ -349,9 +371,8 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 }
 
 func TestPipelineRecoverRefusesIncompleteDecisionFlags(t *testing.T) {
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	for _, flags := range [][]string{
 		{"--step-id", "agent"},
 		{"--receipt", "stale"},
@@ -360,7 +381,7 @@ func TestPipelineRecoverRefusesIncompleteDecisionFlags(t *testing.T) {
 		{"--accept-delivery", "--step-id", "agent", "--receipt", "token", "--reason", "   "},
 		{"--accept-delivery=false", "--step-id", "agent", "--receipt", "token", "--reason", "observed"},
 	} {
-		raw, err := executePipelineRecoveryCommand(t, append([]string{"run-invalid"}, flags...)...)
+		raw, err := executePipelineRecoveryCommandIn(t, root, true, append([]string{"run-invalid"}, flags...)...)
 		var out struct {
 			Success bool   `json:"success"`
 			Code    string `json:"error_code"`
@@ -446,10 +467,12 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 			}
 			resume := func() (string, error) {
 				cmd := newPipelineResumeCmd()
+				var resumeOut bytes.Buffer
 				cmd.SetArgs([]string{cfg.RunID})
-				cmd.SetOut(io.Discard)
+				cmd.SetOut(&resumeOut)
 				cmd.SetErr(io.Discard)
-				return captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+				err := cmd.ExecuteContext(ctx)
+				return resumeOut.String(), err
 			}
 			if raw, err := resume(); err == nil {
 				t.Fatalf("ordinary resume accepted an ambiguous fallback: %s", raw)
@@ -518,10 +541,8 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 }
 
 func TestPipelineRecoverRejectsLiveOwnerBeforeReadingState(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	owner, err := pipeline.AcquireRunControl(context.Background(), root, "run-held-recovery")
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +553,7 @@ func TestPipelineRecoverRejectsLiveOwnerBeforeReadingState(t *testing.T) {
 	if err := os.WriteFile(path, []byte(untouched), 0600); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := executePipelineRecoveryCommand(t, "run-held-recovery", "--accept-delivery", "--step-id", "agent", "--receipt", strings.Repeat("a", 64), "--reason", "Observed original delivery")
+	raw, err := executePipelineRecoveryCommandIn(t, root, true, "run-held-recovery", "--accept-delivery", "--step-id", "agent", "--receipt", strings.Repeat("a", 64), "--reason", "Observed original delivery")
 	var out struct {
 		Success bool   `json:"success"`
 		Code    string `json:"error_code"`
@@ -570,15 +591,11 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
 	fastClient := tmux.NewClient("")
 	fastClient.MaxSendDelay = 2 * time.Millisecond
 	tmux.DefaultClient = fastClient
-	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
-	pipeline.StageIdlePollInterval = 15 * time.Millisecond
 	t.Cleanup(func() {
 		tmux.DefaultClient = oldClient
-		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
 	})
 	return logPath
 }
@@ -593,12 +610,14 @@ func TestPipelineResumeRecoversConfirmedAgentDeliveryWithoutResending(t *testing
 			jsonOutput = true
 			t.Cleanup(func() { jsonOutput = oldJSON })
 			cmd := newPipelineResumeCmd()
+			var resumeOut bytes.Buffer
 			cmd.SetArgs([]string{prior.RunID})
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			raw, err := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			err := cmd.ExecuteContext(ctx)
+			raw := resumeOut.String()
 			if err != nil {
 				t.Fatalf("public resume failed: %v %s", err, raw)
 			}
@@ -643,12 +662,14 @@ func TestPipelineResumeRejectsReplacedAgentProcessWithoutResending(t *testing.T)
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	cmd := newPipelineResumeCmd()
+	var resumeOut bytes.Buffer
 	cmd.SetArgs([]string{prior.RunID})
-	cmd.SetOut(io.Discard)
+	cmd.SetOut(&resumeOut)
 	cmd.SetErr(io.Discard)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	raw, err := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+	err := cmd.ExecuteContext(ctx)
+	raw := resumeOut.String()
 	if err == nil || !strings.Contains(raw+err.Error(), "changed process lifetime") {
 		t.Fatalf("replaced process was not rejected: %v %s", err, raw)
 	}
@@ -673,10 +694,10 @@ func TestPipelineResumeRejectsReplacedAgentProcessWithoutResending(t *testing.T)
 // No command hash, PID, status, or outcome is invented by the recovery fixture.
 func interruptedPipelineCommandOutcome(t *testing.T, root, output string, exitCode int, parse bool) *pipeline.ExecutionState {
 	t.Helper()
-	pipelineRecoveryTmux(t, root, "2718", "")
 	if err := os.WriteFile(filepath.Join(root, "fixture-command-output"), []byte(output), 0600); err != nil {
 		t.Fatal(err)
 	}
+	releaseGate := openPipelineReleaseFIFO(t, filepath.Join(root, "command-release.fifo"))
 	step := pipeline.Step{
 		ID: "command", OutputVar: "recovered", OnError: pipeline.ErrorActionRetry,
 		RetryCount: 3, RetryDelay: pipeline.Duration{Duration: time.Hour},
@@ -685,7 +706,7 @@ func interruptedPipelineCommandOutcome(t *testing.T, root, output string, exitCo
 			"cat fixture-command-output > observed-command-output\n" +
 			"cat observed-command-output\n" +
 			"printf ready > command-ready\n" +
-			"while [ ! -f command-release ]; do sleep 0.01; done\n" + fmt.Sprintf("exit %d", exitCode),
+			"read _ < command-release.fifo\n" + fmt.Sprintf("exit %d", exitCode),
 	}
 	stdin := "${steps.command.output}"
 	if parse {
@@ -745,7 +766,7 @@ func interruptedPipelineCommandOutcome(t *testing.T, root, output string, exitCo
 	if err := os.Mkdir(statePath, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "command-release"), []byte("finish"), 0600); err != nil {
+	if _, err := releaseGate.WriteString("finish\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -789,9 +810,9 @@ type pipelineCommandRecoveryResponse struct {
 	Replayed  bool                                     `json:"replayed"`
 }
 
-func inspectPipelineCommandRecovery(t *testing.T, runID string) pipeline.CommandExecutionRecoveryEntry {
+func inspectPipelineCommandRecovery(t *testing.T, root, runID string) pipeline.CommandExecutionRecoveryEntry {
 	t.Helper()
-	raw, err := executePipelineRecoveryCommand(t, runID)
+	raw, err := executePipelineRecoveryCommandIn(t, root, true, runID)
 	var out pipelineCommandRecoveryResponse
 	if err != nil || json.Unmarshal([]byte(raw), &out) != nil || !out.Success || len(out.Commands) != 1 {
 		t.Fatalf("command recovery inspection failed: %s %v", raw, err)
@@ -809,6 +830,7 @@ func inspectPipelineCommandRecovery(t *testing.T, runID string) pipeline.Command
 }
 
 func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		output    string
@@ -823,20 +845,18 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 		{"legacy completed with exit failure", "PRIVATE-COMMAND-OUTPUT\n", 7, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := inPipelineControlProject(t)
+			t.Parallel()
+			root := t.TempDir()
 			prior := interruptedPipelineCommandOutcome(t, root, tc.output, tc.code, tc.parse)
 			if tc.completed {
 				markPipelineRecoveryFalseCompletion(t, root, prior, "command")
 			}
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
 			statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
 			before, err := os.ReadFile(statePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			entry := inspectPipelineCommandRecovery(t, prior.RunID)
+			entry := inspectPipelineCommandRecovery(t, root, prior.RunID)
 			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
 				t.Fatal("inspection changed the command checkpoint")
 			}
@@ -844,7 +864,7 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 			outputFile := filepath.Join(root, "observed-command-output")
 			args := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken,
 				"--reason", reason, "--exit-code", fmt.Sprint(tc.code), "--output-file", outputFile}
-			raw, err := executePipelineRecoveryCommand(t, args...)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 			var accepted pipelineCommandRecoveryResponse
 			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Success || accepted.Replayed || accepted.Command.ResolutionAction != pipeline.CommandExecutionResolutionAccept || accepted.Command.ResolutionReason != reason || accepted.Command.ResolvedAt.IsZero() || accepted.Command.ExitCode == nil || *accepted.Command.ExitCode != tc.code || accepted.Command.OutputBytes != len(tc.output) {
 				t.Fatalf("command acceptance failed: %s %v", raw, err)
@@ -869,7 +889,7 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			var replay pipelineCommandRecoveryResponse
 			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Command.ReceiptToken != entry.ReceiptToken || replay.Command.ResolvedAt != accepted.Command.ResolvedAt {
 				t.Fatalf("same command decision did not replay: %s %v", raw, err)
@@ -892,7 +912,7 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 						break
 					}
 				}
-				raw, err := executePipelineRecoveryCommand(t, conflict...)
+				raw, err := executePipelineRecoveryCommandIn(t, root, true, conflict...)
 				var refused pipelineCommandRecoveryResponse
 				if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
 					t.Fatalf("conflicting command decision %s was accepted: %s %v", change.flag, raw, err)
@@ -902,12 +922,14 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 				}
 			}
 			cmd := newPipelineResumeCmd()
+			var resumeOut bytes.Buffer
 			cmd.SetArgs([]string{prior.RunID})
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, "delivery-session"), 5*time.Second)
 			defer cancel()
-			raw, resumeErr := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			resumeErr := cmd.ExecuteContext(ctx)
+			raw = resumeOut.String()
 			final, err := pipeline.LoadState(root, prior.RunID)
 			if err != nil {
 				t.Fatal(err)
@@ -939,7 +961,7 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Command.ResolvedAt != accepted.Command.ResolvedAt {
 				t.Fatalf("settled command decision did not replay: %s %v", raw, err)
 			}
@@ -970,12 +992,10 @@ func markPipelineRecoveryFalseCompletion(t *testing.T, root string, state *pipel
 }
 
 func TestPipelineRecoverCommandRejectsInvalidInputs(t *testing.T) {
-	root := inPipelineControlProject(t)
+	t.Parallel()
+	root := t.TempDir()
 	prior := interruptedPipelineCommandOutcome(t, root, "observed", 0, false)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
-	entry := inspectPipelineCommandRecovery(t, prior.RunID)
+	entry := inspectPipelineCommandRecovery(t, root, prior.RunID)
 	outputFile := filepath.Join(root, "observed-command-output")
 	base := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken, "--reason", "Verified completion"}
 	withOutput := func(file string) []string {
@@ -1017,7 +1037,7 @@ func TestPipelineRecoverCommandRejectsInvalidInputs(t *testing.T) {
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
-			raw, err := executePipelineRecoveryCommand(t, args...)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 			var out pipelineCommandRecoveryResponse
 			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.ErrorCode != "RECOVERY_REFUSED" {
 				t.Fatalf("invalid command decision was accepted: %s %v", raw, err)
@@ -1030,12 +1050,10 @@ func TestPipelineRecoverCommandRejectsInvalidInputs(t *testing.T) {
 }
 
 func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
-	root := inPipelineControlProject(t)
+	t.Parallel()
+	root := t.TempDir()
 	prior := interruptedPipelineCommandOutcome(t, root, "", 0, false)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
-	entry := inspectPipelineCommandRecovery(t, prior.RunID)
+	entry := inspectPipelineCommandRecovery(t, root, prior.RunID)
 	args := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken,
 		"--reason", "Verified completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-command-output")}
 	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
@@ -1052,7 +1070,7 @@ func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
 	if err := os.WriteFile(statePath, []byte(invalidState), 0600); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := executePipelineRecoveryCommand(t, args...)
+	raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 	var out pipelineCommandRecoveryResponse
 	if !errors.Is(err, pipeline.ErrRunAlreadyOwned) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.ErrorCode != "PIPELINE_RUNNING" {
 		t.Fatalf("command acceptance read state before ownership: %s %v", raw, err)
@@ -1070,7 +1088,7 @@ func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
 	var output bytes.Buffer
 	cmd.SetOut(&output)
 	cmd.SetErr(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pipelineTestContext(context.Background(), root, true, ""))
 	cancel()
 	err = cmd.ExecuteContext(ctx)
 	if !errors.Is(err, context.Canceled) {
@@ -1092,15 +1110,15 @@ func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
 // hashes, process identities, or evidence that the source ever ran.
 func interruptedPipelineSelectorOutcome(t *testing.T, root, kind string, output []byte, exitCode int) *pipeline.ExecutionState {
 	t.Helper()
-	pipelineRecoveryTmux(t, root, "2718", "")
 	if err := os.WriteFile(filepath.Join(root, "fixture-selector-output"), output, 0600); err != nil {
 		t.Fatal(err)
 	}
+	releaseGate := openPipelineReleaseFIFO(t, filepath.Join(root, "selector-release.fifo"))
 	script := "printf 'once\\n' >> selector-effects\n" +
 		"cat fixture-selector-output > observed-selector-output\n" +
 		"cat observed-selector-output\n" +
 		"printf ready > selector-ready\n" +
-		"while [ ! -f selector-release ]; do sleep 0.01; done\n" + fmt.Sprintf("exit %d", exitCode)
+		"read _ < selector-release.fifo\n" + fmt.Sprintf("exit %d", exitCode)
 	step := pipeline.Step{
 		ID: "select", OnError: pipeline.ErrorActionRetry, RetryCount: 3,
 		RetryDelay: pipeline.Duration{Duration: time.Hour},
@@ -1182,7 +1200,7 @@ func interruptedPipelineSelectorOutcome(t *testing.T, root, kind string, output 
 	if err := os.Mkdir(statePath, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "selector-release"), []byte("finish"), 0600); err != nil {
+	if _, err := releaseGate.WriteString("finish\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1245,9 +1263,9 @@ type pipelineSelectorRecoveryResponse struct {
 	Replayed  bool                            `json:"replayed"`
 }
 
-func inspectPipelineSelectorRecovery(t *testing.T, runID string, output []byte) pipelineSelectorRecoveryEntry {
+func inspectPipelineSelectorRecovery(t *testing.T, root, runID string, output []byte) pipelineSelectorRecoveryEntry {
 	t.Helper()
-	raw, err := executePipelineRecoveryCommand(t, runID)
+	raw, err := executePipelineRecoveryCommandIn(t, root, true, runID)
 	var out pipelineSelectorRecoveryResponse
 	if err != nil || json.Unmarshal([]byte(raw), &out) != nil || !out.Success || len(out.Selectors) != 1 {
 		t.Fatalf("selector inspection failed: %s %v", raw, err)
@@ -1265,6 +1283,7 @@ func inspectPipelineSelectorRecovery(t *testing.T, runID string, output []byte) 
 }
 
 func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, kind, children string
 		output               []byte
@@ -1280,20 +1299,18 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 		{"legacy completed nonzero", "branch", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := inPipelineControlProject(t)
+			t.Parallel()
+			root := t.TempDir()
 			prior := interruptedPipelineSelectorOutcome(t, root, tc.kind, tc.output, tc.code)
 			if tc.completed {
 				markPipelineRecoveryFalseCompletion(t, root, prior, "select")
 			}
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
 			statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
 			before, err := os.ReadFile(statePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			entry := inspectPipelineSelectorRecovery(t, prior.RunID, tc.output)
+			entry := inspectPipelineSelectorRecovery(t, root, prior.RunID, tc.output)
 			if entry.Status != "starting" || entry.ProcessID != 0 || !entry.CanAccept {
 				t.Fatalf("starting intent cannot be reconciled explicitly: %+v", entry)
 			}
@@ -1303,7 +1320,7 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 			const reason = "Verified the original selector and every descendant finished; retained complete stdout and final exit status"
 			args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
 				"--reason", reason, "--exit-code", fmt.Sprint(tc.code), "--output-file", filepath.Join(root, "observed-selector-output")}
-			raw, err := executePipelineRecoveryCommand(t, args...)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 			var accepted pipelineSelectorRecoveryResponse
 			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Success || accepted.Replayed ||
 				accepted.Selector.Status != "accepted" || accepted.Selector.ResolutionAction != "accept" ||
@@ -1329,7 +1346,7 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 					t.Fatalf("acceptance executed %q: %v", name, err)
 				}
 			}
-			inspection := inspectPipelineSelectorRecovery(t, prior.RunID, tc.output)
+			inspection := inspectPipelineSelectorRecovery(t, root, prior.RunID, tc.output)
 			if inspection.Status != "accepted" || inspection.OutputBytes != len(tc.output) || len(inspection.OutputHash) != 64 {
 				t.Fatalf("accepted selector inspection lost bounded output metadata: %+v", inspection)
 			}
@@ -1337,7 +1354,7 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			var replay pipelineSelectorRecoveryResponse
 			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Selector.ResolvedAt != accepted.Selector.ResolvedAt {
 				t.Fatalf("identical selector decision did not replay: %s %v", raw, err)
@@ -1360,7 +1377,7 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 						break
 					}
 				}
-				raw, err := executePipelineRecoveryCommand(t, conflict...)
+				raw, err := executePipelineRecoveryCommandIn(t, root, true, conflict...)
 				var refused pipelineSelectorRecoveryResponse
 				if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
 					t.Fatalf("conflicting selector decision %s was accepted: %s %v", change.flag, raw, err)
@@ -1375,12 +1392,14 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := newPipelineResumeCmd()
+			var resumeOut bytes.Buffer
 			cmd.SetArgs([]string{prior.RunID})
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, "delivery-session"), 5*time.Second)
 			defer cancel()
-			raw, resumeErr := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			resumeErr := cmd.ExecuteContext(ctx)
+			raw = resumeOut.String()
 			final, err := pipeline.LoadState(root, prior.RunID)
 			if err != nil {
 				t.Fatal(err)
@@ -1419,7 +1438,7 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Selector.ResolvedAt != accepted.Selector.ResolvedAt {
 				t.Fatalf("consumed selector decision did not replay: %s %v", raw, err)
 			}
@@ -1431,13 +1450,11 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 }
 
 func TestPipelineRecoverSelectorRejectsInvalidInputs(t *testing.T) {
-	root := inPipelineControlProject(t)
+	t.Parallel()
+	root := t.TempDir()
 	output := []byte("PRIVATE-SELECTOR-KEY\n")
 	prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
-	entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+	entry := inspectPipelineSelectorRecovery(t, root, prior.RunID, output)
 	base := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken, "--reason", "Verified original selector completion"}
 	withOutput := func(file string) []string {
 		return append(append([]string(nil), base...), "--exit-code", "0", "--output-file", file)
@@ -1484,7 +1501,7 @@ func TestPipelineRecoverSelectorRejectsInvalidInputs(t *testing.T) {
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
-			raw, err := executePipelineRecoveryCommand(t, args...)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 			var refused pipelineSelectorRecoveryResponse
 			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
 				t.Fatalf("invalid selector decision was accepted: %s %v", raw, err)
@@ -1497,15 +1514,14 @@ func TestPipelineRecoverSelectorRejectsInvalidInputs(t *testing.T) {
 }
 
 func TestPipelineRecoverSelectorRejectsLegacyAndChangedWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"legacy intent", "changed frozen workflow"} {
 		t.Run(kind, func(t *testing.T) {
-			root := inPipelineControlProject(t)
+			t.Parallel()
+			root := t.TempDir()
 			output := []byte("PRIVATE-SELECTOR-KEY\n")
 			prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
-			entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+			entry := inspectPipelineSelectorRecovery(t, root, prior.RunID, output)
 			if kind == "legacy intent" {
 				record := prior.CommandEvaluations["select"]
 				record.Version, record.InvocationHash, record.StdoutLimit, record.StderrLimit = 1, "", 0, 0
@@ -1514,7 +1530,7 @@ func TestPipelineRecoverSelectorRejectsLegacyAndChangedWorkflow(t *testing.T) {
 				if err := pipeline.SaveState(root, prior); err != nil {
 					t.Fatal(err)
 				}
-				entry = inspectPipelineSelectorRecovery(t, prior.RunID, output)
+				entry = inspectPipelineSelectorRecovery(t, root, prior.RunID, output)
 				if entry.CanAccept || entry.RefusalReason == "" {
 					t.Fatalf("legacy selector lacks an explicit recovery refusal: %+v", entry)
 				}
@@ -1534,7 +1550,7 @@ func TestPipelineRecoverSelectorRejectsLegacyAndChangedWorkflow(t *testing.T) {
 			}
 			args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
 				"--reason", "Verified original selector completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-selector-output")}
-			raw, err := executePipelineRecoveryCommand(t, args...)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 			var refused pipelineSelectorRecoveryResponse
 			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
 				t.Fatalf("ineligible selector recovery was accepted: %s %v", raw, err)
@@ -1547,13 +1563,11 @@ func TestPipelineRecoverSelectorRejectsLegacyAndChangedWorkflow(t *testing.T) {
 }
 
 func TestPipelineRecoverSelectorOwnershipAndCancellation(t *testing.T) {
-	root := inPipelineControlProject(t)
+	t.Parallel()
+	root := t.TempDir()
 	output := []byte("PRIVATE-SELECTOR-KEY\n")
 	prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
-	entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+	entry := inspectPipelineSelectorRecovery(t, root, prior.RunID, output)
 	args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
 		"--reason", "Verified original selector completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-selector-output")}
 	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
@@ -1570,7 +1584,7 @@ func TestPipelineRecoverSelectorOwnershipAndCancellation(t *testing.T) {
 	if err := os.WriteFile(statePath, []byte(invalidState), 0600); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := executePipelineRecoveryCommand(t, args...)
+	raw, err := executePipelineRecoveryCommandIn(t, root, true, args...)
 	var refused pipelineSelectorRecoveryResponse
 	if !errors.Is(err, pipeline.ErrRunAlreadyOwned) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "PIPELINE_RUNNING" {
 		t.Fatalf("selector acceptance read state before checking live ownership: %s %v", raw, err)
@@ -1588,7 +1602,7 @@ func TestPipelineRecoverSelectorOwnershipAndCancellation(t *testing.T) {
 	var response bytes.Buffer
 	cmd.SetOut(&response)
 	cmd.SetErr(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pipelineTestContext(context.Background(), root, true, ""))
 	cancel()
 	err = cmd.ExecuteContext(ctx)
 	if !errors.Is(err, context.Canceled) {
@@ -1656,7 +1670,7 @@ func pipelineCleanupCheckpoint(t *testing.T, root, runID, kind string) (string, 
 	return path, before
 }
 
-func executePipelineCleanupCommand(t *testing.T, args ...string) (string, error) {
+func executePipelineCleanupCommandIn(t *testing.T, root string, asJSON bool, args ...string) (string, error) {
 	t.Helper()
 	cmd := newPipelineCmd()
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
@@ -1664,10 +1678,10 @@ func executePipelineCleanupCommand(t *testing.T, args ...string) (string, error)
 	cmd.SetOut(&commandOutput)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs(append([]string{"cleanup"}, args...))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, asJSON, ""), 5*time.Second)
 	defer cancel()
-	stdout, err := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
-	return stdout + commandOutput.String(), err
+	err := cmd.ExecuteContext(ctx)
+	return commandOutput.String(), err
 }
 
 // Decode the CLI wire contract independently of the cleanup implementation.
@@ -1688,10 +1702,8 @@ type pipelineCleanupResponse struct {
 }
 
 func TestPipelineCleanupPreviewAndDeletionPreserveRecoveryFences(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	paths, original := make(map[string]string), make(map[string][]byte)
 	for kind, runID := range map[string]string{
 		"settled": "run-cleanup-settled", "running": "run-cleanup-running", "unresolved": "run-cleanup-unresolved",
@@ -1714,7 +1726,7 @@ func TestPipelineCleanupPreviewAndDeletionPreserveRecoveryFences(t *testing.T) {
 		if dryRun {
 			args = append(args, "--dry-run")
 		}
-		raw, err := executePipelineCleanupCommand(t, args...)
+		raw, err := executePipelineCleanupCommandIn(t, root, true, args...)
 		var response pipelineCleanupResponse
 		if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success {
 			t.Fatalf("cleanup dry_run=%t failed: %s %v", dryRun, raw, err)
@@ -1758,7 +1770,7 @@ func TestPipelineCleanupPreviewAndDeletionPreserveRecoveryFences(t *testing.T) {
 		}
 	}
 	// Retrying cleanup cannot erase the recovery fences left by the first run.
-	raw, err := executePipelineCleanupCommand(t, "--older", "7d")
+	raw, err := executePipelineCleanupCommandIn(t, root, true, "--older", "7d")
 	var repeated pipelineCleanupResponse
 	if err != nil || json.Unmarshal([]byte(raw), &repeated) != nil || !repeated.Success ||
 		repeated.Deleted != 0 || repeated.Eligible != 0 || repeated.Retained != 3 || len(repeated.Entries) != 3 {
@@ -1767,10 +1779,8 @@ func TestPipelineCleanupPreviewAndDeletionPreserveRecoveryFences(t *testing.T) {
 }
 
 func TestPipelineCleanupRetainsLiveOwnerUntilReleased(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	const runID = "run-cleanup-owner"
 	path, before := pipelineCleanupCheckpoint(t, root, runID, "settled")
 	owner, err := pipeline.AcquireRunControl(context.Background(), root, runID)
@@ -1783,7 +1793,7 @@ func TestPipelineCleanupRetainsLiveOwnerUntilReleased(t *testing.T) {
 		if dryRun {
 			args = append(args, "--dry-run")
 		}
-		raw, err := executePipelineCleanupCommand(t, args...)
+		raw, err := executePipelineCleanupCommandIn(t, root, true, args...)
 		var response pipelineCleanupResponse
 		if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success ||
 			response.DryRun != dryRun || response.Deleted != 0 || response.Eligible != 0 || response.Retained != 1 || len(response.Entries) != 1 {
@@ -1804,7 +1814,7 @@ func TestPipelineCleanupRetainsLiveOwnerUntilReleased(t *testing.T) {
 		t.Fatalf("cleanup displaced the live ownership lock: %v", err)
 	}
 	owner.Close()
-	raw, err := executePipelineCleanupCommand(t, "--older", "7d")
+	raw, err := executePipelineCleanupCommandIn(t, root, true, "--older", "7d")
 	var response pipelineCleanupResponse
 	if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success || response.Deleted != 1 || response.Eligible != 1 || response.Retained != 0 {
 		t.Fatalf("settled checkpoint was not eligible after ownership ended: %s %v", raw, err)
@@ -1815,21 +1825,18 @@ func TestPipelineCleanupRetainsLiveOwnerUntilReleased(t *testing.T) {
 }
 
 func TestPipelineCleanupHumanPreviewShowsEligibilityAndReasons(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	paths, original := make(map[string]string), make(map[string][]byte)
 	for kind, runID := range map[string]string{"settled": "run-cleanup-preview-done", "unresolved": "run-cleanup-preview-uncertain"} {
 		paths[runID], original[runID] = pipelineCleanupCheckpoint(t, root, runID, kind)
 	}
-	raw, err := executePipelineCleanupCommand(t, "--older", "7d", "--dry-run")
+	raw, err := executePipelineCleanupCommandIn(t, root, true, "--older", "7d", "--dry-run")
 	var response pipelineCleanupResponse
 	if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success || response.Eligible != 1 || response.Retained != 1 || len(response.Entries) != 2 {
 		t.Fatalf("preview did not inspect both checkpoint identities: %s %v", raw, err)
 	}
-	jsonOutput = false
-	human, err := executePipelineCleanupCommand(t, "--older", "7d", "--dry-run")
+	human, err := executePipelineCleanupCommandIn(t, root, false, "--older", "7d", "--dry-run")
 	if err != nil || !strings.Contains(human, "1 state file(s) eligible") || !strings.Contains(human, "1 retained") {
 		t.Fatalf("human preview omitted real cleanup counts: %s %v", human, err)
 	}

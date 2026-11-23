@@ -722,12 +722,11 @@ Examples:
 				resumeOpts.MaxResumeAge = age
 			}
 
+			useJSON := pipelineJSONMode(cmd.Context())
+
 			resolvedSession := strings.TrimSpace(session)
 			if resolvedSession != "" {
-				if err := tmux.EnsureInstalled(); err != nil {
-					return err
-				}
-				res, err := resolvePipelineSession(resolvedSession, cmd.OutOrStdout())
+				res, err := resolvePipelineLiveSession(cmd.Context(), resolvedSession, cmd.OutOrStdout())
 				if err != nil {
 					return err
 				}
@@ -742,18 +741,18 @@ Examples:
 			if background {
 				execution, err := pipeline.StartBackgroundResume(cmd.Context(), projectDir, runID, resolvedSession, resumeOpts)
 				if err != nil {
-					if jsonOutput {
+					if useJSON {
 						code := "RESUME_START_FAILED"
 						if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
 							code = "PIPELINE_RUNNING"
 						}
-						return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+						return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), map[string]interface{}{
 							"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
 						}, err)
 					}
 					return fmt.Errorf("start background pipeline resume: %w", err)
 				}
-				if jsonOutput {
+				if useJSON {
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 						"success": true, "run_id": execution.RunID, "status": execution.Status,
 						"workflow": execution.WorkflowID, "session": execution.Session,
@@ -770,12 +769,12 @@ Examples:
 			// may queue behind an owner and replay work the owner completed.
 			control, err := pipeline.AcquireRunControl(cmd.Context(), projectDir, runID)
 			if err != nil {
-				if jsonOutput {
+				if useJSON {
 					code := "CONTROL_UNAVAILABLE"
 					if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
 						code = "PIPELINE_RUNNING"
 					}
-					return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), map[string]interface{}{
 						"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
 					}, err)
 				}
@@ -785,14 +784,14 @@ Examples:
 
 			state, err := pipeline.LoadState(projectDir, runID)
 			if err != nil {
-				if jsonOutput {
+				if useJSON {
 					result := map[string]interface{}{
 						"success":    false,
 						"error":      err.Error(),
 						"error_code": "STATE_NOT_FOUND",
 						"run_id":     runID,
 					}
-					return emitJSONFailureEnvelopeWithCause(result, err)
+					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), result, err)
 				}
 				return fmt.Errorf("failed to load pipeline state: %w", err)
 			}
@@ -804,27 +803,23 @@ Examples:
 				return fmt.Errorf("--session is required (or state must contain session)")
 			}
 
-			if err := tmux.EnsureInstalled(); err != nil {
-				return err
-			}
-
-			res, err := resolvePipelineSession(resolvedSession, cmd.OutOrStdout())
+			res, err := resolvePipelineLiveSession(cmd.Context(), resolvedSession, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
 			session = res.Session
 
 			if state.Status == pipeline.StatusCompleted {
-				if jsonOutput {
+				if useJSON {
 					result := map[string]interface{}{
 						"success": true,
 						"message": "Pipeline already completed",
 						"run_id":  runID,
 						"status":  string(state.Status),
 					}
-					return json.NewEncoder(os.Stdout).Encode(result)
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 				}
-				fmt.Printf("Pipeline %s already completed\n", runID)
+				fmt.Fprintf(cmd.OutOrStdout(), "Pipeline %s already completed\n", runID)
 				return nil
 			}
 
@@ -842,7 +837,7 @@ Examples:
 			}
 
 			if !result.Valid {
-				if jsonOutput {
+				if useJSON {
 					cause := errors.New("workflow validation failed")
 					result := map[string]interface{}{
 						"success":    false,
@@ -850,20 +845,20 @@ Examples:
 						"error_code": "INVALID_WORKFLOW",
 						"run_id":     runID,
 					}
-					return emitJSONFailureEnvelopeWithCause(result, cause)
+					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), result, cause)
 				}
-				fmt.Fprintln(os.Stderr, "Validation failed:")
+				fmt.Fprintln(cmd.ErrOrStderr(), "Validation failed:")
 				for _, e := range result.Errors {
-					fmt.Printf("  ❌ %s\n", e.Message)
+					fmt.Fprintf(cmd.OutOrStdout(), "  ❌ %s\n", e.Message)
 					if e.Hint != "" {
-						fmt.Printf("     💡 %s\n", e.Hint)
+						fmt.Fprintf(cmd.OutOrStdout(), "     💡 %s\n", e.Hint)
 					}
 				}
 				return fmt.Errorf("workflow validation failed")
 			}
 
 			for _, w := range result.Warnings {
-				fmt.Printf("  ⚠️  %s\n", w.Message)
+				fmt.Fprintf(cmd.OutOrStdout(), "  ⚠️  %s\n", w.Message)
 			}
 
 			execCfg := pipeline.DefaultExecutorConfig(session)
@@ -876,7 +871,7 @@ Examples:
 
 			ctx := control.Context()
 
-			if jsonOutput {
+			if useJSON {
 				finalState, err := executor.ResumeWithOptions(ctx, workflow, state, resumeOpts, nil)
 				if err != nil {
 					status := "unknown"
@@ -891,7 +886,7 @@ Examples:
 						"workflow": workflow.Name,
 						"session":  session,
 					}
-					return emitJSONFailureEnvelopeWithCause(result, err)
+					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), result, err)
 				}
 
 				result := map[string]interface{}{
@@ -902,7 +897,7 @@ Examples:
 					"session":  session,
 					"mode":     string(resumeOpts.Mode),
 				}
-				return json.NewEncoder(os.Stdout).Encode(result)
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 			}
 
 			fmt.Printf("📋 Resuming pipeline: %s\n", runID)
@@ -1061,8 +1056,9 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runID := args[0]
+			useJSON := pipelineJSONMode(cmd.Context())
 			fail := func(err error) error {
-				if !jsonOutput {
+				if !useJSON {
 					return err
 				}
 				code := "RECOVERY_REFUSED"
@@ -1141,7 +1137,7 @@ Examples:
 					if err != nil {
 						return fail(err)
 					}
-					if jsonOutput {
+					if useJSON {
 						return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 							"success": true, "run_id": result.RunID, "workflow": result.WorkflowID,
 							"session": result.Session, "selector": result.Selector, "replayed": result.Replayed,
@@ -1161,7 +1157,7 @@ Examples:
 				if err != nil {
 					return fail(err)
 				}
-				if jsonOutput {
+				if useJSON {
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 						"success": true, "run_id": result.RunID, "workflow": result.WorkflowID,
 						"session": result.Session, "command": result.Command, "replayed": result.Replayed,
@@ -1182,7 +1178,7 @@ Examples:
 				if err != nil {
 					return fail(err)
 				}
-				if jsonOutput {
+				if useJSON {
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 						"success": true, "run_id": result.RunID, "workflow": result.WorkflowID,
 						"session": result.Session, "delivery": result.Delivery, "replayed": result.Replayed,
@@ -1210,7 +1206,7 @@ Examples:
 			if err != nil {
 				return fail(err)
 			}
-			if jsonOutput {
+			if useJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 					"success": true, "run_id": inspection.RunID, "workflow": inspection.WorkflowID,
 					"session": inspection.Session, "deliveries": inspection.Deliveries, "commands": commands.Commands,
@@ -1327,9 +1323,10 @@ Examples:
 				return err
 			}
 
+			useJSON := pipelineJSONMode(cmd.Context())
 			report, err := pipeline.CleanupStates(cmd.Context(), projectDir, duration, dryRun)
 			if err != nil {
-				if jsonOutput {
+				if useJSON {
 					result := map[string]interface{}{
 						"success":    false,
 						"error":      err.Error(),
@@ -1341,12 +1338,12 @@ Examples:
 						result["retained"] = report.Retained
 						result["entries"] = report.Entries
 					}
-					return emitJSONFailureEnvelopeWithCause(result, err)
+					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), result, err)
 				}
 				return fmt.Errorf("cleanup failed: %w", err)
 			}
 
-			if jsonOutput {
+			if useJSON {
 				result := map[string]interface{}{
 					"success":     true,
 					"dry_run":     dryRun,
@@ -1358,19 +1355,19 @@ Examples:
 					"duration":    duration.String(),
 					"project_dir": projectDir,
 				}
-				return json.NewEncoder(os.Stdout).Encode(result)
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 			}
 
 			if dryRun {
-				fmt.Printf("Dry run: %d state file(s) eligible for cleanup; %d retained.\n", report.Eligible, report.Retained)
+				fmt.Fprintf(cmd.OutOrStdout(), "Dry run: %d state file(s) eligible for cleanup; %d retained.\n", report.Eligible, report.Retained)
 			} else if report.Deleted == 0 {
-				fmt.Printf("No eligible state files to clean up; %d retained.\n", report.Retained)
+				fmt.Fprintf(cmd.OutOrStdout(), "No eligible state files to clean up; %d retained.\n", report.Retained)
 			} else {
 				output.SuccessCheck(fmt.Sprintf("Cleaned up %d state file(s) older than %s; %d retained", report.Deleted, duration, report.Retained))
 			}
 			for _, entry := range report.Entries {
 				if dryRun || entry.Action == "retained" {
-					fmt.Printf("  %s: %s (%s)\n", entry.RunID, entry.Action, entry.Reason)
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s (%s)\n", entry.RunID, entry.Action, entry.Reason)
 				}
 			}
 
@@ -1492,15 +1489,47 @@ Examples:
 	return cmd
 }
 
+type (
+	pipelineProjectDirKey      struct{}
+	pipelineJSONOutputKey      struct{}
+	pipelineSessionResolverKey struct{}
+)
+
+func pipelineJSONMode(ctx context.Context) bool {
+	if ctx != nil {
+		if override, ok := ctx.Value(pipelineJSONOutputKey{}).(bool); ok {
+			return override
+		}
+	}
+	return jsonOutput
+}
+
+func resolvePipelineLiveSession(ctx context.Context, session string, w io.Writer) (SessionResolution, error) {
+	if ctx != nil {
+		if resolver, ok := ctx.Value(pipelineSessionResolverKey{}).(func(string, io.Writer) (SessionResolution, error)); ok && resolver != nil {
+			return resolver(session, w)
+		}
+	}
+	if err := tmux.EnsureInstalled(); err != nil {
+		return SessionResolution{}, err
+	}
+	return resolvePipelineSession(session, w)
+}
+
 func resolvePipelineProjectDirForSession(ctx context.Context, session string) (string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		resolved, err := normalizeProjectScopedSessionName(ctx, session, !IsJSONOutput())
+		resolved, err := normalizeProjectScopedSessionName(ctx, session, !pipelineJSONMode(ctx))
 		if err != nil {
 			return "", err
 		}
 		session = resolved
 		return resolveExplicitProjectDirForSessionContext(ctx, session)
+	}
+	if ctx != nil {
+		if override, ok := ctx.Value(pipelineProjectDirKey{}).(string); ok && strings.TrimSpace(override) != "" {
+			return override, nil
+		}
 	}
 
 	projectDir := GetProjectRoot()

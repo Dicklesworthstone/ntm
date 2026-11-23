@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -93,6 +95,11 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(isolatedTmp, "xdg-config"))
 	_ = os.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 	_ = os.Setenv("NTM_CLI_TEST_ISOLATED", "1")
+	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
+	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
+		return []string{"-test.run=^TestPipelineBackgroundResumeWorker$", "--"}, nil
+	}
 
 	code := m.Run()
 

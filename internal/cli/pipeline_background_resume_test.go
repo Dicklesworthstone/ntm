@@ -33,16 +33,24 @@ func TestPipelineBackgroundResumeWorker(t *testing.T) {
 	}
 }
 
-func usePipelineResumeTestWorker(t *testing.T) {
+func openPipelineReleaseFIFO(t *testing.T, fifoPath string) *os.File {
 	t.Helper()
-	previous := pipeline.BackgroundWorkerFlags
-	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
-		return []string{"-test.run=^TestPipelineBackgroundResumeWorker$", "--"}, nil
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { pipeline.BackgroundWorkerFlags = previous })
+	f, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.WriteString("finish\n")
+		_ = f.Close()
+	})
+	return f
 }
 
 func TestPipelineResumeBackgroundFlagDefaultsToForeground(t *testing.T) {
+	t.Parallel()
 	cmd := newPipelineResumeCmd()
 	value, err := cmd.Flags().GetBool("background")
 	if err != nil || value {
@@ -51,16 +59,15 @@ func TestPipelineResumeBackgroundFlagDefaultsToForeground(t *testing.T) {
 }
 
 func TestPipelineResumeBackgroundCommandRetainsRecoveryPolicy(t *testing.T) {
+	t.Parallel()
 	for _, reset := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reset=%v", reset), func(t *testing.T) {
-			root := inPipelineControlProject(t)
-			usePipelineResumeTestWorker(t)
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
+			t.Parallel()
+			root := t.TempDir()
+			releaseGate := openPipelineReleaseFIFO(t, filepath.Join(root, "release.fifo"))
 			workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "cli-background-resume", Steps: []pipeline.Step{
 				{ID: "once", Command: "printf duplicate >> once"},
-				{ID: "finish", DependsOn: []string{"once"}, Command: "while [ ! -f release ]; do sleep 0.01; done; printf done > marker"},
+				{ID: "finish", DependsOn: []string{"once"}, Command: "read _ < release.fifo; printf done > marker"},
 			}}
 			_, locator, err := pipeline.SnapshotWorkflow(context.Background(), root, workflow)
 			if err != nil {
@@ -78,13 +85,13 @@ func TestPipelineResumeBackgroundCommandRetainsRecoveryPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				_ = os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600)
+				_, _ = releaseGate.WriteString("finish\n")
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				_ = pipeline.RequestRunCancellation(ctx, root, prior.RunID)
 			})
 			cmd := newPipelineResumeCmd()
-			cmd.SetContext(context.Background())
+			cmd.SetContext(pipelineTestContext(context.Background(), root, true, ""))
 			if err := cmd.Flags().Set("background", "true"); err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +119,7 @@ func TestPipelineResumeBackgroundCommandRetainsRecoveryPolicy(t *testing.T) {
 			if err := json.Unmarshal(output.Bytes(), &response); err != nil || !response.Success || !response.Background || response.RunID != prior.RunID || response.Session != prior.Session || response.Status != "pending" || response.Mode != "restart-failed" {
 				t.Fatalf("bad CLI startup envelope: %s %v", output.String(), err)
 			}
-			if err := os.WriteFile(filepath.Join(root, "release"), []byte("go"), 0600); err != nil {
+			if _, err := releaseGate.WriteString("go\n"); err != nil {
 				t.Fatal(err)
 			}
 			completed := false
@@ -145,11 +152,8 @@ func TestPipelineResumeBackgroundCommandRetainsRecoveryPolicy(t *testing.T) {
 }
 
 func TestPipelineResumeBackgroundRejectsLiveOwner(t *testing.T) {
-	root := inPipelineControlProject(t)
-	usePipelineResumeTestWorker(t)
-	previous := jsonOutput
-	jsonOutput = false
-	t.Cleanup(func() { jsonOutput = previous })
+	t.Parallel()
+	root := t.TempDir()
 	owner, err := pipeline.AcquireRunControl(context.Background(), root, "run-held")
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +164,7 @@ func TestPipelineResumeBackgroundRejectsLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := newPipelineResumeCmd()
-	cmd.SetContext(context.Background())
+	cmd.SetContext(pipelineTestContext(context.Background(), root, false, ""))
 	if err := cmd.Flags().Set("background", "true"); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +180,6 @@ func TestPipelineResumeBackgroundRejectsLiveOwner(t *testing.T) {
 func TestPipelineBackgroundForeachCancelSettlesOwnedGroupsBeforeResume(t *testing.T) {
 	root := inPipelineControlProject(t)
 	pipelineRecoveryTmux(t, root, "2718", "")
-	usePipelineResumeTestWorker(t)
 	previousJSON := jsonOutput
 	jsonOutput = false
 	t.Cleanup(func() { jsonOutput = previousJSON })
@@ -352,14 +355,15 @@ steps:
 	}
 	resume := newPipelineResumeCmd()
 	resume.SilenceUsage, resume.SilenceErrors = true, true
-	resume.SetOut(io.Discard)
+	var resumeOut bytes.Buffer
+	resume.SetOut(&resumeOut)
 	resume.SetErr(io.Discard)
 	resume.SetArgs([]string{runID, "--background", "--mode=restart-failed"})
 	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-	output, err = captureStdout(t, func() error { return resume.ExecuteContext(ctx) })
+	err = resume.ExecuteContext(ctx)
 	cancel()
 	if err != nil {
-		t.Fatalf("CLI could not explicitly resume the settled cancellation: %s %v", output, err)
+		t.Fatalf("CLI could not explicitly resume the settled cancellation: %s %v", resumeOut.String(), err)
 	}
 	final := awaitState(pipeline.StatusCompleted)
 	if data, err := os.ReadFile(filepath.Join(root, "prefix-effects")); err != nil || string(data) != "once" || !final.CommandExecutions["once"].StartedAt.Equal(prefix.StartedAt) {

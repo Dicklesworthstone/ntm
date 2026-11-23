@@ -18,6 +18,7 @@ import (
 )
 
 func TestPipelineResumeStepBudgetsPreserveCompletedEffects(t *testing.T) {
+	t.Parallel()
 	for _, limit := range []struct {
 		flag, field string
 	}{
@@ -26,12 +27,8 @@ func TestPipelineResumeStepBudgetsPreserveCompletedEffects(t *testing.T) {
 	} {
 		for _, background := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/background=%t", limit.flag, background), func(t *testing.T) {
-				root := inPipelineControlProject(t)
-				pipelineRecoveryTmux(t, root, "2718", "")
-				usePipelineResumeTestWorker(t)
-				previousJSON := jsonOutput
-				jsonOutput = true
-				t.Cleanup(func() { jsonOutput = previousJSON })
+				t.Parallel()
+				root := t.TempDir()
 				limits := pipeline.LimitsConfig{
 					MaxCommandStdoutBytes: 64, MaxCommandStderrBytes: 64,
 					MaxStepCountTotal: 64, MaxMaterializedStepNodes: 64,
@@ -60,7 +57,7 @@ func TestPipelineResumeStepBudgetsPreserveCompletedEffects(t *testing.T) {
 				}
 				cfg := pipeline.DefaultExecutorConfig("delivery-session")
 				cfg.ProjectDir, cfg.RunID = root, pipeline.GenerateRunID()
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				first, runErr := pipeline.RunControlledPipeline(ctx, workflow, nil, cfg, nil)
 				cancel()
 				if runErr == nil || first == nil || first.Status != pipeline.StatusFailed || !strings.Contains(runErr.Error(), limit.field) {
@@ -130,12 +127,14 @@ func TestPipelineResumeStepBudgetsPreserveCompletedEffects(t *testing.T) {
 					if background {
 						args = append(args, "--background")
 					}
+					var out bytes.Buffer
 					cmd.SetArgs(args)
-					cmd.SetOut(io.Discard)
+					cmd.SetOut(&out)
 					cmd.SetErr(io.Discard)
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, "delivery-session"), 15*time.Second)
 					defer cancel()
-					return captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+					err := cmd.ExecuteContext(ctx)
+					return out.String(), err
 				}
 				awaitState := func(want pipeline.ExecutionStatus) *pipeline.ExecutionState {
 					t.Helper()
