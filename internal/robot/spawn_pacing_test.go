@@ -744,6 +744,135 @@ func TestGetSpawnAssignWorkPacesWorkPromptsAndCarriesInitialPrompt(t *testing.T)
 	}
 }
 
+// Exercise the actual --robot-spawn assignment, dispatch, ledger, and replay
+// path. A planner-only test would miss a sparse match being reassigned to the
+// first agent or using the wrong agent's stagger slot during delivery.
+func TestGetSpawnSkillMatchedDispatchUsesOptimalAgentSlots(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, tc := range []struct {
+		name string
+		recs []bv.TriageRecommendation
+		want map[string]string // physical pane -> bead
+	}{
+		{
+			name: "whole-batch",
+			recs: []bv.TriageRecommendation{
+				{ID: "bd-feature", Title: "Implement a feature", Type: "feature", Status: "open", Priority: 1},
+				{ID: "bd-docs", Title: "Document the API", Type: "docs", Status: "open", Priority: 1},
+			},
+			want: map[string]string{"%2": "bd-docs", "%3": "bd-feature"},
+		},
+		{
+			name: "later-agent-only",
+			recs: []bv.TriageRecommendation{
+				{ID: "bd-bug", Title: "Fix the failing request", Type: "bug", Status: "open", Priority: 0},
+			},
+			want: map[string]string{"%3": "bd-bug"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := "skill-spawn-" + tc.name
+			world := newStaggerSpawnWorld(t, session, tmux.AgentClaude, tmux.AgentCodex)
+			store := assignment.NewStore(session)
+			claimed := make(map[string]string)
+			keys := 0
+			world.assignment.LoadAssignmentPolicy = func(string, string, bool) (*config.Config, error) { return testSpawnConfig(), nil }
+			world.assignment.FetchActionable = func(context.Context, string, int) ([]bv.TriageRecommendation, error) { return tc.recs, nil }
+			world.assignment.LoadStore = func(string) (*assignment.AssignmentStore, error) { return store, nil }
+			world.assignment.ClaimBead = func(_ context.Context, _ string, beadID, actor string) (bv.BeadClaimResult, error) {
+				if _, exists := claimed[beadID]; exists {
+					t.Fatalf("bead %s was claimed again", beadID)
+				}
+				claimed[beadID] = actor
+				return bv.BeadClaimResult{ID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+			}
+			world.assignment.GetBeadDetails = func(_ context.Context, _ string, beadID string) (*bv.BeadAssignmentDetails, error) {
+				for _, rec := range tc.recs {
+					if rec.ID == beadID {
+						details := &bv.BeadAssignmentDetails{ID: beadID, Title: rec.Title, Priority: rec.Priority, Status: "open"}
+						if actor := claimed[beadID]; actor != "" {
+							details.Status, details.Assignee = "in_progress", actor
+						}
+						return details, nil
+					}
+				}
+				return nil, fmt.Errorf("unknown bead %s", beadID)
+			}
+			world.assignment.GetBeadStatus = func(_ context.Context, _ string, beadID string) (string, error) {
+				if claimed[beadID] != "" {
+					return "in_progress", nil
+				}
+				return "open", nil
+			}
+			world.assignment.NewIdempotencyKey = func() (string, error) {
+				keys++
+				return fmt.Sprintf("ranked-spawn-key-%d", keys), nil
+			}
+			opts := world.options(t)
+			opts.CCCount, opts.CodCount = 1, 1
+			opts.AssignWork, opts.AssignStrategy = true, "skill-matched"
+			opts.StaggerMode, opts.StaggerDelay = config.SpawnStaggerFixed, 15*time.Second
+			out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+			if err != nil || len(out.Assignments) != 2 {
+				t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+			}
+			// Keep the existing partial-coverage contract when there is less
+			// work than spawned agents; only the unmatched agent has an error.
+			if out.Success != (len(tc.want) == 2) || (!out.Success && out.ErrorCode != "ASSIGNMENT_FAILED") {
+				t.Fatalf("spawn assignment coverage changed: %+v", out.RobotResponse)
+			}
+			if len(world.deliveries) != len(tc.want) || len(claimed) != len(tc.want) || keys != len(tc.want) {
+				t.Fatalf("unexpected effects: deliveries=%+v claims=%v keys=%d", world.deliveries, claimed, keys)
+			}
+			for _, delivery := range world.deliveries {
+				beadID, expected := tc.want[delivery.PaneID]
+				if !expected || !strings.Contains(delivery.Message, "Work on bead "+beadID+":") {
+					t.Fatalf("work delivered to the wrong physical pane: %+v; want %v", delivery, tc.want)
+				}
+				offset := time.Duration(0)
+				if delivery.PaneID == "%3" {
+					offset = 15 * time.Second
+				}
+				if !delivery.At.Equal(staggerTestStart.Add(offset)) {
+					t.Fatalf("delivery ignored its original agent slot: %+v, want offset %v", delivery, offset)
+				}
+				row := store.Get(beadID)
+				if row == nil || row.DispatchTarget != delivery.PaneID || row.OccupancyKey != delivery.PaneID ||
+					row.DispatchState != assignment.DispatchSent || row.PromptSent != delivery.Message {
+					t.Fatalf("ledger lost selected agent identity: %+v", row)
+				}
+			}
+			for _, result := range out.Assignments {
+				paneID := "%2"
+				if result.Pane == "2" {
+					paneID = "%3"
+				} else if result.Pane != "1" && result.Pane != "0.1" {
+					t.Fatalf("unexpected public pane selector: %+v", result)
+				}
+				if beadID, expected := tc.want[paneID]; expected {
+					if result.BeadID != beadID || !result.Claimed || !result.PromptSent || result.ClaimError != "" || result.PromptError != "" ||
+						!strings.Contains(result.AssignReason, "skill-matched") {
+						t.Fatalf("assignment receipt disagrees with delivery: %+v", result)
+					}
+				} else if result.BeadID != "" || result.Claimed || result.PromptSent || result.ClaimError == "" {
+					t.Fatalf("unselected agent acquired work: %+v", result)
+				}
+			}
+			replayed, err := assignWorkToAgentsWithError(t.Context(), out, opts.WorkingDir, session,
+				"skill-matched", testSpawnConfig(), false, nil, world.assignment,
+				mockTriage(tc.recs, nil), "", PromptContextOptions{}, nil)
+			if err != nil || len(replayed) != len(tc.want) || len(world.deliveries) != len(tc.want) || keys != len(tc.want) {
+				t.Fatalf("retry changed the assignment or repeated delivery: replay=%+v deliveries=%+v keys=%d err=%v", replayed, world.deliveries, keys, err)
+			}
+			for _, receipt := range replayed {
+				if !receipt.Claimed || !receipt.PromptSent || receipt.ClaimError != "" || receipt.PromptError != "" {
+					t.Fatalf("retry failed to recover the recorded sparse match: %+v", receipt)
+				}
+			}
+		})
+	}
+}
+
 // TestGetSpawnAssignWorkEnrichesWorkPromptAndReplaysWithoutRequery drives
 // --robot-spawn --spawn-assign-work with CASS enrichment: the work prompt
 // carries the bead's history before the durable intent is recorded, the

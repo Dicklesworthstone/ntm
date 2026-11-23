@@ -156,6 +156,16 @@ func (m *Matcher) AssignTasks(beads []Bead, agents []Agent, strategy Strategy) [
 	}
 }
 
+// AssignRankedTasks optimizes capability across a caller-ranked batch. The
+// supplied bead order is authoritative (for example, BV triage ranking), so
+// numeric priority is retained as metadata rather than used to re-sort it.
+// Earlier feasible beads take precedence over later ones; each bead and
+// available worker occurs once. The ordinary context and confidence gates
+// still apply, and neither input slice is modified.
+func (m *Matcher) AssignRankedTasks(beads []Bead, agents []Agent) []Assignment {
+	return m.assignPriorityBatch(beads, m.filterAvailableAgents(agents), false)
+}
+
 // AssignTasksWithRelaxation preserves the strict plan whenever it can place
 // any work. Only a wholly empty plan retries with half the confidence floor;
 // idle state, context limits, caller filters, and the chosen strategy remain

@@ -3207,6 +3207,87 @@ func TestGetWorkItemsForStrategySkillMatchedDiffersFromTopN(t *testing.T) {
 	}
 }
 
+func TestSpawnSkillMatchingOptimizesRankedBatchAndRetainsAgentSlots(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		agents []SpawnedAgent
+		recs   []bv.TriageRecommendation
+		want   []string
+	}{
+		{
+			name:   "whole batch repairs greedy tie",
+			agents: []SpawnedAgent{{Pane: "0.1", Type: "claude"}, {Pane: "0.2", Type: "codex"}},
+			recs: []bv.TriageRecommendation{
+				{ID: "feature", Type: "feature", Priority: 1},
+				{ID: "docs", Type: "docs", Priority: 1},
+			},
+			// cc→feature + cod→docs totals 1.55; this pairing totals 1.75.
+			want: []string{"0:docs", "1:feature"},
+		},
+		{
+			name:   "scarce work goes to later strongest agent",
+			agents: []SpawnedAgent{{Pane: "0.1", Type: "ollama"}, {Pane: "0.2", Type: "cc"}},
+			recs:   []bv.TriageRecommendation{{ID: "refactor", Type: "refactor", Priority: 1}},
+			want:   []string{"1:refactor"},
+		},
+		{
+			name:   "capability cannot displace higher ranked work",
+			agents: []SpawnedAgent{{Pane: "0.1", Type: "cc"}},
+			recs: []bv.TriageRecommendation{
+				{ID: "urgent-bug", Type: "bug", Priority: 0, Score: 1},
+				{ID: "easy-refactor", Type: "refactor", Priority: 2, Score: .5},
+			},
+			want: []string{"0:urgent-bug"},
+		},
+		{
+			name:   "equal scores keep ranked work and stable slots",
+			agents: []SpawnedAgent{{Pane: "0.1", Type: "cc"}, {Pane: "0.2", Type: "cc"}},
+			recs: []bv.TriageRecommendation{
+				{ID: "first", Type: "task", Priority: 1},
+				{ID: "second", Type: "task", Priority: 1},
+				{ID: "third", Type: "task", Priority: 1},
+			},
+			want: []string{"0:first", "1:second"},
+		},
+		{
+			name:   "duplicate beads and worker identities add no capacity",
+			agents: []SpawnedAgent{{Pane: "0.1", Type: "cc"}, {Pane: "0.1", Type: "cc"}, {Pane: "0.2", Type: "cod"}},
+			recs: []bv.TriageRecommendation{
+				{ID: "feature", Type: "feature", Priority: 1},
+				{ID: "feature", Type: "feature", Priority: 1},
+				{ID: "docs", Type: "docs", Priority: 1},
+			},
+			want: []string{"0:docs", "2:feature"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			triage := mockTriage(tc.recs, nil)
+			beforeRecs, beforeAgents := append([]bv.TriageRecommendation(nil), tc.recs...), append([]SpawnedAgent(nil), tc.agents...)
+			items := getWorkItemsForStrategy(triage, "skill-matched", tc.agents)
+			var got []string
+			for _, item := range items {
+				got = append(got, fmt.Sprintf("%d:%s", item.AgentIndex, item.ID))
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("skill-matched plan = %v, want %v; full plan: %+v", got, tc.want, items)
+			}
+			if !reflect.DeepEqual(items, getWorkItemsForStrategy(triage, "skill-matched", tc.agents)) ||
+				!reflect.DeepEqual(beforeRecs, tc.recs) || !reflect.DeepEqual(beforeAgents, tc.agents) {
+				t.Fatal("skill matching is nondeterministic or mutates its inputs")
+			}
+			failures := spawnAssignmentPlanErrors(tc.agents, items, errors.New("ledger unavailable"))
+			for i, failure := range failures {
+				wantAgent := tc.agents[items[i].AgentIndex]
+				if failure.Pane != wantAgent.Pane || failure.AgentType != wantAgent.Type || failure.BeadID != items[i].ID || failure.ClaimError != "ledger unavailable" {
+					t.Fatalf("plan error lost sparse agent identity: %+v", failure)
+				}
+			}
+		})
+	}
+}
+
 // TestGetSkillMatchedWorkItemsNoSignalIsLoud verifies the degenerate class
 // (unknown agent type, uniform 0.5 scores) is recorded loudly instead of
 // silently masquerading as skill matching.

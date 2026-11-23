@@ -12,7 +12,7 @@ The rest of this document is a **developer reference** for anyone building NTM l
 
 ### Prerequisites
 
-- Go 1.26.10+
+- Go 1.26.11+
 - tmux (for testing)
 - golangci-lint (for linting)
 

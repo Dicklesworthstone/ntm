@@ -2922,10 +2922,9 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 	}
 
 	// Assign work to agents
-	for i, agent := range readyAgents {
-		if i >= len(workItems) {
-			break
-		}
+	for _, item := range workItems {
+		i := item.AgentIndex
+		agent := readyAgents[i]
 		if err := ctx.Err(); err != nil {
 			assignments = append(assignments, spawnAgentPlanErrors(readyAgents[i:], fmt.Errorf("spawn assignment canceled: %w", err))...)
 			terminalErr = err
@@ -2940,7 +2939,6 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 			break
 		}
 
-		item := workItems[i]
 		spawnAssignment := SpawnAssignment{
 			Pane:         agent.Pane,
 			AgentType:    agent.Type,
@@ -3389,15 +3387,12 @@ func spawnAtomicRequest(item workItem, target string, pane int, agentType, agent
 }
 
 func spawnAssignmentPlanErrors(agents []SpawnedAgent, items []workItem, err error) []SpawnAssignment {
-	limit := len(agents)
-	if len(items) < limit {
-		limit = len(items)
-	}
-	result := make([]SpawnAssignment, 0, limit)
-	for i := 0; i < limit; i++ {
+	result := make([]SpawnAssignment, 0, len(items))
+	for _, item := range items {
+		agent := agents[item.AgentIndex]
 		result = append(result, SpawnAssignment{
-			Pane: agents[i].Pane, AgentType: agents[i].Type, BeadID: items[i].ID,
-			BeadTitle: items[i].Title, Priority: fmt.Sprintf("P%d", items[i].Priority),
+			Pane: agent.Pane, AgentType: agent.Type, BeadID: item.ID,
+			BeadTitle: item.Title, Priority: fmt.Sprintf("P%d", item.Priority),
 			ClaimError: err.Error(),
 		})
 	}
@@ -3670,36 +3665,42 @@ type workItem struct {
 	Type        string
 	Reasons     []string
 	MatchReason string // How the strategy paired this item with its agent slot (recorded in the envelope)
+	AgentIndex  int    // Original ready-agent slot, including gaps when another agent is a better match
 }
 
 // getWorkItemsForStrategy returns work items based on the selected strategy.
-// The returned slice is positional: workItems[i] is assigned to agents[i].
+// Items retain their original agent slot and are returned in slot order so
+// sparse skill matching preserves both pane identity and stagger scheduling.
 func getWorkItemsForStrategy(triage *bv.TriageResponse, strategy string, agents []SpawnedAgent) []workItem {
 	count := len(agents)
+	var items []workItem
 
 	switch strategy {
 	case "diverse":
 		// Get a mix of different task types
-		return getDiverseWorkItems(triage, count)
+		items = getDiverseWorkItems(triage, count)
 	case "dependency-aware":
 		// Prioritize items that unblock others
-		return getDependencyAwareItems(triage, count)
+		items = getDependencyAwareItems(triage, count)
 	case "skill-matched":
 		// Match agent capabilities (capability matrix) to bead task types.
 		return getSkillMatchedWorkItems(triage, agents)
 	case "top-n":
 		// Get top N recommendations by score
-		return getTopNWorkItems(triage, count)
+		items = getTopNWorkItems(triage, count)
 	default:
 		// Strict normalization upstream should make this unreachable. If a new
 		// strategy value ever leaks through, fall back loudly instead of
 		// silently pretending it ran.
-		items := getTopNWorkItems(triage, count)
+		items = getTopNWorkItems(triage, count)
 		for i := range items {
 			items[i].MatchReason = fmt.Sprintf("strategy %q not implemented at dispatch; fell back to top-n", strategy)
 		}
-		return items
 	}
+	for i := range items {
+		items[i].AgentIndex = i
+	}
+	return items
 }
 
 // spawnTaskTypeForRecommendation resolves the capability-matrix task type for
@@ -3718,58 +3719,53 @@ func spawnTaskTypeForRecommendation(rec bv.TriageRecommendation) assign.TaskType
 	return assign.ParseTaskType(inferTaskType(bv.BeadPreview{ID: rec.ID, Title: rec.Title, Type: rec.Type}))
 }
 
-// getSkillMatchedWorkItems pairs each agent slot with the unassigned
-// recommendation its agent type scores highest on in the capability matrix.
-// Triage order (best score first) is the tie-break, so identical capability
-// scores degrade to top-n order — and that degenerate case is recorded
-// loudly in MatchReason rather than hidden.
+// getSkillMatchedWorkItems uses the shared assignment optimizer to maximize
+// capability across the highest-ranked feasible work. It can leave an earlier
+// agent idle when a later one is a better match, and never trades an earlier
+// triage recommendation for a later bead merely to improve capability scores.
 func getSkillMatchedWorkItems(triage *bv.TriageResponse, agents []SpawnedAgent) []workItem {
 	recs := triage.Triage.Recommendations
 	if len(recs) == 0 || len(agents) == 0 {
 		return nil
 	}
 
-	taskTypes := make([]assign.TaskType, len(recs))
-	for j, rec := range recs {
-		taskTypes[j] = spawnTaskTypeForRecommendation(rec)
+	beads := make([]assign.Bead, 0, len(recs))
+	recommendations := make(map[string]bv.TriageRecommendation, len(recs))
+	for _, rec := range recs {
+		if _, seen := recommendations[rec.ID]; seen || strings.TrimSpace(rec.ID) == "" {
+			continue
+		}
+		recommendations[rec.ID] = rec
+		beads = append(beads, assign.Bead{
+			ID: rec.ID, Title: rec.Title, Priority: rec.Priority,
+			TaskType: spawnTaskTypeForRecommendation(rec), Labels: rec.Labels,
+		})
+	}
+	workers := make([]assign.Agent, 0, len(agents))
+	agentIndexes := make(map[string]int, len(agents))
+	for i, agent := range agents {
+		pane := strings.TrimSpace(agent.Pane)
+		if _, seen := agentIndexes[pane]; seen || pane == "" {
+			continue
+		}
+		agentIndexes[pane] = i
+		workers = append(workers, assign.Agent{ID: pane, AgentType: assign.ParseAgentType(agent.Type), Idle: true})
 	}
 
-	used := make([]bool, len(recs))
-	items := make([]workItem, 0, len(agents))
-	for _, agent := range agents {
-		best := -1
-		bestScore := -1.0
+	matches := assign.NewMatcher().AssignRankedTasks(beads, workers)
+	items := make([]workItem, 0, len(matches))
+	for _, match := range matches {
+		agentIndex := agentIndexes[match.Agent.ID]
+		agent := agents[agentIndex]
+		rec := recommendations[match.Bead.ID]
 		minScore, maxScore := 2.0, -1.0
-		for j := range recs {
-			if used[j] {
-				continue
-			}
-			score := assign.GetAgentScoreByString(agent.Type, string(taskTypes[j]))
-			if score < minScore {
-				minScore = score
-			}
-			if score > maxScore {
-				maxScore = score
-			}
-			// Strictly greater keeps triage score order as the tie-break:
-			// recommendations arrive sorted best-first.
-			if score > bestScore {
-				best = j
-				bestScore = score
-			}
+		for _, bead := range beads {
+			score := assign.GetAgentScoreByString(agent.Type, string(bead.TaskType))
+			minScore, maxScore = min(minScore, score), max(maxScore, score)
 		}
-		if best < 0 {
-			break
-		}
-		used[best] = true
-		rec := recs[best]
-
-		matchReason := fmt.Sprintf("skill-matched: %s capability %.2f for %s tasks", agent.Type, bestScore, taskTypes[best])
+		matchReason := fmt.Sprintf("skill-matched: %s capability %.2f for %s tasks; optimized across the ranked batch", agent.Type, match.Score, match.Bead.TaskType)
 		if minScore == maxScore {
-			// No capability signal discriminated between the remaining beads
-			// (e.g. unknown agent type, or uniform task types): the pick is
-			// triage order. Say so instead of silently looking matched.
-			matchReason = fmt.Sprintf("skill-matched: no discriminating capability signal for agent type %q (uniform score %.2f); kept triage order", agent.Type, bestScore)
+			matchReason = fmt.Sprintf("skill-matched: no discriminating capability signal for agent type %q (uniform score %.2f); honored triage order while optimizing the batch", agent.Type, match.Score)
 		}
 
 		reasons := append([]string(nil), rec.Reasons...)
@@ -3782,9 +3778,10 @@ func getSkillMatchedWorkItems(triage *bv.TriageResponse, agents []SpawnedAgent) 
 			Type:        rec.Type,
 			Reasons:     reasons,
 			MatchReason: matchReason,
+			AgentIndex:  agentIndex,
 		})
 	}
-
+	sort.Slice(items, func(i, j int) bool { return items[i].AgentIndex < items[j].AgentIndex })
 	return items
 }
 
