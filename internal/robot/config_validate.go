@@ -12,6 +12,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 )
@@ -332,8 +333,18 @@ func ValidateMainConfigReferencesWithoutAgents(cfg *config.Config, result *Valid
 	}
 }
 
-// ValidateAgentExecutables checks configured agent launch templates across all 11 harnesses.
+// ValidateAgentExecutables checks configured agent launch templates across all 12 harnesses.
 func ValidateAgentExecutables(cfg *config.Config, result *ValidationResult) {
+	piCmd := plugins.ShippedPiPlugin().Command
+	if loadedPlugins, err := plugins.LoadAgentPluginsWithDefaults(filepath.Join(filepath.Dir(config.DefaultPath()), "agents")); err == nil {
+		for _, p := range loadedPlugins {
+			if p.Name == "pi" && strings.TrimSpace(p.Command) != "" {
+				piCmd = p.Command
+				break
+			}
+		}
+	}
+
 	specs := []struct {
 		field string
 		cmd   string
@@ -348,6 +359,7 @@ func ValidateAgentExecutables(cfg *config.Config, result *ValidationResult) {
 		{"agents.oc", cfg.Agents.Opencode},
 		{"agents.ollama", cfg.Agents.Ollama},
 		{"agents.omp", config.OmpCommandOrDefault(cfg.Agents.Omp)},
+		{"agents.pi", piCmd},
 		{"agents.windsurf", cfg.Agents.Windsurf},
 	}
 
@@ -668,7 +680,7 @@ func validateCapabilityCommand() RobotCommandInfo {
 		Flag:        "--robot-validate",
 		Category:    "utility",
 		Summary:     "Validate NTM config, recipes, personas, and policy.",
-		Description: "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, and policy.yaml schemas, file references, and 11-harness agent executables.",
+		Description: "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, and policy.yaml schemas, file references, and 12-harness agent executables.",
 		Parameters: []RobotParameter{
 			{Name: "validate-all", Flag: "--validate-all", Type: "bool", Required: false, Default: "false", Description: "Include absent optional user and project config locations"},
 			{Name: "validate-fix", Flag: "--validate-fix", Type: "bool", Required: false, Default: "false", Description: "Auto-create missing fixable directories (projects_base, templates.dir)"},
