@@ -621,10 +621,18 @@ func (s *DefaultPaneSpawner) agentLaunchSpec(session, agentType string, index in
 		// The replacement Claude agent keeps ntm's PreToolUse hooks.
 		vars.ClaudeSettings = policy.ClaudeAgentLaunchSettings(s.config).Settings
 	}
-	command, err := config.GenerateAgentCommand(s.getAgentCommand(agentType), vars)
+	var commandTmpl string
+	var piPluginEnv map[string]string
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypePi {
+		commandTmpl, piPluginEnv = resolvePiAgentCommandAndEnv()
+	} else {
+		commandTmpl = s.getAgentCommand(agentType)
+	}
+	command, err := config.GenerateAgentCommand(commandTmpl, vars)
 	if err != nil {
 		return tmux.AgentLaunchSpec{}, err
 	}
+	command = prefixValidatedEnvAssignments(command, piPluginEnv)
 	policy.LogClaudeHooksNotApplied("rotation", command, vars.ClaudeSettings)
 	if strings.TrimSpace(command) == "" {
 		return tmux.AgentLaunchSpec{}, fmt.Errorf("configured %s agent command rendered empty", agentType)
@@ -1214,17 +1222,63 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 }
 
 func resolvePiAgentCommandTemplate() string {
+	cmd, _ := resolvePiAgentCommandAndEnv()
+	return cmd
+}
+
+func resolvePiAgentCommandAndEnv() (string, map[string]string) {
 	agentsDir := filepath.Join(filepath.Dir(config.DefaultPath()), "agents")
 	if loaded, err := plugins.LoadAgentPluginsWithDefaults(agentsDir); err == nil {
 		for _, p := range loaded {
 			if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
 				if strings.TrimSpace(p.Command) != "" {
-					return p.Command
+					return p.Command, p.Env
 				}
 			}
 		}
 	}
-	return plugins.ShippedPiPlugin().Command
+	shipped := plugins.ShippedPiPlugin()
+	return shipped.Command, shipped.Env
+}
+
+func prefixValidatedEnvAssignments(command string, env map[string]string) string {
+	if len(env) == 0 || strings.TrimSpace(command) == "" {
+		return command
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		if !isValidPOSIXEnvKey(k) {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k, tmux.ShellQuote(env[k])))
+	}
+	if len(parts) == 0 {
+		return command
+	}
+	return strings.Join(parts, " ") + " " + command
+}
+
+func isValidPOSIXEnvKey(k string) bool {
+	if len(k) == 0 {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		isAlpha := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'
+		isDigit := c >= '0' && c <= '9'
+		if i == 0 && !isAlpha {
+			return false
+		}
+		if !isAlpha && !isDigit {
+			return false
+		}
+	}
+	return true
 }
 
 func sendCompactionCommandToPane(sender paneInputSender, paneID string, cmd CompactionCommand) error {
