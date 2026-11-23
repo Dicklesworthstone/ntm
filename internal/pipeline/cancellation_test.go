@@ -82,6 +82,7 @@ func TestStepEntryCancellationPersistsNoDispatchProofAndResumes(t *testing.T) {
 		{name: "foreach before kind dispatch", afterInFlight: true, foreach: true},
 	} {
 		t.Run(boundary.name, func(t *testing.T) {
+			t.Parallel()
 			cfg := DefaultExecutorConfig("step-entry-cancel")
 			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "step-entry-cancel", Settings: DefaultWorkflowSettings(), Steps: []Step{
@@ -155,6 +156,7 @@ func TestStepEntryCancellationPreservesEarlierAttemptEvidence(t *testing.T) {
 	t.Parallel()
 	for _, adapter := range []string{"top-level", "foreach"} {
 		t.Run(adapter, func(t *testing.T) {
+			t.Parallel()
 			executor := newCommandTestExecutor(t)
 			executor.state.Session = executor.config.Session
 			step := Step{ID: "work", Command: "printf 'once\\n' >> effects; exit 7", OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}}
@@ -494,6 +496,7 @@ func TestControlledPipelineWaitNoneNaturalFailurePersistsAndResumes(t *testing.T
 		{name: "workflow_shutdown", shutdown: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			cfg := DefaultExecutorConfig("wait-none-outcome")
 			cfg.ProjectDir, cfg.RunID = root, "run-wait-none-outcome"
@@ -502,7 +505,7 @@ func TestControlledPipelineWaitNoneNaturalFailurePersistsAndResumes(t *testing.T
 				"printf ready > sidecar-ready; while [ ! -f sidecar-release ]; do sleep 0.01; done; printf original; " + tc.terminate
 			if tc.shutdown {
 				command = "printf 'once\\n' >> launches; trap 'printf handled > handled; printf shutdown; exit 0' TERM; " +
-					"printf ready > sidecar-ready; while :; do sleep 0.01; done"
+					"printf ready > sidecar-ready; sleep 30 & wait $!"
 			}
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "wait-none-outcome", Settings: DefaultWorkflowSettings(), Steps: []Step{
 				{ID: "sidecar", Wait: WaitNone, Command: command, OnError: ErrorActionRetry, RetryCount: 3, RetryDelay: Duration{Duration: time.Millisecond}},
@@ -687,7 +690,7 @@ func TestControlledPipelineWaitNoneExplicitTimeoutPersistsFailure(t *testing.T) 
 	cfg.ProjectDir, cfg.RunID = root, "run-wait-none-timeout"
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "wait-none-timeout", Settings: DefaultWorkflowSettings(), Steps: []Step{
 		{ID: "sidecar", Wait: WaitNone, Timeout: Duration{Duration: time.Second},
-			Command: "printf 'once\\n' >> launches; trap 'printf handled > handled; printf shutdown; exit 0' TERM; printf ready > ready; while [ ! -f sidecar-release ]; do sleep 0.01; done; printf late > late-effect"},
+			Command: "printf 'once\\n' >> launches; trap 'printf handled > handled; printf shutdown; exit 0' TERM; printf ready > ready; if [ ! -f sidecar-release ]; then sleep 30 & wait $!; fi; printf late > late-effect"},
 		{ID: "gate", DependsOn: []string{"sidecar"}, Command: "while [ ! -f gate-release ]; do sleep 0.01; done; printf consumed"},
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -821,6 +824,7 @@ func TestExecuteCommandWaitNoneExplicitTimeoutPreservesCancellationCause(t *test
 	}
 	for _, scenario := range []string{"natural", "parent_cancel", "deadline_then_parent_cancel"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			e := newCommandTestExecutor(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(func() {
@@ -1057,6 +1061,7 @@ func TestExecutorCancellationHooksFollowMainBackgroundSupervision(t *testing.T) 
 			name = "unresolved_supervision"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newCommandTestExecutor(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			e.cancelFn = cancel
@@ -1066,7 +1071,7 @@ func TestExecutorCancellationHooksFollowMainBackgroundSupervision(t *testing.T) 
 			})
 			main := Step{
 				ID: "sidecar", Wait: WaitNone, Stdin: "fixture\n",
-				Command: "trap 'printf stopped > main-stopped; exit 0' TERM; printf ready > main-ready; while :; do sleep 0.02; done",
+				Command: "trap 'printf stopped > main-stopped; exit 0' TERM; printf ready > main-ready; sleep 30 & wait $!",
 			}
 			receiptStatus := "settled"
 			if unresolved {
@@ -1206,7 +1211,7 @@ func interruptedSuccessHookRun(t *testing.T, shape string, tail bool) (ExecutorC
 	work := Step{ID: "work", Command: "printf 'parent\\n' >> parent-effects; printf parent-value", OutputVar: "body_output", OnSuccess: []Step{
 		{ID: "complete", Command: "printf 'complete\\n' >> complete-effects; printf hook-value", OutputVar: "hook_output"},
 		{ID: "advisory", Command: "printf 'failed\\n' >> failed-effects; exit 9"},
-		{ID: "interrupted", Command: "printf ready > hook-ready; while [ ! -f hook-release ]; do sleep 0.01; done; " +
+		{ID: "interrupted", Command: "printf ready > hook-ready; if [ ! -f hook-release ]; then sleep 30 & wait $!; fi; " +
 			"test '${vars.hook_output}' = hook-value && printf 'resumed\\n' >> resumed-effects; printf resumed-value"},
 	}}
 	if tail {
@@ -1217,7 +1222,7 @@ func interruptedSuccessHookRun(t *testing.T, shape string, tail bool) (ExecutorC
 		interrupted.Command = "while [ ! -f sidecar-ready ]; do sleep 0.01; done; " + interrupted.Command
 		hooks := []Step{work.OnSuccess[0], work.OnSuccess[1], {
 			ID: "sidecar", Wait: WaitNone,
-			Command: "printf 'sidecar\\n' >> sidecar-effects; printf ready > sidecar-ready; while :; do sleep 0.01; done",
+			Command: "printf 'sidecar\\n' >> sidecar-effects; printf ready > sidecar-ready; sleep 30 & wait $!",
 		}, interrupted}
 		work.OnSuccess = append(hooks, work.OnSuccess[3:]...)
 	}
@@ -1335,6 +1340,7 @@ func TestSuccessHookCancellationResumesWithoutReplayingConsumedEffects(t *testin
 		{name: "foreach rounds", shape: "rounds", tail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, tc.shape, tc.tail)
 			parentReceipt := prior.CommandExecutions[parentID]
 			completedReceipt := prior.CommandExecutions[parentID+"_on_success_complete"]
@@ -1550,6 +1556,7 @@ func TestSuccessHookReplayRequiresContainingScope(t *testing.T) {
 		{name: "consumed advisory failure", options: ResumeOptions{Mode: ResumeModeRestartFailed}, refuse: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, "scoped-foreach", true)
 			parentReceipt, prefixReceipt := prior.CommandExecutions[parentID], prior.CommandExecutions["prefix"]
 			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
