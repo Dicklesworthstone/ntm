@@ -399,12 +399,12 @@ func extractZipEntriesWithLimits(zr *zip.Reader, maxEntryBytes, maxTotalBytes in
 	var entryCount int
 	var totalBytes int64
 	for _, f := range zr.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
 		entryCount++
 		if entryCount > maxEntries {
 			return nil, fmt.Errorf("zip bundle exceeds max verify entries (%d)", maxEntries)
+		}
+		if f.FileInfo().IsDir() {
+			continue
 		}
 		cleanName, err := SanitizeArchivePath(f.Name)
 		if err != nil {
@@ -471,12 +471,12 @@ func readTarGzEntriesFromReaderWithLimits(r io.Reader, maxEntryBytes, maxTotalBy
 		if err != nil {
 			return nil, fmt.Errorf("read tar header: %w", err)
 		}
-		if hdr.Typeflag == tar.TypeDir {
-			continue
-		}
 		entryCount++
 		if entryCount > maxEntries {
 			return nil, fmt.Errorf("tar.gz bundle exceeds max verify entries (%d)", maxEntries)
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
 		}
 		cleanName, err := SanitizeArchivePath(hdr.Name)
 		if err != nil {
