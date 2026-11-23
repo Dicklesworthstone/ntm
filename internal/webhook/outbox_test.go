@@ -27,6 +27,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
+func init() {
+	outboxPollInterval = 25 * time.Millisecond
+}
+
 type outboxRequest struct {
 	id, attempt, signature string
 	body                   []byte
