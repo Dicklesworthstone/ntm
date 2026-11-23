@@ -180,9 +180,6 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
-		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
-			le.executor.markForeachIterationCompleted(step.ID, i, total)
-		}
 
 		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			le.executor.persistState()
@@ -191,16 +188,13 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			return result
 		}
 
-		// Collect output if configured. bd-t3q8a: persist each iteration's
-		// collected entry on the foreach state so a subsequent resume can
-		// reconstruct outputs from iterations that completed before the
-		// interruption — without this, a mid-loop resume would silently
-		// drop pre-resume entries when storeCollected runs at the end.
+		// Commit the collected entry with completion so every concurrent
+		// checkpoint can reconstruct the output of iterations safe to skip.
+		var collectedValue interface{}
 		if loop.Collect != "" && len(iterResult) > 0 &&
 			iterResult[len(iterResult)-1].Status != StatusCancelled &&
 			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
-			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
 				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
@@ -208,8 +202,16 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			}
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
-				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 			}
+		}
+		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
+			if collectedValue != nil {
+				le.executor.markForeachIterationCompleted(step.ID, i, total, collectedValue)
+			} else {
+				le.executor.markForeachIterationCompleted(step.ID, i, total)
+			}
+		} else if collectedValue != nil {
+			le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 		}
 		le.executor.persistState()
 
@@ -339,9 +341,6 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
-		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
-			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
-		}
 
 		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			le.executor.persistState()
@@ -350,12 +349,12 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
-		// Collect output if configured
+		// Collect output before publishing the iteration checkpoint.
+		var collectedValue interface{}
 		if loop.Collect != "" && len(iterResult) > 0 &&
 			iterResult[len(iterResult)-1].Status != StatusCancelled &&
 			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
-			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
 				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
@@ -363,8 +362,16 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			}
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
-				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 			}
+		}
+		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
+			if collectedValue != nil {
+				le.executor.markForeachIterationCompleted(step.ID, i, maxIterations, collectedValue)
+			} else {
+				le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
+			}
+		} else if collectedValue != nil {
+			le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 		}
 		le.executor.persistState()
 
@@ -470,12 +477,19 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 	}
 
 	conditionMet := false
-	if startIndex > 0 && !le.executor.config.DryRun {
+	if startIndex > 0 {
 		// The last iteration checkpoint can reach disk before the parent loop
 		// result. Its predicate receipt is the durable termination decision;
 		// starting another body here would repeat effects after a true predicate.
 		untilStep := untilPredicateStep(step, loop, startIndex-1)
-		prior, ok := le.loadUntilPredicateResult(&untilStep)
+		var prior StepResult
+		var ok bool
+		if le.executor.config.DryRun {
+			priorCtx := withLoopVars(ctx, varName, startIndex-1, startIndex-1, maxIterations)
+			prior, ok = le.executor.executeCommand(priorCtx, &untilStep, workflow), true
+		} else {
+			prior, ok = le.loadUntilPredicateResult(&untilStep)
+		}
 		if !ok {
 			result.Error = stepRuntimeError(&untilStep, StepKindCommand, "recovery",
 				"completed until iteration has no predicate receipt",
@@ -584,18 +598,11 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			break
 		}
 
-		// Reaching a verified predicate means the body was consumed, including
-		// failures explicitly allowed by on_error=continue. Leaving those
-		// iterations incomplete would create gaps that replay already-consumed
-		// decisions and duplicate later collected outputs on restart.
-		if ctx.Err() == nil || completedAllSteps {
-			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
-		}
+		var collectedValue interface{}
 		if loop.Collect != "" && len(iterResult) > 0 &&
 			iterResult[len(iterResult)-1].Status != StatusCancelled &&
 			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
-			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
 				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
@@ -603,8 +610,20 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			}
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
-				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 			}
+		}
+		// Reaching a verified predicate means the body was consumed, including
+		// failures explicitly allowed by on_error=continue. Publish completion
+		// and its output under one lock so a concurrent checkpoint cannot
+		// retain a completed iteration while losing its collected value.
+		if ctx.Err() == nil || completedAllSteps {
+			if collectedValue != nil {
+				le.executor.markForeachIterationCompleted(step.ID, i, maxIterations, collectedValue)
+			} else {
+				le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
+			}
+		} else if collectedValue != nil {
+			le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 		}
 		le.executor.persistState()
 
@@ -859,9 +878,6 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
-		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
-			le.executor.markForeachIterationCompleted(step.ID, i, times)
-		}
 
 		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
 			le.executor.persistState()
@@ -870,12 +886,12 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
-		// Collect output if configured
+		// Collect output before publishing the iteration checkpoint.
+		var collectedValue interface{}
 		if loop.Collect != "" && len(iterResult) > 0 &&
 			iterResult[len(iterResult)-1].Status != StatusCancelled &&
 			iterResult[len(iterResult)-1].Status != StatusFailed {
 			lastResult := iterResult[len(iterResult)-1]
-			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
 				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
@@ -883,8 +899,16 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			}
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
-				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 			}
+		}
+		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
+			if collectedValue != nil {
+				le.executor.markForeachIterationCompleted(step.ID, i, times, collectedValue)
+			} else {
+				le.executor.markForeachIterationCompleted(step.ID, i, times)
+			}
+		} else if collectedValue != nil {
+			le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 		}
 		le.executor.persistState()
 

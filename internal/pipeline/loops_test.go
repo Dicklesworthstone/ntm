@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1792,4 +1793,99 @@ func TestPipelineWaveF4Fixes(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLoopCollectionStaysWithCompletedIterations(t *testing.T) {
+	for _, dialect := range []string{"items", "while", "until", "times"} {
+		t.Run(dialect, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			e.state.Status, e.state.Session = StatusRunning, e.config.Session
+			loop := &LoopConfig{
+				MaxIterations: IntOrExpr{Value: 8}, Collect: "values",
+				Steps:         []Step{{ID: "body", Command: "printf 'body\\n' >> bodies; printf value"}},
+			}
+			wantStatus := StatusCompleted
+			switch dialect {
+			case "items":
+				loop.Items = "[0,1,2,3,4,5,6,7]"
+			case "while":
+				loop.While = "true"
+				wantStatus = StatusFailed // The final safety bound stops this loop.
+			case "until":
+				loop.Until = "[ '${loop.index}' -eq 7 ]"
+			case "times":
+				loop.Times = 8
+			}
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "collect", Loop: loop}},
+			}
+			e.graph = NewDependencyGraph(workflow)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			inconsistent := make(chan string, 1)
+			go func() {
+				defer close(done)
+				for ctx.Err() == nil {
+					// Parallel branches can persist this same shared state at
+					// any point during another loop's iteration settlement.
+					e.stateMu.RLock()
+					checkpoint := e.state.ForeachState["collect"]
+					completed, outputs := len(checkpoint.CompletedIterationIDs), len(checkpoint.CollectedOutputs)
+					e.stateMu.RUnlock()
+					if completed != outputs {
+						inconsistent <- fmt.Sprintf("completed=%d collected=%d", completed, outputs)
+						return
+					}
+					runtime.Gosched()
+				}
+			}()
+			result := e.loopExec.ExecuteLoop(ctx, &workflow.Steps[0], workflow)
+			cancel()
+			<-done
+			select {
+			case mismatch := <-inconsistent:
+				t.Errorf("parallel checkpoint could lose a completed iteration's output: %s", mismatch)
+			default:
+			}
+			if result.Status != wantStatus || result.Iterations != 8 || len(result.Collected) != 8 {
+				t.Fatalf("loop did not retain all outputs: %+v", result)
+			}
+			checkpoint, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress := checkpoint.ForeachState["collect"]
+			if len(progress.CompletedIterationIDs) != 8 || len(progress.CollectedOutputs) != 8 {
+				t.Fatalf("durable iteration/output mismatch: %+v", progress)
+			}
+			for _, value := range progress.CollectedOutputs {
+				if value != "value" {
+					t.Fatalf("collected value changed: %#v", value)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "bodies")); err != nil || strings.Count(string(data), "\n") != 8 {
+				t.Fatalf("body count changed while checkpointing outputs: %q (%v)", data, err)
+			}
+		})
+	}
+}
+
+func TestUntilResumeDryRunRetainsIterationBindings(t *testing.T) {
+	t.Parallel()
+	e := newCommandTestExecutor(t)
+	e.config.DryRun = true
+	step := Step{ID: "poll", Loop: &LoopConfig{
+		Until: "echo ${item}-${loop.index}", MaxIterations: IntOrExpr{Value: 1},
+		Steps: []Step{{ID: "body", Command: "echo body"}},
+	}}
+	workflow := &Workflow{Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+	e.graph = NewDependencyGraph(workflow)
+	e.beginForeachState(step.ID, 1)
+	e.markForeachIterationCompleted(step.ID, 0, 1)
+	result := e.loopExec.ExecuteLoop(context.Background(), &step, workflow)
+	if result.Status != StatusCompleted || result.Iterations != 0 {
+		t.Fatalf("dry-run resume lost the completed iteration's bindings: %+v", result)
+	}
 }
