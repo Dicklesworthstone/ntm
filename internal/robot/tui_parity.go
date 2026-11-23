@@ -4378,7 +4378,13 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 	// Add dependencies if specified
 	var depWarnings []string
 	for _, dep := range opts.DependsOn {
-		_, depErr := bv.RunBd("", "dep", "add", output.BeadID, dep)
+		trimmedDep := strings.TrimSpace(dep)
+		if trimmedDep == "" || strings.HasPrefix(trimmedDep, "-") {
+			depWarnings = append(depWarnings,
+				fmt.Sprintf("Skipped invalid dependency %q: must not be empty or start with '-'", dep))
+			continue
+		}
+		_, depErr := bv.RunBd("", "dep", "add", "--", output.BeadID, trimmedDep)
 		if depErr != nil {
 			// Non-fatal, just note it
 			depWarnings = append(depWarnings,
@@ -4443,31 +4449,33 @@ type BeadShowOptions struct {
 // GetBeadShow returns detailed bead information.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
-	if opts.BeadID == "" {
+	beadID := strings.TrimSpace(opts.BeadID)
+	if beadID == "" || strings.HasPrefix(beadID, "-") {
 		return &BeadShowOutput{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("bead ID required"),
+				fmt.Errorf("valid bead ID required"),
 				ErrCodeInvalidFlag,
 				"Specify --robot-bead-show=BEAD_ID",
 			),
+			BeadID: opts.BeadID,
 		}, nil
 	}
 
 	output := &BeadShowOutput{
 		RobotResponse: NewRobotResponse(true),
-		BeadID:        opts.BeadID,
+		BeadID:        beadID,
 	}
 
 	// Get bead details
-	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
+	showOutput, err := bv.RunBd("", "show", "--json", "--", beadID)
 	if err != nil {
 		return &BeadShowOutput{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+				fmt.Errorf("bead '%s' not found: %w", beadID, err),
 				ErrCodeInvalidFlag,
 				"Use 'br list' to see available beads",
 			),
-			BeadID: opts.BeadID,
+			BeadID: beadID,
 		}, nil
 	}
 
@@ -4499,7 +4507,7 @@ func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
 				ErrCodeInternalError,
 				"Bead data may be corrupted",
 			),
-			BeadID: opts.BeadID,
+			BeadID: beadID,
 		}, nil
 	}
 
@@ -4530,13 +4538,13 @@ func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
 	case "open":
 		suggestions = append(suggestions, RobotAction{
 			Action:   "claim",
-			Target:   opts.BeadID,
+			Target:   beadID,
 			Reason:   "Bead is available to work on",
 			Priority: 1,
 		})
-		notes = append(notes, fmt.Sprintf("Claim with: ntm --robot-bead-claim=%s", opts.BeadID))
+		notes = append(notes, fmt.Sprintf("Claim with: ntm --robot-bead-claim=%s", beadID))
 	case "in_progress":
-		notes = append(notes, fmt.Sprintf("Close when done: br close %s", opts.BeadID))
+		notes = append(notes, fmt.Sprintf("Close when done: br close %s", beadID))
 		if output.Assignee != "" {
 			notes = append(notes, fmt.Sprintf("Currently assigned to: %s", output.Assignee))
 		}
@@ -4590,32 +4598,34 @@ type BeadCloseOptions struct {
 // GetBeadClose closes a bead and returns the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
-	if opts.BeadID == "" {
+	beadID := strings.TrimSpace(opts.BeadID)
+	if beadID == "" || strings.HasPrefix(beadID, "-") {
 		return &BeadCloseOutput{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("bead ID required"),
+				fmt.Errorf("valid bead ID required"),
 				ErrCodeInvalidFlag,
 				"Specify --robot-bead-close=BEAD_ID",
 			),
+			BeadID: opts.BeadID,
 		}, nil
 	}
 
 	output := &BeadCloseOutput{
 		RobotResponse: NewRobotResponse(true),
-		BeadID:        opts.BeadID,
+		BeadID:        beadID,
 		Reason:        opts.Reason,
 	}
 
 	// Get current bead info first
-	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
+	showOutput, err := bv.RunBd("", "show", "--json", "--", beadID)
 	if err != nil {
 		return &BeadCloseOutput{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+				fmt.Errorf("bead '%s' not found: %w", beadID, err),
 				ErrCodeInvalidFlag,
 				"Use 'br list' to see available beads",
 			),
-			BeadID: opts.BeadID,
+			BeadID: beadID,
 		}, nil
 	}
 
@@ -4632,7 +4642,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 				ErrCodeInternalError,
 				"Bead data may be corrupted",
 			),
-			BeadID: opts.BeadID,
+			BeadID: beadID,
 		}, nil
 	}
 
@@ -4644,7 +4654,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 		output.NewStatus = "closed"
 		output.Closed = false
 		output.AgentHints = &AgentHints{
-			Summary:  fmt.Sprintf("Bead %s is already closed", opts.BeadID),
+			Summary:  fmt.Sprintf("Bead %s is already closed", beadID),
 			Warnings: []string{"Bead was already closed"},
 		}
 		return output, nil
@@ -4656,7 +4666,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 	if opts.Reason != "" {
 		args = append(args, "--reason="+opts.Reason)
 	}
-	args = append(args, "--", opts.BeadID)
+	args = append(args, "--", beadID)
 
 	_, err = bv.RunBd("", args...)
 	if err != nil {
@@ -4666,7 +4676,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 				ErrCodeInternalError,
 				"Check bead status and dependencies",
 			),
-			BeadID:     opts.BeadID,
+			BeadID:     beadID,
 			Title:      output.Title,
 			PrevStatus: output.PrevStatus,
 		}, nil
@@ -4675,7 +4685,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 	output.NewStatus = "closed"
 	output.Closed = true
 	output.AgentHints = &AgentHints{
-		Summary: fmt.Sprintf("Closed bead %s: %s", opts.BeadID, truncateString(output.Title, 40)),
+		Summary: fmt.Sprintf("Closed bead %s: %s", beadID, truncateString(output.Title, 40)),
 		Notes:   []string{"Remember to run 'br sync --flush-only' to push changes"},
 	}
 

@@ -30,6 +30,7 @@ var (
 type ReviewSuggestion struct {
 	Agent     string `json:"agent"`
 	Pane      int    `json:"pane"`
+	PaneID    string `json:"pane_id,omitempty"`
 	AgentType string `json:"agent_type"`
 	Prompt    string `json:"prompt"`
 	Source    string `json:"source"` // "agent_work", "git_commit", or "idle_available"
@@ -39,6 +40,7 @@ type ReviewSuggestion struct {
 // IdleAgent represents an agent detected as idle.
 type IdleAgent struct {
 	Pane         int    `json:"pane"`
+	PaneID       string `json:"pane_id,omitempty"`
 	AgentType    string `json:"agent_type"`
 	AgentName    string `json:"agent_name,omitempty"`
 	IdleDuration string `json:"idle_duration,omitempty"`
@@ -111,7 +113,7 @@ func GetReviewQueue(ctx context.Context, opts ReviewQueueOptions) (*ReviewQueueO
 
 	normalizedFilter, err := NormalizeReviewQueueFilter(opts.Filter)
 	if err != nil {
-		return newReviewQueueErrorOutput(session, opts.ProjectDir, err, ErrCodeInvalidFlag, "Filter with --type=cc|cod|gmi|agy|grok|omp|oc|cursor|windsurf|aider|ollama"), nil
+		return newReviewQueueErrorOutput(session, opts.ProjectDir, err, ErrCodeInvalidFlag, "Filter with --type=cc|cod|gmi|agy|grok|omp|pi|oc|cursor|windsurf|aider|ollama"), nil
 	}
 
 	if !reviewQueueSessionExists(session) {
@@ -172,7 +174,7 @@ func GetReviewQueue(ctx context.Context, opts ReviewQueueOptions) (*ReviewQueueO
 		if opts.Sender != nil {
 			sent, skipped, err = SendReviewPromptsWithSender(session, suggestions, opts.Sender)
 		} else {
-			sent, skipped, err = SendReviewPrompts(session, suggestions)
+			sent, skipped, err = SendReviewPromptsContext(ctx, session, suggestions)
 		}
 		if err != nil {
 			return newReviewQueueErrorOutput(session, opts.ProjectDir, err, ErrCodeInternalError, "Verify tmux pane readiness before dispatching review prompts"), nil
@@ -274,6 +276,7 @@ func DetectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filt
 
 		idle = append(idle, IdleAgent{
 			Pane:         pane.Index,
+			PaneID:       pane.ID,
 			AgentType:    agentType,
 			IdleDuration: idleDuration,
 			LastTask:     lastTaskByPane[pane.Index],
@@ -352,6 +355,7 @@ func AssignSuggestionsToAgents(suggestions []ReviewSuggestion, idleAgents []Idle
 		idleAgent := idleAgents[i%len(idleAgents)]
 		s.Agent = AgentLabel(idleAgent)
 		s.Pane = idleAgent.Pane
+		s.PaneID = idleAgent.PaneID
 		s.AgentType = idleAgent.AgentType
 		result = append(result, s)
 	}
@@ -409,7 +413,7 @@ func NormalizeReviewQueueFilter(filter string) (string, error) {
 	}
 	normalized := normalizeReviewAgentTypeLike(trimmed)
 	if normalized == "" {
-		return "", fmt.Errorf("invalid agent filter %q: must be one of claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, oc, cursor, windsurf|ws, aider, ollama", filter)
+		return "", fmt.Errorf("invalid agent filter %q: must be one of claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, pi, oc, cursor, windsurf|ws, aider, ollama", filter)
 	}
 	return normalized, nil
 }
@@ -472,9 +476,56 @@ func ValidateReviewPromptDelivery(suggestions []ReviewSuggestion) error {
 	return nil
 }
 
-// SendReviewPrompts dispatches review suggestions using tmux.SendKeys.
+// SendReviewPrompts dispatches review suggestions using agent-aware tmux delivery.
 func SendReviewPrompts(session string, suggestions []ReviewSuggestion) (sent, skipped int, err error) {
-	return SendReviewPromptsWithSender(session, suggestions, tmux.SendKeys)
+	return SendReviewPromptsContext(context.Background(), session, suggestions)
+}
+
+// SendReviewPromptsContext dispatches review suggestions using agent-aware tmux
+// delivery while respecting caller cancellation.
+func SendReviewPromptsContext(ctx context.Context, session string, suggestions []ReviewSuggestion) (sent, skipped int, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ValidateReviewPromptDelivery(suggestions); err != nil {
+		return 0, 0, err
+	}
+	for _, s := range suggestions {
+		if err := ctx.Err(); err != nil {
+			return sent, skipped, err
+		}
+		target := reviewSuggestionTarget(session, s)
+		slog.Info("[E2E-REVIEWQ] send",
+			"session", session,
+			"agent", s.Agent,
+			"pane", s.Pane,
+			"pane_id", s.PaneID,
+			"source", s.Source)
+		sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		sendErr := tmux.SendKeysForAgentContext(sendCtx, target, s.Prompt, true, tmux.AgentType(s.AgentType))
+		cancel()
+		if sendErr != nil {
+			if ctx.Err() != nil {
+				return sent, skipped, ctx.Err()
+			}
+			slog.Warn("[E2E-REVIEWQ] send_failed",
+				"session", session,
+				"pane", s.Pane,
+				"pane_id", s.PaneID,
+				"error", sendErr)
+			skipped++
+		} else {
+			sent++
+		}
+	}
+	return sent, skipped, nil
+}
+
+func reviewSuggestionTarget(session string, s ReviewSuggestion) string {
+	if id := strings.TrimSpace(s.PaneID); id != "" {
+		return id
+	}
+	return fmt.Sprintf("%s:.%d", session, s.Pane)
 }
 
 // SendReviewPromptsWithSender dispatches review suggestions using a custom sender.
@@ -486,16 +537,18 @@ func SendReviewPromptsWithSender(session string, suggestions []ReviewSuggestion,
 		return 0, 0, fmt.Errorf("review prompt sender is required")
 	}
 	for _, s := range suggestions {
-		target := fmt.Sprintf("%s:.%d", session, s.Pane)
+		target := reviewSuggestionTarget(session, s)
 		slog.Info("[E2E-REVIEWQ] send",
 			"session", session,
 			"agent", s.Agent,
 			"pane", s.Pane,
+			"pane_id", s.PaneID,
 			"source", s.Source)
 		if err := sender(target, s.Prompt, true); err != nil {
 			slog.Warn("[E2E-REVIEWQ] send_failed",
 				"session", session,
 				"pane", s.Pane,
+				"pane_id", s.PaneID,
 				"error", err)
 			skipped++
 		} else {

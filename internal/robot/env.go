@@ -134,7 +134,11 @@ func findTmuxBinaryPath() string {
 	}
 
 	// Fall back to which command
-	out, err := exec.Command("which", "tmux").Output()
+	whichCtx, whichCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer whichCancel()
+	whichCmd := exec.CommandContext(whichCtx, "which", "tmux")
+	whichCmd.WaitDelay = time.Second
+	out, err := whichCmd.Output()
 	if err == nil {
 		path := strings.TrimSpace(string(out))
 		if path != "" && fileExists(path) {
@@ -356,7 +360,11 @@ func detectSessionStructure(session string) (*SessionStructureInfo, error) {
 	tmuxPath := tmux.BinaryPath()
 
 	// Determine primary window (prefer window 1 if present)
-	windowOut, err := exec.Command(tmuxPath, "list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}").Output()
+	winCtx, winCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer winCancel()
+	winCmd := exec.CommandContext(winCtx, tmuxPath, "list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}")
+	winCmd.WaitDelay = time.Second
+	windowOut, err := winCmd.Output()
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +391,11 @@ func detectSessionStructure(session string) (*SessionStructureInfo, error) {
 	target := fmt.Sprintf("%s:%d", session, primaryWindow)
 
 	// Get pane indices from primary window
-	out, err := exec.Command(tmuxPath, "list-panes", "-t", tmux.ExactTarget(target), "-F", "#{pane_index}").Output()
+	paneCtx, paneCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer paneCancel()
+	paneCmd := exec.CommandContext(paneCtx, tmuxPath, "list-panes", "-t", tmux.ExactTarget(target), "-F", "#{pane_index}")
+	paneCmd.WaitDelay = time.Second
+	out, err := paneCmd.Output()
 	if err != nil {
 		return nil, err
 	}

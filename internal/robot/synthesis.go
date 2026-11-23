@@ -174,7 +174,10 @@ func (cd *ConflictDetector) pruneWindowsLocked(cutoff time.Time) {
 
 // GetGitStatus returns the current git status of modified files.
 func (cd *ConflictDetector) GetGitStatus() ([]GitFileStatus, error) {
-	cmd := exec.Command("git", "-C", cd.repoPath, "status", "--porcelain")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", cd.repoPath, "status", "--porcelain")
+	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -1405,7 +1408,10 @@ func getPanesForSession(session string) ([]paneInfo, error) {
 
 // capturePaneOutput captures output from a tmux pane.
 func capturePaneOutput(paneID string, lines int) (string, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", tmux.ExactTarget(paneID), "-p", "-S", fmt.Sprintf("-%d", lines))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tmux.BinaryPath(), "capture-pane", "-t", tmux.ExactTarget(paneID), "-p", "-S", fmt.Sprintf("-%d", lines))
+	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

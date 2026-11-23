@@ -464,7 +464,9 @@ func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotSnapshotV1 handles GET /api/v1/robot/snapshot.
 func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetSnapshotWithOptions(nil, s.robotPaginationOptions())
+	opts := s.robotPaginationOptions()
+	opts.Feed = s.getAttentionFeed()
+	output, err := robot.GetSnapshotWithOptions(nil, opts)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -675,7 +677,7 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
 func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetDashboardForProject(s.projectDirSnapshot())
+	output, err := robot.GetDashboardForProject(s.projectDirSnapshot(), s.getAttentionFeed())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -696,7 +698,7 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
 func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetTerseForStoreWithProject(s.stateStore, nil, s.projectDirSnapshot())
+	output, err := robot.GetTerseForStoreWithProject(s.stateStore, nil, s.projectDirSnapshot(), s.getAttentionFeed())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return

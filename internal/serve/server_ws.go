@@ -149,6 +149,7 @@ type WSClient struct {
 	closeOnce  sync.Once
 
 	// Attention subscription state for durable attention semantics.
+	attentionFeed  attentionStreamFeed
 	attentionSub   *WSAttentionSub
 	attentionSubMu sync.Mutex
 }
@@ -684,12 +685,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Create client
 	client := &WSClient{
-		id:         clientID,
-		conn:       conn,
-		hub:        s.wsHub,
-		send:       make(chan []byte, 256),
-		topics:     make(map[string]struct{}),
-		authClaims: extractAuthClaims(r),
+		id:            clientID,
+		conn:          conn,
+		hub:           s.wsHub,
+		send:          make(chan []byte, 256),
+		topics:        make(map[string]struct{}),
+		authClaims:    extractAuthClaims(r),
+		attentionFeed: s.getAttentionFeed(),
 	}
 
 	// Wire persistence before the hub loop starts so seq assignment is
@@ -1063,7 +1065,11 @@ func isAttentionTopic(topic string) bool {
 //   - exclude_muted: bool - Skip muted items
 //   - exclude_snoozed: bool - Skip snoozed items
 func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[string]interface{} {
-	return c.handleAttentionSubscribeWithFeed(robot.GetAttentionFeed(), msg, topics)
+	feed := c.attentionFeed
+	if feed == nil {
+		feed = robot.GetAttentionFeed()
+	}
+	return c.handleAttentionSubscribeWithFeed(feed, msg, topics)
 }
 
 // handleAttentionSubscribeWithFeed establishes a durable attention subscription.

@@ -1063,16 +1063,17 @@ type TerseOutput struct {
 
 // GetTerseForStore returns compact state using an explicit projection store.
 func GetTerseForStore(store *state.Store, cfg *config.Config) (*TerseOutput, error) {
-	return GetTerseForStoreWithProject(store, cfg, "")
+	return GetTerseForStoreWithProject(store, cfg, "", nil)
 }
 
 // GetTerseForStoreWithProject returns compact state using an explicit
-// projection store and project directory.
-func GetTerseForStoreWithProject(store *state.Store, cfg *config.Config, projectDir string) (*TerseOutput, error) {
+// projection store, project directory, and optional attention feed.
+func GetTerseForStoreWithProject(store *state.Store, cfg *config.Config, projectDir string, feed *AttentionFeed) (*TerseOutput, error) {
 	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{
 		Store:         store,
 		ExplicitStore: true,
 		ProjectDir:    strings.TrimSpace(projectDir),
+		Feed:          feed,
 	})
 	if err != nil {
 		return nil, err

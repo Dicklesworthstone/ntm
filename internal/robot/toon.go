@@ -16,6 +16,7 @@ package robot
 
 import (
 	"bytes"
+	"context"
 	"encoding"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // toonEncode encodes a payload as TOON format.
@@ -47,7 +49,10 @@ func toonEncode(payload any, delimiter string) (string, error) {
 		args = append(args, "--delimiter", delimArg)
 	}
 
-	cmd := exec.Command(truPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, truPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = bytes.NewReader(jsonBytes)
 
 	var stdout, stderr bytes.Buffer
@@ -159,13 +164,21 @@ func isToonRustBinary(path string) bool {
 		// Never accept (or invoke) the Node.js encoder as the TOON backend.
 		return false
 	}
-	helpOut, _ := exec.Command(path, "--help").CombinedOutput()
+	helpCtx, helpCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	helpCmd := exec.CommandContext(helpCtx, path, "--help")
+	helpCmd.WaitDelay = time.Second
+	helpOut, _ := helpCmd.CombinedOutput()
+	helpCancel()
 	helpLower := strings.ToLower(string(helpOut))
 	if strings.Contains(helpLower, "reference implementation in rust") {
 		return true
 	}
 
-	verOut, _ := exec.Command(path, "--version").CombinedOutput()
+	verCtx, verCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	verCmd := exec.CommandContext(verCtx, path, "--version")
+	verCmd.WaitDelay = time.Second
+	verOut, _ := verCmd.CombinedOutput()
+	verCancel()
 	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
 	return looksLikeToonRustVersion(verLower) || strings.HasPrefix(verLower, "toon_rust ")
 }

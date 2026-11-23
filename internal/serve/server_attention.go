@@ -660,6 +660,7 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 		IncidentID:          strings.TrimSpace(r.URL.Query().Get("incident_id")),
 		Store:               s.stateStore,
 		ExplicitStore:       true,
+		Feed:                s.getAttentionFeed(),
 	}
 
 	sinceCursorProvided := false

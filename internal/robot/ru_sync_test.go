@@ -70,6 +70,7 @@ func TestParseRUSyncPayloadRejectsNonEnvelopes(t *testing.T) {
 // the configured GitHub URL (ru: mismatch, a conflict) and one is absent
 // (dry_run). Dry-run keeps ru from cloning, so no network is touched.
 func TestGetRUSyncReportsInstalledRUConflicts(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("ru"); err != nil {
 		t.Skip("ru not installed")
 	}
@@ -98,11 +99,14 @@ func TestGetRUSyncReportsInstalledRUConflicts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "home"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", filepath.Join(root, "home"))
-	t.Setenv("RU_CONFIG_DIR", filepath.Join(root, "config"))
-	t.Setenv("RU_PROJECTS_DIR", filepath.Join(root, "projects"))
-
-	out, err := GetRUSync(RUSyncOptions{DryRun: true})
+	out, err := GetRUSync(RUSyncOptions{
+		DryRun: true,
+		extraEnv: []string{
+			"HOME=" + filepath.Join(root, "home"),
+			"RU_CONFIG_DIR=" + filepath.Join(root, "config"),
+			"RU_PROJECTS_DIR=" + filepath.Join(root, "projects"),
+		},
+	})
 	if err != nil {
 		t.Fatalf("GetRUSync error: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -35,7 +36,8 @@ type RUSyncRepos struct {
 
 // RUSyncOptions configures the GetRUSync operation.
 type RUSyncOptions struct {
-	DryRun bool
+	DryRun   bool
+	extraEnv []string
 }
 
 // ru sync exit codes (ru --help, EXIT CODES).
@@ -86,7 +88,7 @@ func GetRUSync(opts RUSyncOptions) (*RUSyncOutput, error) {
 	if opts.DryRun {
 		args = append(args, "--dry-run")
 	}
-	run := runRUSyncCommand(ctx, path, args)
+	run := runRUSyncCommand(ctx, path, args, opts.extraEnv)
 
 	output.DurationMs = time.Since(start).Milliseconds()
 	output.ExitCode = run.exitCode
@@ -207,9 +209,12 @@ type ruSyncRun struct {
 	err      error
 }
 
-func runRUSyncCommand(ctx context.Context, path string, args []string) ruSyncRun {
+func runRUSyncCommand(ctx context.Context, path string, args []string, extraEnv []string) ruSyncRun {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.WaitDelay = 2 * time.Second
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	stdout := tools.NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

@@ -9197,6 +9197,7 @@ export interface components {
             idle_duration?: string;
             last_task?: string;
             pane: number;
+            pane_id?: string;
         };
         ImportCheckpointRequest: {
             allow_overwrite?: boolean;
@@ -11586,6 +11587,7 @@ export interface components {
             agent: string;
             agent_type: string;
             pane: number;
+            pane_id?: string;
             prompt: string;
             source: string;
             source_ref?: string;

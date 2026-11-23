@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -227,7 +228,10 @@ func getProcessMemoryMB(pid int) (int, error) {
 
 	// Fallback to ps (macOS and Linux)
 	// 'rss' is resident set size in kilobytes
-	cmd := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(pid))
+	psCtx, psCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer psCancel()
+	cmd := exec.CommandContext(psCtx, "ps", "-o", "rss=", "-p", strconv.Itoa(pid))
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err == nil {
 		kbStr := strings.TrimSpace(string(out))

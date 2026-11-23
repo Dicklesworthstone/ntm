@@ -7,9 +7,10 @@ import "github.com/Dicklesworthstone/ntm/internal/state"
 type PaginationOptions struct {
 	Limit         int
 	Offset        int
-	Store         *state.Store `json:"-"`
-	ExplicitStore bool         `json:"-"`
-	ProjectDir    string       `json:"-"`
+	Store         *state.Store   `json:"-"`
+	ExplicitStore bool           `json:"-"`
+	ProjectDir    string         `json:"-"`
+	Feed          *AttentionFeed `json:"-"`
 }
 
 func (opts PaginationOptions) resolveStore() *state.Store {

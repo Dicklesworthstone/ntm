@@ -35675,6 +35675,9 @@
           },
           "pane": {
             "type": "integer"
+          },
+          "pane_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -43595,6 +43598,9 @@
           },
           "pane": {
             "type": "integer"
+          },
+          "pane_id": {
+            "type": "string"
           },
           "prompt": {
             "type": "string"

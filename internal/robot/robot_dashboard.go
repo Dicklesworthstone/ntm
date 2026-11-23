@@ -38,12 +38,13 @@ type DashboardOutput struct {
 // GetDashboard retrieves a dashboard-oriented view for AI orchestrators.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetDashboard() (*DashboardOutput, error) {
-	return GetDashboardForProject("")
+	return GetDashboardForProject("", nil)
 }
 
 // GetDashboardForProject retrieves a dashboard-oriented view scoped to
-// projectDir (falling back to the current working directory when empty).
-func GetDashboardForProject(projectDir string) (*DashboardOutput, error) {
+// projectDir (falling back to the current working directory when empty) and
+// optional attention feed.
+func GetDashboardForProject(projectDir string, feed *AttentionFeed) (*DashboardOutput, error) {
 	wd := strings.TrimSpace(projectDir)
 	if wd == "" {
 		wd, _ = os.Getwd()
@@ -191,7 +192,10 @@ func GetDashboardForProject(projectDir string) (*DashboardOutput, error) {
 	}
 
 	// Attention feed summary (best-effort)
-	output.Attention = buildSnapshotAttentionSummary(GetAttentionFeed())
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
+	output.Attention = buildSnapshotAttentionSummary(feed)
 
 	return output, nil
 }

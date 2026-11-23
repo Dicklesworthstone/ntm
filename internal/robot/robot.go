@@ -834,7 +834,15 @@ type RecipesOutput struct {
 // GetRecipes returns available recipes for AI orchestrators.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetRecipes() (*RecipesOutput, error) {
+	return GetRecipesForProject("")
+}
+
+// GetRecipesForProject returns available recipes scoped to projectDir when non-empty.
+func GetRecipesForProject(projectDir string) (*RecipesOutput, error) {
 	loader := recipe.NewLoader()
+	if trimmed := strings.TrimSpace(projectDir); trimmed != "" {
+		loader.ProjectDir = trimmed
+	}
 	recipes, err := loader.LoadAll()
 	if err != nil {
 		// Return empty list on error
@@ -896,8 +904,9 @@ func PrintRecipes() error {
 
 // DiffOptions holds options for the --robot-diff command.
 type DiffOptions struct {
-	Session string        // Required: session name
-	Since   time.Duration // Duration to look back (default: 15m)
+	Session    string        // Required: session name
+	Since      time.Duration // Duration to look back (default: 15m)
+	ProjectDir string        // Optional: repository root (defaults to process cwd)
 }
 
 // DiffOutput is the structured output for --robot-diff.
@@ -997,10 +1006,14 @@ func GetDiff(opts DiffOptions) (*DiffOutput, error) {
 	}
 
 	// Create conflict detector for file analysis
-	wd, err := os.Getwd()
-	if err != nil {
-		// Fall back to empty path - conflict detection will be limited
-		wd = ""
+	wd := strings.TrimSpace(opts.ProjectDir)
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			// Fall back to empty path - conflict detection will be limited
+			wd = ""
+		}
 	}
 	detector := NewConflictDetector(&ConflictDetectorConfig{
 		RepoPath: wd,

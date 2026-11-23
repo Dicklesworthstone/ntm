@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
@@ -147,13 +148,21 @@ var statDiskUsageFn = statDiskUsage
 // runtime store degrades to a sample-only section: usage is reported but no
 // delta can be computed or persisted.
 func collectDiskSection(store WatermarkStore) *DiskSection {
-	cwd, err := os.Getwd()
-	if err != nil {
-		slog.Debug("disk sample skipped: cannot resolve working directory", "error", err)
-		return nil
+	return collectDiskSectionForProject(store, "")
+}
+
+func collectDiskSectionForProject(store WatermarkStore, projectDir string) *DiskSection {
+	baseDir := strings.TrimSpace(projectDir)
+	if baseDir == "" {
+		var err error
+		baseDir, err = os.Getwd()
+		if err != nil {
+			slog.Debug("disk sample skipped: cannot resolve working directory", "error", err)
+			return nil
+		}
 	}
-	scope := cwd
-	if root, rootErr := git.FindProjectRoot(cwd); rootErr == nil && root != "" {
+	scope := baseDir
+	if root, rootErr := git.FindProjectRoot(baseDir); rootErr == nil && root != "" {
 		scope = root
 	}
 	usage, err := statDiskUsageFn(scope)
@@ -360,7 +369,7 @@ func publishDiskTrajectoryFromMergedConfig(disk *DiskSection, now time.Time) {
 // attachSnapshotDisk computes the disk section for a snapshot and fires the
 // trajectory alert before the snapshot drains alerts.GetActiveAlerts, so a
 // within-horizon projection appears in the same snapshot's alert sections.
-func attachSnapshotDisk(output *SnapshotOutput, cfg *config.Config, store *state.Store) {
+func attachSnapshotDisk(output *SnapshotOutput, cfg *config.Config, store *state.Store, projectDir string) {
 	if output == nil {
 		return
 	}
@@ -368,7 +377,7 @@ func attachSnapshotDisk(output *SnapshotOutput, cfg *config.Config, store *state
 	if store != nil {
 		wm = store
 	}
-	output.Disk = collectDiskSection(wm)
+	output.Disk = collectDiskSectionForProject(wm, projectDir)
 	horizon := 0.0
 	if cfg != nil {
 		horizon = cfg.Alerts.DiskFullHorizonHours

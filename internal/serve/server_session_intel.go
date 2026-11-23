@@ -262,8 +262,9 @@ func (s *Server) handleSessionDiffV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := robot.GetDiff(robot.DiffOptions{
-		Session: sessionID,
-		Since:   sinceDur,
+		Session:    sessionID,
+		Since:      sinceDur,
+		ProjectDir: s.projectDirSnapshot(),
 	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -387,7 +388,7 @@ func (s *Server) handlePersonasListV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRecipesListV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	out, err := robot.GetRecipes()
+	out, err := robot.GetRecipesForProject(s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return

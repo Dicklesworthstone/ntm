@@ -413,9 +413,12 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	// Disk trajectory must attach before either snapshot path (projection or
 	// fallback) drains alerts.GetActiveAlerts, so a within-horizon projection
 	// surfaces in this same snapshot's alert sections.
-	attachSnapshotDisk(output, cfg, opts.Store)
+	attachSnapshotDisk(output, cfg, opts.Store, opts.ProjectDir)
 
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	populateSnapshotFeedMetadata(output, feed)
 
 	// Check tmux availability
@@ -434,12 +437,16 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	var mailStats map[string]SnapshotAgentMailStats
 	var projectKey string
 
-	cwd, err := os.Getwd()
-	if err == nil {
-		if root, err := git.FindProjectRoot(cwd); err == nil {
+	baseDir := strings.TrimSpace(opts.ProjectDir)
+	var cwdErr error
+	if baseDir == "" {
+		baseDir, cwdErr = os.Getwd()
+	}
+	if cwdErr == nil && baseDir != "" {
+		if root, err := git.FindProjectRoot(baseDir); err == nil {
 			projectKey = root
 		} else {
-			projectKey = cwd
+			projectKey = baseDir
 		}
 		// Build initial mail summary without pane mapping
 		if summary, agents, stats := fetchAgentMailData(projectKey); summary != nil {
@@ -567,7 +574,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	output.Swarm = buildSwarmSnapshot(cfg, sessions)
 
 	// Try to get beads summary
-	beads := bv.GetBeadsSummary("", BeadLimit)
+	beads := bv.GetBeadsSummary(projectKey, BeadLimit)
 	if beads != nil {
 		output.BeadsSummary = beads
 	}
