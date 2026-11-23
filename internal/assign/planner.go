@@ -100,6 +100,10 @@ func DetectAgentTypeFromTitle(title string) string {
 		return "antigravity"
 	case strings.Contains(title, "gemini"):
 		return "gemini"
+	case strings.Contains(title, "grok"):
+		return "grok"
+	case strings.Contains(title, "oh-my-pi") || strings.Contains(title, "__omp_") || strings.HasSuffix(title, "__omp") || strings.HasPrefix(title, "omp_") || title == "omp":
+		return "omp"
 	case strings.Contains(title, "cursor"):
 		return "cursor"
 	case strings.Contains(title, "windsurf"):
@@ -110,6 +114,8 @@ func DetectAgentTypeFromTitle(title string) string {
 		return "oc"
 	case strings.Contains(title, "ollama"):
 		return "ollama"
+	case strings.Contains(title, "__pi_") || strings.HasSuffix(title, "__pi") || strings.HasPrefix(title, "pi_") || title == "pi":
+		return "pi"
 	case strings.Contains(title, "user"):
 		return "user"
 	}

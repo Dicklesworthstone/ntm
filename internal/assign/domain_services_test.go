@@ -157,6 +157,23 @@ func TestDomainPlannerScoringAndLegacyStrategies(t *testing.T) {
 	if got := DetectAgentTypeFromTitle("proj__omp_2"); got != "omp" {
 		t.Fatalf("DetectAgentTypeFromTitle = %q, want omp", got)
 	}
+	if got := DetectAgentTypeFromTitle("proj__pi_1"); got != "pi" {
+		t.Fatalf("DetectAgentTypeFromTitle(pi) = %q, want pi", got)
+	}
+	for _, tc := range []struct {
+		title string
+		want  string
+	}{
+		{"ubuntu@compute-01: ~", "unknown"},
+		{"~/components", "unknown"},
+		{"prompt-user", "user"},
+		{"compose-aider", "aider"},
+		{"components-cursor", "cursor"},
+	} {
+		if got := DetectAgentTypeFromTitle(tc.title); got != tc.want {
+			t.Fatalf("DetectAgentTypeFromTitle(%q) = %q, want %q", tc.title, got, tc.want)
+		}
+	}
 	if got := DetectModelFromTitle("proj__cc_1_opus"); got != "opus" {
 		t.Fatalf("DetectModelFromTitle = %q, want opus", got)
 	}
