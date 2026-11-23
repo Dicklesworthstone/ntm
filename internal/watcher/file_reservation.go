@@ -554,6 +554,8 @@ func mapAgentTypeToPatternAgent(agentType tmux.AgentType) string {
 		return "grok"
 	case tmux.AgentOmp:
 		return "omp"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentOpencode:
 		return "opencode"
 	default:

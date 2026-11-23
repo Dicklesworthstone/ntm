@@ -82,6 +82,7 @@ var analyticsSessionCreateHarnesses = []sessionCreateHarnessField{
 	{primaryKey: "aider_count", agentType: "aider"},
 	{primaryKey: "opencode_count", aliasKey: "oc_count", agentType: "oc"},
 	{primaryKey: "omp_count", agentType: "omp"},
+	{primaryKey: "pi_count", agentType: "pi"},
 	{primaryKey: "ollama_count", agentType: "ollama"},
 }
 

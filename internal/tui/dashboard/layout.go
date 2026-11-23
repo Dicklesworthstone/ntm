@@ -776,7 +776,7 @@ func agentRowTypePresentation(agentType string, t theme.Theme) (lipgloss.Color, 
 		return color, "󰘦"
 	case tmux.AgentGemini, tmux.AgentAntigravity:
 		return color, "󰇮"
-	case tmux.AgentGrok, tmux.AgentOmp, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
+	case tmux.AgentGrok, tmux.AgentOmp, tmux.AgentPi, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
 		return color, "󰚩"
 	case tmux.AgentCursor:
 		return color, "󰢹"

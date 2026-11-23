@@ -290,11 +290,24 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 			if gmi, ok := event.Data["gemini_count"].(float64); ok && gmi > 0 {
 				agentSpawns["gemini"] += int(gmi)
 			}
+			if agy, ok := event.Data["antigravity_count"].(float64); ok && agy > 0 {
+				agentSpawns["antigravity"] += int(agy)
+			} else if agy, ok := event.Data["agy_count"].(float64); ok && agy > 0 {
+				agentSpawns["antigravity"] += int(agy)
+			}
 			if grok, ok := event.Data["grok_count"].(float64); ok && grok > 0 {
 				agentSpawns["grok"] += int(grok)
 			}
 			if omp, ok := event.Data["omp_count"].(float64); ok && omp > 0 {
 				agentSpawns["omp"] += int(omp)
+			}
+			if pi, ok := event.Data["pi_count"].(float64); ok && pi > 0 {
+				agentSpawns["pi"] += int(pi)
+			}
+			if oc, ok := event.Data["opencode_count"].(float64); ok && oc > 0 {
+				agentSpawns["oc"] += int(oc)
+			} else if oc, ok := event.Data["oc_count"].(float64); ok && oc > 0 {
+				agentSpawns["oc"] += int(oc)
 			}
 			if cursor, ok := event.Data["cursor_count"].(float64); ok && cursor > 0 {
 				agentSpawns["cursor"] += int(cursor)
