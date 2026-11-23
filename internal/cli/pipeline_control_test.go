@@ -106,20 +106,10 @@ func TestPipelineResumeMissingStateReleasesOwnership(t *testing.T) {
 }
 
 func TestPipelineResumeRejectsDamagedManagedWorkflow(t *testing.T) {
-	root := inPipelineControlProject(t)
-	oldJSON := jsonOutput
-	jsonOutput = false
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	t.Parallel()
+	root := t.TempDir()
 	// Command-only workflow: no agent is driven. The session probe is a
-	// deterministic tmux fixture; the workflow loader and hash check are real.
-	fakeTmux := filepath.Join(t.TempDir(), "tmux")
-	// Session resolution lists sessions before has-session, so the fixture
-	// must report the checkpoint's session in list-sessions' -F format.
-	fakeScript := "#!/bin/sh\ncase \"$1\" in\n  -V) echo 'tmux 3.4' ;;\n  list-sessions) echo 'snapshot-session" + tmux.FieldSeparator + "1" + tmux.FieldSeparator + "0" + tmux.FieldSeparator + "now' ;;\nesac\nexit 0\n"
-	if err := os.WriteFile(fakeTmux, []byte(fakeScript), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("NTM_TMUX_BINARY", fakeTmux)
+	// deterministic context resolver; the workflow loader and hash check are real.
 	dir := filepath.Join(root, ".ntm", "pipelines", "workflow-snapshots")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -139,7 +129,9 @@ func TestPipelineResumeRejectsDamagedManagedWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := newPipelineResumeCmd()
-	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetContext(pipelineTestContext(context.Background(), root, false, "snapshot-session"))
 	err = cmd.RunE(cmd, []string{prior.RunID})
 	if err == nil || !strings.Contains(err.Error(), "content hash mismatch") {
 		t.Fatalf("snapshot integrity was not enforced: %v", err)

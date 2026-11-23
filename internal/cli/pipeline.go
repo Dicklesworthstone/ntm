@@ -1363,7 +1363,7 @@ Examples:
 			} else if report.Deleted == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "No eligible state files to clean up; %d retained.\n", report.Retained)
 			} else {
-				output.SuccessCheck(fmt.Sprintf("Cleaned up %d state file(s) older than %s; %d retained", report.Deleted, duration, report.Retained))
+				output.PrintSuccessCheck(cmd.OutOrStdout(), fmt.Sprintf("Cleaned up %d state file(s) older than %s; %d retained", report.Deleted, duration, report.Retained))
 			}
 			for _, entry := range report.Entries {
 				if dryRun || entry.Action == "retained" {
@@ -1513,10 +1513,15 @@ func resolvePipelineLiveSession(ctx context.Context, session string, w io.Writer
 	if err := tmux.EnsureInstalled(); err != nil {
 		return SessionResolution{}, err
 	}
-	return resolvePipelineSession(session, w)
+	return resolvePipelineSessionWithJSON(session, w, pipelineJSONMode(ctx))
 }
 
 func resolvePipelineProjectDirForSession(ctx context.Context, session string) (string, error) {
+	if ctx != nil {
+		if override, ok := ctx.Value(pipelineProjectDirKey{}).(string); ok && strings.TrimSpace(override) != "" {
+			return override, nil
+		}
+	}
 	session = strings.TrimSpace(session)
 	if session != "" {
 		resolved, err := normalizeProjectScopedSessionName(ctx, session, !pipelineJSONMode(ctx))
@@ -1525,11 +1530,6 @@ func resolvePipelineProjectDirForSession(ctx context.Context, session string) (s
 		}
 		session = resolved
 		return resolveExplicitProjectDirForSessionContext(ctx, session)
-	}
-	if ctx != nil {
-		if override, ok := ctx.Value(pipelineProjectDirKey{}).(string); ok && strings.TrimSpace(override) != "" {
-			return override, nil
-		}
 	}
 
 	projectDir := GetProjectRoot()
@@ -1540,11 +1540,15 @@ func resolvePipelineProjectDirForSession(ctx context.Context, session string) (s
 }
 
 func resolvePipelineSession(session string, w io.Writer) (SessionResolution, error) {
+	return resolvePipelineSessionWithJSON(session, w, IsJSONOutput())
+}
+
+func resolvePipelineSessionWithJSON(session string, w io.Writer, asJSON bool) (SessionResolution, error) {
 	session = strings.TrimSpace(session)
 	if session == "" {
 		return SessionResolution{}, fmt.Errorf("session is required")
 	}
-	res, err := ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
+	res, err := ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: asJSON})
 	if err != nil {
 		return SessionResolution{}, err
 	}
