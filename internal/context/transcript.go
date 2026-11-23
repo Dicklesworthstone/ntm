@@ -287,9 +287,12 @@ const TranscriptFreshness = 10 * time.Minute
 type transcriptEntry struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	// Model is top-level on omp "model_change" lines.
-	Model   string `json:"model"`
-	Message struct {
+	// Model is top-level on omp "model_change" lines; Provider and ModelID are
+	// top-level on Pi "model_change" lines.
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	ModelID  string `json:"modelId"`
+	Message  struct {
 		Role     string `json:"role"`
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
@@ -477,8 +480,12 @@ func parseLastUsage(buf []byte) (*TranscriptUsage, bool) {
 			declaredModel = ompQualifiedModel(e.Message.Provider, e.Message.Model)
 		} else if e.Type == "turn_context" && e.Payload.Model != "" {
 			declaredModel = e.Payload.Model
-		} else if e.Type == "model_change" && e.Model != "" {
-			declaredModel = e.Model // omp: already provider-qualified
+		} else if e.Type == "model_change" {
+			if e.Model != "" {
+				declaredModel = ompQualifiedModel(e.Provider, e.Model)
+			} else if e.ModelID != "" {
+				declaredModel = ompQualifiedModel(e.Provider, e.ModelID)
+			}
 		}
 		if declaredModel != "" {
 			if last != nil {
@@ -884,6 +891,10 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 		home, _ := os.UserHomeDir()
 		path, _ = agentsession.NewestOmpTranscriptForCwd(agentsession.OmpSessionRoots(home, os.Getenv), cwd, newerThan, nil)
 		ok = path != ""
+	case "pi":
+		home, _ := os.UserHomeDir()
+		path, _ = agentsession.NewestPiTranscriptForCwd(agentsession.PiSessionRoots(home, cwd, os.Getenv, ""), cwd, newerThan, nil)
+		ok = path != ""
 	default:
 		// Other agent CLIs (cursor, ...) do not yet have known
 		// transcript locations; fall back to scrollback estimation.
@@ -981,7 +992,7 @@ func maxPaneContextUsage(ctx stdcontext.Context, panes []tmux.Pane, stopAt int, 
 		seen[pane.ID] = true
 		agentType := agent.AgentType(pane.Type).Canonical()
 		switch agentType {
-		case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeOmp, agent.AgentTypeOpencode:
+		case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeOmp, agent.AgentTypePi, agent.AgentTypeOpencode:
 		default:
 			continue
 		}
@@ -990,12 +1001,17 @@ func maxPaneContextUsage(ctx stdcontext.Context, panes []tmux.Pane, stopAt int, 
 		// Only these existing parsers establish a native context gauge from
 		// its live composer/footer/sidebar structure. Codex's generic percentage
 		// regex can match quoted history, so Codex uses exact transcript binding.
-		if agentType == agent.AgentTypeGemini || agentType == agent.AgentTypeOmp || agentType == agent.AgentTypeOpencode {
+		if agentType == agent.AgentTypeGemini || agentType == agent.AgentTypeOmp || agentType == agent.AgentTypePi || agentType == agent.AgentTypeOpencode {
 			if visible, err := capture(ctx, pane.ID); err == nil && ctx.Err() == nil {
 				if agentType == agent.AgentTypeOmp {
 					composer := agent.ParseOmpComposer(visible)
 					if composer.Found && composer.RowsBelow == 0 {
 						used, _, measured = agent.OmpContextUsage(visible)
+					}
+				} else if agentType == agent.AgentTypePi {
+					composer := agent.ParsePiComposer(visible)
+					if composer.Found {
+						used, _, measured = agent.PiContextUsage(visible)
 					}
 				} else if agentType == agent.AgentTypeOpencode {
 					used, _, measured = agent.OpencodeContextUsage(visible)

@@ -1813,6 +1813,10 @@ func piSessionRoots(home, cwd string, getenv func(string) string, sessionDir str
 // Header reads are bounded, directory batches check cancellation, and neither
 // symlink traversal nor transcript-body parsing is needed for discovery.
 func visitPiSessions(ctx context.Context, roots []string, visit func(piSessionHeader, *Info)) {
+	visitPiSessionsSince(ctx, roots, time.Time{}, visit)
+}
+
+func visitPiSessionsSince(ctx context.Context, roots []string, newerThan time.Time, visit func(piSessionHeader, *Info)) {
 	seen := make(map[string]bool)
 	var scan func(string, bool)
 	scan = func(dir string, projects bool) {
@@ -1839,12 +1843,15 @@ func visitPiSessions(ctx context.Context, roots []string, visit func(piSessionHe
 				if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 					continue
 				}
-				header, ok := readPiSessionHeader(path)
-				if !ok || ctx.Err() != nil {
-					continue
-				}
 				st, statErr := entry.Info()
 				if statErr != nil || !st.Mode().IsRegular() {
+					continue
+				}
+				if !newerThan.IsZero() && st.ModTime().Before(newerThan) {
+					continue
+				}
+				header, ok := readPiSessionHeader(path)
+				if !ok || ctx.Err() != nil {
 					continue
 				}
 				visit(header, &Info{
@@ -1862,6 +1869,38 @@ func visitPiSessions(ctx context.Context, roots []string, visit func(piSessionHe
 			scan(filepath.Clean(root), true)
 		}
 	}
+}
+
+// PiSessionRoots returns the Pi session roots for the given home/cwd/env.
+func PiSessionRoots(home, cwd string, getenv func(string) string, sessionDir string) []string {
+	return piSessionRoots(home, cwd, getenv, sessionDir)
+}
+
+// NewestPiTranscriptForCwd locates the newest Pi JSONL transcript matching cwd
+// with mtime at or after newerThan, skipping already-claimed sessions.
+func NewestPiTranscriptForCwd(roots []string, cwd string, newerThan time.Time, claimed map[string]bool) (string, time.Time) {
+	if !filepath.IsAbs(cwd) {
+		return "", time.Time{}
+	}
+	cwd = filepath.Clean(cwd)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var newestPath string
+	var newestMod time.Time
+	visitPiSessionsSince(ctx, roots, newerThan, func(header piSessionHeader, info *Info) {
+		if header.Cwd != cwd || claimed[sessionClaimKey("pi", header.ID)] {
+			return
+		}
+		if newestPath == "" || info.UpdatedAt.After(newestMod) ||
+			(info.UpdatedAt.Equal(newestMod) && info.SourcePath < newestPath) {
+			newestPath = info.SourcePath
+			newestMod = info.UpdatedAt
+		}
+	})
+	if ctx.Err() != nil {
+		return "", time.Time{}
+	}
+	return newestPath, newestMod
 }
 
 func newestPiSession(ctx context.Context, roots []string, cwd string, claimed map[string]bool) *Info {

@@ -755,3 +755,37 @@ func TestTranscriptConfidence(t *testing.T) {
 		t.Errorf("stale transcript: got %q, want medium", got)
 	}
 }
+
+func TestReadLatestTranscriptUsage_PiModelChangeInvalidatesPriorModel(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pi-session.jsonl")
+	lines := strings.Join([]string{
+		`{"type":"session","version":3,"id":"pi-1","cwd":"/work/proj"}`,
+		`{"type":"message","message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1000,"output":200,"cacheRead":0,"cacheWrite":0,"totalTokens":1200}}}`,
+		`{"type":"model_change","provider":"openai","modelId":"gpt-5.4"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := ReadLatestTranscriptUsage(path)
+	if err != nil {
+		t.Fatalf("ReadLatestTranscriptUsage: %v", err)
+	}
+	if usage != nil {
+		t.Fatalf("usage = %+v, want nil after Pi model_change to a different model without subsequent usage", usage)
+	}
+
+	// Subsequent usage on the new model must be attributed to openai/gpt-5.4.
+	lines += `{"type":"message","message":{"role":"assistant","provider":"openai","model":"gpt-5.4","usage":{"input":500,"output":100,"cacheRead":0,"cacheWrite":0,"totalTokens":600}}}` + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = ReadLatestTranscriptUsage(path)
+	if err != nil {
+		t.Fatalf("ReadLatestTranscriptUsage after new turn: %v", err)
+	}
+	if usage == nil || usage.Model != "openai/gpt-5.4" || usage.InputTokens != 500 {
+		t.Fatalf("usage = %+v, want model=openai/gpt-5.4 input=500", usage)
+	}
+}
