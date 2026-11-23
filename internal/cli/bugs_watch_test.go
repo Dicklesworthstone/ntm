@@ -29,14 +29,8 @@ import (
 
 func newBugsWatchTestStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open temp store: %v", err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate temp store: %v", err)
-	}
 	return store
 }
 

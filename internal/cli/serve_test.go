@@ -30,13 +30,7 @@ import (
 // prune a row whose staleness window passed while keeping a fresh one.
 func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state store: %v", err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { store.Close() })
 
 	now := time.Now().UTC()
@@ -82,13 +76,7 @@ func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
 func TestCollectStateGarbageOccasionallyThrottlesCLIPasses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	store, err := state.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state store: %v", err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(dir, "state.db"))
 	t.Cleanup(func() { store.Close() })
 	seedStale := func(name string) {
 		t.Helper()
@@ -396,17 +384,7 @@ func TestServeBindsUnder200msWithSlowBVAndShutsDownUnder500msOnSIGTERM(t *testin
 	xdgConfigHome := filepath.Join(homeDir, "config")
 	// Pre-initialize state.db schema outside the bind latency window so -race
 	// instrumentation of 15 cold SQLite DDL migrations does not mask HTTP bind time.
-	preStore, err := state.Open(filepath.Join(xdgConfigHome, "ntm", "state.db"))
-	if err != nil {
-		t.Fatalf("pre-open state store: %v", err)
-	}
-	if err := preStore.Migrate(); err != nil {
-		_ = preStore.Close()
-		t.Fatalf("pre-migrate state store: %v", err)
-	}
-	if err := preStore.Close(); err != nil {
-		t.Fatalf("close pre-migrated state store: %v", err)
-	}
+	seedCLIStateDB(t, filepath.Join(xdgConfigHome, "ntm", "state.db"))
 
 	var stdout, stderr bytes.Buffer
 	child := exec.Command(exe, "-test.run=^TestServeSubprocessHelper$")
@@ -498,13 +476,7 @@ func TestRobotPolicyDecisionsCLIFlagAndStoreQuery(t *testing.T) {
 		t.Fatal("robot-policy-decisions should skip projection refresh")
 	}
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state store: %v", err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
 
 	outEmpty, err := robot.GetPolicyDecisionsForStore(store, robot.PolicyDecisionsOptions{})

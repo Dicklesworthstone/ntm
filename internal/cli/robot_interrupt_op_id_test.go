@@ -27,14 +27,8 @@ func TestRobotRequestSessionAcrossProcesses(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
-	store, err := state.Open(filepath.Join(configHome, "ntm", "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(configHome, "ntm", "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatal(err)
-	}
 	const id = "shared-cli-request"
 	for _, session := range []string{"alpha", "beta"} {
 		op, claimed, err := store.ClaimSendOperation(&state.SendOperation{

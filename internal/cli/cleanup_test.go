@@ -139,14 +139,7 @@ func TestCleanupCmd_ProjectionsFlagClearsStaleRuntimeProjections(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	seedStore, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := seedStore.Migrate(); err != nil {
-		_ = seedStore.Close()
-		t.Fatalf("seedStore.Migrate: %v", err)
-	}
+	seedStore := openFastCLIStateStore(t, dbPath)
 
 	now := time.Now().UTC()
 	if err := seedStore.UpsertRuntimeSession(&state.RuntimeSession{

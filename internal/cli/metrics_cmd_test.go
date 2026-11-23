@@ -22,14 +22,8 @@ func setupMetricsStateDB(t *testing.T, sessionID string) string {
 	t.Setenv("NTM_CONFIG", filepath.Join(tmp, "config.toml"))
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
-	store, err := state.Open(filepath.Join(tmp, "state.db"))
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
+	store := openFastCLIStateStore(t, filepath.Join(tmp, "state.db"))
 	defer store.Close()
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("store.Migrate: %v", err)
-	}
 	if err := store.CreateSession(&state.Session{
 		ID:          sessionID,
 		Name:        sessionID,

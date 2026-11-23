@@ -448,6 +448,7 @@ func TestMonitorRemoteInvocationDoesNotCreateOwnership(t *testing.T) {
 func TestOpenDurableAttentionFeedPersistsBusAndActuationEvents(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NTM_CONFIG", filepath.Join(dir, "config.toml"))
+	seedCLIStateDB(t, filepath.Join(dir, "state.db"))
 	previous := robot.GetAttentionFeed()
 	t.Cleanup(func() { robot.SetAttentionFeed(previous) })
 	wasLive := busEventsPersistedLive.Load()
@@ -500,6 +501,7 @@ func TestOpenDurableAttentionFeedPersistsBusAndActuationEvents(t *testing.T) {
 func TestDurableAttentionFeedCloseDeliversEventsEmittedJustBefore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NTM_CONFIG", filepath.Join(dir, "config.toml"))
+	seedCLIStateDB(t, filepath.Join(dir, "state.db"))
 	previous := robot.GetAttentionFeed()
 	t.Cleanup(func() { robot.SetAttentionFeed(previous) })
 	wasLive := busEventsPersistedLive.Load()
@@ -536,6 +538,7 @@ func TestDurableAttentionFeedCloseDeliversEventsEmittedJustBefore(t *testing.T) 
 func TestPersistEmittedBusEventsStoresShortLivedCommandEvents(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NTM_CONFIG", filepath.Join(dir, "config.toml"))
+	seedCLIStateDB(t, filepath.Join(dir, "state.db"))
 	previous := robot.GetAttentionFeed()
 	t.Cleanup(func() { robot.SetAttentionFeed(previous) })
 	wasLive := busEventsPersistedLive.Load()

@@ -4,13 +4,90 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+var (
+	cliSchemaSnapshotOnce sync.Once
+	cliSchemaSnapshotData []byte
+	cliSchemaSnapshotErr  error
+)
+
+// cliSchemaSnapshot builds one migrated SQLite state.db byte image once per
+// test binary so CLI tests that need fresh on-disk state DBs skip re-running
+// all schema migrations while exercising the exact migrated schema.
+func cliSchemaSnapshot(t testing.TB) []byte {
+	t.Helper()
+	cliSchemaSnapshotOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ntm-cli-schema-*")
+		if err != nil {
+			cliSchemaSnapshotErr = err
+			return
+		}
+		defer os.RemoveAll(dir)
+		dbPath := filepath.Join(dir, "schema.db")
+		st, err := state.Open(dbPath)
+		if err != nil {
+			cliSchemaSnapshotErr = err
+			return
+		}
+		if err := st.Migrate(); err != nil {
+			_ = st.Close()
+			cliSchemaSnapshotErr = err
+			return
+		}
+		if err := st.Close(); err != nil {
+			cliSchemaSnapshotErr = err
+			return
+		}
+		cliSchemaSnapshotData, cliSchemaSnapshotErr = os.ReadFile(dbPath)
+	})
+	if cliSchemaSnapshotErr != nil {
+		t.Fatalf("build CLI state schema snapshot: %v", cliSchemaSnapshotErr)
+	}
+	return cliSchemaSnapshotData
+}
+
+// seedCLIStateDB copies the migrated schema snapshot into dbPath when dbPath
+// does not yet exist, leaving existing databases untouched.
+func seedCLIStateDB(t testing.TB, dbPath string) {
+	t.Helper()
+	if dbPath == "" {
+		dbPath = state.DefaultPath()
+	}
+	if _, err := os.Stat(dbPath); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir state db dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, cliSchemaSnapshot(t), 0o600); err != nil {
+		t.Fatalf("seed state db: %v", err)
+	}
+}
+
+// openFastCLIStateStore opens and migrates a fresh or existing state store at
+// dbPath, pre-seeding non-existent files from cliSchemaSnapshot.
+func openFastCLIStateStore(t testing.TB, dbPath string) *state.Store {
+	t.Helper()
+	seedCLIStateDB(t, dbPath)
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open(%q): %v", dbPath, err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("store.Migrate(%q): %v", dbPath, err)
+	}
+	return store
+}
 
 const (
 	testAgentCatCommandTemplate = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}/bin/cat`

@@ -526,14 +526,7 @@ func writeTestAuditLog(t *testing.T, dir, session string, count int) {
 
 func TestAuditStateSubcommands_HistoryActorTraceAndSources(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	seed, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := seed.Migrate(); err != nil {
-		_ = seed.Close()
-		t.Fatalf("seed.Migrate: %v", err)
-	}
+	seed := openFastCLIStateStore(t, dbPath)
 
 	now := time.Now().UTC().Truncate(time.Second)
 	if err := seed.UpsertAuditActor(&state.AuditActor{

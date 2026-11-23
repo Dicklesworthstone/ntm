@@ -19,14 +19,7 @@ func seedTestAttentionStore(t *testing.T) (*state.Store, int64) {
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", xdg)
 
-	store, err := state.Open("")
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		store.Close()
-		t.Fatalf("store.Migrate: %v", err)
-	}
+	store := openFastCLIStateStore(t, "")
 
 	cursor, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
 		Ts:            time.Now().UTC(),

@@ -12,6 +12,7 @@ import (
 func withTestApprovalStore(t *testing.T) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
+	seedCLIStateDB(t, dbPath)
 	orig := openApprovalStateStoreFunc
 	openApprovalStateStoreFunc = func() (*state.Store, error) {
 		st, err := state.Open(dbPath)

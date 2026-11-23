@@ -373,13 +373,7 @@ func TestGuardDegradationCheck_SurfacesDegradedRuns(t *testing.T) {
 		t.Fatalf("empty ledger should be ok, got %+v", check)
 	}
 
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open state DB: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state DB: %v", err)
-	}
+	store := openFastCLIStateStore(t, dbPath)
 	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
 		RepoPath: "/repo", ProjectKey: "/repo", Reason: "agent-mail-unreachable", Detail: "dial refused",
 	}); err != nil {
@@ -402,13 +396,7 @@ func TestGuardDegradationCheck_SurfacesDegradedRuns(t *testing.T) {
 func TestGuardDegradationCheck_WindowsOldEvents(t *testing.T) {
 	dbPath := isolateGuardState(t)
 
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open state DB: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state DB: %v", err)
-	}
+	store := openFastCLIStateStore(t, dbPath)
 	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
 		RepoPath: "/repo", ProjectKey: "/repo", Reason: guardReasonUnreachable,
 		Detail:    "old incident",
@@ -430,13 +418,7 @@ func TestGuardDegradationCheck_WindowsOldEvents(t *testing.T) {
 func TestGuardDegradationCheck_DistinguishesReasons(t *testing.T) {
 	dbPath := isolateGuardState(t)
 
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open state DB: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state DB: %v", err)
-	}
+	store := openFastCLIStateStore(t, dbPath)
 	for _, ev := range []state.GuardDegradedEvent{
 		{RepoPath: "/repo", Reason: guardReasonUnreachable, Detail: "dial refused"},
 		{RepoPath: "/repo", Reason: guardReasonAppError, Detail: "project not found"},
@@ -464,13 +446,7 @@ func TestGuardDegradationCheck_DistinguishesReasons(t *testing.T) {
 func TestRecordGuardDegradedEvent_PrunesPastRetention(t *testing.T) {
 	dbPath := isolateGuardState(t)
 
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open state DB: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state DB: %v", err)
-	}
+	store := openFastCLIStateStore(t, dbPath)
 	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
 		RepoPath: "/repo", Reason: guardReasonUnreachable, Detail: "ancient",
 		CreatedAt: time.Now().UTC().Add(-guardDegradedRetention - 24*time.Hour),
@@ -482,7 +458,7 @@ func TestRecordGuardDegradedEvent_PrunesPastRetention(t *testing.T) {
 	var stderr bytes.Buffer
 	recordGuardDegradedEvent(&stderr, "/repo", "/repo", guardReasonAppError, nil)
 
-	store, err = state.Open(dbPath)
+	store, err := state.Open(dbPath)
 	if err != nil {
 		t.Fatalf("reopen state DB: %v", err)
 	}
