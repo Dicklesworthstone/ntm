@@ -6,7 +6,75 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDependencyGraphResolvesUntilPredicateReceipts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		runtimeID string
+		wrap      string
+		mutate    func(*Step)
+		want      bool
+	}{
+		{name: "first", runtimeID: "poll_iter0_until", want: true},
+		{name: "later", runtimeID: "poll_iter12_until", want: true},
+		{name: "parallel_child", runtimeID: "group_poll_iter0_until", wrap: "parallel", want: true},
+		{name: "nested_loop", runtimeID: "outer_iter2_poll_iter1_until", wrap: "loop", want: true},
+		{name: "leading_zero", runtimeID: "poll_iter01_until"},
+		{name: "negative", runtimeID: "poll_iter-1_until"},
+		{name: "suffix", runtimeID: "poll_iter0_until_extra"},
+		{name: "foreign_parent", runtimeID: "other_iter0_until"},
+		{name: "items_dialect", runtimeID: "poll_iter0_until", mutate: func(step *Step) { step.Loop.Items = "[\"one\"]" }},
+		{name: "while_dialect", runtimeID: "poll_iter0_until", mutate: func(step *Step) { step.Loop.While = "true" }},
+		{name: "no_predicate", runtimeID: "poll_iter0_until", mutate: func(step *Step) {
+			step.Loop.Until = ""
+			step.Loop.Times = 1
+		}},
+		{name: "body_collision", runtimeID: "poll_iter0_until", mutate: func(step *Step) { step.Loop.Steps[0].ID = "until" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := Step{ID: "poll", Timeout: Duration{Duration: 5 * time.Second}, Loop: &LoopConfig{
+				Until: "test -f ready", MaxIterations: IntOrExpr{Value: 20},
+				Steps: []Step{{ID: "body", Command: "true"}},
+			}}
+			if tc.mutate != nil {
+				tc.mutate(&parent)
+			}
+			workflow := &Workflow{Steps: []Step{parent}}
+			switch tc.wrap {
+			case "parallel":
+				workflow.Steps = []Step{{ID: "group", Parallel: ParallelSpec{Steps: []Step{parent}}}}
+			case "loop":
+				workflow.Steps = []Step{{ID: "outer", Loop: &LoopConfig{Times: 3, Steps: []Step{parent}}}}
+			}
+			graph := NewDependencyGraph(workflow)
+			resolved, canonicalID, ok := graph.ResolveScopedRuntimeStep(tc.runtimeID)
+			if ok != tc.want {
+				t.Fatalf("resolved %q as %+v (%q, %v), want owned=%v", tc.runtimeID, resolved, canonicalID, ok, tc.want)
+			}
+			if !tc.want {
+				return
+			}
+			if canonicalID != tc.runtimeID || resolved.ID != tc.runtimeID {
+				t.Fatalf("predicate lost runtime identity: %+v canonical=%q", resolved, canonicalID)
+			}
+			expected := Step{ID: tc.runtimeID, Command: "test -f ready", Timeout: parent.Timeout, OnError: ErrorActionContinue}
+			gotHash, err := commandDefinitionHash(resolved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantHash, err := commandDefinitionHash(&expected)
+			if err != nil || gotHash != wantHash {
+				t.Fatalf("recovery definition differs from executed predicate: %+v hash=%s want=%s error=%v", resolved, gotHash, wantHash, err)
+			}
+			if _, exists := graph.GetStep(tc.runtimeID); exists {
+				t.Fatal("synthetic predicate became an independently scheduled step")
+			}
+		})
+	}
+}
 
 func TestNewDependencyGraph(t *testing.T) {
 
