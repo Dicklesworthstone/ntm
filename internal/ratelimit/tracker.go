@@ -568,7 +568,7 @@ var exitCodePatterns = []*regexp.Regexp{
 // maxWaitSecondsInt returns the largest whole-second value representable both
 // as a platform int and as a positive time.Duration without int64 overflow.
 func maxWaitSecondsInt() int {
-	const maxDurSec = int64(math.MaxInt64) / int64(time.Second)
+	maxDurSec := int64(math.MaxInt64) / int64(time.Second)
 	if int64(math.MaxInt) < maxDurSec {
 		return math.MaxInt
 	}
