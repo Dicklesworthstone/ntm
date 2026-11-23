@@ -290,20 +290,27 @@ func ParseDarwinVRAMGB(raw string) float64 {
 	return maxGB
 }
 
-// DetectVRAMGB inspects NTM_LOCAL_VRAM_GB, nvidia-smi, or macOS system_profiler for GPU VRAM.
-func DetectVRAMGB() (float64, string) {
+// DetectVRAMGBContext inspects NTM_LOCAL_VRAM_GB, nvidia-smi, or macOS system_profiler for GPU VRAM.
+func DetectVRAMGBContext(ctx context.Context) (float64, string) {
 	if env := strings.TrimSpace(os.Getenv("NTM_LOCAL_VRAM_GB")); env != "" {
 		if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 {
 			return v, "env:NTM_LOCAL_VRAM_GB"
 		}
 	}
-	if out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits").Output(); err == nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gpuCtx, gpuCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer gpuCancel()
+	if out, err := exec.CommandContext(gpuCtx, "nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits").Output(); err == nil {
 		if v := ParseNvidiaSMIMemoryMB(string(out)); v > 0 {
 			return v / 1024.0, "nvidia-smi"
 		}
 	}
 	if runtime.GOOS == "darwin" {
-		if out, err := exec.Command("system_profiler", "SPDisplaysDataType").Output(); err == nil {
+		macCtx, macCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer macCancel()
+		if out, err := exec.CommandContext(macCtx, "system_profiler", "SPDisplaysDataType").Output(); err == nil {
 			if v := ParseDarwinVRAMGB(string(out)); v > 0 {
 				return v, "system_profiler"
 			}
@@ -406,13 +413,23 @@ func SuggestModelCleanup(models []ollama.Model, limit int) []string {
 
 // CheckModelDiskSpace returns free bytes and low-disk flag for path.
 func CheckModelDiskSpace(path string) (int64, bool, error) {
+	return CheckModelDiskSpaceContext(context.Background(), path)
+}
+
+// CheckModelDiskSpaceContext returns free bytes and low-disk flag for path while honoring ctx.
+func CheckModelDiskSpaceContext(ctx context.Context, path string) (int64, bool, error) {
 	if path == "" {
 		path = "."
 	}
 	if runtime.GOOS == "windows" {
 		return 0, false, errors.New("disk free check not supported on windows")
 	}
-	out, err := exec.Command("df", "-k", path).Output()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, "df", "-k", path).Output()
 	if err != nil {
 		return 0, false, err
 	}
@@ -439,7 +456,7 @@ func GetLocalModels(ctx context.Context, opts LocalModelsOptions) (*LocalModelsO
 		action = "recommend"
 	}
 
-	vramGB, source := DetectVRAMGB()
+	vramGB, source := DetectVRAMGBContext(ctx)
 	if vramGB <= 0 {
 		vramGB = 4
 		source = "default"
@@ -502,7 +519,7 @@ func GetLocalModels(ctx context.Context, opts LocalModelsOptions) (*LocalModelsO
 		}
 
 		entries, totalSize := BuildLocalModelEntries(models)
-		diskFree, diskLow, _ := CheckModelDiskSpace(".")
+		diskFree, diskLow, _ := CheckModelDiskSpaceContext(ctx, ".")
 		out.Host = adapter.Host()
 		out.Models = entries
 		out.ModelCount = len(entries)

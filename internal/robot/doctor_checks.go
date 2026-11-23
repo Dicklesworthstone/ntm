@@ -491,7 +491,7 @@ func checkDoctorDaemons(ctx context.Context, cfg *config.Config) []DoctorDaemonC
 	return checks
 }
 
-func checkDoctorConfiguration(configPath string) ([]DoctorConfigCheck, *DoctorGuardHookCheck) {
+func checkDoctorConfiguration(ctx context.Context, projectDir, configPath string) ([]DoctorConfigCheck, *DoctorGuardHookCheck) {
 	checks := make([]DoctorConfigCheck, 0, 6)
 
 	homeDir, err := os.UserHomeDir()
@@ -532,7 +532,11 @@ func checkDoctorConfiguration(configPath string) ([]DoctorConfigCheck, *DoctorGu
 		}
 	}
 
-	if _, err := os.Stat(".beads"); err == nil {
+	beadsPath := ".beads"
+	if strings.TrimSpace(projectDir) != "" {
+		beadsPath = filepath.Join(projectDir, ".beads")
+	}
+	if _, err := os.Stat(beadsPath); err == nil {
 		checks = append(checks, DoctorConfigCheck{
 			Name:    ".beads directory",
 			Valid:   true,
@@ -550,7 +554,7 @@ func checkDoctorConfiguration(configPath string) ([]DoctorConfigCheck, *DoctorGu
 
 	guardHook, guardCfgCheck := CheckDoctorGuardState()
 	checks = append(checks, guardCfgCheck)
-	checks = append(checks, CheckDoctorGuardHookPath())
+	checks = append(checks, CheckDoctorGuardHookPathContext(ctx, projectDir))
 	checks = append(checks, removedDoctorKnobChecks(configPath)...)
 	checks = append(checks, deprecatedDoctorKnobChecks(configPath)...)
 
@@ -640,22 +644,30 @@ func CheckDoctorGuardState() (*DoctorGuardHookCheck, DoctorConfigCheck) {
 	return hookCheck, cfgCheck
 }
 
-// CheckDoctorGuardHookPath detects an installed NTM pre-commit guard hook when
-// `ntm` itself is missing from PATH.
-func CheckDoctorGuardHookPath() DoctorConfigCheck {
+// CheckDoctorGuardHookPathContext detects an installed NTM pre-commit guard hook
+// under projectDir (or the current working directory when empty) when `ntm` itself
+// is missing from PATH.
+func CheckDoctorGuardHookPathContext(ctx context.Context, projectDir string) DoctorConfigCheck {
 	check := DoctorConfigCheck{Name: "guard-hook ntm on PATH", Valid: true, Status: "ok"}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		check.Message = "could not determine current directory"
-		return check
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	repoPath, err := doctorGitRoot(cwd)
+
+	startDir := strings.TrimSpace(projectDir)
+	if startDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			check.Message = "could not determine current directory"
+			return check
+		}
+		startDir = cwd
+	}
+	repoPath, err := doctorGitRoot(ctx, startDir)
 	if err != nil {
 		check.Message = "not in a git repository (guard hook not applicable)"
 		return check
 	}
-	hookPath, err := doctorGitHookPath(repoPath, "pre-commit")
+	hookPath, err := doctorGitHookPath(ctx, repoPath, "pre-commit")
 	if err != nil || !doctorPathExists(hookPath) {
 		check.Message = "no pre-commit guard hook installed here"
 		return check
@@ -675,8 +687,10 @@ func CheckDoctorGuardHookPath() DoctorConfigCheck {
 	return check
 }
 
-func doctorGitRoot(startPath string) (string, error) {
-	cmd := exec.Command("git", "-C", startPath, "rev-parse", "--show-toplevel")
+func doctorGitRoot(ctx context.Context, startPath string) (string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "git", "-C", startPath, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("finding git root: %w", err)
@@ -684,8 +698,10 @@ func doctorGitRoot(startPath string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func doctorGitHookPath(repoPath, hookName string) (string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--git-path", "hooks/"+hookName)
+func doctorGitHookPath(ctx context.Context, repoPath, hookName string) (string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "git", "-C", repoPath, "rev-parse", "--git-path", "hooks/"+hookName)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolving git hook path: %w", err)
@@ -817,12 +833,16 @@ func liveDoctorSchemaConstraints() ([]string, error) {
 	return stmts, nil
 }
 
-func checkDoctorInvariants(ctx context.Context, toolChecks []DoctorToolCheck) []DoctorInvariantCheck {
+func checkDoctorInvariants(ctx context.Context, projectDir string, toolChecks []DoctorToolCheck) []DoctorInvariantCheck {
 	checks := make([]DoctorInvariantCheck, 0)
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
+	cwd := strings.TrimSpace(projectDir)
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
 	}
 
 	checker := invariants.NewChecker(cwd).

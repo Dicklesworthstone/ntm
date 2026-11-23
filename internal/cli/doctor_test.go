@@ -79,7 +79,7 @@ func guardDegradationCheck() ConfigCheck {
 }
 
 func guardHookPathCheck() ConfigCheck {
-	return robot.CheckDoctorGuardHookPath()
+	return robot.CheckDoctorGuardHookPathContext(context.Background(), "")
 }
 
 func TestBuildSafetyDefaults(t *testing.T) {

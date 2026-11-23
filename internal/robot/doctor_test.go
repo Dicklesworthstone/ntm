@@ -227,3 +227,50 @@ func TestDoctor_CancelledContextAndRegistrySchema(t *testing.T) {
 		t.Fatalf("GetSchema(doctor) = (%+v, %v), want valid schema", schemaOut, err)
 	}
 }
+
+func TestDoctor_ScopesBeadsAndGuardChecksToSwarmCWD(t *testing.T) {
+	homeDir := t.TempDir()
+	xdgDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	t.Setenv("NTM_CONFIG", "")
+
+	noBeadsDir := t.TempDir()
+	out, err := GetDoctor(context.Background(), DoctorOptions{
+		Config:   config.Default(),
+		SwarmCWD: noBeadsDir,
+	})
+	if err != nil {
+		t.Fatalf("GetDoctor(noBeadsDir): %v", err)
+	}
+	foundBeadsWarning := false
+	for _, c := range out.Configuration {
+		if c.Name == ".beads directory" && c.Status == "warning" {
+			foundBeadsWarning = true
+		}
+	}
+	if !foundBeadsWarning {
+		t.Fatalf("expected .beads directory warning for empty SwarmCWD %s, got %+v", noBeadsDir, out.Configuration)
+	}
+
+	withBeadsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(withBeadsDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out2, err := GetDoctor(context.Background(), DoctorOptions{
+		Config:   config.Default(),
+		SwarmCWD: withBeadsDir,
+	})
+	if err != nil {
+		t.Fatalf("GetDoctor(withBeadsDir): %v", err)
+	}
+	foundBeadsOK := false
+	for _, c := range out2.Configuration {
+		if c.Name == ".beads directory" && c.Status == "ok" && c.Valid {
+			foundBeadsOK = true
+		}
+	}
+	if !foundBeadsOK {
+		t.Fatalf("expected .beads directory ok for SwarmCWD %s, got %+v", withBeadsDir, out2.Configuration)
+	}
+}

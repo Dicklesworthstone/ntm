@@ -176,9 +176,16 @@ func GetDoctor(ctx context.Context, opts DoctorOptions) (*DoctorOutput, error) {
 		return newDoctorErrorOutput(opts.Config, err, ErrCodeTimeout, "Retry --robot-doctor with an active context"), nil
 	}
 
+	projectDir := strings.TrimSpace(opts.SwarmCWD)
+	if projectDir == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			projectDir = cwd
+		}
+	}
+
 	cfg := opts.Config
 	if cfg == nil {
-		if loaded, loadErr := config.LoadMerged("", opts.ConfigPath); loadErr == nil && loaded != nil {
+		if loaded, loadErr := config.LoadMerged(projectDir, opts.ConfigPath); loadErr == nil && loaded != nil {
 			cfg = loaded
 		} else {
 			cfg = config.Default()
@@ -199,7 +206,7 @@ func GetDoctor(ctx context.Context, opts DoctorOptions) (*DoctorOutput, error) {
 	go func() {
 		defer wg.Done()
 		toolChecks = checkDoctorTools(ctx, opts.Verbose)
-		invariantChecks = checkDoctorInvariants(ctx, toolChecks)
+		invariantChecks = checkDoctorInvariants(ctx, projectDir, toolChecks)
 	}()
 	go func() {
 		defer wg.Done()
@@ -211,20 +218,14 @@ func GetDoctor(ctx context.Context, opts DoctorOptions) (*DoctorOutput, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		configChecks, guardHook = checkDoctorConfiguration(opts.ConfigPath)
+		configChecks, guardHook = checkDoctorConfiguration(ctx, projectDir, opts.ConfigPath)
 	}()
 	wg.Wait()
 
 	contention := []DoctorContentionHolder{}
 	var contentionWarn string
 	if opts.IncludeContention {
-		swarmCWD := strings.TrimSpace(opts.SwarmCWD)
-		if swarmCWD == "" {
-			if cwd, err := os.Getwd(); err == nil {
-				swarmCWD = cwd
-			}
-		}
-		if holders, err := FindContentionHolders(ctx, swarmCWD); err != nil {
+		if holders, err := FindContentionHolders(ctx, projectDir); err != nil {
 			contentionWarn = fmt.Sprintf("contention scan failed: %v", err)
 		} else if holders != nil {
 			contention = holders

@@ -89,6 +89,17 @@ const noOutputThreshold = 300 // 5 minutes
 // GetHealth collects a focused project health summary for AI agents.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetHealth() (*HealthOutput, error) {
+	return GetHealthContextForProject(context.Background(), "")
+}
+
+// GetHealthContextForProject collects a focused health summary scoped to projectDir.
+// When projectDir is empty, checks fall back to the current working directory.
+func GetHealthContextForProject(ctx context.Context, projectDir string) (*HealthOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	projectDir = strings.TrimSpace(projectDir)
+
 	output := &HealthOutput{
 		RobotResponse: NewRobotResponse(true),
 		CheckedAt:     time.Now().UTC(),
@@ -99,24 +110,24 @@ func GetHealth() (*HealthOutput, error) {
 	}
 
 	// Get system health
-	output.System = getSystemHealth()
+	output.System = getSystemHealthContext(ctx, projectDir)
 
 	// Get agent/session health matrix
 	populateAgentHealth(output)
 
 	// Get drift status
-	drift := bv.CheckDrift("")
+	drift := bv.CheckDrift(projectDir)
 	output.DriftStatus = drift.Status.String()
 	output.DriftMessage = drift.Message
 
 	// Get top bottlenecks (limit to 5)
-	bottlenecks, err := bv.GetTopBottlenecks("", 5)
+	bottlenecks, err := bv.GetTopBottlenecks(projectDir, 5)
 	if err == nil {
 		output.TopBottlenecks = bottlenecks
 	}
 
 	// Get insights for keystones
-	insights, err := bv.GetInsights("")
+	insights, err := bv.GetInsights(projectDir)
 	if err == nil && insights != nil {
 		keystones := insights.Keystones
 		if len(keystones) > 5 {
@@ -126,7 +137,7 @@ func GetHealth() (*HealthOutput, error) {
 	}
 
 	// Get priority recommendations
-	recommendations, err := bv.GetNextActions("", 5)
+	recommendations, err := bv.GetNextActions(projectDir, 5)
 	if err == nil {
 		for _, rec := range recommendations {
 			var reason string
@@ -143,7 +154,7 @@ func GetHealth() (*HealthOutput, error) {
 	}
 
 	// Get dependency context (includes ready/in-progress/blocked counts)
-	depCtx, err := bv.GetDependencyContext("", 5)
+	depCtx, err := bv.GetDependencyContext(projectDir, 5)
 	if err == nil {
 		output.DependencyContext = depCtx
 		output.ReadyCount = depCtx.ReadyCount
@@ -164,27 +175,32 @@ func PrintHealth() error {
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot health failed")
 }
 
-// getSystemHealth returns system-level health metrics
-func getSystemHealth() SystemHealthInfo {
+// getSystemHealthContext returns system-level health metrics for dir.
+func getSystemHealthContext(ctx context.Context, dir string) SystemHealthInfo {
 	info := SystemHealthInfo{
 		TmuxOK: tmux.IsInstalled(),
 	}
 
 	// Get disk free space (platform-specific)
-	info.DiskFreeGB = getDiskFreeGB()
+	info.DiskFreeGB = getDiskFreeGBContext(ctx, dir)
 
 	// Get load average (platform-specific)
-	info.LoadAvg = getLoadAverage()
+	info.LoadAvg = getLoadAverageContext(ctx)
 
 	return info
 }
 
-// getDiskFreeGB returns the free disk space in GB for the current directory
-func getDiskFreeGB() float64 {
+// getDiskFreeGBContext returns the free disk space in GB for dir (or "." when empty).
+func getDiskFreeGBContext(ctx context.Context, dir string) float64 {
+	if strings.TrimSpace(dir) == "" {
+		dir = "."
+	}
 	switch runtime.GOOS {
 	case "darwin", "linux":
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 		// Use df command
-		cmd := exec.Command("df", "-k", ".")
+		cmd := exec.CommandContext(probeCtx, "df", "-k", dir)
 		out, err := cmd.Output()
 		if err != nil {
 			return -1
@@ -209,13 +225,15 @@ func getDiskFreeGB() float64 {
 	}
 }
 
-// getLoadAverage returns the 1-minute load average
-func getLoadAverage() float64 {
+// getLoadAverageContext returns the 1-minute load average
+func getLoadAverageContext(ctx context.Context) float64 {
 	switch runtime.GOOS {
 	case "darwin", "linux":
 		// Use sysctl on macOS, /proc/loadavg on Linux
 		if runtime.GOOS == "darwin" {
-			cmd := exec.Command("sysctl", "-n", "vm.loadavg")
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(probeCtx, "sysctl", "-n", "vm.loadavg")
 			out, err := cmd.Output()
 			if err != nil {
 				return -1
