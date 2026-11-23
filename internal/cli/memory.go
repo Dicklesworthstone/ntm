@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -415,7 +416,7 @@ func newMemoryPrivacyStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show cross-agent privacy settings",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCMPrivacyCommand("status", "--json")
+			return runCMPrivacyCommand(cmd.Context(), "status", "--json")
 		},
 	}
 }
@@ -428,8 +429,14 @@ func newMemoryPrivacyEnableCmd() *cobra.Command {
 This requires explicit consent as it allows sharing data between agents.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmdArgs := []string{"enable", "--json"}
-			cmdArgs = append(cmdArgs, args...)
-			return runCMPrivacyCommand(cmdArgs...)
+			for _, arg := range args {
+				trimmed := strings.TrimSpace(arg)
+				if trimmed == "" || strings.HasPrefix(trimmed, "-") {
+					return fmt.Errorf("invalid agent name %q", arg)
+				}
+				cmdArgs = append(cmdArgs, trimmed)
+			}
+			return runCMPrivacyCommand(cmd.Context(), cmdArgs...)
 		},
 	}
 }
@@ -439,7 +446,7 @@ func newMemoryPrivacyDisableCmd() *cobra.Command {
 		Use:   "disable",
 		Short: "Disable cross-agent enrichment",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCMPrivacyCommand("disable", "--json")
+			return runCMPrivacyCommand(cmd.Context(), "disable", "--json")
 		},
 	}
 }
@@ -450,7 +457,11 @@ func newMemoryPrivacyAllowCmd() *cobra.Command {
 		Short: "Allow a specific agent for cross-agent enrichment",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCMPrivacyCommand("allow", args[0], "--json")
+			agentName := strings.TrimSpace(args[0])
+			if agentName == "" || strings.HasPrefix(agentName, "-") {
+				return fmt.Errorf("invalid agent name %q", args[0])
+			}
+			return runCMPrivacyCommand(cmd.Context(), "allow", agentName, "--json")
 		},
 	}
 }
@@ -461,20 +472,30 @@ func newMemoryPrivacyDenyCmd() *cobra.Command {
 		Short: "Remove an agent from the cross-agent allowlist",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCMPrivacyCommand("deny", args[0], "--json")
+			agentName := strings.TrimSpace(args[0])
+			if agentName == "" || strings.HasPrefix(agentName, "-") {
+				return fmt.Errorf("invalid agent name %q", args[0])
+			}
+			return runCMPrivacyCommand(cmd.Context(), "deny", agentName, "--json")
 		},
 	}
 }
 
 // runCMPrivacyCommand executes a cm privacy subcommand
-func runCMPrivacyCommand(args ...string) error {
+func runCMPrivacyCommand(ctx context.Context, args ...string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
 	fullArgs := append([]string{"privacy"}, args...)
-	cmd := exec.CommandContext(context.Background(), "cm", fullArgs...)
+	cmd := exec.CommandContext(ctx, "cm", fullArgs...)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
