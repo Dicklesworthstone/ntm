@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -179,6 +182,21 @@ func TestNewLimitedBuffer(t *testing.T) {
 		buf.Write([]byte("world"))
 		if buf.String() != "hello world" {
 			t.Errorf("buffer content = %q, want %q", buf.String(), "hello world")
+		}
+	})
+
+	t.Run("io.Copy enforces limit without ReadFrom bypass", func(t *testing.T) {
+		t.Parallel()
+		buf := NewLimitedBuffer(16)
+		if _, ok := any(buf).(io.ReaderFrom); ok {
+			t.Fatal("LimitedBuffer must not implement io.ReaderFrom")
+		}
+		_, err := io.Copy(buf, bytes.NewReader(bytes.Repeat([]byte("a"), 128)))
+		if !errors.Is(err, ErrOutputLimitExceeded) {
+			t.Fatalf("io.Copy() error = %v, want ErrOutputLimitExceeded", err)
+		}
+		if buf.Len() != 16 {
+			t.Fatalf("buf.Len() = %d, want 16", buf.Len())
 		}
 	})
 }

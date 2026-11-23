@@ -49,10 +49,11 @@ func ParseStandardVersion(output string) (Version, error) {
 	}, nil
 }
 
-// LimitedBuffer is a bytes.Buffer that errors on overflow.
-// It is used to prevent OOM when capturing command output.
+// LimitedBuffer is a bounded byte buffer that errors on overflow.
+// It intentionally does not embed bytes.Buffer so io.Copy (used by os/exec)
+// cannot bypass Write via bytes.Buffer.ReadFrom.
 type LimitedBuffer struct {
-	bytes.Buffer
+	buf   bytes.Buffer
 	Limit int
 }
 
@@ -62,14 +63,34 @@ func NewLimitedBuffer(limit int) *LimitedBuffer {
 }
 
 func (b *LimitedBuffer) Write(p []byte) (n int, err error) {
-	if b.Len()+len(p) > b.Limit {
-		allowed := b.Limit - b.Len()
+	if b.buf.Len()+len(p) > b.Limit {
+		allowed := b.Limit - b.buf.Len()
 		if allowed > 0 {
-			n, _ = b.Buffer.Write(p[:allowed])
+			n, _ = b.buf.Write(p[:allowed])
 		}
 		return n, ErrOutputLimitExceeded
 	}
-	return b.Buffer.Write(p)
+	return b.buf.Write(p)
+}
+
+// Bytes returns the buffered bytes.
+func (b *LimitedBuffer) Bytes() []byte {
+	return b.buf.Bytes()
+}
+
+// String returns the buffered bytes as a string.
+func (b *LimitedBuffer) String() string {
+	return b.buf.String()
+}
+
+// Len returns the number of buffered bytes.
+func (b *LimitedBuffer) Len() int {
+	return b.buf.Len()
+}
+
+// Reset clears the buffer while preserving Limit.
+func (b *LimitedBuffer) Reset() {
+	b.buf.Reset()
 }
 
 // ToolName identifies a specific tool in the ecosystem
