@@ -96,7 +96,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 	total := len(items)
 
 	// Calculate max iterations
-	maxIterations, err := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(ctx, step, loop)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -172,11 +172,10 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
-		scope := le.pushLoopVars(varName, item, i, total)
+		iterCtx := withLoopVars(ctx, varName, item, i, total)
 
 		// Execute nested steps
-		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
-		le.popLoopVars(scope)
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(iterCtx, step, loop, workflow, i)
 		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		result.Results = append(result.Results, iterResult...)
@@ -267,7 +266,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 	}
 
 	// While loops require max_iterations for safety
-	maxIterations, err := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(ctx, step, loop)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -333,10 +332,9 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
-		scope := le.pushLoopVars(varName, i, i, maxIterations)
+		iterCtx := withLoopVars(ctx, varName, i, i, maxIterations)
 
-		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
-		le.popLoopVars(scope)
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(iterCtx, step, loop, workflow, i)
 		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		result.Results = append(result.Results, iterResult...)
@@ -442,7 +440,7 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 		Collected: make([]interface{}, 0),
 	}
 
-	maxIterations, err := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(ctx, step, loop)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -472,7 +470,23 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 	}
 
 	conditionMet := false
-	for i := startIndex; i < maxIterations; i++ {
+	if startIndex > 0 && !le.executor.config.DryRun {
+		// The last iteration checkpoint can reach disk before the parent loop
+		// result. Its predicate receipt is the durable termination decision;
+		// starting another body here would repeat effects after a true predicate.
+		untilStep := untilPredicateStep(step, loop, startIndex-1)
+		prior, ok := le.loadUntilPredicateResult(&untilStep)
+		if !ok {
+			result.Error = stepRuntimeError(&untilStep, StepKindCommand, "recovery",
+				"completed until iteration has no predicate receipt",
+				"inspect the saved iteration before explicitly resetting its replay scope", "")
+		} else if prior.Status == StatusCompleted && prior.Error == nil {
+			conditionMet = true
+		} else if !untilPredicateExitedFalse(prior) {
+			result.Error = untilPredicateFailure(&untilStep, prior)
+		}
+	}
+	for i := startIndex; !conditionMet && result.Error == nil && i < maxIterations; i++ {
 		select {
 		case <-ctx.Done():
 			result.Status = StatusCancelled
@@ -481,18 +495,41 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 		default:
 		}
 
+		untilStep := untilPredicateStep(step, loop, i)
+		untilRes, restored := le.loadUntilPredicateResult(&untilStep)
+		if le.executor.config.DryRun {
+			restored = false
+		}
+		if restored && (untilRes.Status != StatusCompleted || untilRes.Error != nil) && !untilPredicateExitedFalse(untilRes) {
+			result.Error = untilPredicateFailure(&untilStep, untilRes)
+			break
+		}
+
 		le.executor.markForeachIterationStarted(step.ID, i, maxIterations)
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
-		scope := le.pushLoopVars(varName, i, i, maxIterations)
+		iterCtx := withLoopVars(ctx, varName, i, i, maxIterations)
 
-		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
+		var iterResult []StepResult
+		var shouldBreak, shouldContinue, completedAllSteps bool
+		if restored {
+			// The predicate could only launch after the body returned. Restore
+			// that durable body checkpoint, including continued failures, rather
+			// than letting executeStep retry commands whose effects already ran.
+			iterResult, result.Error = le.restoreUntilIteration(step, loop, workflow, i)
+			if result.Error != nil {
+				le.executor.clearStepInFlight(loopIterationID(step.ID, i))
+				break
+			}
+			completedAllSteps = true
+		} else {
+			iterResult, shouldBreak, shouldContinue, completedAllSteps = le.executeIteration(iterCtx, step, loop, workflow, i)
+		}
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
 
 		if iterationHasCancelledStep(iterResult) || (ctx.Err() != nil && !completedAllSteps) {
-			le.popLoopVars(scope)
 			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 			le.executor.persistState()
 			result.Status = StatusCancelled
@@ -501,7 +538,6 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 		}
 
 		if shouldBreak {
-			le.popLoopVars(scope)
 			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
 				result.Error = iterResult[len(iterResult)-1].Error
@@ -527,14 +563,9 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 
 		// Evaluate the supervised `until` shell predicate with loop variables
 		// still in scope so predicates can reference ${loop.index}/${item}.
-		untilStep := Step{
-			ID:      fmt.Sprintf("%s_iter%d_until", step.ID, i),
-			Command: loop.Until,
-			Timeout: step.Timeout,
-			OnError: ErrorActionContinue,
+		if !restored {
+			untilRes = le.executor.executeCommand(iterCtx, &untilStep, workflow)
 		}
-		untilRes := le.executor.executeCommand(ctx, &untilStep, workflow)
-		le.popLoopVars(scope)
 		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		if untilRes.Status == StatusCancelled || ctx.Err() != nil {
@@ -544,7 +575,20 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
-		if shouldCompleteForeachIteration(ctx, iterResult, false, completedAllSteps) {
+		// A failed supervisor, timeout, interrupted process, or invalid receipt
+		// does not mean the shell predicate evaluated false. Only a proven
+		// ordinary nonzero exit permits another iteration.
+		if (untilRes.Status != StatusCompleted || untilRes.Error != nil) && !untilPredicateExitedFalse(untilRes) {
+			result.Error = untilPredicateFailure(&untilStep, untilRes)
+			le.executor.persistState()
+			break
+		}
+
+		// Reaching a verified predicate means the body was consumed, including
+		// failures explicitly allowed by on_error=continue. Leaving those
+		// iterations incomplete would create gaps that replay already-consumed
+		// decisions and duplicate later collected outputs on restart.
+		if ctx.Err() == nil || completedAllSteps {
 			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
 		}
 		if loop.Collect != "" && len(iterResult) > 0 &&
@@ -610,6 +654,135 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 	return result
 }
 
+func untilPredicateStep(parent *Step, loop *LoopConfig, iteration int) Step {
+	return Step{
+		ID:      fmt.Sprintf("%s_iter%d_until", parent.ID, iteration),
+		Command: loop.Until,
+		Timeout: parent.Timeout,
+		OnError: ErrorActionContinue,
+	}
+}
+
+// A settled predicate proves that its body returned, but does not replace the
+// body's output and dispatch evidence. Missing or ambiguous body checkpoints
+// stop recovery; they never authorize replay after a terminal predicate.
+func (le *LoopExecutor) restoreUntilIteration(parent *Step, loop *LoopConfig, workflow *Workflow, iteration int) ([]StepResult, *StepError) {
+	results := make([]StepResult, 0, len(loop.Steps))
+	for _, child := range loop.Steps {
+		child.ID = fmt.Sprintf("%s_iter%d_%s", parent.ID, iteration, child.ID)
+		refuse := func(reason string) ([]StepResult, *StepError) {
+			return nil, stepRuntimeError(&child, StepKindLoop, "recovery", reason,
+				"inspect the completed predicate and body checkpoint before explicitly resetting the iteration", "")
+		}
+		if foreachControlOnlyStep(child) {
+			return refuse("cannot reconstruct an until body control decision from its predicate receipt")
+		}
+		le.executor.stateMu.RLock()
+		prior, ok := le.executor.state.Steps[child.ID]
+		_, inFlight := le.executor.state.InFlightSteps[child.ID]
+		prior = cloneSuccessHookResult(prior)
+		le.executor.stateMu.RUnlock()
+		if !ok || prior.StepID != child.ID || inFlight || prior.RerunOnResume {
+			return refuse("settled until predicate has no final body checkpoint")
+		}
+		switch prior.Status {
+		case StatusCompleted, StatusSkipped:
+		case StatusFailed:
+			if resolveErrorAction(child.OnError, workflow.Settings.OnError) != ErrorActionContinue {
+				return refuse("until predicate followed a body failure that does not allow continuation")
+			}
+		default:
+			return refuse("settled until predicate has an unfinished body checkpoint")
+		}
+		if stepKind(&child) == StepKindCommand && prior.Status != StatusSkipped {
+			record, ok := le.executor.loadCommandExecution(child.ID)
+			if !ok {
+				return refuse("until body command has lost its dispatch receipt")
+			}
+			if err := validateCommandExecution(child.ID, record); err != nil {
+				return refuse(err.Error())
+			}
+			hash, err := commandDefinitionHash(&child)
+			if err != nil || record.StepHash != hash || record.Status != commandExecutionSettled {
+				return refuse("until body command receipt does not prove settlement of the saved definition")
+			}
+		}
+		results = append(results, prior)
+	}
+	return results, nil
+}
+
+// loadUntilPredicateResult consumes settled predicate receipts without invoking
+// executeCommand: that method may retry a failed command, but a predicate's
+// nonzero exit is a completed decision whose effects must not be repeated.
+func (le *LoopExecutor) loadUntilPredicateResult(step *Step) (StepResult, bool) {
+	record, ok := le.executor.loadCommandExecution(step.ID)
+	if !ok {
+		return StepResult{}, false
+	}
+	reject := func(typ, reason string) (StepResult, bool) {
+		return StepResult{
+			StepID: step.ID, Status: StatusFailed, AgentType: "command",
+			Error: stepRuntimeError(step, StepKindCommand, typ, reason,
+				"inspect the saved predicate outcome before explicitly resetting its replay scope", ""),
+			FinishedAt: time.Now(),
+		}, true
+	}
+	if err := validateCommandExecution(step.ID, record); err != nil {
+		return reject("recovery", err.Error())
+	}
+	stepHash, err := commandDefinitionHash(step)
+	if err != nil {
+		return reject("recovery", err.Error())
+	}
+	if record.StepHash != stepHash {
+		return reject("recovery", "saved until predicate belongs to a different step definition")
+	}
+	if record.Status != commandExecutionSettled {
+		return reject("execution_unknown", uncertainCommandExecutionError(step.ID, record.ProcessID).Error())
+	}
+	if record.Background || record.Result.RerunOnResume {
+		return reject("recovery", "until predicate receipt does not prove a final foreground outcome")
+	}
+	result := record.Result
+	if record.ResolutionAction != "" {
+		le.executor.stateMu.RLock()
+		_, err := commandExecutionRecoveryEntry(le.executor.state, record)
+		le.executor.stateMu.RUnlock()
+		if err != nil {
+			return reject("recovery", err.Error())
+		}
+		if record.ResolutionExitCode != 0 {
+			result.Error = commandExitStepError(step, record.ResolutionExitCode)
+		}
+	}
+	return result, true
+}
+
+func untilPredicateExitedFalse(result StepResult) bool {
+	if result.Status != StatusFailed || result.Error == nil || result.Error.Type != "exit" {
+		return false
+	}
+	for _, field := range strings.Fields(result.Error.Details) {
+		if value, ok := strings.CutPrefix(field, "reason=exit_code="); ok {
+			exitCode, err := strconv.Atoi(value)
+			// ExitCode is -1 when a process was killed by a signal. That is an
+			// interrupted predicate, not evidence that its condition was false.
+			return err == nil && exitCode > 0 && exitCode <= 255
+		}
+	}
+	return false
+}
+
+func untilPredicateFailure(step *Step, result StepResult) *StepError {
+	if result.Error != nil {
+		return result.Error
+	}
+	return stepRuntimeError(step, StepKindCommand, "recovery",
+		fmt.Sprintf("until predicate returned %q without a verified exit outcome", result.Status),
+		"inspect the saved predicate outcome before explicitly resetting its replay scope", "")
+}
+
 // executeTimes implements a simple repeat N times loop.
 func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *LoopConfig, workflow *Workflow) LoopResult {
 	result := LoopResult{
@@ -626,7 +799,7 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 	}
 
 	// Apply max iterations limit
-	maxIterations, err := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(ctx, step, loop)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -679,10 +852,9 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
-		scope := le.pushLoopVars(varName, i, i, times)
+		iterCtx := withLoopVars(ctx, varName, i, i, times)
 
-		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
-		le.popLoopVars(scope)
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(iterCtx, step, loop, workflow, i)
 		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		result.Results = append(result.Results, iterResult...)
@@ -760,11 +932,11 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 	return result
 }
 
-func (le *LoopExecutor) resolveMaxIterations(step *Step, loop *LoopConfig) (int, error) {
+func (le *LoopExecutor) resolveMaxIterations(ctx context.Context, step *Step, loop *LoopConfig) (int, error) {
 	if loop == nil {
 		return DefaultMaxIterations, nil
 	}
-	return le.resolveIntOrExpr(step, "loop.max_iterations", &loop.MaxIterations, DefaultMaxIterations)
+	return le.resolveIntOrExpr(ctx, step, "loop.max_iterations", &loop.MaxIterations, DefaultMaxIterations)
 }
 
 // resolveIntOrExpr resolves an IntOrExpr field. The fallback is only used when
@@ -773,7 +945,7 @@ func (le *LoopExecutor) resolveMaxIterations(step *Step, loop *LoopConfig) (int,
 // step can fail closed. Silently substituting the default would let a typo in
 // a safety cap (e.g. ${defaults.unknown}) raise an intended lower bound and
 // run substantially more iterations than the author configured.
-func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrExpr, fallback int) (int, error) {
+func (le *LoopExecutor) resolveIntOrExpr(ctx context.Context, step *Step, field string, value *IntOrExpr, fallback int) (int, error) {
 	if value == nil {
 		return fallback, nil
 	}
@@ -792,7 +964,7 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 	}
 	le.resolveMu.Unlock()
 
-	resolved, err := le.substituteIntExpr(expr)
+	resolved, err := le.substituteIntExpr(ctx, expr)
 	if err == nil {
 		parsed, parseErr := strconv.Atoi(strings.TrimSpace(resolved))
 		if parseErr != nil {
@@ -831,7 +1003,7 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 	return 0, fmt.Errorf("resolve %s expression %q: %w", field, expr, err)
 }
 
-func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
+func (le *LoopExecutor) substituteIntExpr(ctx context.Context, expr string) (string, error) {
 	// bd-eslpu: lock order is stateMu before varMu (matches the canonical
 	// pattern established in executor.go applyStartFrom and aligned in
 	// foreach_max_rounds.go resolveForeachMaxRounds via bd-8wo27). The
@@ -854,6 +1026,7 @@ func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
 	sub := NewSubstitutor(le.executor.state, le.executor.config.Session, workflowID)
 	sub.SetDefaults(le.executor.defaults)
 	sub.SetMaxDepth(le.executor.limits.MaxSubstitutionDepth)
+	sub.SetLocalOverrides(roundOverridesFromCtx(ctx))
 	return sub.SubstituteStrict(le.executor.substituteRuntimeVariables(expr))
 }
 
@@ -1135,34 +1308,21 @@ func parseItemsString(s string) ([]interface{}, error) {
 	return result, nil
 }
 
-// pushLoopVars sets loop context variables and returns the scope needed to
-// restore the previous outer loop context.
-func (le *LoopExecutor) pushLoopVars(varName string, item interface{}, index, total int) VariableScope {
-	le.executor.varMu.Lock()
-	defer le.executor.varMu.Unlock()
-	scope := CaptureVariableScope(le.executor.state.Variables, loopScopeKeys(varName)...)
-	SetLoopVars(le.executor.state, varName, item, index, total)
-	le.executor.pushScopeFrameLocked(ScopeFrame{
-		Kind: StepKindLoop,
-		Name: varName,
-		Variables: map[string]interface{}{
-			"loop." + varName: item,
-			"loop.item":       item,
-			"loop.index":      index,
-			"loop.count":      total,
-			"loop.first":      index == 0,
-			"loop.last":       index == total-1,
-		},
+// withLoopVars binds an iteration to its own execution context. Parallel
+// branches must never publish item/index values or LIFO scope frames to shared
+// state: a mutex only orders writes and cannot keep a sibling's bindings out of
+// the body. ForeachState and InFlightSteps retain durable iteration progress;
+// returning to the parent context restores the outer bindings without writes.
+func withLoopVars(ctx context.Context, varName string, item interface{}, index, total int) context.Context {
+	return withRoundOverrides(ctx, map[string]interface{}{
+		"loop." + varName: item,
+		"loop.item":       item,
+		"item":            item,
+		"loop.index":      index,
+		"loop.count":      total,
+		"loop.first":      index == 0,
+		"loop.last":       index == total-1,
 	})
-	return scope
-}
-
-// popLoopVars restores the previous loop context.
-func (le *LoopExecutor) popLoopVars(scope VariableScope) {
-	le.executor.varMu.Lock()
-	defer le.executor.varMu.Unlock()
-	scope.Restore(le.executor.state.Variables)
-	le.executor.popScopeFrameLocked()
 }
 
 // storeCollected stores collected loop results in a variable.

@@ -362,11 +362,9 @@ func (s *Substitutor) SetDefaults(d map[string]interface{}) {
 }
 
 // SetLocalOverrides registers a per-call overlay map keyed by full variable
-// path (e.g. "round", "rounds_remaining", "loop.round"). Lookups consult this
-// map BEFORE state.Variables, so callers can supply per-goroutine values for
-// keys that would otherwise race on the shared state map. Used by foreach
-// max_rounds (bd-2ubxp.20) to bind ${round}/${loop.round} per-iteration
-// without writing to state.Variables.
+// path (e.g. "round", "loop.round", "loop.item"). Lookups consult this map
+// before state.Variables, including nested fields below an overridden path,
+// so parallel loops and foreach rounds never consume a sibling's bindings.
 func (s *Substitutor) SetLocalOverrides(o map[string]interface{}) {
 	s.localOverrides = o
 }
@@ -683,20 +681,12 @@ func (s *Substitutor) resolveVar(path string) (interface{}, error) {
 		return nil, fmt.Errorf("empty variable reference")
 	}
 
-	// bd-2ubxp.20: per-call overrides take precedence over state.Variables so
-	// parallel foreach iterations can each see their own ${round} value
-	// without racing on the shared map. Matches by full path first (so
-	// ${loop.round} hits "loop.round" in the overlay) and falls back to the
-	// bare top-level key for ${round}/${rounds_remaining}.
-	if s.localOverrides != nil {
-		if v, ok := s.localOverrides[path]; ok {
-			return v, nil
-		}
-		if len(parts) > 1 {
-			if v, ok := s.localOverrides[parts[0]]; ok {
-				return navigateNested(v, parts[1:])
-			}
-		}
+	// Per-call overrides shadow shared variables for the whole value, not
+	// just an exact path. Prefer the longest matching prefix so loop.item's
+	// nested maps/arrays also resolve locally. If an overridden value lacks
+	// a field, report that error rather than exposing an outer/shared value.
+	if value, found, err := s.resolveLocalOverride(path); found {
+		return value, err
 	}
 
 	switch parts[0] {
@@ -745,6 +735,26 @@ func (s *Substitutor) resolveVar(path string) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("unknown variable namespace: %s", parts[0])
 	}
+}
+
+// resolveLocalOverride distinguishes an absent binding from an overridden
+// value with a missing child field. Iteration source resolution also uses this
+// lookup to preserve typed arrays rather than round-tripping through strings.
+func (s *Substitutor) resolveLocalOverride(path string) (interface{}, bool, error) {
+	if len(s.localOverrides) == 0 {
+		return nil, false, nil
+	}
+	if value, ok := s.localOverrides[path]; ok {
+		return value, true, nil
+	}
+	parts := expandBracketParts(strings.Split(path, "."))
+	for n := len(parts); n > 0; n-- {
+		if value, ok := s.localOverrides[strings.Join(parts[:n], ".")]; ok {
+			resolved, err := navigateNested(value, parts[n:])
+			return resolved, true, err
+		}
+	}
+	return nil, false, nil
 }
 
 // resolveRuntime handles runtime.X (and nested runtime.X.Y) references,

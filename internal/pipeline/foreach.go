@@ -334,6 +334,16 @@ func (e *Executor) resolveForeachItems(ctx context.Context, config *ForeachConfi
 	}
 	switch {
 	case config.Items != "":
+		if ref, ok := exactVariableReference(strings.TrimSpace(config.Items)); ok {
+			sub := NewSubstitutor(nil, e.config.Session, "")
+			sub.SetLocalOverrides(roundOverridesFromCtx(ctx))
+			if value, found, err := sub.resolveLocalOverride(ref); found {
+				if err != nil {
+					return nil, fmt.Errorf("items reference ${%s}: %w", ref, err)
+				}
+				return scalarOrArrayItems(value)
+			}
+		}
 		e.varMu.RLock()
 		vars := captureAllVariables(e.state.Variables)
 		e.varMu.RUnlock()
@@ -592,7 +602,7 @@ func (e *Executor) executeForeachIterationsSequential(ctx context.Context, paren
 		// bd-qeatk: a prior run already completed this iteration; skip
 		// re-dispatch so commands/prompts don't duplicate side effects.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results = append(results, e.resumeCompletedForeachIteration(parent, plan))
+			results = append(results, e.resumeCompletedForeachIteration(ctx, parent, plan))
 			progress.iterationFinished()
 			continue
 		}
@@ -668,7 +678,7 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		}
 		// bd-qeatk: prior-run completion suppresses re-dispatch on resume.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results[i] = e.resumeCompletedForeachIteration(parent, plan)
+			results[i] = e.resumeCompletedForeachIteration(ctx, parent, plan)
 			progress.iterationFinished()
 			continue
 		}
@@ -773,7 +783,7 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 	// loop. When unset the resolver returns 1 and behavior is identical to
 	// the historical single-round path. Per-round IDs are suffixed so each
 	// round's nested results land under unique keys in state.Steps.
-	maxRounds, mrErr := e.resolveForeachMaxRounds(parent)
+	maxRounds, mrErr := e.resolveForeachMaxRounds(ctx, parent)
 	if mrErr != nil {
 		iterResult.Error = mrErr.Error()
 		return iterResult
@@ -1955,14 +1965,14 @@ func resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIteration
 	}
 }
 
-func (e *Executor) resumeCompletedForeachIteration(parent *Step, plan foreachIterationPlan) foreachIterationResult {
+func (e *Executor) resumeCompletedForeachIteration(ctx context.Context, parent *Step, plan foreachIterationPlan) foreachIterationResult {
 	result := resumeCompletedForeachIteration(plan)
 	if e == nil || e.state == nil || len(plan.Steps) == 0 {
 		return result
 	}
 	maxRounds := 1
 	if parent != nil {
-		if mr, err := e.resolveForeachMaxRounds(parent); err == nil && mr > 1 {
+		if mr, err := e.resolveForeachMaxRounds(ctx, parent); err == nil && mr > 1 {
 			maxRounds = mr
 		}
 	}
