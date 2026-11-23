@@ -3837,7 +3837,9 @@ func (e *Executor) markForeachIterationRoundCompleted(stepID, iterID string, rou
 	e.state.ForeachState[stepID] = state
 }
 
-func (e *Executor) markForeachIterationCompleted(stepID string, iteration, total int) {
+// markForeachIterationCompleted publishes completion and any collected outputs
+// atomically so a concurrent snapshot cannot retain one without the other.
+func (e *Executor) markForeachIterationCompleted(stepID string, iteration, total int, collectedOutputs ...interface{}) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	if e.state == nil || stepID == "" {
@@ -3854,6 +3856,7 @@ func (e *Executor) markForeachIterationCompleted(stepID string, iteration, total
 	iterID := loopIterationID(stepID, iteration)
 	if !stringSliceContains(state.CompletedIterationIDs, iterID) {
 		state.CompletedIterationIDs = append(state.CompletedIterationIDs, iterID)
+		state.CollectedOutputs = append(state.CollectedOutputs, collectedOutputs...)
 	}
 	state.CurrentIteration = iteration + 1
 	state.Total = total

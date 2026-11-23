@@ -128,7 +128,7 @@ func TestRace_ParallelInline_50steps(t *testing.T) {
 // TestRace_ForeachLoopUnderSnapshotPressure runs a 100-iteration foreach loop
 // (sequential dispatch — the parallel iteration runtime in bd-2ubxp.12 is still
 // open) while concurrent readers exercise the loop-scope stack via substitution.
-// Detects races on state.Variables across pushLoopVars/popLoopVars boundaries.
+// Detects races while local loop bindings coexist with shared-state readers.
 func TestRace_ForeachLoopUnderSnapshotPressure(t *testing.T) {
 	const itemCount = 100
 	items := make([]interface{}, itemCount)
@@ -256,11 +256,9 @@ func TestRace_PostPipelineDuringMain(t *testing.T) {
 	t.Skip("blocked on bd-w6nth.5: post_pipeline_steps runtime not yet wired")
 }
 
-// TestRace_VariableScopeStackUnderForeach stresses the variable-scope stack
-// (pushLoopVars/popLoopVars) under heavy concurrent substituteVariables and
-// snapshotState pressure. This is the unit-level version of the foreach
-// scenario in TestRace_NestedForeachParallel and is fast enough to be the
-// canary signal for varMu regressions.
+// TestRace_VariableScopeStackUnderForeach exercises local iteration bindings
+// under concurrent substitution and snapshot pressure. Every worker must see
+// its own values while readers of shared state see no iteration variables.
 func TestRace_VariableScopeStackUnderForeach(t *testing.T) {
 	e := newRaceExecutor(t, "race-scope")
 	e.varMu.Lock()
@@ -291,7 +289,10 @@ func TestRace_VariableScopeStackUnderForeach(t *testing.T) {
 					return
 				default:
 				}
-				_ = e.substituteVariables("${base | \"-\"} ${loop.row_w0 | \"-\"} ${loop.index | \"-\"}")
+				if got := e.substituteVariables("${vars.base} ${loop.row_w0 | \"-\"} ${loop.index | \"-\"}"); got != "stable - -" {
+					t.Errorf("shared reader observed a local iteration: %q", got)
+					return
+				}
 				_ = e.snapshotState()
 				runtime.Gosched()
 			}
@@ -306,10 +307,16 @@ func TestRace_VariableScopeStackUnderForeach(t *testing.T) {
 			<-start
 			varName := fmt.Sprintf("row_w%d", id)
 			for i := 0; i < itersPerWriter; i++ {
-				scope := e.loopExec.pushLoopVars(varName, fmt.Sprintf("v-%d-%d", id, i), i, itersPerWriter)
+				value := fmt.Sprintf("v-%d-%d", id, i)
+				ctx := withLoopVars(context.Background(), varName, value, i, itersPerWriter)
 				atomic.AddInt64(&pushes, 1)
-				e.loopExec.popLoopVars(scope)
 				runtime.Gosched()
+				got, err := e.substituteVariablesStrictCtx(ctx, "${loop."+varName+"}:${item}:${loop.index}")
+				want := fmt.Sprintf("%s:%s:%d", value, value, i)
+				if err != nil || got != want {
+					t.Errorf("worker %d iteration %d: %q, %v; want %q", id, i, got, err, want)
+					return
+				}
 			}
 		}(w)
 	}
@@ -322,15 +329,17 @@ func TestRace_VariableScopeStackUnderForeach(t *testing.T) {
 	readerWG.Wait()
 
 	if got := atomic.LoadInt64(&pushes); got != int64(writers*itersPerWriter) {
-		t.Fatalf("expected %d push/pop cycles, got %d", writers*itersPerWriter, got)
+		t.Fatalf("expected %d isolated iteration cycles, got %d", writers*itersPerWriter, got)
 	}
 
-	// After all writers popped their scopes the base variable must still be
-	// the original value — otherwise pushLoopVars leaked a write through.
+	// Local contexts must leave the original global variables intact.
 	e.varMu.RLock()
 	got := e.state.Variables["base"]
 	e.varMu.RUnlock()
 	if got != "stable" {
 		t.Fatalf("base variable corrupted by scope stack: got %v want \"stable\"", got)
+	}
+	if len(e.state.Variables) != 1 || len(e.state.ScopeStack) != 0 {
+		t.Fatal("iteration bindings leaked into shared state")
 	}
 }

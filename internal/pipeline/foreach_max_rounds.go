@@ -8,22 +8,34 @@ import (
 	"strings"
 )
 
-// roundOverridesCtxKey scopes per-iteration round/rounds_remaining bindings
-// onto a context.Context so parallel foreach iterations can each carry their
-// own values without racing on shared state.Variables (bd-2ubxp.20).
+// roundOverridesCtxKey scopes iteration bindings onto a context.Context so
+// parallel foreach rounds and loops carry their own values without writing
+// shared state.Variables.
 type roundOverridesCtxKey struct{}
 
-// withRoundOverrides returns a derived context that exposes the supplied
-// round-binding overlay to substitution call sites. Pass nil to clear.
+// withRoundOverrides returns a derived context with an immutable merged
+// iteration overlay. Nested loops/rounds shadow only their own keys, preserving
+// outer aliases and round bindings. Pass nil to clear the overlay.
 func withRoundOverrides(ctx context.Context, overrides map[string]interface{}) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, roundOverridesCtxKey{}, overrides)
+	if overrides == nil {
+		return context.WithValue(ctx, roundOverridesCtxKey{}, overrides)
+	}
+	parent := roundOverridesFromCtx(ctx)
+	merged := make(map[string]interface{}, len(parent)+len(overrides))
+	for key, value := range parent {
+		merged[key] = value
+	}
+	for key, value := range overrides {
+		merged[key] = value
+	}
+	return context.WithValue(ctx, roundOverridesCtxKey{}, merged)
 }
 
-// roundOverridesFromCtx returns the round-binding overlay attached to ctx, or
-// nil if none. The map should be treated as read-only by callers.
+// roundOverridesFromCtx returns the iteration overlay attached to ctx, or nil
+// if none. The map must be treated as read-only by callers.
 func roundOverridesFromCtx(ctx context.Context) map[string]interface{} {
 	if ctx == nil {
 		return nil
@@ -78,7 +90,7 @@ func buildRoundOverrides(round, maxRounds int) map[string]interface{} {
 // DefaultMaxRounds=100), so operators with a legitimate need >100 can raise
 // it in workflow settings without rewriting expression-driven workflows
 // into literals.
-func (e *Executor) resolveForeachMaxRounds(parent *Step) (int, error) {
+func (e *Executor) resolveForeachMaxRounds(ctx context.Context, parent *Step) (int, error) {
 	fc := parent.Foreach
 	if fc == nil {
 		fc = parent.ForeachPane
@@ -118,6 +130,7 @@ func (e *Executor) resolveForeachMaxRounds(parent *Step) (int, error) {
 	sub := NewSubstitutor(e.state, e.config.Session, workflowID)
 	sub.SetDefaults(e.defaults)
 	sub.SetMaxDepth(e.limits.MaxSubstitutionDepth)
+	sub.SetLocalOverrides(roundOverridesFromCtx(ctx))
 	resolved, subErr := sub.SubstituteStrict(e.substituteRuntimeVariables(mr.Expr))
 	e.varMu.RUnlock()
 	e.stateMu.RUnlock()

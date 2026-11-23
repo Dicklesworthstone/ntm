@@ -522,6 +522,129 @@ func TestScaleJSONAddFailureOwnsSingleTerminalResponseAndFails(t *testing.T) {
 	}
 }
 
+func TestScaleIncompleteExpansionPreservesExistingAgents(t *testing.T) {
+	for _, surface := range []string{"cli", "robot"} {
+		for _, failure := range []string{"launch_failure", "partial_expansion", "seat_refusal"} {
+			t.Run(surface+"/"+failure, func(t *testing.T) {
+				session := newScaleJSONTestSession(t, testAgentCatCommandTemplate)
+				cfg.Agents.Gemini = testAgentCatCommandTemplate
+				cfg.Agents.Codex = testAgentCatCommandTemplate
+				setupOutput, err := captureScaleStdout(t, func() error {
+					return runScale(t.Context(), session, []scaleTarget{{agentType: AgentTypeGemini, count: 1, set: true}}, false, true)
+				})
+				if err != nil || !decodeSingleScaleResponse(t, setupOutput).Success {
+					t.Fatalf("create original agent: %v; output=%s", err, setupOutput)
+				}
+				before, err := tmux.GetPanes(session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var original tmux.Pane
+				for _, pane := range before {
+					if scaleAgentTypeLabel(pane.Type) == "gmi" {
+						original = pane
+					}
+				}
+				if original.ID == "" || original.Dead || original.AgentCLIDead() {
+					t.Fatalf("original agent never became live: %+v", original)
+				}
+
+				targets := map[string]int{"cod": 1, "gmi": 0}
+				if failure == "partial_expansion" {
+					// Claude is added before Codex fails. Preserve both that
+					// successful addition and the original Gemini process.
+					targets["cc"] = 1
+				}
+				if failure == "seat_refusal" {
+					cfg.Integrations.CAAM.SeatSelection = true
+					withStubSeatResolver(t, &stubSeatResolver{
+						errs: map[string]error{"codex": errors.New("replacement seat unavailable")},
+					})
+				} else {
+					cfg.Agents.Codex = "{{"
+				}
+
+				var after map[string]int
+				var operationErrors []string
+				if surface == "cli" {
+					requested, err := parseScaleInputTargets(targets)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stdout, err := captureScaleStdout(t, func() error {
+						return runScale(t.Context(), session, requested, false, true)
+					})
+					if !errors.Is(err, errJSONFailure) {
+						t.Fatalf("incomplete scale did not fail: %v; output=%s", err, stdout)
+					}
+					response := decodeSingleScaleResponse(t, stdout)
+					if response.Success || response.ErrorCode != robot.ErrCodeInternalError {
+						t.Fatalf("incomplete scale response: %+v", response)
+					}
+					after, operationErrors = response.After, response.Errors
+				} else {
+					response, err := executeScaleRobot(t.Context(), robot.ScaleInput{Session: session, Targets: targets, Force: true})
+					if err != nil || response == nil || response.Success || response.ErrorCode != robot.ErrCodeInternalError {
+						t.Fatalf("incomplete robot scale response: %+v %v", response, err)
+					}
+					after, operationErrors = response.After, response.Errors
+				}
+				panes, err := tmux.GetPanes(session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				preserved := false
+				actual := make(map[string]int)
+				for _, pane := range panes {
+					actual[scaleAgentTypeLabel(pane.Type)]++
+					if pane.ID == original.ID {
+						preserved = pane.PID == original.PID && !pane.Dead && !pane.AgentCLIDead()
+					}
+				}
+				if !preserved || actual["gmi"] != 1 || after["gmi"] != 1 {
+					t.Fatalf("failed expansion destroyed existing capacity: original=%+v panes=%+v after=%v", original, panes, after)
+				}
+				if failure == "partial_expansion" && actual["cc"] != 1 {
+					t.Fatalf("successful addition was lost after another launch failed: panes=%+v", panes)
+				}
+				diagnostics := strings.Join(operationErrors, "; ")
+				if !strings.Contains(diagnostics, "spawn cod") || !strings.Contains(diagnostics, "scale-down skipped") {
+					t.Fatalf("scale lost its launch failure or skipped-removal diagnostic: %s", diagnostics)
+				}
+				for _, harness := range scaleHarnessOrder {
+					key := string(harness)
+					if after[key] != actual[key] {
+						t.Errorf("reported %s=%d, observed %d panes", key, after[key], actual[key])
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestScaleSuccessfulExpansionStillAppliesScaleDown(t *testing.T) {
+	session := newScaleJSONTestSession(t, testAgentCatCommandTemplate)
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
+	setupOutput, err := captureScaleStdout(t, func() error {
+		return runScale(t.Context(), session, []scaleTarget{{agentType: AgentTypeGemini, count: 1, set: true}}, false, true)
+	})
+	if err != nil || !decodeSingleScaleResponse(t, setupOutput).Success {
+		t.Fatalf("create original agent: %v; output=%s", err, setupOutput)
+	}
+	response, err := executeScaleRobot(t.Context(), robot.ScaleInput{
+		Session: session, Targets: map[string]int{"cc": 1, "gmi": 0}, Force: true,
+	})
+	if err != nil || response == nil || !response.Success || response.After["cc"] != 1 || response.After["gmi"] != 0 {
+		t.Fatalf("successful replacement did not reach targets: %+v %v", response, err)
+	}
+	response, err = executeScaleRobot(t.Context(), robot.ScaleInput{
+		Session: session, Targets: map[string]int{"cc": 0}, Force: true,
+	})
+	if err != nil || response == nil || !response.Success || response.After["cc"] != 0 {
+		t.Fatalf("scale-down without expansion did not reach target: %+v %v", response, err)
+	}
+}
+
 func newScaleJSONTestSession(t *testing.T, claudeTemplate string) string {
 	t.Helper()
 	testutil.RequireTmuxThrottled(t)

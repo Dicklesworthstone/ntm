@@ -3,6 +3,10 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1333,6 +1337,249 @@ func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
 	})
 }
 
+func TestUntilResumeRecoversTerminalDecisionBeforeParentCheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		maxIterations      int
+		firstBodyContinues bool
+	}{{maxIterations: 1}, {maxIterations: 3}, {maxIterations: 3, firstBodyContinues: true}} {
+		t.Run(fmt.Sprintf("max_%d_continued_failure_%t", tc.maxIterations, tc.firstBodyContinues), func(t *testing.T) {
+			t.Parallel()
+			e := newCommandTestExecutor(t)
+			e.state.Status, e.state.Session = StatusRunning, e.config.Session
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{
+					{ID: "poll", Loop: &LoopConfig{
+						Until:         "printf 'predicate\\n' >> predicates; true",
+						MaxIterations: IntOrExpr{Value: tc.maxIterations},
+						Collect:       "ticks",
+						Steps:         []Step{{ID: "tick", Command: "printf 'body\\n' >> bodies; printf 'tick'"}},
+					}},
+					{ID: "after", DependsOn: []string{"poll"}, Command: "printf '%s' '${vars.ticks}' > collected"},
+				},
+			}
+			wantIterations := 1
+			if tc.firstBodyContinues {
+				wantIterations = 2
+				workflow.Steps[0].Loop.Until = "printf 'predicate\\n' >> predicates; [ '${loop.index}' -ge 1 ]"
+				workflow.Steps[0].Loop.Steps[0].Command += "; if [ '${loop.index}' -eq 0 ]; then exit 7; fi"
+				workflow.Steps[0].Loop.Steps[0].OnError = ErrorActionContinue
+			}
+			e.graph = NewDependencyGraph(workflow)
+			result := e.loopExec.ExecuteLoop(context.Background(), &workflow.Steps[0], workflow)
+			if result.Status != StatusCompleted || result.Iterations != wantIterations {
+				t.Fatalf("initial loop did not stop at its successful predicate: %+v", result)
+			}
+			// ExecuteLoop has persisted the completed iteration and predicate,
+			// but the scheduler has not published the parent result. This is the
+			// actual crash window that used to run an extra body (or fail at the cap).
+			prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, published := prior.Steps["poll"]; published || len(prior.ForeachState["poll"].CompletedIterationIDs) != wantIterations {
+				t.Fatalf("fixture is not between iteration and parent checkpoints: %+v", prior)
+			}
+			final, err := NewExecutor(e.config).Resume(context.Background(), workflow, prior, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps["after"].Status != StatusCompleted {
+				t.Fatalf("terminal predicate was not recovered: %+v %v", final, err)
+			}
+			for name, want := range map[string]string{
+				"bodies": strings.Repeat("body\n", wantIterations), "predicates": strings.Repeat("predicate\n", wantIterations), "collected": `["tick"]`,
+			} {
+				data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, name))
+				if err != nil || string(data) != want {
+					t.Errorf("%s after resume = %q, %v; want %q", name, data, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestUntilResumeReusesPredicateReceiptBeforeIterationCheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		stopAfter          int
+		iterationCompleted bool
+		bodyFailure        bool
+	}{{stopAfter: 1}, {stopAfter: 2}, {stopAfter: 2, iterationCompleted: true}, {stopAfter: 1, bodyFailure: true}, {stopAfter: 2, bodyFailure: true}} {
+		t.Run(fmt.Sprintf("stop_after_%d_completed_%t_body_failure_%t", tc.stopAfter, tc.iterationCompleted, tc.bodyFailure), func(t *testing.T) {
+			t.Parallel()
+			e := newCommandTestExecutor(t)
+			e.state.Status, e.state.Session = StatusRunning, e.config.Session
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "poll", Loop: &LoopConfig{
+					Until:         fmt.Sprintf("printf 'predicate\\n' >> predicates; [ \"$(wc -l < bodies)\" -ge %d ]", tc.stopAfter),
+					MaxIterations: IntOrExpr{Value: 3},
+					Collect:       "ticks",
+					Steps:         []Step{{ID: "tick", Command: "printf 'body\\n' >> bodies; printf 'tick'"}},
+				}}},
+			}
+			if tc.bodyFailure {
+				workflow.Steps[0].Loop.Steps[0].Command += "; exit 7"
+				workflow.Steps[0].Loop.Steps[0].OnError = ErrorActionContinue
+			}
+			e.graph = NewDependencyGraph(workflow)
+			parent := &workflow.Steps[0]
+			e.beginForeachState(parent.ID, 3)
+			e.markForeachIterationStarted(parent.ID, 0, 3)
+			iterCtx := withLoopVars(context.Background(), "item", 0, 0, 3)
+			body, broke, continued, complete := e.loopExec.executeIteration(iterCtx, parent, parent.Loop, workflow, 0)
+			wantBodyStatus := StatusCompleted
+			if tc.bodyFailure {
+				wantBodyStatus = StatusFailed
+			}
+			if broke || continued || !complete || len(body) != 1 || body[0].Status != wantBodyStatus {
+				t.Fatalf("first body did not complete: %+v", body)
+			}
+			predicate := untilPredicateStep(parent, parent.Loop, 0)
+			outcome := e.executeCommand(iterCtx, &predicate, workflow)
+			if (tc.stopAfter == 1 && outcome.Status != StatusCompleted) ||
+				(tc.stopAfter == 2 && !untilPredicateExitedFalse(outcome)) {
+				t.Fatalf("unexpected predicate fixture: %+v", outcome)
+			}
+			if tc.iterationCompleted {
+				e.markForeachIterationCompleted(parent.ID, 0, 3)
+				e.appendForeachCollectedOutput(parent.ID, body[0].Output)
+				if err := e.persistState(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Stop at either the command's settlement checkpoint or the complete
+			// iteration checkpoint. A false predicate may have its own effects,
+			// so executeCommand must not retry it on restart.
+			prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if completed := len(prior.ForeachState["poll"].CompletedIterationIDs) != 0; completed != tc.iterationCompleted {
+				t.Fatal("fixture did not stop at the expected iteration checkpoint")
+			}
+			final, err := NewExecutor(e.config).Resume(context.Background(), workflow, prior, nil)
+			if err != nil || final.Status != StatusCompleted {
+				t.Fatalf("predicate settlement resume failed: %+v %v", final, err)
+			}
+			for name, line := range map[string]string{"bodies": "body\n", "predicates": "predicate\n"} {
+				data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, name))
+				if want := strings.Repeat(line, tc.stopAfter); err != nil || string(data) != want {
+					t.Errorf("%s after resume = %q, %v; want %q", name, data, err, want)
+				}
+			}
+			wantCollected := tc.stopAfter
+			if tc.bodyFailure {
+				wantCollected = 0
+			}
+			if collected, ok := final.Variables["ticks"].([]interface{}); !ok || len(collected) != wantCollected {
+				t.Fatalf("resume did not preserve collected body outputs: %#v", final.Variables["ticks"])
+			}
+		})
+	}
+}
+
+func TestUntilPredicateFailuresStopBeforeAnotherBody(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		predicate string
+		errorType string
+		timeout   time.Duration
+	}{
+		{name: "undefined variable", predicate: "test '${vars.missing_predicate_input}' = ready", errorType: "substitution"},
+		{name: "timeout", predicate: "sleep 60", errorType: "timeout", timeout: 250 * time.Millisecond},
+		{name: "signal", predicate: "kill -TERM $$", errorType: "exit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultExecutorConfig("until-failure")
+			cfg.ProjectDir, cfg.GlobalTimeout = t.TempDir(), 10*time.Second
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: "until-failure", Settings: DefaultWorkflowSettings(),
+				Steps: []Step{
+					{ID: "poll", Timeout: Duration{Duration: tc.timeout}, Loop: &LoopConfig{
+						Until: tc.predicate, MaxIterations: IntOrExpr{Value: 3},
+						Steps: []Step{{ID: "tick", Command: "printf 'body\\n' >> bodies"}},
+					}},
+					{ID: "after", DependsOn: []string{"poll"}, Command: "printf unexpected > after"},
+				},
+			}
+			state, err := NewExecutor(cfg).Run(context.Background(), workflow, nil, nil)
+			if err == nil || state == nil || state.Status != StatusFailed {
+				t.Fatalf("predicate failure did not fail the run: %+v %v", state, err)
+			}
+			failed := state.Steps["poll"]
+			if failed.Error == nil || failed.Error.Type != tc.errorType || !strings.Contains(failed.Error.Message, "poll_iter0_until") {
+				t.Fatalf("predicate error lost its type or identity: %+v", failed)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "bodies")); err != nil || string(data) != "body\n" {
+				t.Fatalf("failed predicate advanced the loop: %q %v", data, err)
+			}
+			if len(state.ForeachState["poll"].CompletedIterationIDs) != 0 {
+				t.Fatal("unproved predicate was checkpointed as a completed iteration")
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "after")); !os.IsNotExist(err) {
+				t.Fatalf("dependent command ran after predicate failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestUntilResumeRejectsUnprovedPreviousPredicate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ExecutionState)
+	}{
+		{name: "missing receipt", mutate: func(state *ExecutionState) { delete(state.CommandExecutions, "poll_iter0_until") }},
+		{name: "different definition", mutate: func(state *ExecutionState) {
+			record := state.CommandExecutions["poll_iter0_until"]
+			record.StepHash = strings.Repeat("a", 64)
+			state.CommandExecutions[record.StepID] = record
+		}},
+		{name: "unsettled receipt", mutate: func(state *ExecutionState) {
+			record := state.CommandExecutions["poll_iter0_until"]
+			record.Status, record.ProcessID = commandExecutionRunning, 1234567
+			record.SettledAt, record.Result = time.Time{}, StepResult{}
+			record.ExitCodeFile, record.ContainmentTier, record.CgroupPath = "", "", ""
+			record.LeaderPID, record.LeaderStartTimeTicks = 0, 0
+			state.CommandExecutions[record.StepID] = record
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newCommandTestExecutor(t)
+			e.state.Status, e.state.Session = StatusRunning, e.config.Session
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "poll", Loop: &LoopConfig{
+					Until: "printf 'predicate\\n' >> predicates; true", MaxIterations: IntOrExpr{Value: 3},
+					Steps: []Step{{ID: "tick", Command: "printf 'body\\n' >> bodies"}},
+				}}},
+			}
+			e.graph = NewDependencyGraph(workflow)
+			if result := e.loopExec.ExecuteLoop(context.Background(), &workflow.Steps[0], workflow); result.Status != StatusCompleted {
+				t.Fatalf("fixture loop failed: %+v", result)
+			}
+			prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(prior)
+			final, err := NewExecutor(e.config).Resume(context.Background(), workflow, prior, nil)
+			if err == nil || (final != nil && final.Status == StatusCompleted) {
+				t.Fatalf("resume trusted an unproved predicate: %+v %v", final, err)
+			}
+			for name, want := range map[string]string{"bodies": "body\n", "predicates": "predicate\n"} {
+				data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, name))
+				if err != nil || string(data) != want {
+					t.Errorf("%s was repeated by rejected resume: %q %v", name, data, err)
+				}
+			}
+		})
+	}
+}
+
 func TestPipelineWaveF4Fixes(t *testing.T) {
 	t.Parallel()
 
@@ -1484,7 +1731,7 @@ func TestPipelineWaveF4Fixes(t *testing.T) {
 			Item:  "alpha",
 			Steps: []Step{{ID: "fan_iter0_work"}},
 		}
-		res := exec.resumeCompletedForeachIteration(parent, plan)
+		res := exec.resumeCompletedForeachIteration(context.Background(), parent, plan)
 		if len(res.Results) != 2 || res.Results[0].Output != "r1" || res.Results[1].Output != "r2" {
 			t.Fatalf("multi-round resumed iteration dropped round outputs: %+v", res.Results)
 		}
@@ -1546,4 +1793,99 @@ func TestPipelineWaveF4Fixes(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLoopCollectionStaysWithCompletedIterations(t *testing.T) {
+	for _, dialect := range []string{"items", "while", "until", "times"} {
+		t.Run(dialect, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			e.state.Status, e.state.Session = StatusRunning, e.config.Session
+			loop := &LoopConfig{
+				MaxIterations: IntOrExpr{Value: 8}, Collect: "values",
+				Steps:         []Step{{ID: "body", Command: "printf 'body\\n' >> bodies; printf value"}},
+			}
+			wantStatus := StatusCompleted
+			switch dialect {
+			case "items":
+				loop.Items = "[0,1,2,3,4,5,6,7]"
+			case "while":
+				loop.While = "true"
+				wantStatus = StatusFailed // The final safety bound stops this loop.
+			case "until":
+				loop.Until = "[ '${loop.index}' -eq 7 ]"
+			case "times":
+				loop.Times = 8
+			}
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "collect", Loop: loop}},
+			}
+			e.graph = NewDependencyGraph(workflow)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			inconsistent := make(chan string, 1)
+			go func() {
+				defer close(done)
+				for ctx.Err() == nil {
+					// Parallel branches can persist this same shared state at
+					// any point during another loop's iteration settlement.
+					e.stateMu.RLock()
+					checkpoint := e.state.ForeachState["collect"]
+					completed, outputs := len(checkpoint.CompletedIterationIDs), len(checkpoint.CollectedOutputs)
+					e.stateMu.RUnlock()
+					if completed != outputs {
+						inconsistent <- fmt.Sprintf("completed=%d collected=%d", completed, outputs)
+						return
+					}
+					runtime.Gosched()
+				}
+			}()
+			result := e.loopExec.ExecuteLoop(ctx, &workflow.Steps[0], workflow)
+			cancel()
+			<-done
+			select {
+			case mismatch := <-inconsistent:
+				t.Errorf("parallel checkpoint could lose a completed iteration's output: %s", mismatch)
+			default:
+			}
+			if result.Status != wantStatus || result.Iterations != 8 || len(result.Collected) != 8 {
+				t.Fatalf("loop did not retain all outputs: %+v", result)
+			}
+			checkpoint, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress := checkpoint.ForeachState["collect"]
+			if len(progress.CompletedIterationIDs) != 8 || len(progress.CollectedOutputs) != 8 {
+				t.Fatalf("durable iteration/output mismatch: %+v", progress)
+			}
+			for _, value := range progress.CollectedOutputs {
+				if value != "value" {
+					t.Fatalf("collected value changed: %#v", value)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "bodies")); err != nil || strings.Count(string(data), "\n") != 8 {
+				t.Fatalf("body count changed while checkpointing outputs: %q (%v)", data, err)
+			}
+		})
+	}
+}
+
+func TestUntilResumeDryRunRetainsIterationBindings(t *testing.T) {
+	t.Parallel()
+	e := newCommandTestExecutor(t)
+	e.config.DryRun = true
+	step := Step{ID: "poll", Loop: &LoopConfig{
+		Until: "echo ${item}-${loop.index}", MaxIterations: IntOrExpr{Value: 1},
+		Steps: []Step{{ID: "body", Command: "echo body"}},
+	}}
+	workflow := &Workflow{Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+	e.graph = NewDependencyGraph(workflow)
+	e.beginForeachState(step.ID, 1)
+	e.markForeachIterationCompleted(step.ID, 0, 1)
+	result := e.loopExec.ExecuteLoop(context.Background(), &step, workflow)
+	if result.Status != StatusCompleted || result.Iterations != 0 {
+		t.Fatalf("dry-run resume lost the completed iteration's bindings: %+v", result)
+	}
 }

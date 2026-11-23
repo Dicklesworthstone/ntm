@@ -334,6 +334,16 @@ func (e *Executor) resolveForeachItems(ctx context.Context, config *ForeachConfi
 	}
 	switch {
 	case config.Items != "":
+		if ref, ok := exactVariableReference(strings.TrimSpace(config.Items)); ok {
+			sub := NewSubstitutor(nil, e.config.Session, "")
+			sub.SetLocalOverrides(roundOverridesFromCtx(ctx))
+			if value, found, err := sub.resolveLocalOverride(ref); found {
+				if err != nil {
+					return nil, fmt.Errorf("items reference ${%s}: %w", ref, err)
+				}
+				return scalarOrArrayItems(value)
+			}
+		}
 		e.varMu.RLock()
 		vars := captureAllVariables(e.state.Variables)
 		e.varMu.RUnlock()
@@ -411,7 +421,7 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 			}
 		}
 
-		steps, err := e.materializeForeachSteps(parent, config, body, plan, len(items))
+		steps, err := e.materializeForeachSteps(ctx, parent, config, body, plan, len(items))
 		if err != nil {
 			return nil, fmt.Errorf("iteration %d materialize steps: %w", i, err)
 		}
@@ -421,7 +431,7 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 	return plans, nil
 }
 
-func (e *Executor) materializeForeachSteps(parent *Step, config *ForeachConfig, body []Step, plan foreachIterationPlan, total int) ([]Step, error) {
+func (e *Executor) materializeForeachSteps(ctx context.Context, parent *Step, config *ForeachConfig, body []Step, plan foreachIterationPlan, total int) ([]Step, error) {
 	// bd-htmpq: serialize the push-substitute-pop sequence so concurrent
 	// foreach materializations (parallel outer + sequential inner, etc.)
 	// cannot race on the shared alias keys (foreachVarName, loop.*,
@@ -436,7 +446,13 @@ func (e *Executor) materializeForeachSteps(parent *Step, config *ForeachConfig, 
 	scope := e.pushForeachVars(varName, plan.Item, plan.Index, total, plan.PaneVars)
 	defer e.popForeachVars(scope)
 
-	protected := e.foreachBodyProtectedPaths(parent, config, body, nil)
+	iterCtx := withLoopVars(ctx, varName, plan.Item, plan.Index, total)
+	bindings := map[string]interface{}{varName: plan.Item}
+	if plan.PaneVars != nil {
+		bindings["pane"] = cloneInterfaceMap(plan.PaneVars)
+	}
+	iterCtx = withRoundOverrides(iterCtx, bindings)
+	protected := e.foreachBodyProtectedPaths(iterCtx, parent, config, body, nil)
 	steps := make([]Step, 0, len(body))
 	for bodyIndex, nested := range body {
 		materialized := cloneStep(nested)
@@ -447,7 +463,7 @@ func (e *Executor) materializeForeachSteps(parent *Step, config *ForeachConfig, 
 		if plan.PaneIndex > 0 && materialized.Pane.Index == 0 && materialized.Pane.Expr == "" {
 			materialized.Pane.Index = plan.PaneIndex
 		}
-		e.substituteForeachStepFieldsProtected(&materialized, protected)
+		e.substituteForeachStepFieldsProtected(iterCtx, &materialized, protected)
 		steps = append(steps, materialized)
 	}
 	return steps, nil
@@ -592,7 +608,7 @@ func (e *Executor) executeForeachIterationsSequential(ctx context.Context, paren
 		// bd-qeatk: a prior run already completed this iteration; skip
 		// re-dispatch so commands/prompts don't duplicate side effects.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results = append(results, e.resumeCompletedForeachIteration(parent, plan))
+			results = append(results, e.resumeCompletedForeachIteration(ctx, parent, plan))
 			progress.iterationFinished()
 			continue
 		}
@@ -668,7 +684,7 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		}
 		// bd-qeatk: prior-run completion suppresses re-dispatch on resume.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results[i] = e.resumeCompletedForeachIteration(parent, plan)
+			results[i] = e.resumeCompletedForeachIteration(ctx, parent, plan)
 			progress.iterationFinished()
 			continue
 		}
@@ -773,7 +789,7 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 	// loop. When unset the resolver returns 1 and behavior is identical to
 	// the historical single-round path. Per-round IDs are suffixed so each
 	// round's nested results land under unique keys in state.Steps.
-	maxRounds, mrErr := e.resolveForeachMaxRounds(parent)
+	maxRounds, mrErr := e.resolveForeachMaxRounds(ctx, parent)
 	if mrErr != nil {
 		iterResult.Error = mrErr.Error()
 		return iterResult
@@ -1415,47 +1431,47 @@ func stepOwnsForeachOutputVar(step *Step) bool {
 	return step != nil && (step.Foreach != nil || step.ForeachPane != nil)
 }
 
-func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected map[string]struct{}) {
-	step.Name = e.substituteForeachString(step.Name, protected)
-	step.Description = e.substituteForeachString(step.Description, protected)
-	step.Agent = e.substituteForeachString(step.Agent, protected)
-	step.Prompt = e.substituteForeachString(step.Prompt, protected)
-	step.PromptFile = e.substituteForeachString(step.PromptFile, protected)
-	step.Command = e.substituteForeachString(step.Command, protected)
-	step.Stdin = e.substituteForeachString(step.Stdin, protected)
-	step.Template = e.substituteForeachString(step.Template, protected)
-	step.Wait = WaitCondition(e.substituteForeachString(string(step.Wait), protected))
-	step.When = e.substituteForeachString(step.When, protected)
-	step.Branch = e.substituteForeachString(step.Branch, protected)
-	step.OutputVar = e.substituteForeachString(step.OutputVar, protected)
-	step.Args = substituteForeachInterfaceMap(e, step.Args, protected)
-	step.Params = substituteForeachInterfaceMap(e, step.Params, protected)
-	step.TemplateParams = substituteForeachInterfaceMap(e, step.TemplateParams, protected)
-	step.OnFailure.Action = e.substituteForeachString(step.OnFailure.Action, protected)
-	step.OnFailure.Fallback = substituteForeachInterfaceMap(e, step.OnFailure.Fallback, protected)
+func (e *Executor) substituteForeachStepFieldsProtected(ctx context.Context, step *Step, protected map[string]struct{}) {
+	step.Name = e.substituteForeachString(ctx, step.Name, protected)
+	step.Description = e.substituteForeachString(ctx, step.Description, protected)
+	step.Agent = e.substituteForeachString(ctx, step.Agent, protected)
+	step.Prompt = e.substituteForeachString(ctx, step.Prompt, protected)
+	step.PromptFile = e.substituteForeachString(ctx, step.PromptFile, protected)
+	step.Command = e.substituteForeachString(ctx, step.Command, protected)
+	step.Stdin = e.substituteForeachString(ctx, step.Stdin, protected)
+	step.Template = e.substituteForeachString(ctx, step.Template, protected)
+	step.Wait = WaitCondition(e.substituteForeachString(ctx, string(step.Wait), protected))
+	step.When = e.substituteForeachString(ctx, step.When, protected)
+	step.Branch = e.substituteForeachString(ctx, step.Branch, protected)
+	step.OutputVar = e.substituteForeachString(ctx, step.OutputVar, protected)
+	step.Args = substituteForeachInterfaceMap(ctx, e, step.Args, protected)
+	step.Params = substituteForeachInterfaceMap(ctx, e, step.Params, protected)
+	step.TemplateParams = substituteForeachInterfaceMap(ctx, e, step.TemplateParams, protected)
+	step.OnFailure.Action = e.substituteForeachString(ctx, step.OnFailure.Action, protected)
+	step.OnFailure.Fallback = substituteForeachInterfaceMap(ctx, e, step.OnFailure.Fallback, protected)
 	if query := step.BeadQuery; query != nil {
-		query.Label = e.substituteForeachStringList(query.Label, protected)
-		e.substituteForeachStrings(protected, &query.Status, &query.State, &query.Type,
+		query.Label = e.substituteForeachStringList(ctx, query.Label, protected)
+		e.substituteForeachStrings(ctx, protected, &query.Status, &query.State, &query.Type,
 			&query.Priority, &query.Assignee, &query.Filter)
 	}
 	if mail := step.MailSend; mail != nil {
-		mail.To = e.substituteForeachStringList(mail.To, protected)
-		e.substituteForeachStrings(protected, &mail.ProjectKey, &mail.AgentName,
+		mail.To = e.substituteForeachStringList(ctx, mail.To, protected)
+		e.substituteForeachStrings(ctx, protected, &mail.ProjectKey, &mail.AgentName,
 			&mail.Subject, &mail.Body, &mail.ThreadID)
 	}
 	if reservation := step.FileReservationPaths; reservation != nil {
-		reservation.Paths = e.substituteForeachStringList(reservation.Paths, protected)
-		e.substituteForeachStrings(protected, &reservation.ProjectKey, &reservation.AgentName, &reservation.Reason)
+		reservation.Paths = e.substituteForeachStringList(ctx, reservation.Paths, protected)
+		e.substituteForeachStrings(ctx, protected, &reservation.ProjectKey, &reservation.AgentName, &reservation.Reason)
 	}
 	if inbox := step.MailInboxCheck; inbox != nil {
-		e.substituteForeachStrings(protected, &inbox.ProjectKey, &inbox.AgentName)
+		e.substituteForeachStrings(ctx, protected, &inbox.ProjectKey, &inbox.AgentName)
 	}
 	if release := step.FileReservationRelease; release != nil {
-		release.Paths = e.substituteForeachStringList(release.Paths, protected)
-		e.substituteForeachStrings(protected, &release.ProjectKey, &release.AgentName)
+		release.Paths = e.substituteForeachStringList(ctx, release.Paths, protected)
+		e.substituteForeachStrings(ctx, protected, &release.ProjectKey, &release.AgentName)
 	}
 	if step.Pane.Expr != "" {
-		resolved := strings.TrimSpace(e.substituteForeachString(step.Pane.Expr, protected))
+		resolved := strings.TrimSpace(e.substituteForeachString(ctx, step.Pane.Expr, protected))
 		if idx, err := strconv.Atoi(resolved); err == nil {
 			step.Pane.Index = idx
 			step.Pane.Expr = ""
@@ -1464,30 +1480,31 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		}
 	}
 	for i := range step.Parallel.Steps {
-		e.substituteForeachStepFieldsProtected(&step.Parallel.Steps[i], protected)
+		e.substituteForeachStepFieldsProtected(ctx, &step.Parallel.Steps[i], protected)
 	}
 	for i := range step.OnSuccess {
-		e.substituteForeachStepFieldsProtected(&step.OnSuccess[i], protected)
+		e.substituteForeachStepFieldsProtected(ctx, &step.OnSuccess[i], protected)
 	}
 	for key, value := range step.Branches {
-		step.Branches[key] = e.substituteForeachBranchFields(value, protected)
+		step.Branches[key] = e.substituteForeachBranchFields(ctx, value, protected)
 	}
 	if step.Loop != nil {
 		// Loop selectors and collection names are evaluated outside the
-		// nested iteration's scope. Only its body owns item and loop.*;
-		// legacy loops do not install a bare custom alias like foreach does.
-		e.substituteForeachStrings(protected, &step.Loop.Items, &step.Loop.While,
-			&step.Loop.Until, &step.Loop.Collect, &step.Loop.MaxIterations.Expr)
+		// nested iteration's scope. Its body and post-condition own item and
+		// loop.*; legacy loops do not install a bare custom foreach alias.
+		e.substituteForeachStrings(ctx, protected, &step.Loop.Items, &step.Loop.While,
+			&step.Loop.Collect, &step.Loop.MaxIterations.Expr)
 		bodyProtected := cloneProtectedRoots(protected)
 		bodyProtected["item"] = struct{}{}
 		bodyProtected["loop"] = struct{}{}
 		loopBody := append(append([]Step(nil), step.Loop.Steps...), step.Loop.Body...)
-		bodyProtected = e.foreachBodyProtectedPaths(step, nil, loopBody, bodyProtected)
+		bodyProtected = e.foreachBodyProtectedPaths(ctx, step, nil, loopBody, bodyProtected)
+		step.Loop.Until = e.substituteForeachString(ctx, step.Loop.Until, bodyProtected)
 		for i := range step.Loop.Steps {
-			e.substituteForeachStepFieldsProtected(&step.Loop.Steps[i], bodyProtected)
+			e.substituteForeachStepFieldsProtected(ctx, &step.Loop.Steps[i], bodyProtected)
 		}
 		for i := range step.Loop.Body {
-			e.substituteForeachStepFieldsProtected(&step.Loop.Body[i], bodyProtected)
+			e.substituteForeachStepFieldsProtected(ctx, &step.Loop.Body[i], bodyProtected)
 		}
 	}
 	for _, config := range []*ForeachConfig{step.Foreach, step.ForeachPane} {
@@ -1502,7 +1519,7 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 			bodyProtected["pane"] = struct{}{}
 		}
 		nestedBody := append(append([]Step(nil), config.Steps...), config.Body...)
-		bodyProtected = e.foreachBodyProtectedPaths(step, config, nestedBody, bodyProtected)
+		bodyProtected = e.foreachBodyProtectedPaths(ctx, step, config, nestedBody, bodyProtected)
 		if foreachVarName(config) == "item" && e.foreachLoopItemActive() {
 			slog.Debug("nested foreach item alias shadows outer item",
 				"run_id", e.state.RunID,
@@ -1511,12 +1528,12 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 			)
 		}
 
-		config.Items = e.substituteForeachString(config.Items, protected)
-		config.Beads = e.substituteForeachString(config.Beads, protected)
-		config.Pairs = e.substituteForeachString(config.Pairs, protected)
-		config.Debates = e.substituteForeachString(config.Debates, protected)
-		config.Filter = e.substituteForeachString(config.Filter, protected)
-		config.MaxRounds.Expr = e.substituteForeachString(config.MaxRounds.Expr, protected)
+		config.Items = e.substituteForeachString(ctx, config.Items, protected)
+		config.Beads = e.substituteForeachString(ctx, config.Beads, protected)
+		config.Pairs = e.substituteForeachString(ctx, config.Pairs, protected)
+		config.Debates = e.substituteForeachString(ctx, config.Debates, protected)
+		config.Filter = e.substituteForeachString(ctx, config.Filter, protected)
+		config.MaxRounds.Expr = e.substituteForeachString(ctx, config.MaxRounds.Expr, protected)
 		// bd-8bujt: foreach.models is a StringOrList that can hold either
 		// an inline literal list of model-family tokens or (single-entry)
 		// a shell command emitting one family per line. Both forms must
@@ -1524,33 +1541,33 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		// so workflow vars like ${vars.model_family} resolve before
 		// ResolveForeachItems hands the list to the runtime.
 		for i := range config.Models {
-			config.Models[i] = e.substituteForeachString(config.Models[i], protected)
+			config.Models[i] = e.substituteForeachString(ctx, config.Models[i], protected)
 		}
-		config.Template = e.substituteForeachString(config.Template, bodyProtected)
-		config.Params = substituteForeachInterfaceMap(e, config.Params, bodyProtected)
-		config.TemplateParams = substituteForeachInterfaceMap(e, config.TemplateParams, bodyProtected)
+		config.Template = e.substituteForeachString(ctx, config.Template, bodyProtected)
+		config.Params = substituteForeachInterfaceMap(ctx, e, config.Params, bodyProtected)
+		config.TemplateParams = substituteForeachInterfaceMap(ctx, e, config.TemplateParams, bodyProtected)
 		for i := range config.Steps {
-			e.substituteForeachStepFieldsProtected(&config.Steps[i], bodyProtected)
+			e.substituteForeachStepFieldsProtected(ctx, &config.Steps[i], bodyProtected)
 		}
 		for i := range config.Body {
-			e.substituteForeachStepFieldsProtected(&config.Body[i], bodyProtected)
+			e.substituteForeachStepFieldsProtected(ctx, &config.Body[i], bodyProtected)
 		}
 	}
 }
 
-func (e *Executor) substituteForeachStrings(protected map[string]struct{}, fields ...*string) {
+func (e *Executor) substituteForeachStrings(ctx context.Context, protected map[string]struct{}, fields ...*string) {
 	for _, field := range fields {
-		*field = e.substituteForeachString(*field, protected)
+		*field = e.substituteForeachString(ctx, *field, protected)
 	}
 }
 
-func (e *Executor) substituteForeachStringList(values StringOrList, protected map[string]struct{}) StringOrList {
+func (e *Executor) substituteForeachStringList(ctx context.Context, values StringOrList, protected map[string]struct{}) StringOrList {
 	if values == nil {
 		return nil
 	}
 	out := make(StringOrList, len(values))
 	for i, value := range values {
-		out[i] = e.substituteForeachString(value, protected)
+		out[i] = e.substituteForeachString(ctx, value, protected)
 	}
 	return out
 }
@@ -1560,7 +1577,7 @@ func (e *Executor) substituteForeachStringList(values StringOrList, protected ma
 // respected, without assigning IDs before the branch has its runtime scope.
 // Leave malformed values for the existing branch validation path, and retain
 // unchanged representations to keep existing checkpoint hashes stable.
-func (e *Executor) substituteForeachBranchFields(value interface{}, protected map[string]struct{}) interface{} {
+func (e *Executor) substituteForeachBranchFields(ctx context.Context, value interface{}, protected map[string]struct{}) interface{} {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return value
@@ -1572,7 +1589,7 @@ func (e *Executor) substituteForeachBranchFields(value interface{}, protected ma
 			return value
 		}
 		for i := range steps {
-			e.substituteForeachStepFieldsProtected(&steps[i], protected)
+			e.substituteForeachStepFieldsProtected(ctx, &steps[i], protected)
 		}
 		after, err := json.Marshal(steps)
 		if err != nil || bytes.Equal(before, after) {
@@ -1588,7 +1605,7 @@ func (e *Executor) substituteForeachBranchFields(value interface{}, protected ma
 	if err != nil {
 		return value
 	}
-	e.substituteForeachStepFieldsProtected(&step, protected)
+	e.substituteForeachStepFieldsProtected(ctx, &step, protected)
 	after, err := json.Marshal(step)
 	if err != nil || bytes.Equal(before, after) {
 		return value
@@ -1621,7 +1638,7 @@ func (e *Executor) foreachLoopItemActive() bool {
 	return ok
 }
 
-func (e *Executor) foreachBodyProtectedPaths(parent *Step, config *ForeachConfig, body []Step, base map[string]struct{}) map[string]struct{} {
+func (e *Executor) foreachBodyProtectedPaths(ctx context.Context, parent *Step, config *ForeachConfig, body []Step, base map[string]struct{}) map[string]struct{} {
 	protected := cloneProtectedRoots(base)
 	for _, key := range []string{
 		"timestamp",
@@ -1640,7 +1657,7 @@ func (e *Executor) foreachBodyProtectedPaths(parent *Step, config *ForeachConfig
 		if !strings.Contains(raw, "${") {
 			candidates = append(candidates, raw)
 		} else if e != nil {
-			resolved := strings.TrimSpace(e.substituteForeachString(raw, protected))
+			resolved := strings.TrimSpace(e.substituteForeachString(ctx, raw, protected))
 			if resolved != "" && !strings.Contains(resolved, "${") {
 				candidates = append(candidates, resolved)
 			}
@@ -1702,7 +1719,7 @@ func (e *Executor) foreachBodyProtectedPaths(parent *Step, config *ForeachConfig
 	return protected
 }
 
-func (e *Executor) substituteForeachString(s string, protected map[string]struct{}) string {
+func (e *Executor) substituteForeachString(ctx context.Context, s string, protected map[string]struct{}) string {
 	if s == "" {
 		return ""
 	}
@@ -1721,7 +1738,7 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 			refs = append(refs, protectedRef{token: token, match: match})
 			return token
 		}
-		value, found, err := e.resolveForeachAlias(varPath)
+		value, found, err := e.resolveForeachAlias(ctx, varPath)
 		if found {
 			if err == nil {
 				formatted := formatValue(value)
@@ -1738,7 +1755,7 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 		return match
 	})
 
-	out := e.substituteVariablesRetainingSeals(rewritten)
+	out, _ := e.substituteVariablesRetainingSealsCtx(ctx, rewritten)
 	for _, ref := range refs {
 		out = strings.ReplaceAll(out, ref.token, ref.match)
 	}
@@ -1786,13 +1803,17 @@ func isForeachProtectedPath(varPath string, protected map[string]struct{}) bool 
 	return false
 }
 
-func (e *Executor) resolveForeachAlias(varPath string) (interface{}, bool, error) {
+func (e *Executor) resolveForeachAlias(ctx context.Context, varPath string) (interface{}, bool, error) {
 	parts := strings.Split(strings.TrimSpace(varPath), ".")
 	if len(parts) == 0 || parts[0] == "" {
 		return nil, false, nil
 	}
 	if knownSubstitutionNamespace(parts[0]) {
 		return nil, false, nil
+	}
+	if value, ok := roundOverridesFromCtx(ctx)[parts[0]]; ok {
+		resolved, err := navigateNested(value, parts[1:])
+		return resolved, true, err
 	}
 
 	e.varMu.RLock()
@@ -1955,14 +1976,14 @@ func resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIteration
 	}
 }
 
-func (e *Executor) resumeCompletedForeachIteration(parent *Step, plan foreachIterationPlan) foreachIterationResult {
+func (e *Executor) resumeCompletedForeachIteration(ctx context.Context, parent *Step, plan foreachIterationPlan) foreachIterationResult {
 	result := resumeCompletedForeachIteration(plan)
 	if e == nil || e.state == nil || len(plan.Steps) == 0 {
 		return result
 	}
 	maxRounds := 1
 	if parent != nil {
-		if mr, err := e.resolveForeachMaxRounds(parent); err == nil && mr > 1 {
+		if mr, err := e.resolveForeachMaxRounds(ctx, parent); err == nil && mr > 1 {
 			maxRounds = mr
 		}
 	}
@@ -2172,39 +2193,39 @@ func cloneInterfaceValue(value interface{}) interface{} {
 	}
 }
 
-func substituteForeachInterfaceMap(e *Executor, in map[string]interface{}, protected map[string]struct{}) map[string]interface{} {
+func substituteForeachInterfaceMap(ctx context.Context, e *Executor, in map[string]interface{}, protected map[string]struct{}) map[string]interface{} {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make(map[string]interface{}, len(in))
 	for key, value := range in {
-		out[key] = substituteForeachInterfaceValue(e, value, protected)
+		out[key] = substituteForeachInterfaceValue(ctx, e, value, protected)
 	}
 	return out
 }
 
-func substituteForeachInterfaceValue(e *Executor, value interface{}, protected map[string]struct{}) interface{} {
+func substituteForeachInterfaceValue(ctx context.Context, e *Executor, value interface{}, protected map[string]struct{}) interface{} {
 	switch v := value.(type) {
 	case string:
-		return e.substituteForeachString(v, protected)
+		return e.substituteForeachString(ctx, v, protected)
 	case map[string]interface{}:
-		return substituteForeachInterfaceMap(e, v, protected)
+		return substituteForeachInterfaceMap(ctx, e, v, protected)
 	case map[string]string:
 		out := make(map[string]string, len(v))
 		for key, item := range v {
-			out[key] = e.substituteForeachString(item, protected)
+			out[key] = e.substituteForeachString(ctx, item, protected)
 		}
 		return out
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
-			out[i] = substituteForeachInterfaceValue(e, item, protected)
+			out[i] = substituteForeachInterfaceValue(ctx, e, item, protected)
 		}
 		return out
 	case []string:
 		out := make([]string, len(v))
 		for i, item := range v {
-			out[i] = e.substituteForeachString(item, protected)
+			out[i] = e.substituteForeachString(ctx, item, protected)
 		}
 		return out
 	default:

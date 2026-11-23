@@ -1342,3 +1342,165 @@ func TestCommandOperatorRecoveryPrematureCompletionRefusalsPreserveState(t *test
 		})
 	}
 }
+
+func TestUntilPredicateOperatorRecoveryResumesWithoutRepeatingEffects(t *testing.T) {
+	t.Parallel()
+	for _, exitCode := range []int{0, 7} {
+		t.Run(fmt.Sprintf("exit_%d", exitCode), func(t *testing.T) {
+			executor := newCommandTestExecutor(t)
+			executor.config.RunID = executor.state.RunID
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: executor.state.WorkflowID, Settings: DefaultWorkflowSettings(),
+				Steps: []Step{
+					{ID: "poll", Loop: &LoopConfig{
+						Until:         fmt.Sprintf("printf 'predicate\\n' >> predicates; while [ ! -f release ]; do sleep 0.01; done; if [ \"$(wc -l < bodies)\" -ge 2 ]; then exit 0; fi; exit %d", exitCode),
+						MaxIterations: IntOrExpr{Value: 2},
+						Collect:       "values",
+						Steps:         []Step{{ID: "body", Command: "printf 'body\\n' >> bodies; printf retained"}},
+					}},
+					{ID: "consume", DependsOn: []string{"poll"}, Command: "printf consumed > dependent"},
+				},
+			}
+			frozen, path, err := SnapshotWorkflow(context.Background(), executor.config.ProjectDir, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor.config.WorkflowFile = path
+			executor.state.WorkflowFile, executor.state.Session = path, executor.config.Session
+			executor.state.Status, executor.state.StartedAt = StatusRunning, time.Now()
+			executor.graph, executor.limits = NewDependencyGraph(frozen), frozen.Settings.Limits.EffectiveLimits()
+			parent := &frozen.Steps[0]
+			executor.beginForeachState(parent.ID, 2)
+			executor.markForeachIterationStarted(parent.ID, 0, 2)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+			body, shouldBreak, _, complete := executor.loopExec.executeIteration(ctx, parent, parent.Loop, frozen, 0)
+			if shouldBreak || !complete || len(body) != 1 || body[0].Status != StatusCompleted {
+				t.Fatalf("initial body failed: %+v", body)
+			}
+
+			// Capture the real running predicate after its body has settled,
+			// then let the entire native process group finish before acceptance.
+			predicate := untilPredicateStep(parent, parent.Loop, 0)
+			done := make(chan StepResult, 1)
+			go func() { done <- executor.executeCommand(ctx, &predicate, frozen) }()
+			var captured *ExecutionState
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				prior, err := LoadState(executor.config.ProjectDir, executor.config.RunID)
+				if err == nil && prior.CommandExecutions[predicate.ID].Status == commandExecutionRunning {
+					if data, err := os.ReadFile(filepath.Join(executor.config.ProjectDir, "predicates")); err == nil && string(data) == "predicate\n" {
+						captured = prior
+						break
+					}
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if captured == nil {
+				t.Fatal("predicate did not publish its running receipt and effect")
+			}
+			if err := os.WriteFile(filepath.Join(executor.config.ProjectDir, "release"), []byte("release"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case result := <-done:
+				want := StatusCompleted
+				if exitCode != 0 {
+					want = StatusFailed
+				}
+				if result.Status != want || (exitCode != 0 && (result.Error == nil || result.Error.Type != "exit")) {
+					t.Fatalf("initial predicate did not settle with exit %d: %+v", exitCode, result)
+				}
+				if exitCode != 0 && result.Error.Message != commandExitStepError(&predicate, exitCode).Message {
+					t.Fatalf("original predicate had a different exit outcome: %+v", result)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("original predicate group did not finish")
+			}
+			if err := SaveState(executor.config.ProjectDir, captured); err != nil {
+				t.Fatal(err)
+			}
+			entry := commandOperatorRecoveryEntry(t, executor.config)
+			if entry.StepID != predicate.ID || !entry.CanAccept || entry.Status != commandExecutionRunning {
+				t.Fatalf("until predicate was not exposed for operator recovery: %+v", entry)
+			}
+
+			// Structural recognition must not relax the existing protection
+			// for an iteration that has already consumed its result.
+			originalProgress := captured.ForeachState[parent.ID]
+			completed := originalProgress
+			completed.CompletedIterationIDs = []string{loopIterationID(parent.ID, 0)}
+			completed.CurrentIteration = 1
+			captured.ForeachState[parent.ID] = completed
+			if err := SaveState(executor.config.ProjectDir, captured); err != nil {
+				t.Fatal(err)
+			}
+			beforeRefusal := commandOperatorRecoveryBytes(t, executor.config)
+			refused := commandOperatorRecoveryEntry(t, executor.config)
+			if refused.CanAccept {
+				t.Fatalf("completed iteration advertised replaceable predicate evidence: %+v", refused)
+			}
+			const reason = "Verified the original predicate group ended and its final exit status"
+			if _, err := AcceptCommandExecutionContext(context.Background(), executor.config.ProjectDir, executor.config.RunID,
+				predicate.ID, entry.ReceiptToken, reason, exitCode, ""); err == nil {
+				t.Fatal("operator acceptance replaced a consumed iteration decision")
+			}
+			if !bytes.Equal(beforeRefusal, commandOperatorRecoveryBytes(t, executor.config)) {
+				t.Fatal("refused predicate acceptance changed its checkpoint")
+			}
+			captured.ForeachState[parent.ID] = originalProgress
+			if err := SaveState(executor.config.ProjectDir, captured); err != nil {
+				t.Fatal(err)
+			}
+
+			accepted, err := AcceptCommandExecutionContext(context.Background(), executor.config.ProjectDir, executor.config.RunID,
+				predicate.ID, entry.ReceiptToken, reason, exitCode, "")
+			if err != nil || accepted == nil || accepted.Replayed || accepted.Command.ExitCode == nil || *accepted.Command.ExitCode != exitCode {
+				t.Fatalf("accept predicate outcome: %+v %v", accepted, err)
+			}
+			acceptedBytes := commandOperatorRecoveryBytes(t, executor.config)
+			repeated, err := AcceptCommandExecutionContext(context.Background(), executor.config.ProjectDir, executor.config.RunID,
+				predicate.ID, entry.ReceiptToken, reason, exitCode, "")
+			if err != nil || repeated == nil || !repeated.Replayed || !bytes.Equal(acceptedBytes, commandOperatorRecoveryBytes(t, executor.config)) {
+				t.Fatalf("repeated predicate acceptance changed its decision: %+v %v", repeated, err)
+			}
+			if _, err := os.Stat(filepath.Join(executor.config.ProjectDir, "dependent")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("acceptance dispatched dependent work: %v", err)
+			}
+			prior, err := LoadState(executor.config.ProjectDir, executor.config.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final, err := NewExecutor(executor.config).Resume(context.Background(), frozen, prior, nil)
+			if err != nil || final == nil || final.Status != StatusCompleted {
+				t.Fatalf("resume did not consume accepted predicate: %+v %v", final, err)
+			}
+			wantCount := 1
+			if exitCode != 0 {
+				wantCount = 2
+			}
+			for _, name := range []string{"bodies", "predicates"} {
+				data, err := os.ReadFile(filepath.Join(executor.config.ProjectDir, name))
+				if err != nil || strings.Count(string(data), "\n") != wantCount {
+					t.Fatalf("accepted predicate repeated or skipped %s: %q (%v), want %d effects", name, data, err, wantCount)
+				}
+			}
+			values, ok := final.Variables["values"].([]interface{})
+			if !ok || len(values) != wantCount {
+				t.Fatalf("recovery lost or duplicated collected body output: %#v", final.Variables["values"])
+			}
+			for _, value := range values {
+				if value != "retained" {
+					t.Fatalf("recovery changed collected body output: %#v", values)
+				}
+			}
+			record := final.CommandExecutions[predicate.ID]
+			if record.ResolutionToken != entry.ReceiptToken || record.ResolutionExitCode != exitCode || record.Result.Error != nil {
+				t.Fatalf("resume changed immutable operator evidence: %+v", record)
+			}
+			if data, err := os.ReadFile(filepath.Join(executor.config.ProjectDir, "dependent")); err != nil || string(data) != "consumed" {
+				t.Fatalf("settled loop did not release its dependent: %q (%v)", data, err)
+			}
+		})
+	}
+}

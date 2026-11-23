@@ -94,7 +94,7 @@ func TestLockOrder_StateMuVarMuCanonicalOrder(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				if _, err := executor.resolveForeachMaxRounds(parent); err != nil {
+				if _, err := executor.resolveForeachMaxRounds(context.Background(), parent); err != nil {
 					workerErrs <- err
 					return
 				}
@@ -278,7 +278,7 @@ func TestLockOrder_LoopSubstituteIntExprCanonicalOrder(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				if _, err := le.substituteIntExpr("${vars.limit}"); err != nil {
+				if _, err := le.substituteIntExpr(context.Background(), "${vars.limit}"); err != nil {
 					workerErrs <- err
 					return
 				}

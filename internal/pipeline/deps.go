@@ -653,6 +653,26 @@ func resolveScopedRuntimeChildren(parentID, runtimeID string, parent *Step) (*St
 		return child, canonicalID, true
 	}
 	if parent.Loop != nil {
+		// Until predicates are real command executions, with receipts that
+		// inspection, operator acceptance, and replay admission must attribute
+		// to the same definition used by the loop executor. Match its active
+		// dialect and exact canonical iteration ID, not an arbitrary suffix.
+		if parent.Loop.Items == "" && parent.Loop.While == "" && parent.Loop.Until != "" {
+			iterationID, ok := scopedRuntimeOrdinal(runtimeID, parentID+"_iter", 0)
+			if ok && runtimeID == iterationID+"_until" {
+				if _, _, collision := resolveScopedRuntimeIterationStep(parentID, runtimeID, parent.Loop.Steps, nil); collision {
+					return nil, "", false
+				}
+				iteration, err := strconv.Atoi(strings.TrimPrefix(iterationID, parentID+"_iter"))
+				if err != nil {
+					return nil, "", false
+				}
+				runtimeParent := *parent
+				runtimeParent.ID = parentID
+				predicate := untilPredicateStep(&runtimeParent, parent.Loop, iteration)
+				return &predicate, runtimeID, true
+			}
+		}
 		if child, canonicalID, ok := resolveScopedRuntimeIterationStep(parentID, runtimeID, parent.Loop.Steps, nil); ok {
 			return child, canonicalID, true
 		}

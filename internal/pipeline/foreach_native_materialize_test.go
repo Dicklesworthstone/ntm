@@ -29,7 +29,7 @@ func TestForeachNativeFieldsCommandInputUsesItemRoundAndLiteralData(t *testing.T
 	items := []string{"literal ${vars.secret}", "second item"}
 	plans := make([][]Step, len(items))
 	for i, item := range items {
-		plans[i], err = e.materializeForeachSteps(parent, config, body, foreachIterationPlan{Index: i, Item: sealTerminalValue(item)}, len(items))
+		plans[i], err = e.materializeForeachSteps(context.Background(), parent, config, body, foreachIterationPlan{Index: i, Item: sealTerminalValue(item)}, len(items))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +72,7 @@ func TestForeachNativeFieldsNestedLoopKeepsInnerBindings(t *testing.T) {
 		Steps:         []Step{{ID: "consume", Command: "cat", Stdin: "${group.name}/${item}/${loop.index}"}},
 	}}}
 	for i, name := range []string{"alpha", "beta"} {
-		steps, err := e.materializeForeachSteps(parent, config, body, foreachIterationPlan{Index: i, Item: map[string]interface{}{
+		steps, err := e.materializeForeachSteps(context.Background(), parent, config, body, foreachIterationPlan{Index: i, Item: map[string]interface{}{
 			"name": name, "members": []string{"one", "two"}, "limit": 2,
 		}}, 2)
 		if err != nil {

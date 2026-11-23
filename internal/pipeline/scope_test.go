@@ -1,6 +1,9 @@
 package pipeline
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestVariableScopeRestoresShadowedLoopLocals(t *testing.T) {
 	vars := map[string]interface{}{
@@ -37,21 +40,20 @@ func TestLoopExecutorNestedScopesRestoreOuterItem(t *testing.T) {
 		Variables:  map[string]interface{}{},
 		Steps:      map[string]StepResult{},
 	}
-	loopExec := NewLoopExecutor(executor)
+	root := context.Background()
+	outer := withLoopVars(root, "item", map[string]interface{}{"id": "outer"}, 0, 1)
+	assertSubstituted(t, executor, outer, "${item.id}", "outer")
 
-	outerScope := loopExec.pushLoopVars("item", map[string]interface{}{"id": "outer"}, 0, 1)
-	assertSubstituted(t, executor.state, "${item.id}", "outer")
+	inner := withLoopVars(outer, "item", map[string]interface{}{"id": "inner"}, 0, 1)
+	assertSubstituted(t, executor, inner, "${item.id}", "inner")
+	assertSubstituted(t, executor, inner, "${loop.item.id}", "inner")
+	assertSubstituted(t, executor, outer, "${item.id}", "outer")
 
-	innerScope := loopExec.pushLoopVars("item", map[string]interface{}{"id": "inner"}, 0, 1)
-	assertSubstituted(t, executor.state, "${item.id}", "inner")
-
-	loopExec.popLoopVars(innerScope)
-	assertSubstituted(t, executor.state, "${item.id}", "outer")
-
-	loopExec.popLoopVars(outerScope)
-	sub := NewSubstitutor(executor.state, "sess", "wf")
-	if _, err := sub.Substitute("${item.id}"); err == nil {
-		t.Fatal("expected item reference to be unavailable after popping outer scope")
+	if _, err := executor.substituteVariablesStrictCtx(root, "${item.id}"); err == nil {
+		t.Fatal("expected item reference to be unavailable outside the loop context")
+	}
+	if len(executor.state.Variables) != 0 || len(executor.state.ScopeStack) != 0 {
+		t.Fatal("iteration bindings leaked into shared execution state")
 	}
 }
 
@@ -62,37 +64,63 @@ func TestLoopExecutorAliasScopeRestoresOuterAlias(t *testing.T) {
 		Variables:  map[string]interface{}{},
 		Steps:      map[string]StepResult{},
 	}
-	loopExec := NewLoopExecutor(executor)
+	root := context.Background()
+	outer := withLoopVars(root, "file", "outer.go", 0, 1)
+	assertSubstituted(t, executor, outer, "${loop.file}", "outer.go")
+	assertSubstituted(t, executor, outer, "${item}", "outer.go")
 
-	outerScope := loopExec.pushLoopVars("file", "outer.go", 0, 1)
-	assertSubstituted(t, executor.state, "${loop.file}", "outer.go")
-	assertSubstituted(t, executor.state, "${item}", "outer.go")
+	inner := withLoopVars(outer, "file", "inner.go", 0, 1)
+	assertSubstituted(t, executor, inner, "${loop.file}", "inner.go")
+	assertSubstituted(t, executor, inner, "${item}", "inner.go")
+	assertSubstituted(t, executor, outer, "${loop.file}", "outer.go")
+	assertSubstituted(t, executor, outer, "${item}", "outer.go")
 
-	innerScope := loopExec.pushLoopVars("file", "inner.go", 0, 1)
-	assertSubstituted(t, executor.state, "${loop.file}", "inner.go")
-	assertSubstituted(t, executor.state, "${item}", "inner.go")
-
-	loopExec.popLoopVars(innerScope)
-	assertSubstituted(t, executor.state, "${loop.file}", "outer.go")
-	assertSubstituted(t, executor.state, "${item}", "outer.go")
-
-	loopExec.popLoopVars(outerScope)
-	sub := NewSubstitutor(executor.state, "sess", "wf")
-	if _, err := sub.Substitute("${loop.file}"); err == nil {
-		t.Fatal("expected alias reference to be unavailable after popping outer scope")
+	if _, err := executor.substituteVariablesStrictCtx(root, "${loop.file}"); err == nil {
+		t.Fatal("expected alias reference to be unavailable outside the loop context")
 	}
 }
 
-func assertSubstituted(t *testing.T, state *ExecutionState, input, want string) {
+func assertSubstituted(t *testing.T, executor *Executor, ctx context.Context, input, want string) {
 	t.Helper()
-	sub := NewSubstitutor(state, "sess", "wf")
-	got, err := sub.Substitute(input)
+	got, err := executor.substituteVariablesStrictCtx(ctx, input)
 	if err != nil {
 		t.Fatalf("Substitute(%q) returned error: %v", input, err)
 	}
 	if got != want {
 		t.Fatalf("Substitute(%q) = %q, want %q", input, got, want)
 	}
+}
+
+func TestLoopContextNestedPathsShadowSharedValues(t *testing.T) {
+	t.Parallel()
+	executor := NewExecutor(DefaultExecutorConfig("sess"))
+	executor.state = &ExecutionState{
+		WorkflowID: "wf",
+		Variables: map[string]interface{}{
+			"loop.file": map[string]interface{}{"name": "shared", "missing": "must not leak"},
+			"loop.item": "shared",
+		},
+		Steps: map[string]StepResult{},
+	}
+	item := map[string]interface{}{"name": "local", "children": []interface{}{"first", "second"}}
+	ctx := withLoopVars(context.Background(), "file", item, 2, 3)
+	for input, want := range map[string]string{
+		"${item.name}":             "local",
+		"${loop.item.name}":        "local",
+		"${loop.file.name}":        "local",
+		"${loop.file.children[1]}": "second",
+		"${item.children[0]}":      "first",
+		"${loop.index}":            "2",
+		"${loop.count}":            "3",
+		"${loop.first}":            "false",
+		"${loop.last}":             "true",
+	} {
+		assertSubstituted(t, executor, ctx, input, want)
+	}
+	if _, err := executor.substituteVariablesStrictCtx(ctx, "${loop.file.missing}"); err == nil {
+		t.Fatal("missing local field fell through to shared loop value")
+	}
+	assertSubstituted(t, executor, context.Background(), "${loop.file.name}", "shared")
 }
 
 // A branch's restore must undo only its own writes. A branch is reachable from a

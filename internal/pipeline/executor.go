@@ -3528,12 +3528,6 @@ func (e *Executor) substituteVariables(s string) string {
 	return result
 }
 
-// substituteVariablesRetainingSeals is like substituteVariables but does not unseal terminal namespaces.
-func (e *Executor) substituteVariablesRetainingSeals(s string) string {
-	result, _ := e.substituteVariablesRetainingSealsCtx(context.Background(), s)
-	return result
-}
-
 // substituteVariablesCtx is the ctx-aware form of substituteVariables.
 // Errors are silently dropped (the non-strict contract) but ctx-carried
 // round overrides from withRoundOverrides are respected so a body step's

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -203,7 +204,7 @@ func TestCoverageHelpersForeachBodyAndSubstitutionHelpers(t *testing.T) {
 		t.Fatal("empty foreach body error = nil")
 	}
 
-	got := substituteForeachInterfaceMap(executor, map[string]interface{}{
+	got := substituteForeachInterfaceMap(context.Background(), executor, map[string]interface{}{
 		"alias": "${alias.id}",
 		"kept":  "${item.id}",
 	}, map[string]struct{}{"item": {}})
