@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
@@ -536,15 +538,243 @@ func parseAttentionTimestamp(raw string) time.Time {
 	return time.Time{}
 }
 
-// fetchMetricsCmd refreshes observability metrics.
+// fetchMetricsCmd refreshes observability metrics for the active ensemble session.
 func (m *Model) fetchMetricsCmd() tea.Cmd {
 	gen := m.nextGen(refreshMetrics)
+	sessionName := m.session
 
 	return func() tea.Msg {
+		data, err := computeDashboardEnsembleMetrics(sessionName)
 		return MetricsUpdateMsg{
-			Data: panels.MetricsData{},
+			Data: data,
+			Err:  err,
 			Gen:  gen,
 		}
+	}
+}
+
+func computeDashboardEnsembleMetrics(sessionName string) (panels.MetricsData, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return panels.MetricsData{}, nil
+	}
+
+	sess, err := ensemble.LoadSession(sessionName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return panels.MetricsData{}, nil
+		}
+		return panels.MetricsData{}, err
+	}
+	if sess == nil {
+		return panels.MetricsData{}, nil
+	}
+
+	catalog, _ := ensemble.GlobalCatalog()
+	data := panels.MetricsData{
+		Coverage: buildEnsembleCoverageReport(sess, catalog),
+	}
+
+	collector, collectErr := ensemble.CollectModeOutputs(sess, nil)
+	if collectErr != nil || collector == nil || len(collector.Outputs) == 0 {
+		return data, nil
+	}
+
+	data.Velocity = buildEnsembleVelocityReport(collector.Outputs, catalog)
+	if len(collector.Outputs) >= 2 {
+		data.Redundancy = ensemble.AnalyzeRedundancy(collector.Outputs, catalog)
+		if auditReport, auditErr := ensemble.NewDisagreementAuditor(collector.Outputs, nil).Audit(); auditErr == nil && auditReport != nil {
+			data.Conflicts = buildEnsembleConflictDensity(auditReport, len(collector.Outputs))
+		}
+	}
+
+	return data, nil
+}
+
+func buildEnsembleCoverageReport(sess *ensemble.EnsembleSession, catalog *ensemble.ModeCatalog) *ensemble.CoverageReport {
+	if sess == nil || len(sess.Assignments) == 0 {
+		return nil
+	}
+
+	allCats := ensemble.AllCategories()
+	perCat := make(map[ensemble.ModeCategory]ensemble.CategoryCoverage, len(allCats))
+	for _, cat := range allCats {
+		perCat[cat] = ensemble.CategoryCoverage{Category: cat}
+	}
+
+	if catalog != nil {
+		for _, mode := range catalog.ListModes() {
+			cc := perCat[mode.Category]
+			cc.TotalModes++
+			perCat[mode.Category] = cc
+		}
+	}
+
+	seenByCat := make(map[ensemble.ModeCategory]map[string]struct{}, len(allCats))
+	for _, assignment := range sess.Assignments {
+		modeID := strings.TrimSpace(assignment.ModeID)
+		if modeID == "" || catalog == nil {
+			continue
+		}
+		mode := catalog.GetMode(modeID)
+		if mode == nil {
+			continue
+		}
+		if seenByCat[mode.Category] == nil {
+			seenByCat[mode.Category] = make(map[string]struct{})
+		}
+		if _, dup := seenByCat[mode.Category][mode.ID]; dup {
+			continue
+		}
+		seenByCat[mode.Category][mode.ID] = struct{}{}
+		cc := perCat[mode.Category]
+		cc.UsedModes = append(cc.UsedModes, mode.ID)
+		perCat[mode.Category] = cc
+	}
+
+	covered := 0
+	var blindSpots []ensemble.ModeCategory
+	for _, cat := range allCats {
+		cc := perCat[cat]
+		sort.Strings(cc.UsedModes)
+		if cc.TotalModes > 0 {
+			cc.Coverage = float64(len(cc.UsedModes)) / float64(cc.TotalModes)
+		}
+		if len(cc.UsedModes) > 0 {
+			covered++
+		} else {
+			blindSpots = append(blindSpots, cat)
+		}
+		perCat[cat] = cc
+	}
+
+	overall := 0.0
+	if len(allCats) > 0 {
+		overall = float64(covered) / float64(len(allCats))
+	}
+
+	return &ensemble.CoverageReport{
+		Overall:     overall,
+		PerCategory: perCat,
+		BlindSpots:  blindSpots,
+	}
+}
+
+func buildEnsembleVelocityReport(outputs []ensemble.ModeOutput, catalog *ensemble.ModeCatalog) *ensemble.VelocityReport {
+	if len(outputs) == 0 {
+		return nil
+	}
+
+	entries := make([]ensemble.VelocityEntry, 0, len(outputs))
+	totalTokens := 0
+	totalFindings := 0
+	for _, out := range outputs {
+		tokens := estimateDashboardOutputTokens(out)
+		findings := len(out.TopFindings)
+		vel := 0.0
+		if tokens > 0 {
+			vel = float64(findings) * 1000.0 / float64(tokens)
+		}
+		modeName := out.ModeID
+		if catalog != nil {
+			if mode := catalog.GetMode(out.ModeID); mode != nil && mode.Name != "" {
+				modeName = mode.Name
+			}
+		}
+		entries = append(entries, ensemble.VelocityEntry{
+			ModeID:         out.ModeID,
+			ModeName:       modeName,
+			TokensSpent:    tokens,
+			FindingsCount:  findings,
+			UniqueFindings: findings,
+			Velocity:       vel,
+		})
+		totalTokens += tokens
+		totalFindings += findings
+	}
+
+	overall := 0.0
+	if totalTokens > 0 {
+		overall = float64(totalFindings) * 1000.0 / float64(totalTokens)
+	}
+
+	var highPerformers, lowPerformers []string
+	for _, e := range entries {
+		if overall > 0 && e.FindingsCount > 0 && e.Velocity >= overall*1.2 {
+			highPerformers = append(highPerformers, e.ModeID)
+		} else if overall > 0 && (e.FindingsCount == 0 || e.Velocity < overall*0.5) {
+			lowPerformers = append(lowPerformers, e.ModeID)
+		}
+	}
+	sort.Strings(highPerformers)
+	sort.Strings(lowPerformers)
+
+	return &ensemble.VelocityReport{
+		Overall:        overall,
+		PerMode:        entries,
+		HighPerformers: highPerformers,
+		LowPerformers:  lowPerformers,
+	}
+}
+
+func estimateDashboardOutputTokens(out ensemble.ModeOutput) int {
+	if rawLen := len(strings.TrimSpace(out.RawOutput)); rawLen > 0 {
+		tokens := rawLen / 4
+		if tokens < 1 {
+			return 1
+		}
+		return tokens
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil || len(encoded) == 0 {
+		return 0
+	}
+	tokens := len(encoded) / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
+}
+
+func buildEnsembleConflictDensity(auditReport *ensemble.AuditReport, modeCount int) *ensemble.ConflictDensity {
+	total := len(auditReport.Conflicts)
+	pairs := 0
+	if modeCount >= 2 {
+		pairs = modeCount * (modeCount - 1) / 2
+	}
+	perPair := 0.0
+	if pairs > 0 {
+		perPair = float64(total) / float64(pairs)
+	}
+
+	highPairsSet := make(map[string]struct{})
+	for _, conflict := range auditReport.Conflicts {
+		if conflict.Severity != ensemble.ConflictHigh || len(conflict.Positions) < 2 {
+			continue
+		}
+		a := conflict.Positions[0].ModeID
+		b := conflict.Positions[1].ModeID
+		if a > b {
+			a, b = b, a
+		}
+		label := fmt.Sprintf("%s <-> %s", a, b)
+		if topic := strings.TrimSpace(conflict.Topic); topic != "" {
+			label = fmt.Sprintf("%s (%s)", label, topic)
+		}
+		highPairsSet[label] = struct{}{}
+	}
+	highPairs := make([]string, 0, len(highPairsSet))
+	for pair := range highPairsSet {
+		highPairs = append(highPairs, pair)
+	}
+	sort.Strings(highPairs)
+
+	return &ensemble.ConflictDensity{
+		TotalConflicts:      total,
+		ResolvedConflicts:   0,
+		UnresolvedConflicts: total,
+		ConflictsPerPair:    perPair,
+		HighConflictPairs:   highPairs,
+		Source:              "disagreement_auditor",
 	}
 }
 

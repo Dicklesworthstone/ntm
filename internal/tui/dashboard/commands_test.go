@@ -841,6 +841,63 @@ func TestMessageErrorHandling(t *testing.T) {
 	})
 }
 
+func TestFetchMetricsCmdComputesRealEnsembleMetrics(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	outA := filepath.Join(tmpDir, "deductive.json")
+	outB := filepath.Join(tmpDir, "inductive.json")
+	payloadA := `{"mode_id":"deductive","thesis":"Use strict schemas for API safety","top_findings":[{"finding":"Missing schema validation allows malformed writes","impact":"high","confidence":0.9}],"risks":[],"recommendations":[{"recommendation":"Enforce strict schema checks","priority":"high"}],"confidence":0.9}`
+	payloadB := `{"mode_id":"inductive","thesis":"Avoid strict schemas to move faster","top_findings":[{"finding":"Observed fast iteration without strict schema checks","impact":"medium","confidence":0.8}],"risks":[],"recommendations":[{"recommendation":"Skip strict schema validation during prototyping","priority":"medium"}],"confidence":0.8}`
+	if err := os.WriteFile(outA, []byte(payloadA), 0o600); err != nil {
+		t.Fatalf("write outA: %v", err)
+	}
+	if err := os.WriteFile(outB, []byte(payloadB), 0o600); err != nil {
+		t.Fatalf("write outB: %v", err)
+	}
+
+	const sessionName = "dash-metrics-real-session"
+	now := time.Now().UTC()
+	sess := &ensemble.EnsembleSession{
+		SessionName:       sessionName,
+		Question:          "Should API writes enforce strict schemas?",
+		Status:            ensemble.EnsembleComplete,
+		SynthesisStrategy: ensemble.StrategyManual,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "%1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outA, AssignedAt: now},
+			{ModeID: "inductive", PaneName: "%2", AgentType: "cod", Status: ensemble.AssignmentDone, OutputPath: outB, AssignedAt: now},
+		},
+	}
+	if err := ensemble.SaveSession(sessionName, sess); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	m := New(sessionName, tmpDir)
+	cmd := m.fetchMetricsCmd()
+	msg, ok := cmd().(MetricsUpdateMsg)
+	if !ok {
+		t.Fatalf("fetchMetricsCmd returned %T, want MetricsUpdateMsg", msg)
+	}
+	if msg.Err != nil {
+		t.Fatalf("fetchMetricsCmd returned err: %v", msg.Err)
+	}
+	if msg.Data.Coverage == nil || msg.Data.Coverage.Overall <= 0 {
+		t.Fatalf("expected non-empty Coverage report, got %+v", msg.Data.Coverage)
+	}
+	if msg.Data.Velocity == nil || len(msg.Data.Velocity.PerMode) != 2 || msg.Data.Velocity.Overall <= 0 {
+		t.Fatalf("expected Velocity report for 2 modes, got %+v", msg.Data.Velocity)
+	}
+	if msg.Data.Redundancy == nil || len(msg.Data.Redundancy.PairwiseScores) == 0 {
+		t.Fatalf("expected Redundancy analysis for 2 modes, got %+v", msg.Data.Redundancy)
+	}
+	if msg.Data.Conflicts == nil || msg.Data.Conflicts.Source != "disagreement_auditor" {
+		t.Fatalf("expected ConflictDensity from disagreement_auditor, got %+v", msg.Data.Conflicts)
+	}
+}
+
 func TestResolveDashboardEditorSpec_PreservesAllowlistedBinaries(t *testing.T) {
 	cases := []struct {
 		editor   string
