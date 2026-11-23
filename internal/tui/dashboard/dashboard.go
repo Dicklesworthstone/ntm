@@ -4199,8 +4199,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowPanel.HasData() &&
-			((m.focusedPanel == PanelSidebar && m.sidebarActivePanel == m.workflowPanel.Config().ID) ||
-				(m.tier < layout.TierUltra && m.focusedPanel != PanelPaneList && m.activeOperationalPanel() == m.workflowPanel)) &&
+			m.focusedOperationalPanelForKeys() == m.workflowPanel &&
 			msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
 			return m, cmd
@@ -6700,22 +6699,40 @@ func (m Model) renderSplitPrimaryPanel(width, height int) string {
 	return m.renderPaneDetail(width)
 }
 
+func isInteractiveOperationalPanelID(id string) bool {
+	switch id {
+	case "pipelines", "approvals", "worktrees_checkpoints", "mail_inbox", "workflow":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m Model) focusedOperationalPanelForKeys() panels.Panel {
 	if m.focusedPanel == PanelSidebar {
-		if ref, ok := m.sidebarActivePanelRef(); ok {
-			switch ref.id {
-			case "pipelines", "approvals", "worktrees_checkpoints", "mail_inbox", "workflow":
-				return ref.panel
-			}
+		if ref, ok := m.sidebarActivePanelRef(); ok && isInteractiveOperationalPanelID(ref.id) {
+			return ref.panel
 		}
 		return nil
 	}
 	if m.tier < layout.TierUltra {
 		active := m.activeOperationalPanel()
-		if active != nil && active.Config().ID == "workflow" && m.focusedPanel == PanelPaneList {
+		if active == nil || !isInteractiveOperationalPanelID(active.Config().ID) {
 			return nil
 		}
-		return active
+		// In split view, operational panels render inside PanelDetail while
+		// PanelPaneList and bottom panels remain independently focusable.
+		// In narrow view (< TierSplit), the active operational panel replaces
+		// the primary pane grid when focused on the primary pane view.
+		if m.tier >= layout.TierSplit {
+			if m.focusedPanel != PanelDetail {
+				return nil
+			}
+			return active
+		}
+		if m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail {
+			return active
+		}
 	}
 	return nil
 }

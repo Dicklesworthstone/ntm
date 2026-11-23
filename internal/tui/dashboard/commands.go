@@ -107,8 +107,23 @@ func newDashboardAddAgentsCommand(ctx context.Context, projectDir, session strin
 	if result.OmpCount > 0 {
 		args = append(args, fmt.Sprintf("--omp=%d", result.OmpCount))
 	}
+	if result.PiCount > 0 {
+		args = append(args, fmt.Sprintf("--pi=%d", result.PiCount))
+	}
 	if result.OcCount > 0 {
 		args = append(args, fmt.Sprintf("--oc=%d", result.OcCount))
+	}
+	if result.CursorCount > 0 {
+		args = append(args, fmt.Sprintf("--cursor=%d", result.CursorCount))
+	}
+	if result.WindsurfCount > 0 {
+		args = append(args, fmt.Sprintf("--windsurf=%d", result.WindsurfCount))
+	}
+	if result.AiderCount > 0 {
+		args = append(args, fmt.Sprintf("--aider=%d", result.AiderCount))
+	}
+	if result.OllamaCount > 0 {
+		args = append(args, fmt.Sprintf("--ollama=%d", result.OllamaCount))
 	}
 	if len(args) == 2 {
 		return nil, fmt.Errorf("no agents requested")
@@ -122,19 +137,31 @@ func newDashboardAddAgentsCommand(ctx context.Context, projectDir, session strin
 	return cmd, nil
 }
 
-func buildDashboardEditorCommand(path string) (*exec.Cmd, error) {
-	editorName := "vi"
-	args := []string{path}
-	switch resolveDashboardEditorPreset(os.Getenv("EDITOR")) {
+func resolveDashboardEditorSpec(editor string) (string, []string) {
+	parts := strings.Fields(strings.TrimSpace(editor))
+	switch resolveDashboardEditorPreset(editor) {
 	case dashboardEditorPresetVSCode:
-		editorName = "code"
-		args = []string{"-w", path}
+		return strings.ToLower(filepath.Base(parts[0])), []string{"-w"}
 	case dashboardEditorPresetZed:
-		editorName = "zed"
-		args = []string{"--wait", path}
+		return "zed", []string{"--wait"}
 	case dashboardEditorPresetNano:
-		editorName = "nano"
+		return "nano", nil
+	default:
+		if len(parts) > 0 && dashboardEditorTokensSafe(parts) {
+			switch base := strings.ToLower(filepath.Base(parts[0])); base {
+			case "vi", "vim", "nvim", "hx", "helix", "micro", "emacs", "emacsclient", "less":
+				return base, nil
+			}
+		}
+		return "vi", nil
 	}
+}
+
+func buildDashboardEditorCommand(path string) (*exec.Cmd, error) {
+	editorName, prefixArgs := resolveDashboardEditorSpec(os.Getenv("EDITOR"))
+	args := make([]string, 0, len(prefixArgs)+1)
+	args = append(args, prefixArgs...)
+	args = append(args, path)
 
 	cmdPath, err := exec.LookPath(editorName)
 	if err != nil {

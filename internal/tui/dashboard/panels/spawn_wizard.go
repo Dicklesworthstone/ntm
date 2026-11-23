@@ -26,19 +26,25 @@ const (
 
 // SpawnWizardResult holds the configuration produced by the wizard.
 type SpawnWizardResult struct {
-	CCCount   int
-	CodCount  int
-	GmiCount  int
-	AgyCount  int
-	GrokCount int
-	OmpCount  int
-	OcCount   int
-	Confirmed bool
+	CCCount       int
+	CodCount      int
+	GmiCount      int
+	AgyCount      int
+	GrokCount     int
+	OmpCount      int
+	PiCount       int
+	OcCount       int
+	CursorCount   int
+	WindsurfCount int
+	AiderCount    int
+	OllamaCount   int
+	Confirmed     bool
 }
 
 // TotalCount returns the total number of agents configured across all harnesses.
 func (r SpawnWizardResult) TotalCount() int {
-	return r.CCCount + r.CodCount + r.GmiCount + r.AgyCount + r.GrokCount + r.OmpCount + r.OcCount
+	return r.CCCount + r.CodCount + r.GmiCount + r.AgyCount + r.GrokCount + r.OmpCount +
+		r.PiCount + r.OcCount + r.CursorCount + r.WindsurfCount + r.AiderCount + r.OllamaCount
 }
 
 // SpawnWizardDoneMsg is sent when the wizard completes or is cancelled.
@@ -62,14 +68,19 @@ type SpawnWizard struct {
 	submitted    bool
 
 	// Step 2: Agent counts
-	countsForm *huh.Form
-	ccStr      string
-	codStr     string
-	gmiStr     string
-	agyStr     string
-	grokStr    string
-	ompStr     string
-	ocStr      string
+	countsForm  *huh.Form
+	ccStr       string
+	codStr      string
+	gmiStr      string
+	agyStr      string
+	grokStr     string
+	ompStr      string
+	piStr       string
+	ocStr       string
+	cursorStr   string
+	windsurfStr string
+	aiderStr    string
+	ollamaStr   string
 
 	// Step 3: Confirmation
 	confirmForm *huh.Form
@@ -196,14 +207,19 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (sw *SpawnWizard) currentResult() SpawnWizardResult {
 	return SpawnWizardResult{
-		CCCount:   parseCount(sw.ccStr),
-		CodCount:  parseCount(sw.codStr),
-		GmiCount:  parseCount(sw.gmiStr),
-		AgyCount:  parseCount(sw.agyStr),
-		GrokCount: parseCount(sw.grokStr),
-		OmpCount:  parseCount(sw.ompStr),
-		OcCount:   parseCount(sw.ocStr),
-		Confirmed: sw.confirmed,
+		CCCount:       parseCount(sw.ccStr),
+		CodCount:      parseCount(sw.codStr),
+		GmiCount:      parseCount(sw.gmiStr),
+		AgyCount:      parseCount(sw.agyStr),
+		GrokCount:     parseCount(sw.grokStr),
+		OmpCount:      parseCount(sw.ompStr),
+		PiCount:       parseCount(sw.piStr),
+		OcCount:       parseCount(sw.ocStr),
+		CursorCount:   parseCount(sw.cursorStr),
+		WindsurfCount: parseCount(sw.windsurfStr),
+		AiderCount:    parseCount(sw.aiderStr),
+		OllamaCount:   parseCount(sw.ollamaStr),
+		Confirmed:     sw.confirmed,
 	}
 }
 
@@ -331,7 +347,7 @@ func (sw *SpawnWizard) initMethodForm() {
 				Description("How would you like to configure agents?").
 				Options(
 					huh.NewOption("Manual — pick agent types and counts", "manual"),
-					huh.NewOption("Quick — balanced mix (2 CC, 1 Cod, 1 Gmi)", "quick"),
+					huh.NewOption("Quick — balanced mix (2 CC, 1 Cod, 1 Agy)", "quick"),
 					huh.NewOption("Minimal — single Claude agent", "minimal"),
 				).
 				Value(&sw.configMethod),
@@ -349,7 +365,12 @@ func (sw *SpawnWizard) initCountsForm() {
 		sw.agyStr = "1"
 		sw.grokStr = "0"
 		sw.ompStr = "0"
+		sw.piStr = "0"
 		sw.ocStr = "0"
+		sw.cursorStr = "0"
+		sw.windsurfStr = "0"
+		sw.aiderStr = "0"
+		sw.ollamaStr = "0"
 	case "minimal":
 		sw.ccStr = "1"
 		sw.codStr = "0"
@@ -357,29 +378,21 @@ func (sw *SpawnWizard) initCountsForm() {
 		sw.agyStr = "0"
 		sw.grokStr = "0"
 		sw.ompStr = "0"
+		sw.piStr = "0"
 		sw.ocStr = "0"
+		sw.cursorStr = "0"
+		sw.windsurfStr = "0"
+		sw.aiderStr = "0"
+		sw.ollamaStr = "0"
 	default:
 		// Manual - keep existing values or defaults
-		if sw.ccStr == "" {
-			sw.ccStr = "0"
-		}
-		if sw.codStr == "" {
-			sw.codStr = "0"
-		}
-		if sw.gmiStr == "" {
-			sw.gmiStr = "0"
-		}
-		if sw.agyStr == "" {
-			sw.agyStr = "0"
-		}
-		if sw.grokStr == "" {
-			sw.grokStr = "0"
-		}
-		if sw.ompStr == "" {
-			sw.ompStr = "0"
-		}
-		if sw.ocStr == "" {
-			sw.ocStr = "0"
+		for _, ptr := range []*string{
+			&sw.ccStr, &sw.codStr, &sw.gmiStr, &sw.agyStr, &sw.grokStr, &sw.ompStr,
+			&sw.piStr, &sw.ocStr, &sw.cursorStr, &sw.windsurfStr, &sw.aiderStr, &sw.ollamaStr,
+		} {
+			if *ptr == "" {
+				*ptr = "0"
+			}
 		}
 	}
 
@@ -422,10 +435,40 @@ func (sw *SpawnWizard) initCountsForm() {
 				Value(&sw.ompStr).
 				Validate(validateAgentCount),
 			huh.NewInput().
+				Title("Pi agents (pi)").
+				Description("Number of Pi coding agents").
+				Placeholder("0").
+				Value(&sw.piStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
 				Title("OpenCode agents (oc)").
 				Description("Number of OpenCode agents").
 				Placeholder("0").
 				Value(&sw.ocStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Cursor agents (cursor)").
+				Description("Number of Cursor agents").
+				Placeholder("0").
+				Value(&sw.cursorStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Windsurf agents (windsurf)").
+				Description("Number of Windsurf agents").
+				Placeholder("0").
+				Value(&sw.windsurfStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Aider agents (aider)").
+				Description("Number of Aider agents").
+				Placeholder("0").
+				Value(&sw.aiderStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Ollama agents (ollama)").
+				Description("Number of Ollama agents").
+				Placeholder("0").
+				Value(&sw.ollamaStr).
 				Validate(validateAgentCount),
 		),
 	).WithTheme(theme.HuhTheme()).WithWidth(sw.modalContentWidth()).WithHeight(sw.countsFormHeight())
@@ -436,8 +479,11 @@ func (sw *SpawnWizard) initConfirmForm() {
 	total := res.TotalCount()
 
 	summary := fmt.Sprintf(
-		"Spawn %d agent(s):\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d\n  Grok: %d, Omp: %d, OpenCode: %d",
-		total, res.CCCount, res.CodCount, res.GmiCount, res.AgyCount, res.GrokCount, res.OmpCount, res.OcCount,
+		"Spawn %d agent(s):\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d\n  Grok: %d, Omp: %d, Pi: %d, OpenCode: %d\n  Cursor: %d, Windsurf: %d, Aider: %d, Ollama: %d",
+		total,
+		res.CCCount, res.CodCount, res.GmiCount, res.AgyCount,
+		res.GrokCount, res.OmpCount, res.PiCount, res.OcCount,
+		res.CursorCount, res.WindsurfCount, res.AiderCount, res.OllamaCount,
 	)
 
 	sw.confirmForm = huh.NewForm(
