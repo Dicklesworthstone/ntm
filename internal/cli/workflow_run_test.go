@@ -201,7 +201,7 @@ func TestWorkflowRunnerEndpointDriftCannotDispatchOrRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			result, err := runner.Run(ctx)
 			wantSends := 1
@@ -358,6 +358,7 @@ func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"answer in first repaint", "blank then restored history", "echo then repaint", "Markdown echo then repaint", "partial composer with verdict draft"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			fake := newFakeWorkflowSession()
 			history := map[string]string{"%1": "previous red work\nRED-HANDOFF", "%2": "previous green work\nGREEN-HANDOFF"}
 			pending := make(map[string][]string)
@@ -422,7 +423,7 @@ func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			result, err := runner.Run(ctx)
 			if err != nil || result.Transitions != 2 || strings.Join(fake.dispatchedPanes(), ",") != "%1,%2,%1" {
@@ -570,7 +571,7 @@ func TestWorkflowRunnerPiRejectsReplacementAfterPartialResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			result, err := runner.Run(ctx)
 			if err == nil || !strings.Contains(err.Error(), "saved output boundary") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 {
@@ -1464,6 +1465,7 @@ func TestWorkflowRunnerPreservesReceiptsWhenOutputEvidenceFails(t *testing.T) {
 	t.Parallel()
 	for _, lostBoundary := range []bool{false, true} {
 		t.Run(map[bool]string{false: "capture failure", true: "screen replacement"}[lostBoundary], func(t *testing.T) {
+			t.Parallel()
 			fake := newFakeWorkflowSession()
 			fake.say("%1", "original unique screen")
 			ports := fake.ports()
@@ -1548,6 +1550,7 @@ func TestWorkflowRunnerDoesNotManufactureAnchorsByTrimmingEvidence(t *testing.T)
 		{name: "string complete line", pattern: `\AAPPROVED`, prefix: "preamble\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			template := pingPongTemplate()
 			template.Flow.Transitions[0].Trigger.Pattern = tc.pattern
 			fake := newFakeWorkflowSession()
@@ -2370,6 +2373,7 @@ func TestWorkflowRunnerPiRefusesRenderedVerdictBeforeDispatch(t *testing.T) {
 			name = "final prepared hook"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			template := pingPongTemplate()
 			template.Description = "Review the requested change."
 			template.Flow.Transitions[0].Trigger.Pattern = `(?m)^APPROVE$`

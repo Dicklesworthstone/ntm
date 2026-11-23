@@ -127,6 +127,7 @@ func TestWorkflowResumeObservesFilesChangedWhileStopped(t *testing.T) {
 		{name: "same size and restored timestamp", kind: workflow.TriggerFileModified, preexisting: true, preserveMetadata: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual, opts.MaxTransitions = false, 8
 			template := fileResumeWorkflowTemplate(tc.kind)
@@ -178,6 +179,7 @@ func TestWorkflowResumeUnchangedFilesDoNotCompleteStage(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []workflow.TriggerType{workflow.TriggerFileCreated, workflow.TriggerFileModified} {
 		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			template := fileResumeWorkflowTemplate(kind)
@@ -306,6 +308,7 @@ func TestWorkflowResumeRejectsMissingOrStaleFilesystemEvidence(t *testing.T) {
 		{"missing transition", func(s *workflow.WorkflowState) { s.Files.Triggers = map[int]workflow.FileTriggerState{} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
@@ -339,6 +342,7 @@ func TestWorkflowFileTriggersIgnoreCheckpointWrites(t *testing.T) {
 	t.Parallel()
 	for _, location := range []string{"default", "custom", "symlink alias"} {
 		t.Run(location, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			if location != "default" {
@@ -517,6 +521,7 @@ func TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce(t *testing.T) {
 	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionNotify, ""} {
 		t.Run("policy="+string(action), func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual, opts.Interval = false, 5*time.Minute
 			template := resumeWorkflowTemplate()
@@ -593,6 +598,7 @@ func TestWorkflowExpiredResumeHandlesTimeoutBeforePendingDeliveries(t *testing.T
 	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionSkipStage, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			template := resumeWorkflowTemplate()
@@ -729,6 +735,7 @@ func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) 
 			name = "action acknowledgment"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual, opts.Interval = false, time.Minute
 			template := resumeWorkflowTemplate()
@@ -825,6 +832,7 @@ func TestWorkflowResumeRejectsMissingOrStaleTimeoutReceipt(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			template := resumeWorkflowTemplate()
@@ -852,7 +860,7 @@ func TestWorkflowResumeRejectsMissingOrStaleTimeoutReceipt(t *testing.T) {
 			opts.Resume, opts.Vars = true, nil
 			resumePorts := resumeWorkflowPorts(&sent)
 			resumePorts.now = func() time.Time { return now }
-			resumeCtx, stop := context.WithTimeout(t.Context(), time.Second)
+			resumeCtx, stop := context.WithTimeout(t.Context(), 15*time.Second)
 			defer stop()
 			result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts).Run(resumeCtx)
 			if err == nil || result.Success || result.Reason != "resume-rejected" || len(sent) != 1 {
@@ -870,6 +878,7 @@ func TestWorkflowResumePreservesConsumedRecoveryBudget(t *testing.T) {
 	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual, opts.MaxAgentRestarts = false, 1
 			template := resumeWorkflowTemplate()
@@ -973,6 +982,7 @@ func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
 	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual, opts.MaxAgentRestarts = false, 1
 			template := resumeWorkflowTemplate()
@@ -1045,6 +1055,7 @@ func TestWorkflowResumeRejectsMissingOrInvalidRecoveryEvidence(t *testing.T) {
 		{"negative restart count", func(s *workflow.WorkflowState) { s.Recovery.Restarts = map[string]int{"%1": -1} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.MaxAgentRestarts = 1
 			template := resumeWorkflowTemplate()
@@ -1129,6 +1140,7 @@ func TestWorkflowResumeBindsTmuxEndpointBeforeObservation(t *testing.T) {
 		{name: "completed legacy checkpoint", original: "local", resume: "local", missingIdentity: true, completed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.TmuxEndpoint = tc.original
 			if tc.completed {
@@ -1136,7 +1148,7 @@ func TestWorkflowResumeBindsTmuxEndpointBeforeObservation(t *testing.T) {
 			}
 			var sent []string
 			first := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			result, err := first.Run(ctx)
 			if err != nil || !result.Success || result.Completed != tc.completed || len(sent) != 2 {
@@ -1309,6 +1321,7 @@ func TestWorkflowResumeRejectsMismatchedOrInvalidCheckpointWithoutMutation(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			var sent []string
 			runner := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
@@ -1437,6 +1450,7 @@ func TestWorkflowReconciledDeliveryResumesWithoutRestartingPriorStages(t *testin
 	t.Parallel()
 	for _, outcome := range []string{"delivered", "not-sent"} {
 		t.Run(outcome, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			var sent []string
 			first := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
