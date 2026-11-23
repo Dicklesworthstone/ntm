@@ -21,17 +21,23 @@ type Executor interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
 }
 
-// limitedBuffer prevents unbounded memory growth when capturing output
+// limitedBuffer prevents unbounded memory growth when capturing output.
+// It intentionally does not embed bytes.Buffer so os/exec's io.Copy cannot
+// bypass Write via bytes.Buffer.ReadFrom.
 type limitedBuffer struct {
-	bytes.Buffer
+	buf   bytes.Buffer
 	limit int
 }
 
 func (b *limitedBuffer) Write(p []byte) (n int, err error) {
-	if b.Len()+len(p) > b.limit {
+	if b.buf.Len()+len(p) > b.limit {
 		return 0, fmt.Errorf("output exceeded limit of %d bytes", b.limit)
 	}
-	return b.Buffer.Write(p)
+	return b.buf.Write(p)
+}
+
+func (b *limitedBuffer) Bytes() []byte {
+	return b.buf.Bytes()
 }
 
 // DefaultExecutor runs the caut binary via os/exec
