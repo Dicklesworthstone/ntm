@@ -310,6 +310,12 @@ func observeCommandExitID(idType, id, extraFlags int) error {
 
 var commandLeaderObservationRetryTimeout = 250 * time.Millisecond
 
+func init() {
+	if isPipelineTestProcess() {
+		commandLeaderObservationRetryTimeout = 120 * time.Millisecond
+	}
+}
+
 type commandLeaderObservationTestHookKey struct{}
 
 // Retain the original leader through a failed non-reaping probe. A pidfd keeps

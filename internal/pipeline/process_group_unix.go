@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"testing"
 	"time"
 )
 
@@ -26,6 +27,25 @@ var (
 	// would permanently discard the identity needed to certify settlement.
 	commandSettlementRecoveryTimeout = 5 * time.Second
 )
+
+func init() {
+	// Tighten process-group cleanup/settlement windows inside any `go test`
+	// binary (including downstream packages such as internal/cli and
+	// internal/serve) while keeping production defaults (5s/1s/50ms/5s)
+	// unchanged in cmd/ntm. Every lifecycle test still exercises the full
+	// SIGTERM->grace->SIGKILL, pipe drain, and settlement-recovery choreography
+	// using these symbolic durations.
+	if isPipelineTestProcess() {
+		commandCancelGracePeriod = 250 * time.Millisecond
+		commandPipeDrainTimeout = 250 * time.Millisecond
+		commandGroupPollInterval = 12 * time.Millisecond
+		commandSettlementRecoveryTimeout = 350 * time.Millisecond
+	}
+}
+
+func isPipelineTestProcess() bool {
+	return testing.Testing()
+}
 
 // Per-command fault injection keeps concurrent waiters independent. Cleanup
 // contexts retain these values even after the command's context is cancelled.

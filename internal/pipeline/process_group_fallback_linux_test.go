@@ -1730,10 +1730,12 @@ printf natural > complete
 }
 
 func TestCommandOwnershipLossAfterGroupObservationRefusesSignalsAndSettlement(t *testing.T) {
-	oldDrain, oldRecovery := commandPipeDrainTimeout, commandSettlementRecoveryTimeout
-	commandPipeDrainTimeout = 400 * time.Millisecond
-	commandSettlementRecoveryTimeout = 500 * time.Millisecond
+	oldGrace, oldDrain, oldRecovery := commandCancelGracePeriod, commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandCancelGracePeriod = 800 * time.Millisecond
+	commandPipeDrainTimeout = 500 * time.Millisecond
+	commandSettlementRecoveryTimeout = 900 * time.Millisecond
 	t.Cleanup(func() {
+		commandCancelGracePeriod = oldGrace
 		commandPipeDrainTimeout = oldDrain
 		commandSettlementRecoveryTimeout = oldRecovery
 	})

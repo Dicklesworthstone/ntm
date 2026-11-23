@@ -17,18 +17,6 @@ import (
 	"time"
 )
 
-func init() {
-	// Tighten process-group cleanup/settlement windows inside `go test` while
-	// keeping production defaults (5s/1s/50ms/5s) unchanged in cmd/ntm. Every
-	// lifecycle test still exercises the full SIGTERM->grace->SIGKILL, pipe
-	// drain, and settlement-recovery choreography using these symbolic durations.
-	commandCancelGracePeriod = 250 * time.Millisecond
-	commandPipeDrainTimeout = 250 * time.Millisecond
-	commandGroupPollInterval = 12 * time.Millisecond
-	commandSettlementRecoveryTimeout = 350 * time.Millisecond
-	commandLeaderObservationRetryTimeout = 120 * time.Millisecond
-}
-
 func TestExecuteCommand_CancelKillsProcessGroupChild(t *testing.T) {
 	t.Parallel()
 	e := newCommandTestExecutor(t)
