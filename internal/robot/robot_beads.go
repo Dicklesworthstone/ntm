@@ -70,6 +70,7 @@ func GetPlan() (*PlanOutput, error) {
 // GetPlanForProject generates an execution plan scoped to projectDir (falling
 // back to the current working directory when projectDir is empty).
 func GetPlanForProject(projectDir string) (*PlanOutput, error) {
+	projectDir = strings.TrimSpace(projectDir)
 	plan := &PlanOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
@@ -912,8 +913,9 @@ type LabelAttentionOptions struct {
 
 // FileBeadsOptions configures file-to-beads analysis
 type FileBeadsOptions struct {
-	FilePath string
-	Limit    int
+	FilePath   string
+	Limit      int
+	ProjectDir string `json:"-"`
 }
 
 // FileHotspotsOptions configures file hotspots analysis
@@ -1353,7 +1355,10 @@ func GetFileBeads(opts FileBeadsOptions) (*FileBeadsOutput, error) {
 		return output, nil
 	}
 
-	wd := mustGetwd()
+	wd := strings.TrimSpace(opts.ProjectDir)
+	if wd == "" {
+		wd = mustGetwd()
+	}
 	raw, err := adapter.GetFileBeads(context.Background(), wd, opts.FilePath, opts.Limit)
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get file beads: %v", err)

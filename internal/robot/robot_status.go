@@ -458,7 +458,7 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 		output.DegradedSources = append(output.DegradedSources, output.Sources.Degraded...)
 	}
 
-	statusApplyAlertCounts(output, alerts.GetActiveAlerts(AlertConfigForProject(cfg, "")))
+	statusApplyAlertCounts(output, alerts.GetActiveAlerts(AlertConfigForProject(cfg, projectDir)))
 	statusFinalize(output, opts)
 	return output, nil
 }

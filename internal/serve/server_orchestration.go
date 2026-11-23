@@ -557,8 +557,9 @@ func (s *Server) handleRecommendRouteV1(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleGetQuotaStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	provider := strings.TrimSpace(firstQueryParam(r, "provider"))
+	projectDir := s.projectDirSnapshot()
 	if provider != "" {
-		checkOut, checkErr := robot.GetQuotaCheck(provider)
+		checkOut, checkErr := robot.GetQuotaCheckForProject(provider, projectDir)
 		if checkErr != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, checkErr.Error(), nil, reqID)
 			return
@@ -579,7 +580,7 @@ func (s *Server) handleGetQuotaStatusV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	out, err := robot.GetQuotaStatus()
+	out, err := robot.GetQuotaStatusForProject(projectDir)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return

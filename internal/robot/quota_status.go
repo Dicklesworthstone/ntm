@@ -143,6 +143,12 @@ func refreshCautQuotaCache(poller *caut.UsagePoller) {
 // GetQuotaStatus returns quota status information.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetQuotaStatus() (*QuotaStatusOutput, error) {
+	return GetQuotaStatusForProject("")
+}
+
+// GetQuotaStatusForProject returns quota status information with rate-limit
+// tracker overlays loaded from projectDir (or the current working directory when empty).
+func GetQuotaStatusForProject(projectDir string) (*QuotaStatusOutput, error) {
 	poller := caut.GetGlobalPoller()
 	refreshCautQuotaCache(poller)
 	cache := poller.GetCache()
@@ -248,8 +254,14 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 	defer limitsCancel()
 	applyLiveProviderQuota(limitsCtx, &quotaInfo)
 
-	if wd, wdErr := os.Getwd(); wdErr == nil {
-		applyRateLimitTrackerOverlay(wd, &quotaInfo)
+	overlayDir := strings.TrimSpace(projectDir)
+	if overlayDir == "" {
+		if wd, wdErr := os.Getwd(); wdErr == nil {
+			overlayDir = wd
+		}
+	}
+	if overlayDir != "" {
+		applyRateLimitTrackerOverlay(overlayDir, &quotaInfo)
 	}
 
 	// Check for cache errors
@@ -385,6 +397,12 @@ func PrintQuotaStatus() error {
 // GetQuotaCheck returns quota check for a specific provider.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
+	return GetQuotaCheckForProject(provider, "")
+}
+
+// GetQuotaCheckForProject returns quota check for a specific provider with
+// rate-limit tracker overlays loaded from projectDir (or CWD when empty).
+func GetQuotaCheckForProject(provider, projectDir string) (*QuotaCheckOutput, error) {
 	if provider == "" {
 		return &QuotaCheckOutput{
 			RobotResponse: NewErrorResponse(
@@ -459,8 +477,14 @@ func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 		limitsCancel()
 	}
 
-	if wd, wdErr := os.Getwd(); wdErr == nil {
-		applyRateLimitTrackerOverlay(wd, &info)
+	overlayDir := strings.TrimSpace(projectDir)
+	if overlayDir == "" {
+		if wd, wdErr := os.Getwd(); wdErr == nil {
+			overlayDir = wd
+		}
+	}
+	if overlayDir != "" {
+		applyRateLimitTrackerOverlay(overlayDir, &info)
 	}
 
 	providerQuota, found := info.Providers[canonicalProvider]
