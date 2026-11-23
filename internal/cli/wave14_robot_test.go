@@ -92,6 +92,7 @@ func TestKernelSessionsAdoptRegistrationAndValidation(t *testing.T) {
 }
 
 func TestWave14RobotCLIFlagsAndSubprocessDispatch(t *testing.T) {
+	t.Parallel()
 	homeDir := t.TempDir()
 	configHome := t.TempDir()
 	dataHome := t.TempDir()

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -934,4 +935,41 @@ func FuzzCompletedRotationSummary_BulletAndANSIInvariance(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestDefaultPaneSpawner_PiCommandTemplateRendersOverrides(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("NTM_CONFIG", "")
+
+	spawner := &DefaultPaneSpawner{config: config.Default()}
+	got := spawner.getAgentCommand("pi")
+	wantDefault := plugins.ShippedPiPlugin().Command
+	if got != wantDefault {
+		t.Fatalf("getAgentCommand(pi) = %q, want shipped template %q", got, wantDefault)
+	}
+	rendered, err := config.GenerateAgentCommand(got, config.AgentTemplateVars{
+		Model:           "claude-sonnet-4-6",
+		ModelRequested:  true,
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentCommand(pi): %v", err)
+	}
+	if !strings.Contains(rendered, "--model") || !strings.Contains(rendered, "claude-sonnet-4-6") || !strings.Contains(rendered, "--thinking") {
+		t.Fatalf("rendered pi rotation command = %q, want --model and --thinking flags", rendered)
+	}
+
+	// Custom agents/pi.toml override must be honored by rotation too.
+	agentsDir := filepath.Join(filepath.Dir(config.DefaultPath()), "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customToml := "[agent]\nname = \"pi\"\ncommand = \"pi-custom {{if .Model}}--model {{shellQuote .Model}}{{end}}\"\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "pi.toml"), []byte(customToml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if gotCustom := spawner.getAgentCommand("pi"); !strings.HasPrefix(gotCustom, "pi-custom ") {
+		t.Fatalf("getAgentCommand(pi) with override = %q, want pi-custom prefix", gotCustom)
+	}
 }

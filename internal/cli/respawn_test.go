@@ -126,6 +126,7 @@ func TestReadRestartEnvironmentPrivateSnapshot(t *testing.T) {
 }
 
 func TestRestartEnvironmentRejectsOtherRobotSurface(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	args, err := json.Marshal([]string{"--robot-version", "--restart-env-file=" + filepath.Join(root, "unused")})
 	if err != nil {

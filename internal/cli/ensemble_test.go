@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -478,5 +480,28 @@ func TestParseSelectionIndices(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDefaultBrCommand_SeparatesStderrFromJSONStdout(t *testing.T) {
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = fail ]; then echo 'fatal stderr diag' >&2; exit 1; fi\necho 'WARNING: sqlite pragmas' >&2\nprintf '{\"id\":\"bd-42\"}\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := defaultBrCommand(context.Background(), t.TempDir(), "create", "--json")
+	if err != nil {
+		t.Fatalf("defaultBrCommand success path: %v", err)
+	}
+	id, err := parseBrCreateID(out)
+	if err != nil || id != "bd-42" {
+		t.Fatalf("parseBrCreateID(%q) = (%q, %v), want (bd-42, nil)", string(out), id, err)
+	}
+
+	errOut, err := defaultBrCommand(context.Background(), t.TempDir(), "fail")
+	if err == nil || !strings.Contains(string(errOut), "fatal stderr diag") {
+		t.Fatalf("defaultBrCommand failure path = (%q, %v), want stderr diagnostic and error", string(errOut), err)
 	}
 }

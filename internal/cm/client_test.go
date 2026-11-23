@@ -1472,3 +1472,28 @@ func TestClientHealthRejectsNonJSONRPCResponse(t *testing.T) {
 		t.Fatal("Health() = nil for a non-JSON-RPC 200 response, want error")
 	}
 }
+
+func TestCLIClientGetContext_OptionEndAndEqualsWorkspace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "argv.txt")
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + "'" + argsFile + "'" + "\nprintf '{\"success\":true,\"data\":{\"relevantBullets\":[],\"antiPatterns\":[],\"historySnippets\":[]}}\\n'\n"
+	bin := filepath.Join(dir, "fake-cm")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewCLIClient(WithCLIBinaryPath(bin))
+	if _, err := client.GetContext(context.Background(), "--dash-prefixed-task", "/tmp/-weird-ws"); err != nil {
+		t.Fatalf("GetContext: %v", err)
+	}
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	want := []string{"context", "--json", "--workspace=/tmp/-weird-ws", "--", "--dash-prefixed-task"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("cm argv = %q, want %q", got, want)
+	}
+}

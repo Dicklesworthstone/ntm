@@ -158,7 +158,7 @@ func TestContextInjectCommandMemoryUsesTargetProject(t *testing.T) {
 			const script = `#!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$NTM_CONTEXT_CM_ROOT/cm-argv"
-if [ "$1" = context ] && [ "$4" = --workspace ] && [ "$5" = "$NTM_CONTEXT_CM_TARGET" ]; then
+if [ "$1" = context ] && [ "$2" = --json ] && [ "$3" = "--workspace=$NTM_CONTEXT_CM_TARGET" ] && [ "$4" = -- ]; then
   printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"target-rule","content":"TARGET_WORKSPACE_MEMORY"}]}}'
 else
   printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"wrong-rule","content":"CALLER_WORKSPACE_MEMORY"}]}}'
@@ -225,7 +225,7 @@ fi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(argv), "--workspace\n"+target+"\n") || strings.Contains(string(argv), caller) {
+			if !strings.Contains(string(argv), "--workspace="+target+"\n") || strings.Contains(string(argv), caller) {
 				t.Fatalf("CM received caller workspace: %s", argv)
 			}
 			if mode == "dry-run" {

@@ -643,6 +643,7 @@ func TestFormatContextInjectContent_AllowsConfinedSymlink(t *testing.T) {
 }
 
 func TestFormatContextInjectContent_RejectsFIFO(t *testing.T) {
+	t.Parallel()
 	// Run the read in a child test process so removing the regular-file guard
 	// fails by a bounded deadline instead of hanging the whole test suite.
 	if fifo := os.Getenv("NTM_CONTEXT_INJECT_FIFO_FIXTURE"); fifo != "" {

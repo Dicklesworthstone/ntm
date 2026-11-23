@@ -272,6 +272,7 @@ func TestRobotInterruptTypeFilterInterruptsOnlyThatAgentType(t *testing.T) {
 // controlled. The recorded key destinations prove Pi is actually interrupted,
 // user panes are untouched, and a failed sibling cannot end the sweep early.
 func TestPiInterruptCLIAndRobotRespectTargets(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("tmux transport fixture requires /bin/sh")
 	}
@@ -322,7 +323,9 @@ esac
 		{name: "robot Pi", args: []string{"--robot-interrupt=pi-control", "--type=pi", "--force", "--no-wait"}, json: true, robot: true, wantKeys: "send-keys -t %12 C-c\n"},
 		{name: "robot Pi alias", args: []string{"--robot-interrupt=pi-control", "--type=pi-agent", "--force", "--no-wait"}, json: true, robot: true, wantKeys: "send-keys -t %12 C-c\n"},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			binary := filepath.Join(root, "tmux")
 			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {

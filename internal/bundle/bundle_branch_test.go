@@ -1,6 +1,10 @@
 package bundle
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,3 +218,102 @@ func TestGenerateTarGz_ZeroModTimeFallback(t *testing.T) {
 // ---------------------------------------------------------------------------
 // AddDirectory with full Generate + Verify round-trip
 // ---------------------------------------------------------------------------
+
+func TestVerifyArchiveBoundsRejectsExcessEntriesAndTotalBytes(t *testing.T) {
+	t.Parallel()
+
+	// Build a valid zip with 3 entries of 10 bytes each (30 bytes total).
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	for i := 0; i < 3; i++ {
+		w, err := zw.Create("f" + string(rune('0'+i)) + ".txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("0123456789")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBuf.Bytes()), int64(zipBuf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractZipEntriesWithLimits(zr, 100, 100, 2); err == nil || !strings.Contains(err.Error(), "max verify entries") {
+		t.Fatalf("zip entry count cap err = %v, want max verify entries", err)
+	}
+	if _, err := extractZipEntriesWithLimits(zr, 100, 25, 10); err == nil || !strings.Contains(err.Error(), "max total verify size") {
+		t.Fatalf("zip total bytes cap err = %v, want max total verify size", err)
+	}
+	if entries, err := extractZipEntriesWithLimits(zr, 100, 30, 3); err != nil || len(entries) != 3 {
+		t.Fatalf("zip within bounds = (%d, %v), want (3, nil)", len(entries), err)
+	}
+
+	// Build a valid tar.gz with 3 entries of 10 bytes each (30 bytes total).
+	var tgzBuf bytes.Buffer
+	gw := gzip.NewWriter(&tgzBuf)
+	tw := tar.NewWriter(gw)
+	for i := 0; i < 3; i++ {
+		hdr := &tar.Header{Name: "f" + string(rune('0'+i)) + ".txt", Mode: 0o600, Size: 10}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte("0123456789")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readTarGzEntriesFromReaderWithLimits(bytes.NewReader(tgzBuf.Bytes()), 100, 100, 2); err == nil || !strings.Contains(err.Error(), "max verify entries") {
+		t.Fatalf("tar.gz entry count cap err = %v, want max verify entries", err)
+	}
+	if _, err := readTarGzEntriesFromReaderWithLimits(bytes.NewReader(tgzBuf.Bytes()), 100, 25, 10); err == nil || !strings.Contains(err.Error(), "max total verify size") {
+		t.Fatalf("tar.gz total bytes cap err = %v, want max total verify size", err)
+	}
+	if entries, err := readTarGzEntriesFromReaderWithLimits(bytes.NewReader(tgzBuf.Bytes()), 100, 30, 3); err != nil || len(entries) != 3 {
+		t.Fatalf("tar.gz within bounds = (%d, %v), want (3, nil)", len(entries), err)
+	}
+
+	// Directory-only archives must also count against maxEntries (preventing dir-header bombs).
+	var dirZipBuf bytes.Buffer
+	dzw := zip.NewWriter(&dirZipBuf)
+	for i := 0; i < 4; i++ {
+		if _, err := dzw.Create("dir" + string(rune('0'+i)) + "/"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dzr, err := zip.NewReader(bytes.NewReader(dirZipBuf.Bytes()), int64(dirZipBuf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractZipEntriesWithLimits(dzr, 100, 100, 3); err == nil || !strings.Contains(err.Error(), "max verify entries") {
+		t.Fatalf("zip dir-bomb err = %v, want max verify entries", err)
+	}
+
+	var dirTgzBuf bytes.Buffer
+	dgw := gzip.NewWriter(&dirTgzBuf)
+	dtw := tar.NewWriter(dgw)
+	for i := 0; i < 4; i++ {
+		if err := dtw.WriteHeader(&tar.Header{Name: "dir" + string(rune('0'+i)) + "/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dtw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dgw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readTarGzEntriesFromReaderWithLimits(bytes.NewReader(dirTgzBuf.Bytes()), 100, 100, 3); err == nil || !strings.Contains(err.Error(), "max verify entries") {
+		t.Fatalf("tar.gz dir-bomb err = %v, want max verify entries", err)
+	}
+}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -359,6 +360,9 @@ func TestAttentionIncidentsCLIValidationAndNotFound(t *testing.T) {
 		out, err = execAttentionCLI(t, action...)
 		if err == nil {
 			t.Fatalf("expected NOT_FOUND error for %v", action)
+		}
+		if !errors.Is(err, errJSONFailure) {
+			t.Fatalf("expected errJSONFailure sentinel for %v so root.Execute does not emit duplicate JSON, got %v", action, err)
 		}
 		errEnv = nil
 		if decErr := json.Unmarshal([]byte(out), &errEnv); decErr != nil {

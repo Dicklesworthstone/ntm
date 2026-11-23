@@ -979,8 +979,11 @@ func TestWorkflowRunnerStageTimeoutPausesRun(t *testing.T) {
 }
 
 func TestWorkflowRunnerResumedDeadlineBoundsObservationAndCommands(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"pane capture", "command_success", "command_failure"} {
+		scenario := scenario
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			opts.TriggerTimeout = 10 * time.Second
@@ -992,10 +995,10 @@ func TestWorkflowRunnerResumedDeadlineBoundsObservationAndCommands(t *testing.T)
 				// exec replaces the shell so cancellation kills the blocking
 				// command itself, without leaving a sleeping child behind.
 				command := filepath.Join(opts.ProjectRoot, "wait-for-stage-timeout")
-				if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf started > \"$NTM_WORKFLOW_TIMEOUT_STARTED\"\nexec sleep 10\n"), 0o700); err != nil {
+				script := "#!/bin/sh\nprintf started > " + tmux.ShellQuote(marker) + "\nexec sleep 10\n"
+				if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				t.Setenv("NTM_WORKFLOW_TIMEOUT_STARTED", marker)
 				template.Flow.Transitions[0].Trigger = workflow.Trigger{Type: workflow.TriggerType(scenario), Command: "./wait-for-stage-timeout"}
 			}
 

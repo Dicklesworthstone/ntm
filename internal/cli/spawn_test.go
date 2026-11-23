@@ -835,6 +835,7 @@ func TestSpawnUnknownAgentJSONProcessHelper(t *testing.T) {
 }
 
 func TestSpawnUnknownAgentJSONProcessContract(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSpawnUnknownAgentJSONProcessHelper$")
 	cmd.Env = append(os.Environ(), "NTM_SPAWN_UNKNOWN_JSON_HELPER=1")
 	var stdout bytes.Buffer
