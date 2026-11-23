@@ -957,7 +957,7 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 		finding.Finding.Suggestion)
 
 	// Determine priority
-	priority := req.Priority
+	priority := strings.TrimSpace(req.Priority)
 	if priority == "" {
 		switch finding.Finding.Severity {
 		case scanner.SeverityCritical:
@@ -968,15 +968,42 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 			priority = "P2"
 		}
 	}
+	if !validateBeadArgument(w, title, "title", reqID) {
+		return
+	}
+	if !validateBeadArgument(w, priority, "priority", reqID) {
+		return
+	}
 
-	// Create bead via br CLI
-	labels := append([]string{"bug", "scanner"}, req.Labels...)
+	// Create bead via br CLI using single-token --flag=value form so leading-dash
+	// user inputs cannot be parsed as br options, and pass --description directly
+	// instead of discarding a second update call.
+	labels := make([]string, 0, 2+len(req.Labels))
+	labels = append(labels, "bug", "scanner")
+	for _, rawLabel := range req.Labels {
+		label := strings.TrimSpace(rawLabel)
+		if label == "" {
+			continue
+		}
+		if !validateBeadArgument(w, label, "label", reqID) {
+			return
+		}
+		labels = append(labels, label)
+	}
 	// --json: br's text output ("✓ Created <id>: ...") names the ID with a
 	// project-derived prefix that cannot be recognized reliably, and an
 	// unrecognized ID left the created bead orphaned and duplicated on retry.
-	args := []string{"--title", title, "--priority", priority, "--type", "bug", "--json"}
+	args := []string{
+		"--title=" + title,
+		"--priority=" + priority,
+		"--type=bug",
+		"--json",
+	}
+	if strings.TrimSpace(description) != "" {
+		args = append(args, "--description="+description)
+	}
 	if len(labels) > 0 {
-		args = append(args, "--labels", strings.Join(labels, ","))
+		args = append(args, "--labels="+strings.Join(labels, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDirSnapshot(), append([]string{"create"}, args...)...)
@@ -1001,9 +1028,6 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 			"Failed to determine bead ID from br output", map[string]interface{}{"output": strings.TrimSpace(output)}, reqID)
 		return
 	}
-
-	// Update bead description
-	_, _ = bv.RunBd(s.projectDirSnapshot(), "update", beadID, "--description", description)
 
 	// Link the bead and release the claim in one atomic step.
 	scannerStore.LinkFindingBead(findingID, beadID)
@@ -1051,7 +1075,7 @@ func (s *Server) handleListBugs(w http.ResponseWriter, r *http.Request) {
 	allFindings := scannerStore.GetFindings("", false, severity, 10000, 0)
 
 	// Additional filtering
-	var filtered []*FindingRecord
+	filtered := make([]*FindingRecord, 0, len(allFindings))
 	for _, f := range allFindings {
 		if file != "" && !strings.Contains(f.Finding.File, file) {
 			continue
@@ -1065,7 +1089,7 @@ func (s *Server) handleListBugs(w http.ResponseWriter, r *http.Request) {
 	// Apply pagination
 	total := len(filtered)
 	if offset >= total {
-		filtered = nil
+		filtered = []*FindingRecord{}
 	} else {
 		end := offset + limit
 		if end > total {

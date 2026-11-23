@@ -4295,21 +4295,22 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 		Labels:        opts.Labels,
 	}
 
-	// Build br create command
+	// Build br create command using single-token --flag=value form so values
+	// starting with '-' (e.g. markdown bullets) are never parsed as br options.
 	args := []string{
 		"create",
 		"--json",
-		"--type", opts.Type,
-		"--priority", fmt.Sprintf("%d", opts.Priority),
-		"--title", opts.Title,
+		"--type=" + opts.Type,
+		fmt.Sprintf("--priority=%d", opts.Priority),
+		"--title=" + opts.Title,
 	}
 
 	if opts.Description != "" {
-		args = append(args, "--description", opts.Description)
+		args = append(args, "--description="+opts.Description)
 	}
 
 	if len(opts.Labels) > 0 {
-		args = append(args, "--labels", strings.Join(opts.Labels, ","))
+		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
 	}
 
 	// Execute creation
@@ -4327,12 +4328,19 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 		}, nil
 	}
 
-	// Parse the result to get the bead ID
-	// br create returns a single object, not an array
+	// Parse the result to get the bead ID.
+	// br create may return {"id": "..."}, {"created": {"id": "..."}}, or [{"id": "..."}].
 	var singleResult struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Created *struct {
+			ID string `json:"id"`
+		} `json:"created"`
 	}
-	if err := json.Unmarshal([]byte(createOutput), &singleResult); err != nil {
+	if err := json.Unmarshal([]byte(createOutput), &singleResult); err == nil {
+		if singleResult.ID == "" && singleResult.Created != nil {
+			singleResult.ID = singleResult.Created.ID
+		}
+	} else {
 		// Try array format as fallback
 		var arrayResult []struct {
 			ID string `json:"id"`
@@ -4642,11 +4650,13 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 		return output, nil
 	}
 
-	// Close the bead
-	args := []string{"close", opts.BeadID, "--json"}
+	// Close the bead using single-token --reason=value so leading-dash reasons
+	// cannot be interpreted as br CLI flags.
+	args := []string{"close", "--json"}
 	if opts.Reason != "" {
-		args = append(args, "--reason", opts.Reason)
+		args = append(args, "--reason="+opts.Reason)
 	}
+	args = append(args, "--", opts.BeadID)
 
 	_, err = bv.RunBd("", args...)
 	if err != nil {

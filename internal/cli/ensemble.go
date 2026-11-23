@@ -2383,10 +2383,10 @@ func runBrCreate(ctx context.Context, dir string, spec beadSpec) (string, error)
 	args := []string{
 		"create",
 		"--json",
-		"--title", spec.Title,
-		"--type", spec.Type,
-		"--priority", fmt.Sprintf("%d", spec.Priority),
-		"--description", spec.Description,
+		"--title=" + spec.Title,
+		"--type=" + spec.Type,
+		fmt.Sprintf("--priority=%d", spec.Priority),
+		"--description=" + spec.Description,
 	}
 
 	outputBytes, err := runBrCommand(ctx, dir, args...)
