@@ -433,6 +433,8 @@ export default function MemoryPage() {
               <option value="codex">Codex (codex)</option>
               <option value="gemini">Gemini (gemini)</option>
               <option value="antigravity">Antigravity (antigravity)</option>
+              <option value="grok">Grok (grok)</option>
+              <option value="omp">Oh My Pi (omp)</option>
               <option value="cursor">Cursor (cursor)</option>
               <option value="windsurf">Windsurf (windsurf)</option>
               <option value="aider">Aider (aider)</option>
