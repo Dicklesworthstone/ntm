@@ -104,6 +104,23 @@ type beadsRecoveryTestWorkspace struct {
 	doctorStarted string
 	jsonl         string
 	jsonlContents string
+	binPath       string
+	env           map[string]string
+}
+
+func (w *beadsRecoveryTestWorkspace) setEnv(key, value string) {
+	w.env[key] = value
+}
+
+func (w *beadsRecoveryTestWorkspace) context(parent context.Context) context.Context {
+	envSlice := make([]string, 0, len(w.env))
+	for k, v := range w.env {
+		envSlice = append(envSlice, k+"="+v)
+	}
+	return context.WithValue(parent, brCommandOverrideKey{}, brCommandOverride{
+		binary: w.binPath,
+		env:    envSlice,
+	})
 }
 
 // Run the actual subprocess wrapper so exit status, separate output streams,
@@ -126,6 +143,7 @@ func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestC
 		doctorStarted: filepath.Join(dir, "doctor-started"),
 		jsonl:         filepath.Join(dir, ".beads", "issues.jsonl"),
 		jsonlContents: "{\"id\":\"ntm-preserved\",\"status\":\"tombstone\"}\n",
+		env:           make(map[string]string, 16),
 	}
 	if err := os.WriteFile(workspace.jsonl, []byte(workspace.jsonlContents), 0o600); err != nil {
 		t.Fatalf("write authoritative JSONL: %v", err)
@@ -150,7 +168,7 @@ func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestC
 		"NTM_TEST_DOCTOR_EXIT":    fmt.Sprint(doctor.exitCode),
 		"NTM_TEST_DOCTOR_BLOCK":   "",
 	} {
-		t.Setenv(key, value)
+		workspace.setEnv(key, value)
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
@@ -184,10 +202,10 @@ case "$*" in
     ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+	workspace.binPath = filepath.Join(binDir, "br")
+	if err := os.WriteFile(workspace.binPath, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake br: %v", err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return workspace
 }
 
@@ -218,7 +236,7 @@ func setupBeadsReadRecoveryCommands(t *testing.T, doctor beadsRecoveryTestComman
 	w := setupBeadsRecoveryCommands(t,
 		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6}, doctor)
 	var info beadsWorkspaceInfo
-	if err := json.Unmarshal([]byte(os.Getenv("NTM_TEST_BR_INFO")), &info); err != nil {
+	if err := json.Unmarshal([]byte(w.env["NTM_TEST_BR_INFO"]), &info); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(info.DatabasePath)
@@ -229,15 +247,16 @@ func setupBeadsReadRecoveryCommands(t *testing.T, doctor beadsRecoveryTestComman
 	if err := os.WriteFile(info.DatabasePath, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
-	t.Setenv("NTM_TEST_READ_STDOUT", `{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}}`)
-	t.Setenv("NTM_TEST_READ_STDERR", "")
-	t.Setenv("NTM_TEST_READ_EXIT", "2")
+	w.setEnv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
+	w.setEnv("NTM_TEST_READ_STDOUT", `{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}}`)
+	w.setEnv("NTM_TEST_READ_STDERR", "")
+	w.setEnv("NTM_TEST_READ_EXIT", "2")
 	setNoDBState(w.dir, false)
 	return w
 }
 
 func TestReadForMutationContextRepairsOnlyFailedBeadsReads(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		preservation bool
@@ -250,20 +269,22 @@ func TestReadForMutationContextRepairsOnlyFailedBeadsReads(t *testing.T) {
 		{name: "persistent corruption gets only one repair", persistent: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			report := beadsRecoveryDoctorReport()
 			if test.unverified {
 				report["database_verified"] = false
 			}
 			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, report), exitCode: 2})
 			if test.preservation {
-				t.Setenv("NTM_TEST_READ_STDOUT", beadsRebuildPreservationConflict)
-				t.Setenv("NTM_TEST_READ_EXIT", "6")
+				w.setEnv("NTM_TEST_READ_STDOUT", beadsRebuildPreservationConflict)
+				w.setEnv("NTM_TEST_READ_EXIT", "6")
 			}
+			ctx := w.context(t.Context())
 			reads := 0
-			result, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+			result, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
 				reads++
 				if reads == 1 || test.persistent {
-					return RunBdContext(t.Context(), w.dir, "show", "task-1", "--json")
+					return RunBdContext(ctx, w.dir, "show", "task-1", "--json")
 				}
 				return "fresh evidence", nil
 			})
@@ -287,6 +308,7 @@ func TestReadForMutationContextRepairsOnlyFailedBeadsReads(t *testing.T) {
 }
 
 func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
+	t.Parallel()
 	for _, output := range []string{
 		`{"error":{"code":"CONFIG_ERROR","message":"database disk image is malformed"}}`,
 		`{"error":{"code":"DATABASE_ERROR","message":"permission denied"}}`,
@@ -295,13 +317,15 @@ func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
 		`{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}} trailing task text`,
 	} {
 		t.Run(output, func(t *testing.T) {
+			t.Parallel()
 			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
-			t.Setenv("NTM_TEST_READ_STDOUT", output)
+			w.setEnv("NTM_TEST_READ_STDOUT", output)
+			ctx := w.context(t.Context())
 			reads := 0
 			var originalErr error
-			_, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+			_, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
 				reads++
-				result, readErr := RunBdContext(t.Context(), w.dir, "show", "task-1", "--json")
+				result, readErr := RunBdContext(ctx, w.dir, "show", "task-1", "--json")
 				originalErr = readErr
 				return result, readErr
 			})
@@ -319,9 +343,11 @@ func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
 		"terminal refusal":    fmt.Errorf("file is not a database: %w", ErrBeadTerminal),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
+			ctx := w.context(t.Context())
 			reads := 0
-			result, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+			result, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
 				reads++
 				return "original evidence", originalErr
 			})
@@ -334,8 +360,10 @@ func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
 }
 
 func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"parent workspace", "clone under parent workspace", "symlinked beads directory", "external database", "external JSONL"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
 			readDir := w.dir
 			commands := []string{"show task-1 --json"}
@@ -353,7 +381,7 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 				// A read that only reached this tracker by walking up must not
 				// let br change it, and that holds for a mutation's reads too.
 				commands = []string{"show task-1 --json --no-auto-import --no-auto-flush"}
-				t.Setenv("NTM_TEST_READ_ARGV", "--lock-timeout 5000 show task-1 --json --no-auto-import --no-auto-flush")
+				w.setEnv("NTM_TEST_READ_ARGV", "--lock-timeout 5000 show task-1 --json --no-auto-import --no-auto-flush")
 			case "symlinked beads directory":
 				readDir = t.TempDir()
 				if err := os.Mkdir(filepath.Join(readDir, ".git"), 0755); err != nil {
@@ -365,7 +393,7 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 				w.dir = readDir
 			default:
 				var info beadsWorkspaceInfo
-				if err := json.Unmarshal([]byte(os.Getenv("NTM_TEST_BR_INFO")), &info); err != nil {
+				if err := json.Unmarshal([]byte(w.env["NTM_TEST_BR_INFO"]), &info); err != nil {
 					t.Fatal(err)
 				}
 				external := filepath.Join(t.TempDir(), "outside")
@@ -381,13 +409,14 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 				} else {
 					info.JSONLPath = redirect
 				}
-				t.Setenv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
+				w.setEnv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
 				commands = append(commands, "info --json --no-auto-import --no-auto-flush")
 			}
+			ctx := w.context(t.Context())
 			reads := 0
-			_, err := ReadForMutationContext(t.Context(), readDir, func() (string, error) {
+			_, err := ReadForMutationContext(ctx, readDir, func() (string, error) {
 				reads++
-				return RunBdContext(t.Context(), readDir, "show", "task-1", "--json")
+				return RunBdContext(ctx, readDir, "show", "task-1", "--json")
 			})
 			if err == nil || !strings.Contains(err.Error(), "refusing database recovery") || reads != 1 {
 				t.Fatalf("error=%v reads=%d, want unsafe recovery refused", err, reads)
@@ -398,7 +427,9 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 }
 
 func TestReadForMutationContextCancellationPreventsReadAndRetry(t *testing.T) {
+	t.Parallel()
 	t.Run("inactive context and missing callback", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		for _, ctx := range []context.Context{nil, ctx} {
@@ -415,8 +446,9 @@ func TestReadForMutationContextCancellationPreventsReadAndRetry(t *testing.T) {
 		}
 	})
 	t.Run("canceled after initial read", func(t *testing.T) {
+		t.Parallel()
 		w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
-		ctx, cancel := context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancel(w.context(t.Context()))
 		defer cancel()
 		_, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
 			result, err := RunBdContext(ctx, w.dir, "show", "task-1", "--json")
@@ -429,9 +461,10 @@ func TestReadForMutationContextCancellationPreventsReadAndRetry(t *testing.T) {
 		w.assertCommands(t, "show task-1 --json")
 	})
 	t.Run("canceled during doctor", func(t *testing.T) {
+		t.Parallel()
 		w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, beadsRecoveryDoctorReport()), exitCode: 2})
-		t.Setenv("NTM_TEST_DOCTOR_BLOCK", "true")
-		ctx, cancel := context.WithCancel(t.Context())
+		w.setEnv("NTM_TEST_DOCTOR_BLOCK", "true")
+		ctx, cancel := context.WithCancel(w.context(t.Context()))
 		defer cancel()
 		reads := 0
 		done := make(chan error, 1)
@@ -457,6 +490,7 @@ func TestReadForMutationContextCancellationPreventsReadAndRetry(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryRequiresPreservationConflict(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		rebuild beadsRecoveryTestCommand
@@ -477,9 +511,10 @@ func TestBeadsCorruptionRecoveryRequiresPreservationConflict(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			workspace := setupBeadsRecoveryCommands(t, test.rebuild, beadsRecoveryTestCommand{})
 			attempts := 0
-			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+			result, err := withBeadsCorruptionRecovery(workspace.context(t.Context()), workspace.dir, func() (string, error) {
 				attempts++
 				if attempts == 1 {
 					return "", errors.New("database disk image is malformed (11)")
@@ -500,6 +535,7 @@ func TestBeadsCorruptionRecoveryRequiresPreservationConflict(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryValidatesDoctorRepair(t *testing.T) {
+	t.Parallel()
 	partial := beadsRecoveryJSON(t, beadsRecoveryDoctorReport())
 	type testCase struct {
 		name        string
@@ -588,13 +624,14 @@ func TestBeadsCorruptionRecoveryValidatesDoctorRepair(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			// br versions can put the rebuild error on stdout while logging
 			// separately to stderr; neither stream may hide the other.
 			workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{
 				stdout: beadsRebuildPreservationConflict, stderr: "warning: index needs repair\n", exitCode: 6,
 			}, test.doctor)
 			attempts := 0
-			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+			result, err := withBeadsCorruptionRecovery(workspace.context(t.Context()), workspace.dir, func() (string, error) {
 				attempts++
 				if attempts == 1 {
 					return "", errors.New("database disk image is malformed (11)")
@@ -617,13 +654,14 @@ func TestBeadsCorruptionRecoveryValidatesDoctorRepair(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryDoesNotRepeatRepair(t *testing.T) {
+	t.Parallel()
 	workspace := setupBeadsRecoveryCommands(t,
 		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6},
 		beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, beadsRecoveryDoctorReport()), exitCode: 2},
 	)
 	retryErr := errors.New("database disk image is malformed on retry")
 	attempts := 0
-	result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+	result, err := withBeadsCorruptionRecovery(workspace.context(t.Context()), workspace.dir, func() (string, error) {
 		attempts++
 		if attempts == 1 {
 			return "", errors.New("file is not a database")
@@ -637,6 +675,7 @@ func TestBeadsCorruptionRecoveryDoesNotRepeatRepair(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryLeavesUnrelatedErrorsUntouched(t *testing.T) {
+	t.Parallel()
 	for name, originalErr := range map[string]error{
 		"normal assignment":   nil,
 		"ordinary failure":    errors.New("permission denied"),
@@ -645,9 +684,10 @@ func TestBeadsCorruptionRecoveryLeavesUnrelatedErrorsUntouched(t *testing.T) {
 		"terminal refusal":    fmt.Errorf("file is not a database: %w", ErrBeadTerminal),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{}, beadsRecoveryTestCommand{})
 			attempts := 0
-			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+			result, err := withBeadsCorruptionRecovery(workspace.context(t.Context()), workspace.dir, func() (string, error) {
 				attempts++
 				return "original result", originalErr
 			})
@@ -660,12 +700,13 @@ func TestBeadsCorruptionRecoveryLeavesUnrelatedErrorsUntouched(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryCancelsDuringDoctor(t *testing.T) {
+	t.Parallel()
 	workspace := setupBeadsRecoveryCommands(t,
 		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6},
 		beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, beadsRecoveryDoctorReport()), exitCode: 2},
 	)
-	t.Setenv("NTM_TEST_DOCTOR_BLOCK", "true")
-	ctx, cancel := context.WithCancel(t.Context())
+	workspace.setEnv("NTM_TEST_DOCTOR_BLOCK", "true")
+	ctx, cancel := context.WithCancel(workspace.context(t.Context()))
 	defer cancel()
 	attempts := 0
 	result := make(chan error, 1)
@@ -690,11 +731,12 @@ func TestBeadsCorruptionRecoveryCancelsDuringDoctor(t *testing.T) {
 }
 
 func TestBeadsCorruptionRecoveryCancelsAtWorkspaceGate(t *testing.T) {
+	t.Parallel()
 	workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{}, beadsRecoveryTestCommand{})
 	gate := workspaceBDMutex(workspace.dir)
 	gate.Lock()
 	defer gate.Unlock()
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(workspace.context(t.Context()))
 	defer cancel()
 	doneObserved := make(chan struct{}, 1)
 	result := make(chan error, 1)
