@@ -4,6 +4,7 @@ package hooks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,40 @@ import (
 	"strings"
 	"time"
 )
+
+const maxHookOutputBytes = 256 * 1024
+
+type boundedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	origLen := len(p)
+	if b.limit <= 0 {
+		return origLen, nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = b.buf.Write(p[:remaining])
+			b.truncated = true
+		} else {
+			_, _ = b.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return origLen, nil
+}
+
+func (b *boundedBuffer) String() string {
+	if !b.truncated {
+		return b.buf.String()
+	}
+	return b.buf.String() + "\n...[truncated]"
+}
 
 // ExecutionResult contains the outcome of running a hook
 type ExecutionResult struct {
@@ -106,6 +141,14 @@ func (e *Executor) RunHooksForEvent(ctx context.Context, event CommandEvent, exe
 		result := e.runSingleHook(ctx, hook, execCtx)
 		results = append(results, result)
 
+		// Caller cancellation always stops the chain, even when continue_on_error is set.
+		if ctx.Err() != nil {
+			if result.Error != nil && errors.Is(result.Error, ctx.Err()) {
+				return results, result.Error
+			}
+			return results, ctx.Err()
+		}
+
 		// Stop on error unless continue_on_error is set
 		if !result.Success && !result.Skipped && !hook.ContinueOnError {
 			return results, result.Error
@@ -150,8 +193,9 @@ func (e *Executor) runSingleHook(ctx context.Context, hook *CommandHook, execCtx
 	// Set environment
 	cmd.Env = buildEnvironment(hook, execCtx)
 
-	// Capture output
-	var stdout, stderr bytes.Buffer
+	// Capture bounded output so runaway hooks cannot exhaust memory.
+	stdout := boundedBuffer{limit: maxHookOutputBytes}
+	stderr := boundedBuffer{limit: maxHookOutputBytes}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -162,10 +206,12 @@ func (e *Executor) runSingleHook(ctx context.Context, hook *CommandHook, execCtx
 	result.Stderr = stderr.String()
 
 	if err != nil {
-		// Check if it was a timeout
-		if hookCtx.Err() == context.DeadlineExceeded {
+		// Check cancellation vs timeout before generic exit-code mapping.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			result.Error = fmt.Errorf("hook %q canceled: %w", hook.Name, context.Canceled)
+		} else if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
 			result.TimedOut = true
-			result.Error = fmt.Errorf("hook %q timed out after %v", hook.Name, timeout)
+			result.Error = fmt.Errorf("hook %q timed out after %v: %w", hook.Name, timeout, context.DeadlineExceeded)
 		} else if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 			result.Error = fmt.Errorf("hook %q failed with exit code %d: %s", hook.Name, result.ExitCode, strings.TrimSpace(result.Stderr))

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -480,6 +481,73 @@ func TestExecutionResultExitCode(t *testing.T) {
 	if results[0].ExitCode != 42 {
 		t.Errorf("expected exit code 42, got %d", results[0].ExitCode)
 	}
+}
+
+func TestExecutorCancellationAndBoundedOutput(t *testing.T) {
+	t.Run("timeout wraps context.DeadlineExceeded", func(t *testing.T) {
+		cfg := &CommandHooksConfig{
+			Hooks: []CommandHook{{
+				Name:    "slow-hook",
+				Event:   EventPreSpawn,
+				Command: "sleep 2",
+				Timeout: Duration(50 * time.Millisecond),
+			}},
+		}
+		exec := NewExecutor(cfg)
+		results, err := exec.RunHooksForEvent(context.Background(), EventPreSpawn, ExecutionContext{})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected wrapped DeadlineExceeded, got %v", err)
+		}
+		if len(results) != 1 || !results[0].TimedOut {
+			t.Fatalf("expected TimedOut result, got %+v", results)
+		}
+	})
+
+	t.Run("mid-hook cancellation stops continue_on_error chain and wraps context.Canceled", func(t *testing.T) {
+		cfg := &CommandHooksConfig{
+			Hooks: []CommandHook{
+				{Name: "first", Event: EventPreSpawn, Command: "sleep 2", ContinueOnError: true, Timeout: Duration(5 * time.Second)},
+				{Name: "second", Event: EventPreSpawn, Command: "echo should-not-run"},
+			},
+		}
+		exec := NewExecutor(cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+		results, err := exec.RunHooksForEvent(ctx, EventPreSpawn, ExecutionContext{})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result (chain stopped on cancellation), got %d", len(results))
+		}
+	})
+
+	t.Run("runaway stdout is capped without breaking hook", func(t *testing.T) {
+		cfg := &CommandHooksConfig{
+			Hooks: []CommandHook{{
+				Name:    "noisy",
+				Event:   EventPreSpawn,
+				Command: "dd if=/dev/zero bs=4096 count=100 2>/dev/null | tr '\\0' 'x'",
+			}},
+		}
+		exec := NewExecutor(cfg)
+		results, err := exec.RunHooksForEvent(context.Background(), EventPreSpawn, ExecutionContext{})
+		if err != nil {
+			t.Fatalf("noisy hook failed unexpectedly: %v", err)
+		}
+		if len(results) != 1 || !results[0].Success {
+			t.Fatalf("expected successful noisy hook, got %+v", results)
+		}
+		if !strings.HasSuffix(results[0].Stdout, "\n...[truncated]") {
+			t.Fatalf("expected truncated suffix on >256KiB stdout, len=%d", len(results[0].Stdout))
+		}
+		if len(results[0].Stdout) > maxHookOutputBytes+32 {
+			t.Fatalf("stdout exceeded cap: len=%d", len(results[0].Stdout))
+		}
+	})
 }
 
 // errTest is a simple error type for testing
