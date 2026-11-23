@@ -923,8 +923,13 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 		// injected only when requested; `[agents] omp = "..."` overrides.
 		return config.OmpCommandOrDefault(cfg.Agents.Omp), nil, nil
 	case AgentTypePi:
-		if p, ok := pluginMap[string(agentType)]; ok {
+		if p, ok := pluginMap[string(agentType)]; ok && strings.TrimSpace(p.Command) != "" {
 			return p.Command, p.Env, nil
+		}
+		for _, p := range pluginMap {
+			if (strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi")) && strings.TrimSpace(p.Command) != "" {
+				return p.Command, p.Env, nil
+			}
 		}
 		shipped := plugins.ShippedPiPlugin()
 		return shipped.Command, shipped.Env, nil
@@ -1708,6 +1713,9 @@ func newSpawnCmd() *cobra.Command {
 	preloadedPluginMap := make(map[string]plugins.AgentPlugin)
 	for _, p := range loadedPlugins {
 		preloadedPluginMap[p.Name] = p
+		if (strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi")) && strings.TrimSpace(p.Command) != "" {
+			preloadedPluginMap["pi"] = p
+		}
 	}
 
 	cmd := &cobra.Command{
@@ -2674,6 +2682,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		const testPaneInitDelay = 50 * time.Millisecond
 		if paneInitDelay > testPaneInitDelay {
 			paneInitDelay = testPaneInitDelay
+		}
+		if tmux.DefaultClient != nil && tmux.DefaultClient.MaxSendDelay > 0 && paneInitDelay > tmux.DefaultClient.MaxSendDelay {
+			paneInitDelay = tmux.DefaultClient.MaxSendDelay
 		}
 	}
 	panesAdded := 0

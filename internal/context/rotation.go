@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/rotation"
@@ -1176,7 +1177,7 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 				return s.config.Agents.Opencode
 			}
 		case agent.AgentTypePi:
-			return "pi"
+			return resolvePiAgentCommandTemplate()
 		}
 	}
 
@@ -1195,7 +1196,7 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 	case agent.AgentTypeOmp:
 		return defaults.Omp
 	case agent.AgentTypePi:
-		return "pi"
+		return resolvePiAgentCommandTemplate()
 	case agent.AgentTypeOpencode:
 		return defaults.Opencode
 	case agent.AgentTypeCursor:
@@ -1210,6 +1211,20 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 	// Fall back to using the agent type name as the command.
 	// This handles unknown/future agent types that match their CLI name.
 	return strings.TrimSpace(agentType)
+}
+
+func resolvePiAgentCommandTemplate() string {
+	agentsDir := filepath.Join(filepath.Dir(config.DefaultPath()), "agents")
+	if loaded, err := plugins.LoadAgentPluginsWithDefaults(agentsDir); err == nil {
+		for _, p := range loaded {
+			if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
+				if strings.TrimSpace(p.Command) != "" {
+					return p.Command
+				}
+			}
+		}
+	}
+	return plugins.ShippedPiPlugin().Command
 }
 
 func sendCompactionCommandToPane(sender paneInputSender, paneID string, cmd CompactionCommand) error {

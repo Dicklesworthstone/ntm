@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -247,6 +248,7 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 
 	var agentCmdTemplate string
 	var agentType string
+	var pluginEnv map[string]string
 
 	// Prefer the explicit pane agent type for the relaunch command. Multiple
 	// agent types can share one auth provider (agy and gemini both map to the
@@ -280,11 +282,14 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	case tmux.AgentOmp:
 		agentCmdTemplate, agentType = config.OmpCommandOrDefault(o.cfg.Agents.Omp), "omp"
 	case tmux.AgentPi:
-		tmpl := plugins.ShippedPiPlugin().Command
+		shipped := plugins.ShippedPiPlugin()
+		tmpl := shipped.Command
+		pluginEnv = shipped.Env
 		if loadedPlugins, err := plugins.LoadAgentPluginsWithDefaults(filepath.Join(filepath.Dir(config.DefaultPath()), "agents")); err == nil {
 			for _, p := range loadedPlugins {
 				if (strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi")) && strings.TrimSpace(p.Command) != "" {
 					tmpl = p.Command
+					pluginEnv = p.Env
 					break
 				}
 			}
@@ -324,6 +329,23 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	agentCmd, err := config.GenerateAgentCommand(agentCmdTemplate, vars)
 	if err != nil {
 		return fmt.Errorf("generating command: %w", err)
+	}
+	if len(pluginEnv) > 0 {
+		keys := make([]string, 0, len(pluginEnv))
+		for k := range pluginEnv {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var envParts []string
+		for _, k := range keys {
+			if !isValidRestartEnvKey(k) {
+				continue
+			}
+			envParts = append(envParts, fmt.Sprintf("%s=%s", k, tmux.ShellQuote(pluginEnv[k])))
+		}
+		if len(envParts) > 0 {
+			agentCmd = strings.Join(envParts, " ") + " " + agentCmd
+		}
 	}
 	policy.LogClaudeHooksNotApplied("auth-restart", agentCmd, vars.ClaudeSettings)
 	// An auth restart deliberately changes the account in the current launch
@@ -375,6 +397,23 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	// Launch agent command using the specialized robust sender
 	agentTypeEnum := tmux.AgentType(agentType)
 	return o.sendKeysForAgent(ctx.PaneID, cmd, true, agentTypeEnum)
+}
+
+func isValidRestartEnvKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if i == 0 {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+				return false
+			}
+		} else if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateAutomatedRestartContext(ctx RestartContext) error {
