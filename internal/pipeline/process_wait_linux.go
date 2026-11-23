@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -535,7 +536,7 @@ var procCensusScratchPool = sync.Pool{
 	New: func() any {
 		return &procCensusScratch{
 			statBuf: make([]byte, 32768),
-			dentBuf: make([]byte, 65536),
+			dentBuf: make([]byte, 131072),
 		}
 	},
 }
@@ -568,6 +569,12 @@ func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, err
 	}
 	defer func() { _ = unix.Close(statFD) }()
 
+	dirFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, fmt.Errorf("inspect command process group: %w", err)
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+
 	// Pooled scratch buffers keep the birthsBefore..birthsAfter critical window
 	// allocation-free and avoid Go scheduler entersyscall/exitsyscall parks on
 	// every PID via RawSyscall(SYS_GETPGID), cutting the birth-race window by
@@ -578,10 +585,15 @@ func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, err
 
 	const maxBirthRaceImmediateRetries = 64
 	for attempt := 0; ; attempt++ {
-		if attempt > 0 && ctx.Err() != nil {
-			return false, errCommandGroupBirthRace
+		if attempt > 0 {
+			if ctx.Err() != nil {
+				return false, errCommandGroupBirthRace
+			}
+			if _, seekErr := unix.Seek(dirFD, 0, io.SeekStart); seekErr != nil {
+				return false, fmt.Errorf("rewind /proc directory: %w", seekErr)
+			}
 		}
-		alive, err := inspectCommandGroupLive(pgid, statFD, mountBefore, &scratch.statBuf, &scratch.dentBuf)
+		alive, err := inspectCommandGroupLive(pgid, statFD, dirFD, mountBefore, &scratch.statBuf, &scratch.dentBuf)
 		if !errors.Is(err, errCommandGroupBirthRace) {
 			return alive, err
 		}
@@ -644,20 +656,15 @@ func parsePositiveProcPID(name []byte) (int, bool) {
 	return pid, pid > 0
 }
 
-func inspectCommandGroupLive(pgid int, statFD int, mountBefore string, statBuf, dentBuf *[]byte) (bool, error) {
+func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, statBuf, dentBuf *[]byte) (bool, error) {
 	birthsBefore, err := readCommandProcessBirthsFD(statFD, statBuf)
 	if err != nil {
 		return false, err
 	}
-	dirFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return false, fmt.Errorf("inspect command process group: %w", err)
-	}
-	defer func() { _ = unix.Close(dirFD) }()
 
 	buf := *dentBuf
-	if len(buf) < 65536 {
-		buf = make([]byte, 65536)
+	if len(buf) < 131072 {
+		buf = make([]byte, 131072)
 		*dentBuf = buf
 	}
 
