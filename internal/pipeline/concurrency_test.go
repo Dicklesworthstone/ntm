@@ -182,6 +182,79 @@ func TestLoopContextPreservesNestedAliasesAndRounds(t *testing.T) {
 	}
 }
 
+// Foreach materialization must read outer loop aliases from the execution
+// context before defaults or unrelated shared variables can freeze wrong values.
+func TestForeachMaterializationPreservesOuterLoopBindings(t *testing.T) {
+	t.Parallel()
+	for _, shared := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shared-shadow-%v", shared), func(t *testing.T) {
+			t.Parallel()
+			query := func(id, label string) Step {
+				return Step{ID: id, BeadQuery: &BeadQueryStep{Label: StringOrList{label}}}
+			}
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion,
+				Name:          "foreach-outer-bindings",
+				Settings:      DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "outer", Loop: &LoopConfig{
+					Items: `[{"name":"outer","cap":2,"children":[{"name":"child"}]}]`,
+					As:    "group",
+					Steps: []Step{
+						{ID: "children", Foreach: &ForeachConfig{
+							Items: "${loop.group.children}", As: "entry",
+							Steps: []Step{
+								query("inspect", "direct:${loop.group.name | fallback}:${item.name}:${entry.name}:${loop.item.name}:${loop.index}"),
+								{ID: "repeat", Loop: &LoopConfig{
+									Until: "test '${loop.index}' -eq 1", MaxIterations: IntOrExpr{Expr: "${loop.group.cap | 1}"},
+									Steps: []Step{query("inspect", "repeat:${loop.group.name | fallback}:${entry.name}:${item}")},
+								}},
+							},
+						}},
+						query("after", "after:${loop.group.name}:${item.name}:${loop.index}"),
+					},
+				}}},
+			}
+			cfg := DefaultExecutorConfig("foreach-outer-bindings")
+			cfg.ProjectDir = t.TempDir()
+			cfg.GlobalTimeout = 10 * time.Second
+			var observed []string
+			cfg.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
+				for i := 0; i+1 < len(args); i++ {
+					if args[i] == "--label" {
+						observed = append(observed, args[i+1])
+					}
+				}
+				return []byte(`{"issues":[]}`), nil
+			}
+			globals := map[string]interface{}{"stable": "unchanged"}
+			if shared {
+				globals["loop.group"] = map[string]interface{}{"name": "shared", "cap": 3}
+			}
+			state, err := NewExecutor(cfg).Run(context.Background(), workflow, globals, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("Run() = %+v, %v; queries=%q", state, err, observed)
+			}
+			want := []string{
+				"direct:outer:child:child:child:0",
+				"repeat:outer:child:0",
+				"repeat:outer:child:1",
+				"after:outer:outer:0",
+			}
+			if !reflect.DeepEqual(observed, want) {
+				t.Fatalf("materialized outer bindings = %q, want %q", observed, want)
+			}
+			for key, value := range globals {
+				if !reflect.DeepEqual(state.Variables[key], value) {
+					t.Fatalf("global %s changed: got %#v, want %#v", key, state.Variables[key], value)
+				}
+			}
+			if _, present := state.Variables["loop.group"]; present != shared {
+				t.Fatal("materialization leaked an outer binding into workflow globals")
+			}
+		})
+	}
+}
+
 func TestApplyResumeStateConcurrentWithSnapshots(t *testing.T) {
 	const stepCount = 200
 

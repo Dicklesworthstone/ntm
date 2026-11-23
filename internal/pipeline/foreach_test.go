@@ -1166,7 +1166,7 @@ func TestSubstituteForeachFieldsResolvesModelsList(t *testing.T) {
 		},
 	}
 
-	e.substituteForeachStepFieldsProtected(step, nil)
+	e.substituteForeachStepFieldsProtected(context.Background(), step, nil)
 
 	got := step.Foreach.Models
 	want := StringOrList{"claude", "codex", "literal-pinned-model"}

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -291,7 +292,7 @@ func TestCoverageSubstituteForeachInterfaceValues(t *testing.T) {
 	scope := e.pushForeachVars("item", map[string]interface{}{"name": "alpha"}, 2, 4, map[string]interface{}{"role": "reviewer"})
 	defer e.popForeachVars(scope)
 
-	substituted := substituteForeachInterfaceMap(e, map[string]interface{}{
+	substituted := substituteForeachInterfaceMap(context.Background(), e, map[string]interface{}{
 		"prompt":  "${item.name}:${loop.index}:${pane.role}",
 		"nested":  map[string]interface{}{"value": "${item.name}"},
 		"list":    []interface{}{"${item.name}", 7},
@@ -313,11 +314,11 @@ func TestCoverageSubstituteForeachInterfaceValues(t *testing.T) {
 	if got := substituted["plain"]; got != 9 {
 		t.Fatalf("plain value = %#v, want 9", got)
 	}
-	if got := substituteForeachInterfaceMap(e, nil, nil); got != nil {
+	if got := substituteForeachInterfaceMap(context.Background(), e, nil, nil); got != nil {
 		t.Fatalf("empty foreach map substitution = %#v, want nil", got)
 	}
 
-	protected := substituteForeachInterfaceValue(e, []interface{}{"${item.name}", "${pane.role}"}, map[string]struct{}{"item": {}})
+	protected := substituteForeachInterfaceValue(context.Background(), e, []interface{}{"${item.name}", "${pane.role}"}, map[string]struct{}{"item": {}})
 	protectedValues := protected.([]interface{})
 	if protectedValues[0] != "${item.name}" || protectedValues[1] != "reviewer" {
 		t.Fatalf("protected substitution = %#v, want item preserved and pane resolved", protectedValues)
