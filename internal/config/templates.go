@@ -308,7 +308,7 @@ func parseArgumentReferencesAnyField(node parse.Node, wanted map[string]struct{}
 // the `N:model@effort` spec shorthand for the same set.
 func agentTypeConsumesReasoningEffort(agentType string) bool {
 	switch strings.ToLower(strings.TrimSpace(agentType)) {
-	case "cc", "claude", "cod", "codex", "grok", "omp", "oh-my-pi":
+	case "cc", "claude", "cod", "codex", "grok", "omp", "oh-my-pi", "pi":
 		return true
 	default:
 		return false

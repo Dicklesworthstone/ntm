@@ -4874,10 +4874,12 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Agents.Windsurf, nil
 		case "aider":
 			return cfg.Agents.Aider, nil
-		case "oc":
+		case "oc", "opencode":
 			return cfg.Agents.Opencode, nil
 		case "omp":
 			return cfg.Agents.Omp, nil
+		case "ollama":
+			return cfg.Agents.Ollama, nil
 		}
 	case "tmux":
 		if len(parts) < 2 {
@@ -5034,6 +5036,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.DefaultAntigravity, nil
 		case "default_grok":
 			return cfg.Models.DefaultGrok, nil
+		case "default_ollama":
+			return cfg.Models.DefaultOllama, nil
 		case "default_opencode":
 			return cfg.Models.DefaultOpencode, nil
 		case "default_omp":
@@ -5046,8 +5050,20 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.Gemini, nil
 		case "grok":
 			return cfg.Models.Grok, nil
+		case "ollama":
+			return cfg.Models.Ollama, nil
+		case "cursor":
+			return cfg.Models.Cursor, nil
+		case "windsurf":
+			return cfg.Models.Windsurf, nil
+		case "aider":
+			return cfg.Models.Aider, nil
+		case "opencode", "oc":
+			return cfg.Models.Opencode, nil
 		case "omp":
 			return cfg.Models.Omp, nil
+		case "context_limits":
+			return cfg.Models.ContextLimits, nil
 		}
 	case "alerts":
 		if len(parts) < 2 {
