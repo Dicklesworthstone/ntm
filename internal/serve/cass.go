@@ -168,13 +168,19 @@ func (s *MemoryStore) GetDaemonInfo() *MemoryDaemonInfo {
 }
 
 // TryBeginStart atomically claims DaemonStateStarting unless another start or
-// stop transition is already active in memory. Returns the monotonic generation
-// token that authorizes subsequent transitions for this start attempt.
+// stop transition is already active in memory or a live daemon is already running.
+// Returns the monotonic generation token that authorizes subsequent transitions
+// for this start attempt.
 func (s *MemoryStore) TryBeginStart(port int, sessionID string) (*MemoryDaemonInfo, uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.daemonInfo != nil && (s.daemonInfo.State == DaemonStateStarting || s.daemonInfo.State == DaemonStateStopping) {
-		return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+	if s.daemonInfo != nil {
+		if s.daemonInfo.State == DaemonStateStarting || s.daemonInfo.State == DaemonStateStopping {
+			return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+		}
+		if s.daemonInfo.State == DaemonStateRunning && s.daemonInfo.PID > 0 && process.IsAlive(s.daemonInfo.PID) {
+			return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+		}
 	}
 	s.daemonGen++
 	s.daemonInfo = &MemoryDaemonInfo{
@@ -267,18 +273,29 @@ func (s *MemoryStore) MarkStoppedIfMatches(gen uint64, sessionID string, pid int
 	return true
 }
 
-// TryBeginStop atomically claims DaemonStateStopping unless another start or
-// stop transition is already active in memory.
+// TryBeginStop atomically claims DaemonStateStopping only when the matching
+// running daemon is active in memory (or when stopping an external daemon
+// whose info was just synced via currentMemoryDaemonInfo). Rejects already-
+// stopped states, concurrent start/stop transitions, and stale stop calls
+// targeting a superseded PID/SessionID.
 func (s *MemoryStore) TryBeginStop(info *MemoryDaemonInfo) (*MemoryDaemonInfo, uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.daemonInfo != nil && (s.daemonInfo.State == DaemonStateStarting || s.daemonInfo.State == DaemonStateStopping) {
+	if s.daemonInfo == nil || s.daemonInfo.State == DaemonStateStopped {
 		return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+	}
+	if s.daemonInfo.State == DaemonStateStarting || s.daemonInfo.State == DaemonStateStopping {
+		return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+	}
+	if s.daemonInfo.State == DaemonStateRunning && info != nil {
+		if (info.PID > 0 && s.daemonInfo.PID != info.PID) || (info.SessionID != "" && s.daemonInfo.SessionID != info.SessionID) {
+			return cloneMemoryDaemonInfo(s.daemonInfo), 0, false
+		}
 	}
 	s.daemonGen++
 	stopping := cloneMemoryDaemonInfo(info)
 	if stopping == nil {
-		stopping = &MemoryDaemonInfo{}
+		stopping = cloneMemoryDaemonInfo(s.daemonInfo)
 	}
 	stopping.State = DaemonStateStopping
 	s.daemonInfo = stopping
@@ -1121,15 +1138,19 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 	current, startGen, ok := memoryStore.TryBeginStart(port, sessionID)
 	if !ok {
 		msg := "Memory daemon is already starting"
-		if current.State == DaemonStateStopping {
-			msg = "Memory daemon is currently stopping"
+		details := map[string]interface{}{
+			"state":      current.State,
+			"port":       current.Port,
+			"session_id": current.SessionID,
 		}
-		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning,
-			msg, map[string]interface{}{
-				"state":      current.State,
-				"port":       current.Port,
-				"session_id": current.SessionID,
-			}, reqID)
+		switch current.State {
+		case DaemonStateStopping:
+			msg = "Memory daemon is currently stopping"
+		case DaemonStateRunning:
+			msg = "Memory daemon is already running"
+			details["pid"] = current.PID
+		}
+		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning, msg, details, reqID)
 		return
 	}
 
@@ -1240,9 +1261,22 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string, startGen uin
 func (s *Server) handleMemoryDaemonStop(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	// Check if daemon is running
-	daemonInfo := s.checkMemoryDaemon()
+	// Check if daemon is running (and sync external disk PID state if idle).
+	daemonInfo := s.currentMemoryDaemonInfo()
 	if daemonInfo.State != DaemonStateRunning {
+		if daemonInfo.State == DaemonStateStarting || daemonInfo.State == DaemonStateStopping {
+			msg := "Memory daemon is already stopping"
+			if daemonInfo.State == DaemonStateStarting {
+				msg = "Memory daemon is currently starting"
+			}
+			writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning,
+				msg, map[string]interface{}{
+					"state":      daemonInfo.State,
+					"port":       daemonInfo.Port,
+					"session_id": daemonInfo.SessionID,
+				}, reqID)
+			return
+		}
 		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonNotRunning,
 			"Memory daemon is not running", nil, reqID)
 		return
@@ -1252,9 +1286,17 @@ func (s *Server) handleMemoryDaemonStop(w http.ResponseWriter, r *http.Request) 
 	// and concurrent starts cannot race past a stop in progress.
 	current, stopGen, ok := memoryStore.TryBeginStop(daemonInfo)
 	if !ok {
+		if current == nil || current.State == DaemonStateStopped {
+			writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonNotRunning,
+				"Memory daemon is not running", nil, reqID)
+			return
+		}
 		msg := "Memory daemon is already stopping"
-		if current.State == DaemonStateStarting {
+		switch current.State {
+		case DaemonStateStarting:
 			msg = "Memory daemon is currently starting"
+		case DaemonStateRunning:
+			msg = "Memory daemon instance changed; retry stop"
 		}
 		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonRunning,
 			msg, map[string]interface{}{
@@ -1262,6 +1304,15 @@ func (s *Server) handleMemoryDaemonStop(w http.ResponseWriter, r *http.Request) 
 				"port":       current.Port,
 				"session_id": current.SessionID,
 			}, reqID)
+		return
+	}
+
+	// Re-check disk PID files after claiming DaemonStateStopping so a daemon
+	// that exited just before TryBeginStop returns 409 instead of a false stop.
+	if live := s.checkMemoryDaemonMatching(daemonInfo.Port, daemonInfo.SessionID); live.State != DaemonStateRunning || live.PID != daemonInfo.PID {
+		memoryStore.MarkStoppedIfStoppingGen(stopGen)
+		writeErrorResponse(w, http.StatusConflict, ErrCodeDaemonNotRunning,
+			"Memory daemon is not running", nil, reqID)
 		return
 	}
 
