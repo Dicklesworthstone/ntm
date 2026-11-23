@@ -77,8 +77,12 @@ func ActiveEncryptionConfig() *EncryptionConfig {
 	return cp
 }
 
-// maxVerifyEntryBytes bounds individual archive entry reads during verification.
-const maxVerifyEntryBytes = 256 * 1024 * 1024
+// Bounds for archive verification to prevent zip/tar decompression bombs.
+const (
+	maxVerifyEntryBytes = 256 * 1024 * 1024
+	maxVerifyTotalBytes = 512 * 1024 * 1024
+	maxVerifyEntries    = 10000
+)
 
 // VerifyResult contains the results of bundle verification.
 type VerifyResult struct {
@@ -387,10 +391,20 @@ func readZipEntriesFromBytes(data []byte) (map[string][]byte, error) {
 }
 
 func extractZipEntries(zr *zip.Reader) (map[string][]byte, error) {
-	entries := make(map[string][]byte, len(zr.File))
+	return extractZipEntriesWithLimits(zr, maxVerifyEntryBytes, maxVerifyTotalBytes, maxVerifyEntries)
+}
+
+func extractZipEntriesWithLimits(zr *zip.Reader, maxEntryBytes, maxTotalBytes int64, maxEntries int) (map[string][]byte, error) {
+	entries := make(map[string][]byte, min(len(zr.File), maxEntries))
+	var entryCount int
+	var totalBytes int64
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
+		}
+		entryCount++
+		if entryCount > maxEntries {
+			return nil, fmt.Errorf("zip bundle exceeds max verify entries (%d)", maxEntries)
 		}
 		cleanName, err := SanitizeArchivePath(f.Name)
 		if err != nil {
@@ -400,14 +414,26 @@ func extractZipEntries(zr *zip.Reader) (map[string][]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open zip entry %q: %w", f.Name, err)
 		}
-		data, readErr := io.ReadAll(io.LimitReader(rc, maxVerifyEntryBytes+1))
+		remaining := maxTotalBytes - totalBytes
+		if remaining < 0 {
+			remaining = 0
+		}
+		limit := maxEntryBytes
+		if remaining < limit {
+			limit = remaining
+		}
+		data, readErr := io.ReadAll(io.LimitReader(rc, limit+1))
 		_ = rc.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("read zip entry %q: %w", f.Name, readErr)
 		}
-		if len(data) > maxVerifyEntryBytes {
-			return nil, fmt.Errorf("zip entry %q exceeds max verify size (%d bytes)", f.Name, maxVerifyEntryBytes)
+		if int64(len(data)) > maxEntryBytes {
+			return nil, fmt.Errorf("zip entry %q exceeds max verify size (%d bytes)", f.Name, maxEntryBytes)
 		}
+		if totalBytes+int64(len(data)) > maxTotalBytes {
+			return nil, fmt.Errorf("zip bundle exceeds max total verify size (%d bytes)", maxTotalBytes)
+		}
+		totalBytes += int64(len(data))
 		entries[cleanName] = data
 	}
 	return entries, nil
@@ -423,6 +449,10 @@ func readTarGzEntries(bundlePath string) (map[string][]byte, error) {
 }
 
 func readTarGzEntriesFromReader(r io.Reader) (map[string][]byte, error) {
+	return readTarGzEntriesFromReaderWithLimits(r, maxVerifyEntryBytes, maxVerifyTotalBytes, maxVerifyEntries)
+}
+
+func readTarGzEntriesFromReaderWithLimits(r io.Reader, maxEntryBytes, maxTotalBytes int64, maxEntries int) (map[string][]byte, error) {
 	gr, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("open gzip stream: %w", err)
@@ -431,6 +461,8 @@ func readTarGzEntriesFromReader(r io.Reader) (map[string][]byte, error) {
 
 	tr := tar.NewReader(gr)
 	entries := make(map[string][]byte)
+	var entryCount int
+	var totalBytes int64
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -442,17 +474,33 @@ func readTarGzEntriesFromReader(r io.Reader) (map[string][]byte, error) {
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
+		entryCount++
+		if entryCount > maxEntries {
+			return nil, fmt.Errorf("tar.gz bundle exceeds max verify entries (%d)", maxEntries)
+		}
 		cleanName, err := SanitizeArchivePath(hdr.Name)
 		if err != nil {
 			return nil, fmt.Errorf("unsafe tar entry %q: %w", hdr.Name, err)
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, maxVerifyEntryBytes+1))
+		remaining := maxTotalBytes - totalBytes
+		if remaining < 0 {
+			remaining = 0
+		}
+		limit := maxEntryBytes
+		if remaining < limit {
+			limit = remaining
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, limit+1))
 		if err != nil {
 			return nil, fmt.Errorf("read tar entry %q: %w", hdr.Name, err)
 		}
-		if len(data) > maxVerifyEntryBytes {
-			return nil, fmt.Errorf("tar entry %q exceeds max verify size (%d bytes)", hdr.Name, maxVerifyEntryBytes)
+		if int64(len(data)) > maxEntryBytes {
+			return nil, fmt.Errorf("tar entry %q exceeds max verify size (%d bytes)", hdr.Name, maxEntryBytes)
 		}
+		if totalBytes+int64(len(data)) > maxTotalBytes {
+			return nil, fmt.Errorf("tar.gz bundle exceeds max total verify size (%d bytes)", maxTotalBytes)
+		}
+		totalBytes += int64(len(data))
 		entries[cleanName] = data
 	}
 	return entries, nil
