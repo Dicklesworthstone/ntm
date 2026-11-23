@@ -1195,6 +1195,48 @@ func TestGetAllPanes_NoServerReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestGetAllPanesAndListSessions_EmptyServerWithExitEmptyOffReturnsEmpty(t *testing.T) {
+	skipIfNoTmux(t)
+
+	tmuxTmpDir, err := os.MkdirTemp(tmuxTestTempBase(), "ntm-tmux-empty-*")
+	if err != nil {
+		t.Fatalf("create short tmux socket root: %v", err)
+	}
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() {
+		killCmd := exec.Command(BinaryPath(), "kill-server")
+		killCmd.Env = append(os.Environ(), "TMUX_TMPDIR="+tmuxTmpDir, "TMUX=")
+		_ = killCmd.Run()
+		if err := os.RemoveAll(tmuxTmpDir); err != nil {
+			t.Errorf("remove short tmux socket root %q: %v", tmuxTmpDir, err)
+		}
+	})
+
+	// Start a live tmux server with exit-empty off and zero sessions. On tmux
+	// 3.4/3.6, `list-panes -a` exits 1 with "no current target".
+	startCmd := exec.Command(BinaryPath(), "-f", "/dev/null", "start-server", ";", "set-option", "-g", "exit-empty", "off")
+	if out, err := startCmd.CombinedOutput(); err != nil {
+		t.Fatalf("start empty tmux server: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	panes, err := GetAllPanes()
+	if err != nil {
+		t.Fatalf("GetAllPanes on empty live server error: %v", err)
+	}
+	if panes == nil || len(panes) != 0 {
+		t.Fatalf("GetAllPanes on empty live server = %#v, want non-nil empty map", panes)
+	}
+
+	sessions, err := ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions on empty live server error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("ListSessions on empty live server = %#v, want empty", sessions)
+	}
+}
+
 func TestGetSession(t *testing.T) {
 	skipIfNoTmux(t)
 

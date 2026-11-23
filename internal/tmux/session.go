@@ -1175,6 +1175,7 @@ func (c *Client) ListSessionsContext(ctx context.Context) ([]Session, error) {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no server running") ||
 			strings.Contains(errMsg, "no sessions") ||
+			strings.Contains(errMsg, "no current target") ||
 			strings.Contains(errMsg, "No such file or directory") ||
 			strings.Contains(errMsg, "error connecting to") {
 			return nil, nil
@@ -1773,6 +1774,7 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no server running") ||
 			strings.Contains(errMsg, "no sessions") ||
+			strings.Contains(errMsg, "no current target") ||
 			strings.Contains(errMsg, "No such file or directory") ||
 			strings.Contains(errMsg, "error connecting to") {
 			return map[string][]Pane{}, nil
