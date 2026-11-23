@@ -405,10 +405,11 @@ func (c *CLIClient) GetContext(ctx context.Context, task string, workspace strin
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	args := []string{"context", task, "--json"}
+	args := []string{"context", "--json"}
 	if strings.TrimSpace(workspace) != "" {
-		args = append(args, "--workspace", workspace)
+		args = append(args, "--workspace="+workspace)
 	}
+	args = append(args, "--", task)
 	cmd := exec.CommandContext(ctx, c.binaryPath, args...)
 	cmd.WaitDelay = 2 * time.Second
 	// Run from a stable directory. Some environments (and some tests) temporarily

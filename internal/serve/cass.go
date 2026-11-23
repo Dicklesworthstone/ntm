@@ -1535,12 +1535,25 @@ func (s *Server) handleMemoryContext(w http.ResponseWriter, r *http.Request) {
 		maxSnippets = 5
 	}
 
-	result, err := cliClient.GetRecoveryContext(ctx, req.Task, req.Workspace, maxRules, maxSnippets)
+	result, err := cliClient.GetContext(ctx, req.Task, req.Workspace)
 	if err != nil {
 		slog.Warn("memory context failed", "error", err, "request_id", reqID)
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeContextFailed,
 			"Failed to get context", map[string]interface{}{"error": err.Error()}, reqID)
 		return
+	}
+	if result != nil {
+		if maxRules > 0 {
+			if len(result.RelevantBullets) > maxRules {
+				result.RelevantBullets = result.RelevantBullets[:maxRules]
+			}
+			if len(result.AntiPatterns) > maxRules {
+				result.AntiPatterns = result.AntiPatterns[:maxRules]
+			}
+		}
+		if maxSnippets > 0 && len(result.HistorySnippets) > maxSnippets {
+			result.HistorySnippets = result.HistorySnippets[:maxSnippets]
+		}
 	}
 
 	if result == nil {
