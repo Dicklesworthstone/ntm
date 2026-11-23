@@ -181,11 +181,30 @@ func executeSwarmCommandJSON(t *testing.T, ctx context.Context, args ...string) 
 // project's resilience monitor had just seen rate-limited.
 func TestSwarmCommandWaitsOutProjectCodexCooldown(t *testing.T) {
 	project, dir := swarmCommandFixture(t)
-	// Record the cooldown the way the resilience monitor does.
+	// Record the cooldown the way the resilience monitor does, then set the
+	// persisted window to 200ms so the test still proves the full load+wait
+	// contract without burning a full second on wall clock.
 	monitorTracker := ratelimit.NewRateLimitTracker(project)
-	cooldown := monitorTracker.RecordRateLimitWithCooldown("openai", "send", 1)
-	deadline := time.Now().Add(cooldown)
+	monitorTracker.RecordRateLimitWithCooldown("openai", "send", 1)
 	if err := monitorTracker.SaveToDir(project); err != nil {
+		t.Fatal(err)
+	}
+	rateLimitsPath := filepath.Join(project, ".ntm", "rate_limits.json")
+	rawLimits, err := os.ReadFile(rateLimitsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedLimits map[string]any
+	if err := json.Unmarshal(rawLimits, &persistedLimits); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	persistedLimits["state"].(map[string]any)["openai"].(map[string]any)["cooldown_until"] = deadline.Format(time.RFC3339Nano)
+	updatedLimits, err := json.MarshalIndent(persistedLimits, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rateLimitsPath, updatedLimits, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -358,6 +377,9 @@ func TestSwarmCommandJSONCancellationPreservesPartialProgress(t *testing.T) {
 
 func TestSwarmCommandJSONReadinessTimeoutIsFailure(t *testing.T) {
 	project, _ := swarmCommandFixture(t)
+	oldOverride := swarmReadyTimeoutOverride
+	swarmReadyTimeoutOverride = 120 * time.Millisecond
+	t.Cleanup(func() { swarmReadyTimeoutOverride = oldOverride })
 	t.Setenv("NTM_SWARM_NOT_READY", "true")
 	out, err := executeSwarmCommandJSON(t, context.Background(), "--projects", project, "--wait-ready", "--ready-timeout", "1")
 	if !errors.Is(err, context.DeadlineExceeded) || out.Success || out.ErrorCode != "TIMEOUT" || out.Execution == nil {

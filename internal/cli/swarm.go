@@ -284,6 +284,10 @@ type swarmOptions struct {
 	ReadyTimeout      int
 }
 
+// swarmReadyTimeoutOverride allows deterministic tests to exercise the full
+// --wait-ready timeout path without sleeping for a full integer second.
+var swarmReadyTimeoutOverride time.Duration
+
 // SwarmPlanOutput is the JSON output format for swarm plan
 type SwarmPlanOutput struct {
 	robot.RobotResponse
@@ -735,6 +739,9 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		timeout := time.Duration(opts.ReadyTimeout) * time.Second
 		if timeout <= 0 {
 			timeout = 30 * time.Second
+		}
+		if swarmReadyTimeoutOverride > 0 {
+			timeout = swarmReadyTimeoutOverride
 		}
 		if !opts.JSONOutput {
 			output.PrintInfof("Waiting for agents to reach ready state (timeout: %s)...", timeout)
