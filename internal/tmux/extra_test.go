@@ -116,6 +116,11 @@ func TestClassifyCommandError(t *testing.T) {
 			want: CommandErrorClass{Kind: CommandErrorSessionNotFound},
 		},
 		{
+			name: "empty server no current target",
+			err:  fmt.Errorf("tmux list-panes: %w: no current target", exit1),
+			want: CommandErrorClass{Kind: CommandErrorSessionNotFound},
+		},
+		{
 			name: "missing pane",
 			err:  fmt.Errorf("tmux select-pane: %w: can't find pane: %%99", exit1),
 			want: CommandErrorClass{Kind: CommandErrorPaneNotFound},

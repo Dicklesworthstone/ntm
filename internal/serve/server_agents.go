@@ -135,7 +135,7 @@ func (s *Server) listSessionAgents(ctx context.Context, sessionID string) (sessi
 	}
 
 	switch tmux.ClassifyCommandError(err).Kind {
-	case tmux.CommandErrorSessionNotFound, tmux.CommandErrorNoServer:
+	case tmux.CommandErrorSessionNotFound, tmux.CommandErrorPaneNotFound, tmux.CommandErrorNoServer:
 		if s.stateStore != nil {
 			stored, storeErr := s.stateStore.GetSession(sessionID)
 			if storeErr != nil {

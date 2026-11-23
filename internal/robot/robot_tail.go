@@ -113,7 +113,8 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 	if err != nil {
 		errorCode := ErrCodeInternalError
 		hint := "Check tmux is running and session is accessible"
-		if tmux.ClassifyCommandError(err).Kind == tmux.CommandErrorSessionNotFound {
+		switch tmux.ClassifyCommandError(err).Kind {
+		case tmux.CommandErrorSessionNotFound, tmux.CommandErrorPaneNotFound, tmux.CommandErrorNoServer:
 			errorCode = ErrCodeSessionNotFound
 			hint = "Use 'ntm list' to see available sessions"
 		}

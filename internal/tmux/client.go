@@ -359,7 +359,8 @@ func ClassifyCommandError(err error) CommandErrorClass {
 	}
 	if strings.Contains(msg, "can't find session") ||
 		strings.Contains(msg, "no such session") ||
-		strings.Contains(msg, "session not found") {
+		strings.Contains(msg, "session not found") ||
+		strings.Contains(msg, "no current target") {
 		return CommandErrorClass{Kind: CommandErrorSessionNotFound}
 	}
 	if strings.Contains(msg, "permission denied") {

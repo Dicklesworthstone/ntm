@@ -561,13 +561,14 @@ func refreshLifecyclePane(ctx context.Context, session, paneID string) (tmux.Pan
 		}
 		panes, err := tmux.GetPanesContext(ctx, session)
 		if err != nil {
-			// A session that no longer exists is a DEFINITIVE answer, not a
-			// transient failure: killing a session's last pane destroys the
-			// session, so the listing legitimately errors and the pane really
-			// is gone. Treating that as a lookup failure would report a
-			// successful kill-pane as a failure.
+			// A session or window that no longer exists is a DEFINITIVE answer,
+			// not a transient failure: killing a session's last pane destroys
+			// the session, and on a multi-session tmux server `list-panes -s -t =sess`
+			// reports `can't find window: sess` (CommandErrorPaneNotFound) rather
+			// than `can't find session`. Treating that as a lookup failure would
+			// report a successful close/kill as VerificationFailed.
 			switch tmux.ClassifyCommandError(err).Kind {
-			case tmux.CommandErrorSessionNotFound, tmux.CommandErrorNoServer:
+			case tmux.CommandErrorSessionNotFound, tmux.CommandErrorPaneNotFound, tmux.CommandErrorNoServer:
 				return tmux.Pane{}, paneAbsent
 			}
 			lastErr = err
@@ -978,9 +979,17 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 				return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 			})
 			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), true)
-			if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
-				exitErr = nil
-				exited = true
+			if ctx.Err() == nil && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
+				if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) {
+					exitErr = nil
+					exited = true
+				} else if exitErr != nil {
+					switch tmux.ClassifyCommandError(exitErr).Kind {
+					case tmux.CommandErrorPaneNotFound, tmux.CommandErrorSessionNotFound, tmux.CommandErrorNoServer:
+						exitErr = nil
+						exited = true
+					}
+				}
 			}
 			if exitErr != nil && !exited {
 				break

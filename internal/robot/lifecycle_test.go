@@ -1068,7 +1068,9 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	directExecCmd := fmt.Sprintf("env NTM_TEST_TMUX_ENV_OWNED=1 NTM_MOCK_DIRECT_EXEC_AGENT=1 TMPDIR=%s %s -test.run=^TestDirectExecMockAgentHelper$", tmux.ShellQuote(tmpDir), tmux.ShellQuote(selfExe))
+	// Use explicit "exec" so POSIX /bin/sh (dash) replaces itself with the helper
+	// process instead of staying as a parent shell in the pane.
+	directExecCmd := fmt.Sprintf("exec env NTM_TEST_TMUX_ENV_OWNED=1 NTM_MOCK_DIRECT_EXEC_AGENT=1 TMPDIR=%s %s -test.run=^TestDirectExecMockAgentHelper$", tmux.ShellQuote(tmpDir), tmux.ShellQuote(selfExe))
 
 	waitForForegroundAgent := func(t *testing.T, session string) tmux.Pane {
 		t.Helper()
