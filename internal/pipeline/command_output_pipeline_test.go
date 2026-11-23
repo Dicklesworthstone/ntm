@@ -88,12 +88,10 @@ func TestControlledPipelineRejectsOversizedBranchBeforeDefault(t *testing.T) {
 }
 
 func TestControlledPipelineRejectsUnsettledSelectorOutput(t *testing.T) {
-	t.Parallel()
 	for _, kind := range []string{"branch", "foreach"} {
 		for _, stream := range []string{"stdout", "stderr"} {
 			for _, exitCode := range []int{0, 7} {
 				t.Run(fmt.Sprintf("%s/%s/exit_%d", kind, stream, exitCode), func(t *testing.T) {
-					t.Parallel()
 					root := t.TempDir()
 					script, release := escapedCommandOutputFixture(t, root, stream, exitCode)
 					step := Step{ID: "select", OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}}

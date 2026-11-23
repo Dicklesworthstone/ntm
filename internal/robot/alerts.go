@@ -99,32 +99,6 @@ type WebhookChannel struct {
 	httpClient *http.Client
 }
 
-// Alert-delivery retry policy (WS6-wire, bd-ws6-config-truth-ienmd.1): the
-// alert webhook retry loop is governed by the central [retry] policy via
-// cfg.Retry.RetryPolicyFor("alerts") — globals plus the [retry.alerts]
-// override. ApplyAlertRetryPolicy is invoked once per process after config
-// load (internal/cli/root.go); compiled-in defaults preserve historical
-// behavior exactly (3 retries after the first call, 1s base doubling).
-var (
-	alertRetryMu           sync.RWMutex
-	alertRetryMaxRetries   = 3
-	alertRetryInitialDelay = time.Second
-)
-
-// ApplyAlertRetryPolicy configures the alert webhook retry defaults from
-// cfg.Retry.RetryPolicyFor("alerts"). Non-positive values keep the
-// compiled-in defaults.
-func ApplyAlertRetryPolicy(maxAttempts, initialDelayMs int) {
-	alertRetryMu.Lock()
-	defer alertRetryMu.Unlock()
-	if maxAttempts > 0 {
-		alertRetryMaxRetries = maxAttempts
-	}
-	if initialDelayMs > 0 {
-		alertRetryInitialDelay = time.Duration(initialDelayMs) * time.Millisecond
-	}
-}
-
 // =============================================================================
 // Log Channel
 // =============================================================================

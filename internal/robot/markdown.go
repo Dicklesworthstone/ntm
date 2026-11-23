@@ -358,8 +358,8 @@ var markdownAgentTypeLabels = map[string]string{
 	"aider":       "aid",
 	"oc":          "oc",
 	"ollama":      "oll",
-	"user":     "usr",
-	"other":    "oth",
+	"user":        "usr",
+	"other":       "oth",
 }
 
 func formatMarkdownAgentTypeCounts(counts map[string]int) string {

@@ -1341,15 +1341,4 @@ func TestResumeParallelAndScopeBookkeepingHelpers(t *testing.T) {
 		t.Fatalf("InFlightStepIDs = %#v, want empty", group.InFlightStepIDs)
 	}
 
-	executor.pushScopeFrameLocked(ScopeFrame{Kind: StepKindLoop, Name: "row"})
-	executor.pushScopeFrameLocked(ScopeFrame{Kind: StepKindParallel, Name: "group"})
-	executor.popScopeFrameLocked()
-	if got := executor.state.ScopeStack; len(got) != 1 || got[0].Name != "row" {
-		t.Fatalf("ScopeStack after pop = %#v, want only row frame", got)
-	}
-	executor.popScopeFrameLocked()
-	executor.popScopeFrameLocked()
-	if len(executor.state.ScopeStack) != 0 {
-		t.Fatalf("ScopeStack = %#v, want empty", executor.state.ScopeStack)
-	}
 }

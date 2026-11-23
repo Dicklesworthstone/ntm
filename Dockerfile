@@ -3,7 +3,7 @@
 # Build stage
 # Must satisfy go.mod's `go` line: the official image sets GOTOOLCHAIN=local,
 # so an older Go refuses `go mod download` outright.
-FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
+FROM golang:1.26.11-alpine3.24@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS builder
 
 WORKDIR /app
 

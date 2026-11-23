@@ -55,7 +55,7 @@ func waitCommandWithProcPGID(ctx context.Context, cmd *exec.Cmd) (result command
 		)
 	}()
 	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = commandPipeDrainTimeout
+		cmd.WaitDelay = effectiveCommandPipeDrainTimeout()
 	}
 	leaderExitedBeforeSignal := false
 	// All group signals must finish before this handoff. Wait owns cmd from
@@ -66,7 +66,7 @@ func waitCommandWithProcPGID(ctx context.Context, cmd *exec.Cmd) (result command
 	reap := func(result commandCleanupResult) commandCleanupResult {
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
-		timer := time.NewTimer(commandPipeDrainTimeout + cmd.WaitDelay)
+		timer := time.NewTimer(effectiveCommandPipeDrainTimeout() + cmd.WaitDelay)
 		defer timer.Stop()
 		select {
 		case err := <-done:
@@ -153,7 +153,7 @@ func cleanupCancelledCommandGroup(ctx context.Context, cmd *exec.Cmd, observatio
 	if termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
 		result.Err = errors.Join(result.Err, fmt.Errorf("terminate command group: %w", termErr))
 	}
-	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), effectiveCommandCancelGracePeriod())
 	graceErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
 	// The deadline alone means live work used its normal grace allowance.
@@ -176,7 +176,7 @@ func cleanupCancelledCommandGroup(ctx context.Context, cmd *exec.Cmd, observatio
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
+	settle, stop := withCommandSettlementBudget(ctx, effectiveCommandPipeDrainTimeout())
 	quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr == nil {
@@ -217,7 +217,7 @@ func cleanupCommandAfterObservationFailure(ctx context.Context, cmd *exec.Cmd, o
 	}
 	var cleanupErr error
 	handleErr := cmd.Process.WithHandle(func(handle uintptr) {
-		result.SignalSent, cleanupErr = cancelCommandLeaderWithHandle(int(handle), commandCancelGracePeriod, commandLeaderHandleOps{
+		result.SignalSent, cleanupErr = cancelCommandLeaderWithHandle(int(handle), effectiveCommandCancelGracePeriod(), commandLeaderHandleOps{
 			signal: unix.PidfdSendSignal,
 			poll:   unix.Poll,
 		})
@@ -255,7 +255,7 @@ func cancelCommandLeaderWithHandle(fd int, grace time.Duration, ops commandLeade
 		if remaining <= 0 {
 			break
 		}
-		interval := min(remaining, commandGroupPollInterval)
+		interval := min(remaining, effectiveCommandGroupPollInterval())
 		started := time.Now()
 		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 		_, err := ops.poll(fds, int((interval+time.Millisecond-1)/time.Millisecond))
@@ -308,12 +308,19 @@ func observeCommandExitID(idType, id, extraFlags int) error {
 	}
 }
 
-var commandLeaderObservationRetryTimeout = 250 * time.Millisecond
+const (
+	defaultCommandLeaderObservationRetryTimeout = 250 * time.Millisecond
+	testCommandLeaderObservationRetryTimeout    = 120 * time.Millisecond
+)
 
-func init() {
-	if isPipelineTestProcess() {
-		commandLeaderObservationRetryTimeout = 120 * time.Millisecond
-	}
+var commandLeaderObservationRetryTimeout = defaultCommandLeaderObservationRetryTimeout
+
+func effectiveCommandLeaderObservationRetryTimeout() time.Duration {
+	return effectiveCommandTiming(
+		commandLeaderObservationRetryTimeout,
+		defaultCommandLeaderObservationRetryTimeout,
+		testCommandLeaderObservationRetryTimeout,
+	)
 }
 
 type commandLeaderObservationTestHookKey struct{}
@@ -357,7 +364,7 @@ func retryCommandLeaderObservation(ctx context.Context, pid int, stableHandle bo
 		}
 		return errors.Join(firstObservationErr, observationErr)
 	}
-	ticker := time.NewTicker(commandGroupPollInterval)
+	ticker := time.NewTicker(effectiveCommandGroupPollInterval())
 	defer ticker.Stop()
 	var deadline *time.Timer
 	var deadlineC <-chan time.Time
@@ -376,7 +383,7 @@ func retryCommandLeaderObservation(ctx context.Context, pid int, stableHandle bo
 			// Unsupported pidfd observation cannot silently switch to an
 			// unbounded numeric probe. The same bound keeps explicit
 			// cancellation effective when observation never recovers.
-			deadline = time.NewTimer(commandLeaderObservationRetryTimeout)
+			deadline = time.NewTimer(effectiveCommandLeaderObservationRetryTimeout())
 			deadlineC = deadline.C
 			cancelled = nil
 		}
@@ -483,7 +490,7 @@ func waitCommandLeaderExit(ctx context.Context, process *os.Process) error {
 			}
 		}
 	}
-	ticker := time.NewTicker(commandGroupPollInterval)
+	ticker := time.NewTicker(effectiveCommandGroupPollInterval())
 	defer ticker.Stop()
 	for {
 		if err := ctx.Err(); err != nil {

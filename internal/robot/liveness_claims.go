@@ -121,10 +121,6 @@ func init() {
 	// Safety profile echoed on the robot status/snapshot surfaces (robot.go).
 	config.RegisterReader("safety.profile", newStatusOutput)
 
-	// [retry.alerts] override, applied at startup (alerts.go).
-	config.RegisterReader("retry.alerts.max_attempts", ApplyAlertRetryPolicy)
-	config.RegisterReader("retry.alerts.initial_delay_ms", ApplyAlertRetryPolicy)
-
 	// integrations.xf.enabled is a LIVE knob, kept while the rest of
 	// [integrations.xf] was removed (bd-ws6-config-truth-ienmd.2): it gates
 	// the built-in xf-search entry in GetPalette output (tui_parity.go).

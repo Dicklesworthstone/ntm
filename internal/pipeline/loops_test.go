@@ -1802,7 +1802,7 @@ func TestLoopCollectionStaysWithCompletedIterations(t *testing.T) {
 			e.state.Status, e.state.Session = StatusRunning, e.config.Session
 			loop := &LoopConfig{
 				MaxIterations: IntOrExpr{Value: 8}, Collect: "values",
-				Steps:         []Step{{ID: "body", Command: "printf 'body\\n' >> bodies; printf value"}},
+				Steps: []Step{{ID: "body", Command: "printf 'body\\n' >> bodies; printf value"}},
 			}
 			wantStatus := StatusCompleted
 			switch dialect {

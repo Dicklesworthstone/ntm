@@ -74,10 +74,10 @@ type ResumeInjectInfo struct {
 
 func newResumeCmd() *cobra.Command {
 	var (
-		fromPath    string
-		spawn       bool
-		inject      bool
-		dryRun      bool
+		fromPath      string
+		spawn         bool
+		inject        bool
+		dryRun        bool
 		ccCount       int
 		codCount      int
 		gmiCount      int
@@ -153,10 +153,10 @@ Examples:
 
 // resumeSpawnCounts carries the per-type agent counts for `resume --spawn`.
 type resumeSpawnCounts struct {
-	CC, Cod, Gmi, Agy, Grok, Omp, Oc     int
-	Cursor, Windsurf, Aider, Ollama      int
-	Plugins                              AgentSpecs
-	PluginMap                            map[string]plugins.AgentPlugin
+	CC, Cod, Gmi, Agy, Grok, Omp, Oc int
+	Cursor, Windsurf, Aider, Ollama  int
+	Plugins                          AgentSpecs
+	PluginMap                        map[string]plugins.AgentPlugin
 }
 
 func (c resumeSpawnCounts) total() int {

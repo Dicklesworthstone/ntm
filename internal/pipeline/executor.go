@@ -4109,6 +4109,45 @@ func truncatePrompt(s string, n int) string {
 	return s[:prevI] + "..."
 }
 
+// preserveSettledUntilBodySteps retains terminal body step checkpoints (such as
+// continued failures) for any until-loop iteration whose predicate receipt has
+// already settled, so executeUntil can validate and restore the completed
+// iteration without losing its body evidence during applyResumeState.
+func preserveSettledUntilBodySteps(graph *DependencyGraph, state *ExecutionState, settledChildren map[string]bool) {
+	if graph == nil || state == nil || len(state.CommandExecutions) == 0 || len(state.Steps) == 0 {
+		return
+	}
+	for execID, record := range state.CommandExecutions {
+		if record.Status != commandExecutionSettled || !strings.HasSuffix(execID, "_until") {
+			continue
+		}
+		iterPrefix := strings.TrimSuffix(execID, "until")
+		iterIdx := strings.LastIndex(iterPrefix, "_iter")
+		if iterIdx <= 0 {
+			continue
+		}
+		parentID := iterPrefix[:iterIdx]
+		parentStep, ok := graph.GetStep(parentID)
+		if !ok || parentStep == nil {
+			parentStep, _, ok = graph.ResolveScopedRuntimeStep(parentID)
+		}
+		if !ok || parentStep == nil || parentStep.Loop == nil || strings.TrimSpace(parentStep.Loop.Until) == "" {
+			continue
+		}
+		for stepID, result := range state.Steps {
+			if stepID == execID || !strings.HasPrefix(stepID, iterPrefix) {
+				continue
+			}
+			if resumeResultInFlight(state, stepID, result) || result.RerunOnResume || result.Status != StatusFailed {
+				continue
+			}
+			if _, _, scoped := graph.ResolveScopedRuntimeStep(stepID); scoped {
+				settledChildren[stepID] = true
+			}
+		}
+	}
+}
+
 func (e *Executor) applyResumeState() error {
 	if e.graph == nil {
 		return nil
@@ -4153,6 +4192,7 @@ func (e *Executor) applyResumeState() error {
 		e.stateMu.Unlock()
 		return err
 	}
+	preserveSettledUntilBodySteps(e.graph, e.state, settledChildren)
 	runID := e.state.RunID
 	workflowID := e.state.WorkflowID
 	for stepID, record := range e.state.CommandExecutions {

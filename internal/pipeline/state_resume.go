@@ -3965,20 +3965,6 @@ func (e *Executor) completeParallelState(groupID string) {
 	e.state.ParallelState[groupID] = state
 }
 
-func (e *Executor) pushScopeFrameLocked(frame ScopeFrame) {
-	if e.state == nil {
-		return
-	}
-	e.state.ScopeStack = append(e.state.ScopeStack, frame)
-}
-
-func (e *Executor) popScopeFrameLocked() {
-	if e.state == nil || len(e.state.ScopeStack) == 0 {
-		return
-	}
-	e.state.ScopeStack = e.state.ScopeStack[:len(e.state.ScopeStack)-1]
-}
-
 func appendUniqueString(values []string, value string) []string {
 	if value == "" || stringSliceContains(values, value) {
 		return values
