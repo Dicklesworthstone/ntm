@@ -390,11 +390,28 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 					fmt.Errorf("seat selection skipped a pane: %s", skip.Reason),
 				)
 			}
+			if outcome.Added != action.Count && len(outcome.SeatSkips) == 0 {
+				recordOperationError(fmt.Sprintf("spawn %s", action.AgentType),
+					fmt.Errorf("only added %d/%d agents", outcome.Added, action.Count))
+			}
+		}
+	}
+
+	// Scale-up protects existing capacity only if every requested replacement
+	// actually launched. Preserve the old agents after any launch failure or
+	// skipped seat; successful additions and any panes left by a failed launch
+	// remain available for inspection. The final census reports their state.
+	scaleUpIncomplete := len(operationErrors) > 0
+	if scaleUpIncomplete && len(plan.scaleDownActions) > 0 && cancellationErr == nil {
+		message := "scale-down skipped because scale-up did not reach every requested target; existing agents were preserved"
+		operationErrors = append(operationErrors, message)
+		if emitHuman {
+			fmt.Printf("  %s\n", message)
 		}
 	}
 
 	for _, action := range plan.scaleDownActions {
-		if cancellationErr != nil {
+		if scaleUpIncomplete || cancellationErr != nil {
 			break
 		}
 		if err := ctx.Err(); err != nil {
