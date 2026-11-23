@@ -64,6 +64,12 @@ type PlanAction struct {
 // GetPlan generates an execution plan.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetPlan() (*PlanOutput, error) {
+	return GetPlanForProject("")
+}
+
+// GetPlanForProject generates an execution plan scoped to projectDir (falling
+// back to the current working directory when projectDir is empty).
+func GetPlanForProject(projectDir string) (*PlanOutput, error) {
 	plan := &PlanOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
@@ -130,7 +136,7 @@ func GetPlan() (*PlanOutput, error) {
 	}
 
 	// Add bead-based recommendations from bv priority analysis
-	beadActions, beadWarnings := getBeadRecommendations(5) // Top 5 recommendations
+	beadActions, beadWarnings := getBeadRecommendations(projectDir, 5) // Top 5 recommendations
 	plan.BeadActions = beadActions
 	plan.Warnings = append(plan.Warnings, beadWarnings...)
 
@@ -153,7 +159,7 @@ func PrintPlan() error {
 }
 
 // getBeadRecommendations returns recommended bead actions from bv priority analysis
-func getBeadRecommendations(limit int) ([]BeadAction, []string) {
+func getBeadRecommendations(projectDir string, limit int) ([]BeadAction, []string) {
 	var actions []BeadAction
 	var warnings []string
 
@@ -164,14 +170,14 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 	}
 
 	// Get priority recommendations from bv
-	recommendations, err := bv.GetNextActions("", limit)
+	recommendations, err := bv.GetNextActions(projectDir, limit)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("failed to get bv priority: %v", err))
 		return actions, warnings
 	}
 
 	// Get ready issues to check blockers
-	readyIssues := getReadyIssueIDs()
+	readyIssues := getReadyIssueIDs(projectDir)
 
 	// Collect issue IDs for batch graph position lookup
 	var issueIDs []string
@@ -180,7 +186,7 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 	}
 
 	// Get graph positions in batch for efficiency
-	graphPositions, graphErr := bv.GetGraphPositionsBatch("", issueIDs)
+	graphPositions, graphErr := bv.GetGraphPositionsBatch(projectDir, issueIDs)
 	if graphErr != nil {
 		warnings = append(warnings, fmt.Sprintf("failed to get graph positions: %v", graphErr))
 	}
@@ -218,7 +224,7 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 
 		// If not ready, try to determine blockers
 		if !isReady {
-			blockers := getBlockersForIssue(rec.IssueID)
+			blockers := getBlockersForIssue(projectDir, rec.IssueID)
 			action.BlockedBy = blockers
 		}
 
@@ -229,11 +235,11 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 }
 
 // getReadyIssueIDs returns a set of issue IDs that are ready (unblocked)
-func getReadyIssueIDs() map[string]bool {
+func getReadyIssueIDs(projectDir string) map[string]bool {
 	ready := make(map[string]bool)
 
 	// Try to run br ready --json to get ready issues
-	output, err := bv.RunBd("", "ready", "--json")
+	output, err := bv.RunBd(projectDir, "ready", "--json")
 	if err != nil {
 		return ready
 	}
@@ -256,11 +262,11 @@ func getReadyIssueIDs() map[string]bool {
 }
 
 // getBlockersForIssue returns the IDs of issues blocking the given issue
-func getBlockersForIssue(issueID string) []string {
+func getBlockersForIssue(projectDir, issueID string) []string {
 	var blockers []string
 
 	// Try to run br show <id> --json to get dependencies
-	output, err := bv.RunBd("", "show", issueID, "--json")
+	output, err := bv.RunBd(projectDir, "show", issueID, "--json")
 	if err != nil {
 		return blockers
 	}
@@ -346,6 +352,12 @@ type GraphMailSummary struct {
 // GetGraph returns bv graph insights for AI consumption.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetGraph() (*GraphOutput, error) {
+	return GetGraphForProject("")
+}
+
+// GetGraphForProject returns bv graph insights scoped to projectDir (falling
+// back to the current working directory when projectDir is empty).
+func GetGraphForProject(projectDir string) (*GraphOutput, error) {
 	output := &GraphOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
@@ -361,7 +373,10 @@ func GetGraph() (*GraphOutput, error) {
 		)
 		// Even if bv is missing, still attempt correlation to provide partial data.
 	} else {
-		wd := mustGetwd()
+		wd := strings.TrimSpace(projectDir)
+		if wd == "" {
+			wd = mustGetwd()
+		}
 
 		// Get insights (bottlenecks, keystones, etc.)
 		insights, err := bv.GetInsights(wd)
@@ -394,7 +409,7 @@ func GetGraph() (*GraphOutput, error) {
 	}
 
 	// Build correlation graph (best-effort, independent of bv availability)
-	output.Correlation = buildCorrelationGraph()
+	output.Correlation = buildCorrelationGraph(projectDir)
 
 	return output, nil
 }
@@ -410,7 +425,7 @@ func PrintGraph() error {
 }
 
 // buildCorrelationGraph assembles a best-effort correlation map across agents, beads, and mail.
-func buildCorrelationGraph() *GraphCorrelation {
+func buildCorrelationGraph(projectDir string) *GraphCorrelation {
 	now := time.Now().UTC()
 	corr := &GraphCorrelation{
 		GeneratedAt:   now,
@@ -421,10 +436,14 @@ func buildCorrelationGraph() *GraphCorrelation {
 		OrphanThreads: make([]string, 0),
 	}
 
-	wd, err := os.Getwd()
-	if err != nil {
-		corr.Errors = append(corr.Errors, fmt.Sprintf("working directory unavailable: %v", err))
-		return corr
+	wd := strings.TrimSpace(projectDir)
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			corr.Errors = append(corr.Errors, fmt.Sprintf("working directory unavailable: %v", err))
+			return corr
+		}
 	}
 
 	// Collect Agent Mail agents (if available)
@@ -778,7 +797,8 @@ func getBeadNeighbors(dir, issueID, direction string) ([]string, []bdDepTreeNode
 
 // TriageOptions configures the triage output
 type TriageOptions struct {
-	Limit int // Max recommendations per category (default 10)
+	Limit      int    // Max recommendations per category (default 10)
+	ProjectDir string // Optional project directory (defaults to CWD when empty)
 }
 
 // TriageOutput is the robot-triage JSON output structure
@@ -826,7 +846,10 @@ func GetTriage(opts TriageOptions) (*TriageOutput, error) {
 		return output, nil
 	}
 
-	wd := mustGetwd()
+	wd := strings.TrimSpace(opts.ProjectDir)
+	if wd == "" {
+		wd = mustGetwd()
+	}
 
 	// Get triage data (uses internal cache)
 	triage, err := bv.GetTriage(wd)

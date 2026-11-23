@@ -153,6 +153,7 @@ type SpawnLifecycleDependencies struct {
 	// AcquireAdmission fences local count-capped spawns across processes. The
 	// release must tolerate repeated calls; GetSpawn also wraps injected ports.
 	AcquireAdmission func(context.Context) (func(), error)
+	CollectPressure  func(context.Context) pressure.Snapshot
 	IsTMUXInstalled  func() bool
 	GetAllPanes      func(context.Context) (map[string][]tmux.Pane, error)
 	SessionExists    func(context.Context, string) (bool, error)
@@ -455,7 +456,10 @@ func validateExistingSpawnPaneBaselines(ctx context.Context, panes []tmux.Pane, 
 
 func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDependencies {
 	deps := SpawnLifecycleDependencies{
-		AcquireAdmission:    acquireLocalSpawnAdmission,
+		AcquireAdmission: acquireLocalSpawnAdmission,
+		CollectPressure: func(ctx context.Context) pressure.Snapshot {
+			return collectSystemPressureSnapshot(ctx)
+		},
 		IsTMUXInstalled:     tmux.IsInstalled,
 		GetAllPanes:         tmux.GetAllPanesContext,
 		SessionExists:       tmux.SessionExistsContext,
@@ -478,6 +482,9 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 	}
 	if custom.AcquireAdmission != nil {
 		deps.AcquireAdmission = custom.AcquireAdmission
+	}
+	if custom.CollectPressure != nil {
+		deps.CollectPressure = custom.CollectPressure
 	}
 	if custom.IsTMUXInstalled != nil {
 		deps.IsTMUXInstalled = custom.IsTMUXInstalled
@@ -609,6 +616,17 @@ func collectSpawnAdmissionInputWithPanes(
 	totalAgents, totalPanes int,
 	getAllPanes func(context.Context) (map[string][]tmux.Pane, error),
 ) pressure.SpawnAdmissionInput {
+	return collectSpawnAdmissionInputWithDeps(ctx, opts, cfg, totalAgents, totalPanes, getAllPanes, collectSystemPressureSnapshot)
+}
+
+func collectSpawnAdmissionInputWithDeps(
+	ctx context.Context,
+	opts SpawnOptions,
+	cfg *config.Config,
+	totalAgents, totalPanes int,
+	getAllPanes func(context.Context) (map[string][]tmux.Pane, error),
+	collectPressure func(context.Context) pressure.Snapshot,
+) pressure.SpawnAdmissionInput {
 	input := pressure.SpawnAdmissionInput{
 		Session:         opts.Session,
 		RequestedAgents: totalAgents,
@@ -636,7 +654,10 @@ func collectSpawnAdmissionInputWithPanes(
 			input.MaxAgents = spawnAdmissionAgentLimit(cfg)
 			input.MaxAgentsByType = spawnAdmissionAgentTypeLimits(cfg)
 		}
-		input.Pressure = collectSystemPressureSnapshot(ctx)
+		if collectPressure == nil {
+			collectPressure = collectSystemPressureSnapshot
+		}
+		input.Pressure = collectPressure(ctx)
 	}
 
 	panesBySession, err := getAllPanes(ctx)
@@ -782,7 +803,11 @@ func spawnAdmissionAgentType(kind tmux.AgentType) string {
 	}
 }
 
-func collectSystemPressureSnapshot(ctx context.Context) pressure.Snapshot {
+// collectSystemPressureSnapshot reads live system pressure for spawn admission.
+// Injectable so unit tests stay deterministic under noisy shared-host loads.
+var collectSystemPressureSnapshot = defaultCollectSystemPressureSnapshot
+
+func defaultCollectSystemPressureSnapshot(ctx context.Context) pressure.Snapshot {
 	pressureCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
 	g := pressure.New(pressure.Config{
@@ -1134,13 +1159,14 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	defer releaseAdmission()
 
 	var admissionTopologyErr error
-	admissionInput := collectSpawnAdmissionInputWithPanes(
+	admissionInput := collectSpawnAdmissionInputWithDeps(
 		ctx, opts, cfg, totalAgents, totalPanes,
 		func(callCtx context.Context) (map[string][]tmux.Pane, error) {
 			panesBySession, err := deps.GetAllPanes(callCtx)
 			admissionTopologyErr = err
 			return panesBySession, err
 		},
+		deps.CollectPressure,
 	)
 	if cancelErr := spawnCancellationError(ctx, admissionTopologyErr); cancelErr != nil {
 		setSpawnCancellation(output, cancelErr)

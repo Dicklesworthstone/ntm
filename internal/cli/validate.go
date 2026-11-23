@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -134,7 +136,11 @@ func validateConfigFile(loc ConfigLocation, fix bool) ValidationResult {
 	switch loc.Type {
 	case "main":
 		if cfg, ok := robot.LoadMainConfigForValidation(loc.Path, &result); ok {
-			validateMainConfigReferences(cfg, &result, fix)
+			configDir := ""
+			if strings.TrimSpace(loc.Path) != "" {
+				configDir = filepath.Dir(loc.Path)
+			}
+			validateMainConfigReferences(cfg, &result, fix, configDir)
 		}
 	case "project":
 		validateProjectConfig(loc.Path, &result, fix)
@@ -150,13 +156,13 @@ func validateConfigFile(loc ConfigLocation, fix bool) ValidationResult {
 	return result
 }
 
-func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, fix bool) {
+func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, fix bool, configDirs ...string) {
 	robot.ValidateMainConfigReferencesWithoutAgents(cfg, result, fix)
-	validateAgentExecutables(cfg, result)
+	validateAgentExecutables(cfg, result, configDirs...)
 }
 
-func validateAgentExecutables(cfg *config.Config, result *ValidationResult) {
-	robot.ValidateAgentExecutables(cfg, result)
+func validateAgentExecutables(cfg *config.Config, result *ValidationResult, configDirs ...string) {
+	robot.ValidateAgentExecutables(cfg, result, configDirs...)
 }
 
 func validateProjectConfig(path string, result *ValidationResult, fix bool) {

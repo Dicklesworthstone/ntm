@@ -590,7 +590,7 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
 func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetDashboard()
+	output, err := robot.GetDashboardForProject(s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -611,7 +611,7 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
 func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetTerseForStore(s.stateStore, nil)
+	output, err := robot.GetTerseForStoreWithProject(s.stateStore, nil, s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -632,7 +632,7 @@ func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotTriageV1 handles GET /api/v1/robot/triage.
 func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetTriage(robot.TriageOptions{})
+	output, err := robot.GetTriage(robot.TriageOptions{ProjectDir: s.projectDirSnapshot()})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -653,7 +653,7 @@ func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotPlanV1 handles GET /api/v1/robot/plan.
 func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetPlan()
+	output, err := robot.GetPlanForProject(s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -674,7 +674,7 @@ func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotGraphV1 handles GET /api/v1/robot/graph.
 func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetGraph()
+	output, err := robot.GetGraphForProject(s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -722,7 +722,7 @@ func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRobotAlertsV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	includeResolved := r.URL.Query().Get("include_resolved") == "true"
-	output, err := robot.GetAlertsDetailed(includeResolved)
+	output, err := robot.GetAlertsDetailedForProject(includeResolved, s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return

@@ -268,13 +268,12 @@ func ValidateMainConfig(path string, result *ValidationResult, fix bool) {
 	if !ok {
 		return
 	}
-	ValidateMainConfigReferences(cfg, result, fix)
-}
-
-// ValidateMainConfigReferences checks referenced paths, prompt files, integrations, and 11-harness executables.
-func ValidateMainConfigReferences(cfg *config.Config, result *ValidationResult, fix bool) {
 	ValidateMainConfigReferencesWithoutAgents(cfg, result, fix)
-	ValidateAgentExecutables(cfg, result)
+	configDir := ""
+	if strings.TrimSpace(path) != "" {
+		configDir = filepath.Dir(path)
+	}
+	ValidateAgentExecutables(cfg, result, configDir)
 }
 
 // ValidateMainConfigReferencesWithoutAgents validates non-agent file/directory/binary references in cfg.
@@ -334,11 +333,20 @@ func ValidateMainConfigReferencesWithoutAgents(cfg *config.Config, result *Valid
 }
 
 // ValidateAgentExecutables checks configured agent launch templates across all 12 harnesses.
-func ValidateAgentExecutables(cfg *config.Config, result *ValidationResult) {
+// When a non-empty configDir is supplied, companion agent plugins are loaded from
+// <configDir>/agents rather than the default config directory.
+func ValidateAgentExecutables(cfg *config.Config, result *ValidationResult, configDirs ...string) {
+	configDir := ""
+	if len(configDirs) > 0 {
+		configDir = strings.TrimSpace(configDirs[0])
+	}
+	if configDir == "" {
+		configDir = filepath.Dir(config.DefaultPath())
+	}
 	piCmd := plugins.ShippedPiPlugin().Command
-	if loadedPlugins, err := plugins.LoadAgentPluginsWithDefaults(filepath.Join(filepath.Dir(config.DefaultPath()), "agents")); err == nil {
+	if loadedPlugins, err := plugins.LoadAgentPluginsWithDefaults(filepath.Join(configDir, "agents")); err == nil {
 		for _, p := range loadedPlugins {
-			if p.Name == "pi" && strings.TrimSpace(p.Command) != "" {
+			if (strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi")) && strings.TrimSpace(p.Command) != "" {
 				piCmd = p.Command
 				break
 			}

@@ -38,7 +38,16 @@ type DashboardOutput struct {
 // GetDashboard retrieves a dashboard-oriented view for AI orchestrators.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetDashboard() (*DashboardOutput, error) {
-	wd, _ := os.Getwd()
+	return GetDashboardForProject("")
+}
+
+// GetDashboardForProject retrieves a dashboard-oriented view scoped to
+// projectDir (falling back to the current working directory when empty).
+func GetDashboardForProject(projectDir string) (*DashboardOutput, error) {
+	wd := strings.TrimSpace(projectDir)
+	if wd == "" {
+		wd, _ = os.Getwd()
+	}
 	fleet := "ntm"
 	if wd != "" {
 		fleet = filepath.Base(wd)
@@ -169,16 +178,16 @@ func GetDashboard() (*DashboardOutput, error) {
 
 	// Conflicts and file changes (best-effort)
 	statusOutput := StatusOutput{}
-	appendConflicts(&statusOutput)
-	appendFileChanges(&statusOutput)
+	appendConflictsForProject(&statusOutput, wd)
+	appendFileChangesForProject(&statusOutput, wd)
 	output.Conflicts = statusOutput.Conflicts
 	output.FileChanges = statusOutput.FileChanges
 
 	// Agent Mail summary (best-effort)
-	if cwd, err := os.Getwd(); err != nil {
+	if wd == "" {
 		output.AgentMail = &SnapshotAgentMail{Available: false, Reason: "unable to determine working directory"}
 	} else {
-		output.AgentMail, _, _ = fetchAgentMailData(cwd)
+		output.AgentMail, _, _ = fetchAgentMailData(wd)
 	}
 
 	// Attention feed summary (best-effort)

@@ -828,9 +828,16 @@ func PrintStatusWithOptions(opts PaginationOptions) error {
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot status failed")
 }
 
-func appendFileChanges(output *StatusOutput) {
+func appendFileChangesForProject(output *StatusOutput, projectDir string) {
 	cutoff := time.Now().Add(-fileChangeLookback)
-	changes := tracker.RecordedChangesSince(cutoff)
+	var changes []tracker.RecordedFileChange
+	wd := strings.TrimSpace(projectDir)
+	if wd != "" {
+		changes = tracker.ChangesForProjectSince(wd, cutoff)
+	} else {
+		changes = tracker.RecordedChangesSince(cutoff)
+		wd, _ = os.Getwd()
+	}
 	if len(changes) == 0 {
 		return
 	}
@@ -839,7 +846,6 @@ func appendFileChanges(output *StatusOutput) {
 		changes = changes[len(changes)-fileChangeLimit:]
 	}
 
-	wd, _ := os.Getwd()
 	prefix := wd
 	if prefix != "" && !strings.HasSuffix(prefix, string(os.PathSeparator)) {
 		prefix += string(os.PathSeparator)
@@ -861,8 +867,13 @@ func appendFileChanges(output *StatusOutput) {
 	}
 }
 
-func appendConflicts(output *StatusOutput) {
-	conflicts := tracker.ConflictsSince(time.Now().Add(-fileChangeLookback), "")
+func appendConflictsForProject(output *StatusOutput, projectDir string) {
+	var conflicts []tracker.Conflict
+	if dir := strings.TrimSpace(projectDir); dir != "" {
+		conflicts = tracker.ConflictsForProjectSince(dir, time.Now().Add(-fileChangeLookback), "")
+	} else {
+		conflicts = tracker.ConflictsSince(time.Now().Add(-fileChangeLookback), "")
+	}
 	if len(conflicts) == 0 {
 		return
 	}
@@ -910,10 +921,13 @@ type AlertsOutput struct {
 	Summary     AlertSummaryInfo `json:"summary"`
 }
 
-// GetAlertsDetailed returns all alerts.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetAlertsDetailed(includeResolved bool) (*AlertsOutput, error) {
-	wd := mustGetwd()
+// GetAlertsDetailedForProject returns all alerts scoped to projectDir (falling
+// back to the current working directory when projectDir is empty).
+func GetAlertsDetailedForProject(includeResolved bool, projectDir string) (*AlertsOutput, error) {
+	wd := strings.TrimSpace(projectDir)
+	if wd == "" {
+		wd = mustGetwd()
+	}
 	cfg, err := config.LoadMerged(wd, config.DefaultPath())
 	if err != nil {
 		cfg = config.Default()
@@ -1049,9 +1063,16 @@ type TerseOutput struct {
 
 // GetTerseForStore returns compact state using an explicit projection store.
 func GetTerseForStore(store *state.Store, cfg *config.Config) (*TerseOutput, error) {
+	return GetTerseForStoreWithProject(store, cfg, "")
+}
+
+// GetTerseForStoreWithProject returns compact state using an explicit
+// projection store and project directory.
+func GetTerseForStoreWithProject(store *state.Store, cfg *config.Config, projectDir string) (*TerseOutput, error) {
 	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{
 		Store:         store,
 		ExplicitStore: true,
+		ProjectDir:    strings.TrimSpace(projectDir),
 	})
 	if err != nil {
 		return nil, err

@@ -29,6 +29,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -265,13 +266,29 @@ func stubRobotWork(t *testing.T, collect func(ctx context.Context, store *state.
 var developerDataHome string
 
 func TestMain(m *testing.M) {
+	collectRobotWork = func(context.Context, *state.Store, adapters.WorkCoordinationAdapterConfig, bool) (*adapters.WorkSection, error) {
+		return nil, errNoTestWorkSource
+	}
+	// Keep unit-test spawn admission deterministic and free of 50ms /proc CPU
+	// sampling sleeps under heavy shared-host load; tests asserting pressure
+	// rejection inject SpawnLifecycleDependencies.CollectPressure explicitly.
+	collectSystemPressureSnapshot = func(context.Context) pressure.Snapshot {
+		return pressure.Snapshot{
+			TakenAt: time.Now().UTC(),
+			Overall: pressure.LevelLow,
+		}
+	}
+	if os.Getenv("NTM_ROBOT_TEST_ISOLATED") == "1" {
+		// Re-execed helper process spawned by a parent robot.test that already
+		// isolated TMUX_TMPDIR, XDG_DATA_HOME, and AGENT_MAIL_URL (and may
+		// have supplied per-test overrides in cmd.Env).
+		developerDataHome = os.Getenv("XDG_DATA_HOME")
+		os.Exit(m.Run())
+	}
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isolate robot tmux tests: %v\n", err)
 		os.Exit(1)
-	}
-	collectRobotWork = func(context.Context, *state.Store, adapters.WorkCoordinationAdapterConfig, bool) (*adapters.WorkSection, error) {
-		return nil, errNoTestWorkSource
 	}
 	// Robot sends record prompt history (and spawns write manifests) under
 	// XDG_DATA_HOME; never let the package's real-tmux sends append to the
@@ -295,7 +312,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "isolate robot Agent Mail endpoint: %v\n", err)
 		os.Exit(1)
 	}
+	_ = os.Setenv("NTM_ROBOT_TEST_ISOLATED", "1")
 	code := m.Run()
+	_ = os.Unsetenv("NTM_ROBOT_TEST_ISOLATED")
 	_ = os.RemoveAll(dataHome)
 	if err := cleanupTmux(); err != nil {
 		fmt.Fprintf(os.Stderr, "clean up isolated robot tmux: %v\n", err)
@@ -3322,9 +3341,9 @@ func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
 		}
 	})
 
-	result, err := GetAlertsDetailed(false)
+	result, err := GetAlertsDetailedForProject(false, "")
 	if err != nil {
-		t.Fatalf("GetAlertsDetailed: %v", err)
+		t.Fatalf("GetAlertsDetailedForProject: %v", err)
 	}
 	if result.Enabled {
 		t.Fatal("Enabled = true, want false when alerts are disabled in config")
@@ -6587,7 +6606,7 @@ func TestBuildCorrelationGraphMailSummaryIgnoresReadMessagesForUnreadCounts(t *t
 
 	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
-	corr := buildCorrelationGraph()
+	corr := buildCorrelationGraph("")
 	if corr == nil {
 		t.Fatal("expected correlation graph")
 	}
