@@ -57,7 +57,10 @@ func ApplyAlertRetryPolicy(maxAttempts, initialDelayMs int) {
 	} else {
 		alertRetryMaxRetries = defaultAlertRetryMaxRetries
 	}
-	if initialDelayMs > 0 {
+	const maxDelayMs = int(maxAlertWebhookRetryDelay / time.Millisecond)
+	if initialDelayMs >= maxDelayMs {
+		alertRetryInitialDelay = maxAlertWebhookRetryDelay
+	} else if initialDelayMs > 0 {
 		alertRetryInitialDelay = time.Duration(initialDelayMs) * time.Millisecond
 	} else {
 		alertRetryInitialDelay = defaultAlertRetryInitialDelay
