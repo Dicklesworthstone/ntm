@@ -3547,7 +3547,7 @@ func TestDepsCmdExecutes(t *testing.T) {
 	toolDir := t.TempDir()
 	writeFakeVersionTool(t, toolDir, "tmux", "tmux 3.4")
 
-	t.Setenv("PATH", toolDir+":"+fakeToolsDir+":"+os.Getenv("PATH"))
+	t.Setenv("PATH", toolDir+":"+fakeToolsDir)
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 
 	resetFlags()
@@ -3584,7 +3584,7 @@ func TestDepsCmdSmoke(t *testing.T) {
 		writeFakeVersionTool(t, toolDir, tool.name, tool.version)
 	}
 
-	t.Setenv("PATH", toolDir+":"+fakeToolsDir+":"+os.Getenv("PATH"))
+	t.Setenv("PATH", toolDir+":"+fakeToolsDir)
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 
 	t.Run("json output", func(t *testing.T) {

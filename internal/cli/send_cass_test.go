@@ -398,7 +398,7 @@ func TestSendCASSCommandRespectsSelectedPaneCapacity(t *testing.T) {
 
 func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
 	oldUsageTimeout := ntmctx.MaxPaneContextUsageTimeout
-	ntmctx.MaxPaneContextUsageTimeout = 250 * time.Millisecond
+	ntmctx.MaxPaneContextUsageTimeout = 80 * time.Millisecond
 	t.Cleanup(func() { ntmctx.MaxPaneContextUsageTimeout = oldUsageTimeout })
 	for _, mode := range []string{"cancel", "deadline", "optional-probe-timeout"} {
 		t.Run(mode, func(t *testing.T) {
@@ -408,7 +408,7 @@ func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
 			var watcherDone chan struct{}
 			if mode == "deadline" {
 				var stop context.CancelFunc
-				ctx, stop = context.WithTimeout(ctx, 250*time.Millisecond)
+				ctx, stop = context.WithTimeout(ctx, 80*time.Millisecond)
 				defer stop()
 			} else if mode == "cancel" {
 				watcherDone = make(chan struct{})
@@ -534,7 +534,7 @@ func TestSendCASSCommandStopsRetrievalWithoutDelivery(t *testing.T) {
 			var watcherDone chan struct{}
 			if mode == "deadline" {
 				var deadlineCancel context.CancelFunc
-				ctx, deadlineCancel = context.WithTimeout(ctx, 450*time.Millisecond)
+				ctx, deadlineCancel = context.WithTimeout(ctx, 120*time.Millisecond)
 				defer deadlineCancel()
 			} else {
 				watcherDone = make(chan struct{})

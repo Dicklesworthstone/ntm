@@ -394,7 +394,7 @@ esac
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	previousClient, previousCfg, previousJSON := tmux.DefaultClient, cfg, jsonOutput
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 2 * time.Millisecond
+	fastClient.MaxSendDelay = 1 * time.Millisecond
 	tmux.DefaultClient, cfg, jsonOutput = fastClient, config.Default(), true
 	t.Cleanup(func() { tmux.DefaultClient, cfg, jsonOutput = previousClient, previousCfg, previousJSON })
 	return logPath

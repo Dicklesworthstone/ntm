@@ -368,7 +368,7 @@ esac
 	cfg.Redaction.Mode = "redact"
 	jsonOutput = true
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 2 * time.Millisecond
+	fastClient.MaxSendDelay = 1 * time.Millisecond
 	tmux.DefaultClient = fastClient
 	newSpawnSessionObserver = func() spawnSessionObserver {
 		now := time.Now()

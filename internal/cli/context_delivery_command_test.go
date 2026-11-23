@@ -350,7 +350,7 @@ func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite st
 
 	oldClient := tmux.DefaultClient
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 2 * time.Millisecond
+	fastClient.MaxSendDelay = 1 * time.Millisecond
 	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
 	return dir, mutationsPath

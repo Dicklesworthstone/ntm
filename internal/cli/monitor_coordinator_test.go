@@ -27,7 +27,7 @@ import (
 func startMonitorCoordinatorHostForTest(t *testing.T, session, project string) func() {
 	t.Helper()
 	host := newMonitorCoordinatorHost(session, project)
-	host.pollEvery, host.reloadEvery, host.maintenanceEvery = 10*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond
+	host.pollEvery, host.reloadEvery, host.maintenanceEvery = 4*time.Millisecond, 15*time.Millisecond, 8*time.Millisecond
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
@@ -63,7 +63,7 @@ func waitForMonitorCoordinator(t *testing.T, session, what string, accept func(*
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s: status=%+v err=%v", what, status, err)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(3 * time.Millisecond)
 	}
 }
 

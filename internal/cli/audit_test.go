@@ -179,6 +179,7 @@ func newTestSearcher(t *testing.T, dir string) *audit.Searcher {
 		t.Fatalf("symlink audit dir: %v", err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 	s, err := audit.NewSearcher()
 	if err != nil {
 		t.Fatalf("NewSearcher: %v", err)

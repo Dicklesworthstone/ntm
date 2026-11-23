@@ -185,6 +185,7 @@ func isolateIdentityDirs(t *testing.T) {
 // a booting agent resolves equals the one reported in AgentMap.
 func TestSpawnIdentityCoordinator_PublishesIdentityAtPrepareTime(t *testing.T) {
 	isolateIdentityDirs(t)
+	t.Setenv("AGENT_MAIL_URL", "")
 	srv, calledTools := fakeSpawnMailServer(t, "BraveFalcon")
 
 	oldCfg := cfg

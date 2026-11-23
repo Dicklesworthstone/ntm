@@ -40,6 +40,7 @@ func stubPaneProbe(t *testing.T, panes []tmux.Pane, err error) {
 
 func enableFakeAgentMail(t *testing.T, url string) {
 	t.Helper()
+	t.Setenv("AGENT_MAIL_URL", "")
 	oldCfg := cfg
 	t.Cleanup(func() { cfg = oldCfg })
 	cfg = config.Default()

@@ -142,6 +142,7 @@ func (s *rotationMailServer) start(t *testing.T) string {
 func rotationFixture(t *testing.T, srvURL, agentName, paneTitle, paneID, oldToken string) (string, string) {
 	t.Helper()
 	isolateIdentityDirs(t)
+	t.Setenv("AGENT_MAIL_URL", "")
 
 	oldCfg := cfg
 	t.Cleanup(func() { cfg = oldCfg })

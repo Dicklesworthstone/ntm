@@ -65,12 +65,12 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 
 	oldClient := tmux.DefaultClient
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 5 * time.Millisecond
+	fastClient.MaxSendDelay = 1 * time.Millisecond
 	tmux.DefaultClient = fastClient
 	oldLeadPoll := ensemble.DefaultLeadPollInterval
 	oldCollectorPoll := ensemble.DefaultOutputCollectorPollInterval
-	ensemble.DefaultLeadPollInterval = 15 * time.Millisecond
-	ensemble.DefaultOutputCollectorPollInterval = 15 * time.Millisecond
+	ensemble.DefaultLeadPollInterval = 5 * time.Millisecond
+	ensemble.DefaultOutputCollectorPollInterval = 5 * time.Millisecond
 	t.Cleanup(func() {
 		tmux.DefaultClient = oldClient
 		ensemble.DefaultLeadPollInterval = oldLeadPoll
@@ -101,7 +101,7 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 		"      seen_mode=\"${clean#\"**ID**: \"}\"",
 		"      seen_mode=\"${seen_mode#\"${seen_mode%%[![:space:]]*}\"}\"",
 		"      seen_mode=\"${seen_mode%\"${seen_mode##*[![:space:]]}\"}\"",
-		"      while IFS= read -r -t 0.25 _; do :; done",
+		"      while IFS= read -r -t 0.05 _; do :; done",
 		"      if [ -n \"$seen_mode\" ]; then",
 		"        printf '{\"mode_id\":\"%s\",\"pane\":\"%s\"}\\n' \"$seen_mode\" \"${TMUX_PANE:-}\" >> \"$EVENT_DIR/invocations.jsonl\"",
 		"        printf '%s\\n' \"$seen_mode\" >> \"$EVENT_DIR/$seen_mode.runs\"",
@@ -125,7 +125,7 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 		"    \"You are the SYNTHESIZER for a reasoning ensemble.\"*) ",
 		"      synth_findings=()",
 		"      in_task=0",
-		"      while IFS= read -r -t 0.25 sline; do",
+		"      while IFS= read -r -t 0.05 sline; do",
 		"        sclean=\"${sline%$'\\r'}\"",
 		"        case \"$sclean\" in",
 		"          \"## Your Task\"*) in_task=1 ;;",
@@ -176,7 +176,7 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 			if err := probe.Run(); err != nil {
 				break
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		ensemble.CloseDefaultStateStore()
 	})

@@ -74,9 +74,9 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
 			oldRotDelay := ctxmon.MaxRotationDelay
 			fastClient := tmux.NewClient("")
-			fastClient.MaxSendDelay = 2 * time.Millisecond
+			fastClient.MaxSendDelay = 1 * time.Millisecond
 			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
-			ctxmon.MaxRotationDelay = 5 * time.Millisecond
+			ctxmon.MaxRotationDelay = 1 * time.Millisecond
 			if cfg.Rotation.AutoConfirm {
 				t.Fatal("fixture must exercise manual confirmation with default auto-confirm disabled")
 			}
@@ -627,9 +627,9 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
 			oldDelay := ctxmon.MaxRotationDelay
 			fastClient := tmux.NewClient("")
-			fastClient.MaxSendDelay = 2 * time.Millisecond
+			fastClient.MaxSendDelay = 1 * time.Millisecond
 			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
-			ctxmon.MaxRotationDelay = 5 * time.Millisecond
+			ctxmon.MaxRotationDelay = 1 * time.Millisecond
 			ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
 			ctxmon.DefaultRotationHistoryStore = ctxmon.NewRotationHistoryStore()
 			t.Cleanup(func() {
@@ -647,7 +647,7 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 			command.SetOut(&out)
 			command.SetErr(new(bytes.Buffer))
 			command.SetArgs([]string{pending.AgentID, "--action=rotate"})
-			timeout := 500 * time.Millisecond
+			timeout := 120 * time.Millisecond
 			if tc.bound && tc.kind == "assistant" {
 				timeout = 15 * time.Second
 			}
@@ -710,7 +710,11 @@ case "$1" in
   has-session) exit 0 ;;
   display-message)
     case "$*" in
-      *'#{@ntm_rotation_token}'*) printf '['; if [ -f "$NTM_CONFIRM_ROOT/token.${target#%}" ]; then cat "$NTM_CONFIRM_ROOT/token.${target#%}"; fi; printf ']\n' ;;
+      *'#{@ntm_rotation_token}'*)
+        tok=
+        if [ -f "$NTM_CONFIRM_ROOT/token.${target#%}" ]; then IFS= read -r tok < "$NTM_CONFIRM_ROOT/token.${target#%}"; fi
+        printf '[%s]\n' "$tok"
+        ;;
       *) printf '%s\n' "$NTM_CONFIRM_WORKDIR" ;;
     esac
     ;;
@@ -731,14 +735,14 @@ case "$1" in
       index=1
       if [ -f "$NTM_CONFIRM_ROOT/created" ] && [ ! -f "$NTM_CONFIRM_ROOT/replacement-retired" ]; then index=2; fi
       token=
-      if [ -f "$NTM_CONFIRM_ROOT/token.1" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.1"); fi
+      if [ -f "$NTM_CONFIRM_ROOT/token.1" ]; then IFS= read -r token < "$NTM_CONFIRM_ROOT/token.1"; fi
       printf '%s%%1_NTM_SEP_%s_NTM_SEP_demo__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$index" "$pid" "$token"
     fi
     if [ -f "$NTM_CONFIRM_ROOT/created" ] && [ ! -f "$NTM_CONFIRM_ROOT/replacement-retired" ]; then
       command=bash
       if [ -f "$NTM_CONFIRM_ROOT/launched" ]; then command=node; fi
       token=
-      if [ -f "$NTM_CONFIRM_ROOT/token.99" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.99"); fi
+      if [ -f "$NTM_CONFIRM_ROOT/token.99" ]; then IFS= read -r token < "$NTM_CONFIRM_ROOT/token.99"; fi
       printf '%s%%99_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$command" "${NTM_CONFIRM_REPLACEMENT_PID:-321}" "$token"
     fi
     if [ -n "$prefix" ] && [ "$NTM_CONFIRM_MODE" = cross-session ]; then

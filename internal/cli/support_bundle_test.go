@@ -23,7 +23,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
 
+func isolateSupportBundleToolPATH(t *testing.T) {
+	t.Helper()
+	toolDir := t.TempDir()
+	writeFakeVersionTool(t, toolDir, "tmux", "tmux 3.4")
+	t.Setenv("PATH", toolDir)
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(toolDir, "tmux"))
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+}
+
 func TestSupportBundleEncryptionCommandRoundTrip(t *testing.T) {
+	isolateSupportBundleToolPATH(t)
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	key := bytes.Repeat([]byte{0x43}, encryption.KeySize)
@@ -67,6 +77,7 @@ func TestSupportBundleEncryptionCommandRoundTrip(t *testing.T) {
 }
 
 func TestSupportBundleEncryptionMissingKeyAndExplicitPlaintext(t *testing.T) {
+	isolateSupportBundleToolPATH(t)
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("NTM_SUPPORT_BUNDLE_MISSING_KEY", "")
@@ -126,6 +137,7 @@ func TestSupportBundleConfigNeverExportsEncryptionCredentials(t *testing.T) {
 func TestSupportBundleStartupKeepsOtherPersistenceEncrypted(t *testing.T) {
 	for _, position := range []string{"after subcommand", "before subcommand"} {
 		t.Run(position, func(t *testing.T) {
+			isolateSupportBundleToolPATH(t)
 			resetFlags()
 			t.Cleanup(resetFlags)
 			startup.ResetConfig()
@@ -277,6 +289,7 @@ func TestSupportBundleEncryptionOverridesStayLocal(t *testing.T) {
 }
 
 func TestSupportBundleCreateAndVerify(t *testing.T) {
+	isolateSupportBundleToolPATH(t)
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 

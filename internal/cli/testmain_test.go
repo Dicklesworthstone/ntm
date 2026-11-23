@@ -42,6 +42,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv("NTM_PI_PANE_FIXTURE") == "1" && filepath.Base(os.Args[0]) == "pi" {
 		os.Exit(runPiPaneFixture())
 	}
+	if os.Getenv("NTM_ROBOT_CONTRACT_ARGS") != "" {
+		// Re-execed helper process spawned by a parent cli.test that already
+		// isolated TMUX_TMPDIR, git config, TMPDIR, and XDG directories (and
+		// intentionally passed per-test XDG/TMUX overrides in cmd.Env).
+		os.Exit(m.Run())
+	}
 	if len(os.Args) == 7 && os.Args[1] == "-test.run=^TestPipelineBackgroundResumeWorker$" &&
 		os.Args[2] == "--" && os.Args[3] == "__pipeline-worker" && os.Args[4] == "--" {
 		// This exact worker invocation inherits the parent's isolated test

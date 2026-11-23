@@ -146,7 +146,7 @@ func awaitWaitCommandStage(t *testing.T, dir, stage string, done <-chan error) {
 	t.Helper()
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
-	poll := time.NewTicker(5 * time.Millisecond)
+	poll := time.NewTicker(2 * time.Millisecond)
 	defer poll.Stop()
 	for {
 		data, _ := os.ReadFile(filepath.Join(dir, "blocked-stage"))
@@ -195,7 +195,7 @@ func TestWaitCommandTimeoutInterruptsTmuxRead(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "block-"+stage), nil, 0600); err != nil {
 				t.Fatal(err)
 			}
-			cmd, out, _ := waitCommandHarness(t, "wait-project", "--pane=%51", "--until=idle", "--timeout=150ms", "--poll=30s", "--json")
+			cmd, out, _ := waitCommandHarness(t, "wait-project", "--pane=%51", "--until=idle", "--timeout=70ms", "--poll=30s", "--json")
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
 			start := time.Now()
@@ -222,14 +222,14 @@ func TestWaitCommandTimeoutRejectsLateReadyCapture(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "hold-%51"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd, out, _ := waitCommandHarness(t, "wait-project", "--pane=%51", "--until=idle", "--timeout=150ms", "--poll=30s", "--json")
+	cmd, out, _ := waitCommandHarness(t, "wait-project", "--pane=%51", "--until=idle", "--timeout=70ms", "--poll=30s", "--json")
 	_, done := startWaitCommand(t, cmd, t.Context())
 	awaitWaitCommandStage(t, dir, "capture-pane", done)
 
 	// Without a deadline-aware capture, this transport eventually returns a
 	// valid ready prompt, which used to publish success after the timeout.
 	releaseDone := make(chan error, 1)
-	release := time.AfterFunc(350*time.Millisecond, func() {
+	release := time.AfterFunc(200*time.Millisecond, func() {
 		releaseDone <- os.WriteFile(filepath.Join(dir, "release"), nil, 0600)
 	})
 	t.Cleanup(func() {
@@ -267,7 +267,7 @@ func TestWaitCommandKeepsUnreadableTargetsPending(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installWaitCommandTmux(t, "%41")
-			args := []string{"wait-project", "--until=idle", "--timeout=200ms", "--poll=30s", "--json"}
+			args := []string{"wait-project", "--until=idle", "--timeout=60ms", "--poll=30s", "--json"}
 			cmd, out, diagnostics := waitCommandHarness(t, append(args, tc.flags...)...)
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
@@ -295,7 +295,7 @@ func TestWaitCommandKeepsUnreadableTargetsPending(t *testing.T) {
 
 func TestWaitCommandTimeoutInterruptsLongPoll(t *testing.T) {
 	installWaitCommandTmux(t, "%41")
-	cmd, out, _ := waitCommandHarness(t, "wait-project", "--until=idle", "--timeout=150ms", "--poll=30s", "--json")
+	cmd, out, _ := waitCommandHarness(t, "wait-project", "--until=idle", "--timeout=60ms", "--poll=30s", "--json")
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -339,7 +339,7 @@ func TestWaitCommandCancellationInterruptsLongPoll(t *testing.T) {
 				}
 			})
 			deadline := time.After(2 * time.Second)
-			poll := time.NewTicker(5 * time.Millisecond)
+			poll := time.NewTicker(2 * time.Millisecond)
 			defer poll.Stop()
 		observing:
 			for {

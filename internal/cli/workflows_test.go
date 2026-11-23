@@ -25,7 +25,7 @@ func workflowCommandTmuxFixture(t *testing.T, scenario string) (projectRoot, log
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	oldConfig, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
 	fastClient := tmux.NewClient("")
-	fastClient.MaxSendDelay = 2 * time.Millisecond
+	fastClient.MaxSendDelay = 1 * time.Millisecond
 	cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
 	cfg.AgentMail.Enabled = false
 	cfg.CASS.Context.Enabled = false
@@ -56,9 +56,10 @@ case "$1" in
   list-sessions) echo 'evidence-run_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000' ;;
   list-panes)
     pane='%91'; pid=4242; dead=0
-    agent_kind=$(cat "$NTM_WORKFLOW_TEST_ROOT/pane-kind")
-    agent_command=$(cat "$NTM_WORKFLOW_TEST_ROOT/pane-command")
-    rotation_token=$(cat "$NTM_WORKFLOW_TEST_ROOT/rotation-token")
+    IFS= read -r agent_kind < "$NTM_WORKFLOW_TEST_ROOT/pane-kind"
+    IFS= read -r agent_command < "$NTM_WORKFLOW_TEST_ROOT/pane-command"
+    rotation_token=
+    IFS= read -r rotation_token < "$NTM_WORKFLOW_TEST_ROOT/rotation-token" || true
     if [ "$NTM_WORKFLOW_TEST_SCENARIO" = zero-pid ]; then pid=0; fi
     if [ -f "$NTM_WORKFLOW_TEST_ROOT/captured" ]; then
       case "$NTM_WORKFLOW_TEST_SCENARIO" in
@@ -76,7 +77,9 @@ case "$1" in
   display-message)
     case "$*" in
       *"@ntm_rotation_token"*)
-        printf '[%s]\n' "$(cat "$NTM_WORKFLOW_TEST_ROOT/rotation-token")"
+        rtok=
+        IFS= read -r rtok < "$NTM_WORKFLOW_TEST_ROOT/rotation-token" || true
+        printf '[%s]\n' "$rtok"
         exit 0
         ;;
     esac
@@ -127,7 +130,7 @@ pattern = %q
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{path, "--session", "evidence-run", "--project-root", projectRoot, "--interval", "10ms", "--timeout", "10s"})
+	cmd.SetArgs([]string{path, "--session", "evidence-run", "--project-root", projectRoot, "--interval", "2ms", "--timeout", "10s"})
 	stdout, runErr := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
 	var result WorkflowRunResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
