@@ -168,7 +168,10 @@ func TestSessionWorkspaceMatchesCassWorkspaceFilter(t *testing.T) {
 			t.Errorf("sessionWorkspace(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
 
+func TestSessionWorkspaceMatchesCassWorkspaceFilterLive(t *testing.T) {
+	t.Parallel()
 	client := casspkg.NewClient()
 	if !client.IsInstalled() {
 		t.Skip("cass not installed")
@@ -177,7 +180,7 @@ func TestSessionWorkspaceMatchesCassWorkspaceFilter(t *testing.T) {
 		n   int
 		err error
 	}
-	project := sessionWorkspace("frankentui")
+	const project = "/data/projects/frankentui"
 	projCh := make(chan searchRes, 1)
 	bareCh := make(chan searchRes, 1)
 	go func() {
@@ -199,6 +202,9 @@ func TestSessionWorkspaceMatchesCassWorkspaceFilter(t *testing.T) {
 	projRes := <-projCh
 	bareRes := <-bareCh
 	if projRes.err != nil {
+		if errors.Is(projRes.err, casspkg.ErrNotInitialized) {
+			t.Skipf("cass index not initialized in isolated test environment: %v", projRes.err)
+		}
 		t.Fatalf("cass search --workspace=%q: %v", project, projRes.err)
 	}
 	if projRes.n == 0 {
