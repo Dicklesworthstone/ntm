@@ -443,7 +443,7 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 // We scan recent output (last 50 lines) to avoid stale errors triggering state.
 func piLiveChromePresent(output string, agentType AgentType) bool {
 	trimmed := trimTrailingBlankLines(output)
-	if HasTrailingShellExitPrompt(trimmed) || TrustDialogVisible(trimmed) {
+	if hasTrailingPiShellExitPrompt(trimmed) || TrustDialogVisible(trimmed) {
 		return false
 	}
 	if ParsePiComposer(output).Found {
@@ -544,6 +544,9 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		// transcript keywords would keep a finished omp pane "working".
 		return OmpActivelyWorking(output, 0)
 	case AgentTypePi:
+		if hasTrailingPiShellExitPrompt(output) {
+			return false
+		}
 		// Pi's top-rule braille spinner is authoritative; fall back to declared
 		// plugin working patterns for alternate Pi versions or user overrides.
 		if c := ParsePiComposer(output); c.Found {
@@ -670,7 +673,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// the banner, so only a visible, quiet composer box is idle evidence.
 		return OmpIdlePromptShowing(output)
 	case AgentTypePi:
-		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+		if hasTrailingPiShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
 			return false
 		}
 		if c := ParsePiComposer(output); c.Found {
@@ -874,7 +877,7 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		}
 		return matches
 	case AgentTypePi:
-		if HasTrailingShellExitPrompt(output) {
+		if hasTrailingPiShellExitPrompt(output) {
 			return nil
 		}
 		c := ParsePiComposer(output)

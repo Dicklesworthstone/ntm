@@ -1832,10 +1832,12 @@ func TestParser_PiDetectionMetricsAndState(t *testing.T) {
 
 	t.Run("idle pi composer with context gauge and rate limit prose", func(t *testing.T) {
 		t.Parallel()
-		// Transcript prose mentioning "rate limit" must never park a pi pane.
+		// Transcript prose containing literal rate-limit and error substrings
+		// must never park a live pi pane while its bottom composer is visible.
 		out := strings.Join([]string{
 			"pi v0.67.6",
-			"Discussed rate limit retry backoff in handler.",
+			"Discussed 429 Too Many Requests and rate limit exceeded retry backoff.",
+			"Error: sample prose error line in conversation history.",
 			"────────────────────",
 			"",
 			"────────────────────",
@@ -1862,6 +1864,22 @@ func TestParser_PiDetectionMetricsAndState(t *testing.T) {
 		}
 	})
 
+	t.Run("exited pi pane with unframed 429 reports rate limit and error", func(t *testing.T) {
+		t.Parallel()
+		out := strings.Join([]string{
+			"Error: 429 Too Many Requests — rate limit exceeded",
+			"~/proj % ",
+		}, "\n")
+		st, err := p.ParseWithHint(out, AgentTypePi)
+		if err != nil {
+			t.Fatalf("ParseWithHint: %v", err)
+		}
+		if !st.IsRateLimited || !st.IsInError || st.IsIdle || st.IsWorking {
+			t.Fatalf("state = idle:%v working:%v rateLimited:%v error:%v, want rateLimited+error only",
+				st.IsIdle, st.IsWorking, st.IsRateLimited, st.IsInError)
+		}
+	})
+
 	t.Run("working pi composer spinner wins over chrome", func(t *testing.T) {
 		t.Parallel()
 		out := strings.Join([]string{
@@ -1885,7 +1903,7 @@ func TestParser_PiDetectionMetricsAndState(t *testing.T) {
 
 	t.Run("pi exited to shell prompt is neither idle nor working", func(t *testing.T) {
 		t.Parallel()
-		for _, prompt := range []string{"user@host:~/proj$ ", "root@host:~/proj# "} {
+		for _, prompt := range []string{"user@host:~/proj$ ", "root@host:~/proj# ", "bash-5.2# ", "~/proj % ", "~/proj ❯ "} {
 			out := strings.Join([]string{
 				"── ⠋ Thinking... ───",
 				"",
@@ -1911,19 +1929,38 @@ func TestParser_PiDetectionMetricsAndState(t *testing.T) {
 func TestParser_PiWorkingExitedToShellNotMisclassifiedWithShippedPlugin(t *testing.T) {
 	registerShippedPiForTest(t)
 	p := NewParser()
-	out := strings.Join([]string{
-		"── ⠋ Thinking... ───",
-		"",
-		"────────────────────",
-		"~/proj",
-		"↑1k 5%/200k",
-		"user@host:~/proj$ ",
-	}, "\n")
-	st, err := p.ParseWithHint(out, AgentTypePi)
-	if err != nil {
-		t.Fatalf("ParseWithHint: %v", err)
-	}
-	if st.IsWorking || st.IsIdle || len(st.WorkIndicators) != 0 {
-		t.Fatalf("exited working pi with plugin = working:%v idle:%v indicators:%v, want all false/empty", st.IsWorking, st.IsIdle, st.WorkIndicators)
+	prompts := []string{"user@host:~/proj$ ", "root@host:~/proj# ", "bash-5.2# ", "~/proj % ", "% ", "~/proj ❯ "}
+	for _, prompt := range prompts {
+		workingExited := strings.Join([]string{
+			"── ⠋ Thinking... ───",
+			"",
+			"────────────────────",
+			"~/proj",
+			"↑1k 5%/200k",
+			prompt,
+		}, "\n")
+		st, err := p.ParseWithHint(workingExited, AgentTypePi)
+		if err != nil {
+			t.Fatalf("ParseWithHint(working %q): %v", prompt, err)
+		}
+		if st.IsWorking || st.IsIdle || len(st.WorkIndicators) != 0 {
+			t.Fatalf("exited working pi (%q) with plugin = working:%v idle:%v indicators:%v, want all false/empty", prompt, st.IsWorking, st.IsIdle, st.WorkIndicators)
+		}
+
+		idleExited := strings.Join([]string{
+			"────────────────────",
+			"",
+			"────────────────────",
+			"~/proj",
+			"↑1k 5%/200k",
+			prompt,
+		}, "\n")
+		st, err = p.ParseWithHint(idleExited, AgentTypePi)
+		if err != nil {
+			t.Fatalf("ParseWithHint(idle %q): %v", prompt, err)
+		}
+		if st.IsWorking || st.IsIdle || len(st.WorkIndicators) != 0 {
+			t.Fatalf("exited idle pi (%q) with plugin = working:%v idle:%v indicators:%v, want all false/empty", prompt, st.IsWorking, st.IsIdle, st.WorkIndicators)
+		}
 	}
 }

@@ -1436,6 +1436,22 @@ func isPiUserShellPrompt(line string) bool {
 	return trimmed != "" && (piUserShellPromptRe.MatchString(trimmed) || trailingShellExitPromptRe.MatchString(trimmed))
 }
 
+// hasTrailingPiShellExitPrompt reports whether the bottom-most non-empty row of
+// output is a shell prompt terminating Pi's bottom-anchored composer/footer.
+// Unlike HasTrailingShellExitPrompt (shared with harnesses that themselves draw
+// bare "❯"/">" prompts), Pi's live footer never ends with a shell prompt, so
+// any prompt matched by isPiUserShellPrompt proves Pi exited back to the shell.
+func hasTrailingPiShellExitPrompt(output string) bool {
+	lines := strings.Split(strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		return isPiUserShellPrompt(lines[i])
+	}
+	return false
+}
+
 func piRuleWidth(line string, top bool) int {
 	line = strings.TrimRight(stripANSICodes(line), " \t\r")
 	width := utf8.RuneCountInString(line)
@@ -1963,7 +1979,7 @@ func stripANSICodes(text string) string {
 	return sb.String()
 }
 
-var trailingShellExitPromptRe = regexp.MustCompile(`^(?:[\w.\-]+@[\w.\-]+:[^\s$%#]*\s*[$%#]|(?:bash|zsh|sh)(?:-[\d.]+)?[$%]|\$)\s*$`)
+var trailingShellExitPromptRe = regexp.MustCompile(`^(?:[\w.\-]+@[\w.\-]+:[^\s$%#]*\s*[$%#]|(?:bash|zsh|sh)(?:-[\d.]+)?[$%#]|\$)\s*$`)
 
 // trimTrailingBlankLines removes trailing whitespace-only rows from a viewport
 // capture while preserving all characters on the bottom-most non-empty row.
