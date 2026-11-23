@@ -3,6 +3,7 @@ package robot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -99,6 +100,23 @@ func canonicalRobotProvider(provider string) string {
 		return "openai"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func validateRobotAccountProvider(provider string) (string, error) {
+	trimmed := strings.TrimSpace(provider)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", fmt.Errorf("invalid provider %q: must not begin with '-'", provider)
+	}
+	canonical := canonicalRobotProvider(trimmed)
+	switch canonical {
+	case "claude", "openai", "gemini":
+		return canonical, nil
+	default:
+		return "", fmt.Errorf("unsupported provider %q (supported: claude, openai, gemini)", provider)
 	}
 }
 

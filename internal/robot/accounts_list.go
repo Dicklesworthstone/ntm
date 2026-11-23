@@ -34,6 +34,19 @@ type AccountsListOptions struct {
 // GetAccountsList returns the list of accounts.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetAccountsList(opts AccountsListOptions) (*AccountsListOutput, error) {
+	canonicalProvider, providerErr := validateRobotAccountProvider(opts.Provider)
+	if providerErr != nil {
+		return &AccountsListOutput{
+			RobotResponse: NewErrorResponse(
+				providerErr,
+				ErrCodeInvalidFlag,
+				"Specify a valid provider (claude, openai, gemini)",
+			),
+			Accounts: []AccountInfo{},
+		}, nil
+	}
+	opts.Provider = canonicalProvider
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

@@ -72,6 +72,15 @@ type AccountStatusOptions struct {
 // GetAccountStatus returns account status information.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetAccountStatus(opts AccountStatusOptions) (*AccountStatusOutput, error) {
+	canonicalProvider, err := validateRobotAccountProvider(opts.Provider)
+	if err != nil {
+		return &AccountStatusOutput{
+			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Specify a valid provider: claude, openai, or gemini"),
+			Accounts:      make(map[string]ProviderStatus),
+		}, nil
+	}
+	opts.Provider = canonicalProvider
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

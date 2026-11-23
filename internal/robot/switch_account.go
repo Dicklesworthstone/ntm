@@ -40,7 +40,21 @@ type SwitchAccountOptions struct {
 //	ntm --robot-switch-account claude         # Switch to next Claude account
 //	ntm --robot-switch-account openai:acc123  # Switch to specific account
 func GetSwitchAccount(opts SwitchAccountOptions) (*SwitchAccountOutput, error) {
-	canonicalProvider := canonicalRobotProvider(opts.Provider)
+	canonicalProvider, providerErr := validateRobotAccountProvider(opts.Provider)
+	if providerErr != nil {
+		return &SwitchAccountOutput{
+			RobotResponse: NewErrorResponse(
+				providerErr,
+				ErrCodeInvalidFlag,
+				"Specify a valid provider (claude, openai, gemini)",
+			),
+			Switch: SwitchAccountResult{
+				Success:  false,
+				Provider: strings.TrimSpace(opts.Provider),
+				Error:    providerErr.Error(),
+			},
+		}, nil
+	}
 	if canonicalProvider == "" {
 		return &SwitchAccountOutput{
 			RobotResponse: NewErrorResponse(
@@ -53,6 +67,37 @@ func GetSwitchAccount(opts SwitchAccountOptions) (*SwitchAccountOutput, error) {
 				Error:   "provider required",
 			},
 		}, nil
+	}
+	if opts.AccountID != "" {
+		trimmedAccount := strings.TrimSpace(opts.AccountID)
+		var acctErr error
+		if trimmedAccount == "" {
+			acctErr = fmt.Errorf("invalid account_id %q: must not be whitespace-only", opts.AccountID)
+		} else if strings.HasPrefix(trimmedAccount, "-") {
+			acctErr = fmt.Errorf("invalid account_id %q: must not begin with '-'", opts.AccountID)
+		} else {
+			for _, r := range opts.AccountID {
+				if r < 0x20 || r == 0x7f {
+					acctErr = fmt.Errorf("invalid account_id: contains control character 0x%02x", r)
+					break
+				}
+			}
+		}
+		if acctErr != nil {
+			return &SwitchAccountOutput{
+				RobotResponse: NewErrorResponse(
+					acctErr,
+					ErrCodeInvalidFlag,
+					"Provide a valid non-empty account ID without leading '-' or control characters",
+				),
+				Switch: SwitchAccountResult{
+					Success:  false,
+					Provider: canonicalProvider,
+					Error:    acctErr.Error(),
+				},
+			}, nil
+		}
+		opts.AccountID = trimmedAccount
 	}
 	if strings.TrimSpace(opts.Pane) != "" {
 		return &SwitchAccountOutput{
