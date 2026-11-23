@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
@@ -261,6 +262,20 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 		agentCmdTemplate, agentType = o.cfg.Agents.Antigravity, "agy"
 	case tmux.AgentGrok:
 		agentCmdTemplate, agentType = o.cfg.Agents.Grok, "grok"
+	case tmux.AgentOllama:
+		agentCmdTemplate, agentType = o.cfg.Agents.Ollama, "ollama"
+	case tmux.AgentCursor:
+		agentCmdTemplate, agentType = o.cfg.Agents.Cursor, "cursor"
+	case tmux.AgentWindsurf:
+		agentCmdTemplate, agentType = o.cfg.Agents.Windsurf, "windsurf"
+	case tmux.AgentAider:
+		agentCmdTemplate, agentType = o.cfg.Agents.Aider, "aider"
+	case tmux.AgentOpencode:
+		agentCmdTemplate, agentType = o.cfg.Agents.Opencode, "oc"
+	case tmux.AgentOmp:
+		agentCmdTemplate, agentType = config.OmpCommandOrDefault(o.cfg.Agents.Omp), "omp"
+	case tmux.AgentPi:
+		agentCmdTemplate, agentType = plugins.ShippedPiPlugin().Command, "pi"
 	default:
 		// No usable agent type recorded — fall back to the auth provider name.
 		switch prov.Name() {

@@ -340,7 +340,7 @@ var (
 	robotDoctorContention bool // include shared-resource contention scan
 	robotDoctorVerbose    bool // include verbose adapter details
 
-	// Robot-scale flags for 11-harness session scaling
+	// Robot-scale flags for 12-harness session scaling
 	robotScale         string // session name for --robot-scale
 	robotScaleCC       int    // target Claude agent count
 	robotScaleCod      int    // target Codex agent count
@@ -352,6 +352,7 @@ var (
 	robotScaleAider    int    // target Aider agent count
 	robotScaleGrok     int    // target Grok Build agent count
 	robotScaleOmp      int    // target Oh My Pi agent count
+	robotScalePi       int    // target Pi agent count
 	robotScaleOc       int    // target OpenCode agent count
 
 	// Robot-rebalance flags for workload analysis and transfer execution
@@ -1125,7 +1126,7 @@ func registerRobotFlags() {
 	rootCmd.Flags().BoolVar(&robotDoctorContention, "doctor-contention", false, "Include shared-resource process contention scan in --robot-doctor")
 	rootCmd.Flags().BoolVar(&robotDoctorVerbose, "doctor-verbose", false, "Include verbose tool adapter diagnostics in --robot-doctor")
 
-	// Robot-scale flags for 11-harness session scaling
+	// Robot-scale flags for 12-harness session scaling
 	rootCmd.Flags().StringVar(&robotScale, "robot-scale", "", "Scale agents in a session to target harness counts (JSON). Required: SESSION and at least one --scale-<harness>=N flag. Example: ntm --robot-scale=myproject --scale-cc=4 --scale-cod=2")
 	rootCmd.Flags().IntVar(&robotScaleCC, "scale-cc", 0, "Target Claude (cc) agent count for --robot-scale (0 terminates all cc agents)")
 	rootCmd.Flags().IntVar(&robotScaleCod, "scale-cod", 0, "Target Codex (cod) agent count for --robot-scale (0 terminates all cod agents)")
@@ -1137,6 +1138,7 @@ func registerRobotFlags() {
 	rootCmd.Flags().IntVar(&robotScaleAider, "scale-aider", 0, "Target Aider agent count for --robot-scale")
 	rootCmd.Flags().IntVar(&robotScaleGrok, "scale-grok", 0, "Target Grok Build (grok) agent count for --robot-scale")
 	rootCmd.Flags().IntVar(&robotScaleOmp, "scale-omp", 0, "Target Oh My Pi (omp) agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScalePi, "scale-pi", 0, "Target Pi (pi) agent count for --robot-scale")
 	rootCmd.Flags().IntVar(&robotScaleOc, "scale-oc", 0, "Target OpenCode (oc) agent count for --robot-scale")
 
 	// Robot-rebalance flags for workload analysis and transfer execution

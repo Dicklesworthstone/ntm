@@ -468,6 +468,7 @@ func resetFlags() {
 	robotScaleAider = 0
 	robotScaleGrok = 0
 	robotScaleOmp = 0
+	robotScalePi = 0
 	robotScaleOc = 0
 	robotRebalance = ""
 	robotRebalanceApply = false

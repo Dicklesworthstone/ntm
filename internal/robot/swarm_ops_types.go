@@ -309,7 +309,7 @@ func scaleCapabilityCommand() RobotCommandInfo {
 		Flag:        "--robot-scale",
 		Category:    "spawn",
 		Summary:     "Scale session agent counts per harness.",
-		Description: "Scale agent counts per harness up or down across all 11 built-in harnesses without interactive prompts.",
+		Description: "Scale agent counts per harness up or down across all 12 built-in harnesses without interactive prompts.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-scale", Type: "string", Required: true, Description: "Session name to scale"},
 			{Name: "scale-cc", Flag: "--scale-cc", Type: "int", Required: false, Description: "Target Claude (cc) agent count"},
@@ -322,6 +322,7 @@ func scaleCapabilityCommand() RobotCommandInfo {
 			{Name: "scale-aider", Flag: "--scale-aider", Type: "int", Required: false, Description: "Target Aider agent count"},
 			{Name: "scale-grok", Flag: "--scale-grok", Type: "int", Required: false, Description: "Target Grok Build agent count"},
 			{Name: "scale-omp", Flag: "--scale-omp", Type: "int", Required: false, Description: "Target Oh My Pi (omp) agent count"},
+			{Name: "scale-pi", Flag: "--scale-pi", Type: "int", Required: false, Description: "Target Pi (pi) agent count"},
 			{Name: "scale-oc", Flag: "--scale-oc", Type: "int", Required: false, Description: "Target OpenCode (oc) agent count"},
 			{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Default: "false", Description: "Preview scale plan without adding or killing panes"},
 			{Name: "force", Flag: "--force", Type: "bool", Required: false, Default: "false", Description: "Force scale-down without safety confirmation"},

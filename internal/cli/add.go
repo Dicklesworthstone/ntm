@@ -230,6 +230,11 @@ func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]pl
 		return opencodeCommandOrDefault(cfg.Agents.Opencode), nil, nil
 	case AgentTypeOmp:
 		return config.OmpCommandOrDefault(cfg.Agents.Omp), nil, nil
+	case AgentTypePi:
+		if p, ok := pluginMap[string(agentType)]; ok {
+			return p.Command, p.Env, nil
+		}
+		return plugins.ShippedPiPlugin().Command, nil, nil
 	default:
 		if p, ok := pluginMap[string(agentType)]; ok {
 			return p.Command, p.Env, nil

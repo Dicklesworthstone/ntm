@@ -118,6 +118,7 @@ type AgentCountsResponse struct {
 	Aider       int `json:"aider"`
 	Opencode    int `json:"opencode"`
 	Omp         int `json:"omp"`
+	Pi          int `json:"pi"`
 	User        int `json:"user,omitempty"`
 	Other       int `json:"other,omitempty"`
 	Total       int `json:"total"`

@@ -57,6 +57,9 @@ const (
 	// on spawn/add/adopt/send, launched through `[agents] omp` or
 	// config.DefaultOmpCommand.
 	AgentTypeOmp AgentType = "omp"
+	// AgentTypePi covers Pi (`pi`) panes: `--pi=N[:model[:effort]]`, backed by
+	// the shipped Pi plugin (overridable via agents/pi.toml).
+	AgentTypePi AgentType = "pi"
 )
 
 // AgentSpec represents a parsed agent specification with optional model
@@ -117,7 +120,7 @@ func (s *AgentSpecs) Type() string {
 // separator (ntm-mjf7).
 func agentTypeSupportsEffortSuffix(agentType AgentType) bool {
 	switch agentType {
-	case AgentTypeClaude, AgentTypeCodex, AgentTypeGrok, AgentTypeOmp:
+	case AgentTypeClaude, AgentTypeCodex, AgentTypeGrok, AgentTypeOmp, AgentTypePi:
 		return true
 	default:
 		return false

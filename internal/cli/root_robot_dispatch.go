@@ -1456,6 +1456,7 @@ func dispatchRobotSwarmOps(cmd *cobra.Command, robotDryRunEffective bool) bool {
 			{"scale-aider", "aider", robotScaleAider},
 			{"scale-grok", "grok", robotScaleGrok},
 			{"scale-omp", "omp", robotScaleOmp},
+			{"scale-pi", "pi", robotScalePi},
 			{"scale-oc", "oc", robotScaleOc},
 		}
 		for _, spec := range scaleFlagSpecs {

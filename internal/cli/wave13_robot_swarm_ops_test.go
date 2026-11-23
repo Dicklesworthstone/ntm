@@ -20,7 +20,7 @@ func TestScale11HarnessParityAndKernelHandler(t *testing.T) {
 	wantFlags := []string{
 		"cc", "cod", "gmi", "agy",
 		"ollama", "cursor", "windsurf", "aider",
-		"grok", "omp", "oc",
+		"grok", "omp", "pi", "oc",
 	}
 	for _, flagName := range wantFlags {
 		if scaleCmd.Flags().Lookup(flagName) == nil {
@@ -42,6 +42,7 @@ func TestScale11HarnessParityAndKernelHandler(t *testing.T) {
 		{tmux.AgentAider, "aider"},
 		{tmux.AgentGrok, "grok"},
 		{tmux.AgentOmp, "omp"},
+		{tmux.AgentPi, "pi"},
 		{tmux.AgentOpencode, "oc"},
 	}
 	for _, tc := range labelCases {
