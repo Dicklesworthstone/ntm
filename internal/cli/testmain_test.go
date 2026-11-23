@@ -42,10 +42,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv("NTM_PI_PANE_FIXTURE") == "1" && filepath.Base(os.Args[0]) == "pi" {
 		os.Exit(runPiPaneFixture())
 	}
-	if os.Getenv("NTM_ROBOT_CONTRACT_ARGS") != "" {
+	if os.Getenv("NTM_CLI_TEST_ISOLATED") == "1" || os.Getenv("NTM_ROBOT_CONTRACT_ARGS") != "" {
 		// Re-execed helper process spawned by a parent cli.test that already
 		// isolated TMUX_TMPDIR, git config, TMPDIR, and XDG directories (and
-		// intentionally passed per-test XDG/TMUX overrides in cmd.Env).
+		// may have passed per-test XDG/TMUX overrides in cmd.Env).
 		os.Exit(m.Run())
 	}
 	if len(os.Args) == 7 && os.Args[1] == "-test.run=^TestPipelineBackgroundResumeWorker$" &&
@@ -92,8 +92,11 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("XDG_DATA_HOME", filepath.Join(isolatedTmp, "xdg-data"))
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(isolatedTmp, "xdg-config"))
 	_ = os.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+	_ = os.Setenv("NTM_CLI_TEST_ISOLATED", "1")
 
 	code := m.Run()
+
+	_ = os.Unsetenv("NTM_CLI_TEST_ISOLATED")
 
 	if hadDataHome {
 		_ = os.Setenv("XDG_DATA_HOME", origDataHome)

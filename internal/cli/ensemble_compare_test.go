@@ -1290,8 +1290,18 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", binPath)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
-	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	oldLeadPoll := ensemble.DefaultLeadPollInterval
+	oldCollectorPoll := ensemble.DefaultOutputCollectorPollInterval
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 1 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	ensemble.DefaultLeadPollInterval = 5 * time.Millisecond
+	ensemble.DefaultOutputCollectorPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+		ensemble.DefaultLeadPollInterval = oldLeadPoll
+		ensemble.DefaultOutputCollectorPollInterval = oldCollectorPoll
+	})
 	now := time.Now().UTC()
 	state := &ensemble.EnsembleSession{
 		SessionName:       session,
