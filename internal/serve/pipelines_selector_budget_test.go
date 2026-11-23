@@ -20,6 +20,7 @@ func TestPipelineResumeSelectorBudgetHTTPAndJobs(t *testing.T) {
 	t.Parallel()
 	for _, asJob := range []bool{false, true} {
 		t.Run(fmt.Sprintf("job=%t", asJob), func(t *testing.T) {
+			t.Parallel()
 			srv := NewHermeticServer("test")
 			defer srv.Stop()
 			root := t.TempDir()

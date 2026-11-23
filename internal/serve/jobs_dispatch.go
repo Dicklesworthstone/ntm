@@ -650,7 +650,7 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 		return nil, fmt.Errorf("invalid session name: %w", err)
 	}
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	cp, err := storage.Load(req.Session, req.CheckpointID)
 	if err != nil {
 		return nil, fmt.Errorf("load checkpoint %s/%s: %w", req.Session, req.CheckpointID, err)

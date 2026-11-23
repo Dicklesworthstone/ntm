@@ -4487,6 +4487,7 @@ func TestHandleMemoryDaemonStop_RunningDaemon(t *testing.T) {
 	}
 	waitDone := make(chan error, 1)
 	go func() {
+		defer close(waitDone)
 		waitDone <- cmd.Wait()
 	}()
 	t.Cleanup(func() {

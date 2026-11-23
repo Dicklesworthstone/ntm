@@ -113,9 +113,10 @@ func TestJobOperationHTTPRequiresDurabilityAndValidIdentity(t *testing.T) {
 
 func TestJobOperationHTTPKeepsStrictParametersForEveryJobType(t *testing.T) {
 	t.Parallel()
-	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	for _, kind := range implementedJobTypes {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 			body := fmt.Sprintf(`{"type":%q,"params":{"operation_id":%q,"dry_rnu":true}}`, kind, "strict-"+kind)
 			for attempt := 0; attempt < 2; attempt++ {
 				env := postJob(t, srv, body)

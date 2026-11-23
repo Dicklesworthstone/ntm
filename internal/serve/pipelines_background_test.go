@@ -532,7 +532,7 @@ func interruptedAPIDetachedResume(t *testing.T, root string) *pipeline.Execution
 				{ID: "once_body", When: "false", Command: "exit 91"},
 			}}},
 			{ID: "delay", DependsOn: []string{"once"}, Loop: &pipeline.LoopConfig{
-				Items: `[0,1,2]`, Delay: pipeline.Duration{Duration: time.Second},
+				Items: `[0,1,2]`, Delay: pipeline.Duration{Duration: 300 * time.Millisecond},
 				Steps: []pipeline.Step{{ID: "tick", When: "false", Command: "exit 92"}},
 			}},
 			{ID: "finish", DependsOn: []string{"delay"}, Loop: &pipeline.LoopConfig{Times: 1, Steps: []pipeline.Step{
@@ -603,9 +603,9 @@ func TestRESTBackgroundResumeSurvivesServerExit(t *testing.T) {
 }
 
 func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	prior := interruptedAPIDetachedResume(t, root)
-	useAPIDetachedResumeWorker(t)
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	srv.projectDir = root
@@ -675,6 +675,7 @@ func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
 		`{"background":true,"max_materialized_step_nodes":-1}`,
 	} {
 		t.Run(body, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			prior := interruptedAPIDetachedResume(t, root)
 			before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
@@ -765,7 +766,6 @@ func TestRESTBackgroundResumeKeepsPermissionAndProjectScope(t *testing.T) {
 	projectA, projectB := srv.projectDir, t.TempDir()
 	prior := interruptedAPIDetachedResume(t, projectA)
 	other := interruptedAPIDetachedResume(t, projectB)
-	useAPIDetachedResumeWorker(t)
 	path := "/api/v1/pipelines/" + prior.RunID + "/resume"
 	const body = `{"background":true}`
 	beforeA, beforeB := pipelineRecoveryHTTPJournal(t, projectA, prior.RunID), pipelineRecoveryHTTPJournal(t, projectB, other.RunID)

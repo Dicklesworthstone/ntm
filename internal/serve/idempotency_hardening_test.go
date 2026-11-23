@@ -220,9 +220,9 @@ func TestIdempotencyOverflowRetainsTerminalResult(t *testing.T) {
 }
 
 func TestIdempotencyOversizedCheckpointImportDoesNotOverwriteOnRetry(t *testing.T) {
-	cp, _ := checkpointDisclosureFixture(t, "clean")
+	t.Parallel()
+	cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 	cp.Description = strings.Repeat("public recovery notes ", idempotencyMaxBodyBytes/len("public recovery notes ")+1)
-	storage := checkpoint.NewStorage()
 	if err := storage.Save(cp); err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +235,7 @@ func TestIdempotencyOversizedCheckpointImportDoesNotOverwriteOnRetry(t *testing.
 		t.Fatal(err)
 	}
 	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}})
+	s.checkpointDir = storage.BaseDir
 	body := ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive), AllowOverwrite: true}
 	do := func(body ImportCheckpointRequest) *httptest.ResponseRecorder {
 		req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/large-import/checkpoints/import", body)

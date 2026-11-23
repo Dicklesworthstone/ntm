@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -442,15 +443,11 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
 	fastClient := tmux.NewClient("")
 	fastClient.MaxSendDelay = 2 * time.Millisecond
 	tmux.DefaultClient = fastClient
-	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
-	pipeline.StageIdlePollInterval = 15 * time.Millisecond
 	t.Cleanup(func() {
 		tmux.DefaultClient = oldClient
-		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
 	})
 	srv := &Server{projectDir: root}
 	request := pipelineControlRequest(http.MethodPost, prior.RunID)
@@ -556,7 +553,6 @@ func pipelineRecoveryHTTPJournal(t *testing.T, root, runID string) []byte {
 // rather than inventing a receipt or bypassing production admission checks.
 func pipelineRecoveryHTTPCheckpoint(t *testing.T, root, kind string) *pipeline.ExecutionState {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 80 * time.Millisecond}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
@@ -626,15 +622,11 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
 	fastClient := tmux.NewClient("")
 	fastClient.MaxSendDelay = 2 * time.Millisecond
 	tmux.DefaultClient = fastClient
-	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
-	pipeline.StageIdlePollInterval = 15 * time.Millisecond
 	t.Cleanup(func() {
 		tmux.DefaultClient = oldClient
-		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
 	})
 	return filepath.Join(root, "recovery-tmux-calls")
 }
@@ -797,6 +789,7 @@ func TestPipelineRecoverHTTPRefusalsPreserveJournal(t *testing.T) {
 }
 
 func TestPipelineRecoverHTTPRejectsMalformedDecisions(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
 	root := srv.projectDir
@@ -1119,7 +1112,6 @@ func TestPipelineRecoverHTTPPreservesConfiguredRedaction(t *testing.T) {
 // finishes, modelling an interrupted publication without inventing receipts.
 func pipelineRecoveryHTTPOutcomeCheckpoint(t *testing.T, root string, selector bool) (*pipeline.ExecutionState, string) {
 	t.Helper()
-	pipelineRecoveryHTTPTmux(t, root, "")
 	output := `{"answer":42}`
 	if selector {
 		output = "PRIVATE-SELECTOR-KEY"
@@ -1127,7 +1119,19 @@ func pipelineRecoveryHTTPOutcomeCheckpoint(t *testing.T, root string, selector b
 	if err := os.WriteFile(filepath.Join(root, "fixture-outcome"), []byte(output), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := "printf 'once\\n' >> outcome-effects; cat fixture-outcome; printf ready > outcome-ready; while [ ! -f outcome-release ]; do sleep 0.01; done"
+	releaseFIFO := filepath.Join(root, "outcome-release.fifo")
+	if err := syscall.Mkfifo(releaseFIFO, 0600); err != nil {
+		t.Fatal(err)
+	}
+	releaseGate, err := os.OpenFile(releaseFIFO, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = releaseGate.WriteString("finish\n")
+		_ = releaseGate.Close()
+	})
+	script := "printf 'once\\n' >> outcome-effects; cat fixture-outcome; printf ready > outcome-ready; read _ < outcome-release.fifo"
 	work := pipeline.Step{ID: "work", Command: script, OutputVar: "recovered", OutputParse: pipeline.OutputParse{Type: "json"},
 		Timeout: pipeline.Duration{Duration: 10 * time.Second}}
 	consumer := pipeline.Step{ID: "consume", DependsOn: []string{"work"}, Command: "cat > outcome-dependent", Stdin: "${steps.work.data.answer}|${vars.recovered_parsed.answer}"}
@@ -1188,7 +1192,7 @@ func pipelineRecoveryHTTPOutcomeCheckpoint(t *testing.T, root string, selector b
 	if err := os.Mkdir(statePath, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "outcome-release"), []byte("finish"), 0600); err != nil {
+	if _, err := releaseGate.WriteString("finish\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1234,8 +1238,10 @@ func pipelineRecoveryHTTPOutcomeBody(t *testing.T, token string, selector bool, 
 }
 
 func TestPipelineRecoverHTTPCommandAndSelectorOutcomesResumeWithoutReplay(t *testing.T) {
+	t.Parallel()
 	for _, selector := range []bool{false, true} {
 		t.Run(fmt.Sprintf("selector_%t", selector), func(t *testing.T) {
+			t.Parallel()
 			srv, _ := setupTestServer(t)
 			srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
 			srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}
@@ -1322,6 +1328,7 @@ func TestPipelineRecoverHTTPCommandAndSelectorOutcomesResumeWithoutReplay(t *tes
 }
 
 func TestPipelineRecoverHTTPOutcomeRefusalsPreserveJournal(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
 	srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}
@@ -1585,10 +1592,10 @@ func TestPipelineHTTPProjectScopePreservesUnconfiguredPolicy(t *testing.T) {
 }
 
 func TestPipelineHTTPProjectScopeResumeKeepsOwnershipAndReplay(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleAdmin}
 	projectA, projectB := srv.projectDir, t.TempDir()
-	pipelineRecoveryHTTPTmux(t, projectA, "")
 	const runID = "same-project-resume-run"
 	for i, project := range []string{projectA, projectB} {
 		workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: fmt.Sprintf("resume-project-%d", i), Steps: []pipeline.Step{
@@ -1657,10 +1664,10 @@ func TestPipelineHTTPProjectScopeResumeKeepsOwnershipAndReplay(t *testing.T) {
 }
 
 func TestPipelineHTTPProjectScopeCancellationKeepsOriginalOwner(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleAdmin}
 	projectA, projectB := srv.projectDir, t.TempDir()
-	pipelineRecoveryHTTPTmux(t, projectA, "")
 	const runID = "same-project-cancel-run"
 	type outcome struct {
 		state *pipeline.ExecutionState
@@ -1669,7 +1676,7 @@ func TestPipelineHTTPProjectScopeCancellationKeepsOriginalOwner(t *testing.T) {
 	runs := make([]chan outcome, 0, 2)
 	for i, project := range []string{projectA, projectB} {
 		workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: fmt.Sprintf("cancel-project-%d", i), Steps: []pipeline.Step{{
-			ID: "hold", Command: "printf ready > running; while [ ! -f release ]; do sleep 0.01; done",
+			ID: "hold", Command: "printf ready > running; exec sleep 30",
 		}}}
 		cfg := pipeline.DefaultExecutorConfig("delivery-session")
 		cfg.ProjectDir, cfg.RunID = project, runID
@@ -1808,9 +1815,11 @@ func TestPipelineRecoveryOutputPreservesUnicode(t *testing.T) {
 }
 
 func TestPipelineRecoverHTTPRejectsUnicodeRepairBeforeDecision(t *testing.T) {
+	t.Parallel()
 	for _, selector := range []bool{false, true} {
 		for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeRedact} {
 			t.Run(fmt.Sprintf("selector=%v/redaction=%s", selector, mode), func(t *testing.T) {
+				t.Parallel()
 				srv, _ := setupTestServer(t)
 				srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
 				srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}

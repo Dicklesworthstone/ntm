@@ -41,17 +41,9 @@ func TestParallelServersProjectionStoreIsolation(t *testing.T) {
 	stores := make([]*state.Store, serverCount)
 
 	for i := 0; i < serverCount; i++ {
-		dbPath := filepath.Join(t.TempDir(), fmt.Sprintf("srv-%d.db", i))
-		st, err := state.Open(dbPath)
-		if err != nil {
-			t.Fatalf("open store %d: %v", i, err)
-		}
-		if err := st.Migrate(); err != nil {
-			st.Close()
-			t.Fatalf("migrate store %d: %v", i, err)
-		}
-		idx := i
+		st := openFastMigratedMemoryStore(t)
 		t.Cleanup(func() { _ = st.Close() })
+		idx := i
 
 		now := time.Now().UTC()
 		staleAfter := now.Add(10 * time.Minute)

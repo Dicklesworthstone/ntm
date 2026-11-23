@@ -61,6 +61,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("NTM_SERVE_TEST_ISOLATED") == "1" {
+		os.Exit(m.Run())
+	}
 	socketRoot, err := os.MkdirTemp("", "ntmt")
 	if err == nil {
 		defaultServeTestTmuxTmpDir = socketRoot
@@ -75,8 +78,15 @@ func TestMain(m *testing.M) {
 	if dataErr == nil {
 		_ = os.Setenv("XDG_DATA_HOME", dataHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(dataHome, "config"))
+		_ = os.Setenv("XDG_STATE_HOME", filepath.Join(dataHome, "state"))
+	}
+	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
+	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
+		return []string{"-test.run=^TestAPIDetachedPipelineProcess$", "--"}, nil
 	}
 	_ = os.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+	_ = os.Setenv("NTM_SERVE_TEST_ISOLATED", "1")
 
 	code := m.Run()
 	if dataHome != "" {
@@ -153,7 +163,7 @@ func buildSerializedMigratedStateImage() ([]byte, error) {
 	return snapshot, nil
 }
 
-func openFastMigratedMemoryStore(t testing.TB) *state.Store {
+func serveSchemaSnapshot(t testing.TB) []byte {
 	t.Helper()
 	serveSchemaBootstrapOnce.Do(func() {
 		serveSchemaSnapshotBytes, serveSchemaBootstrapErr = buildSerializedMigratedStateImage()
@@ -161,6 +171,12 @@ func openFastMigratedMemoryStore(t testing.TB) *state.Store {
 	if serveSchemaBootstrapErr != nil {
 		t.Fatalf("build serialized state schema image: %v", serveSchemaBootstrapErr)
 	}
+	return serveSchemaSnapshotBytes
+}
+
+func openFastMigratedMemoryStore(t testing.TB) *state.Store {
+	t.Helper()
+	snapshot := serveSchemaSnapshot(t)
 
 	store, err := state.Open(":memory:")
 	if err != nil {
@@ -177,7 +193,7 @@ func openFastMigratedMemoryStore(t testing.TB) *state.Store {
 		if !ok {
 			return fmt.Errorf("sqlite driver connection %T does not implement Deserialize()", driverConn)
 		}
-		return deser.Deserialize(serveSchemaSnapshotBytes)
+		return deser.Deserialize(snapshot)
 	})
 	_ = sqlConn.Close()
 	if rawErr != nil {

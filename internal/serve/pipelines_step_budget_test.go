@@ -21,6 +21,7 @@ func TestPipelineResumeStepBudgetsHTTPAndJobs(t *testing.T) {
 	for _, field := range []string{"max_step_count_total", "max_materialized_step_nodes"} {
 		for _, asJob := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/job=%t", field, asJob), func(t *testing.T) {
+				t.Parallel()
 				srv := NewHermeticServer("test")
 				defer srv.Stop()
 				root := t.TempDir()

@@ -46,6 +46,15 @@ var (
 	errCheckpointDisclosureInvalid   = errors.New("checkpoint archive could not be safely inspected")
 )
 
+func (s *Server) checkpointStorage() *checkpoint.Storage {
+	if s != nil {
+		if dir := strings.TrimSpace(s.checkpointDir); dir != "" {
+			return &checkpoint.Storage{BaseDir: dir}
+		}
+	}
+	return checkpoint.NewStorage()
+}
+
 func (s *Server) checkpointDisclosureConfig() (redaction.Config, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -529,7 +538,7 @@ func (s *Server) handleListCheckpoints(w http.ResponseWriter, r *http.Request) {
 	// Parse optional query params
 	includeDetails := r.URL.Query().Get("details") == "true"
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	checkpoints, err := storage.List(sessionName)
 	if err != nil {
 		log.Printf("REST: checkpoint list failed session=%s error=%v request_id=%s", sessionName, err, reqID)
@@ -600,7 +609,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		opts = append(opts, checkpoint.WithScrollbackLines(*req.ScrollbackLines))
 	}
 
-	capturer := checkpoint.NewCapturer()
+	capturer := checkpoint.NewCapturerWithStorage(s.checkpointStorage())
 	cp, err := capturer.Create(sessionName, req.Name, opts...)
 	if err != nil {
 		log.Printf("REST: checkpoint create failed session=%s name=%s error=%v request_id=%s",
@@ -631,7 +640,7 @@ func (s *Server) handleGetCheckpoint(w http.ResponseWriter, r *http.Request) {
 	checkpointID := chi.URLParam(r, "checkpointId")
 	reqID := requestIDFromContext(r.Context())
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	capturer := checkpoint.NewCapturerWithStorage(storage)
 
 	// Parse checkpoint reference (can be ID, name, or ~N notation)
@@ -657,7 +666,7 @@ func (s *Server) handleDeleteCheckpoint(w http.ResponseWriter, r *http.Request) 
 	checkpointID := chi.URLParam(r, "checkpointId")
 	reqID := requestIDFromContext(r.Context())
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 
 	deletingInvalid := false
 	if _, err := storage.Load(sessionName, checkpointID); err != nil {
@@ -724,7 +733,7 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	restorer := checkpoint.NewRestorerWithStorage(storage)
 	cp, ok := loadExactCheckpointOrWriteError(w, storage, sessionName, checkpointID, reqID)
 	if !ok {
@@ -811,7 +820,7 @@ func (s *Server) handleVerifyCheckpoint(w http.ResponseWriter, r *http.Request) 
 	checkpointID := chi.URLParam(r, "checkpointId")
 	reqID := requestIDFromContext(r.Context())
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	exists, err := storage.HasCheckpointPath(sessionName, checkpointID)
 	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
@@ -886,7 +895,7 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 
 	// Check checkpoint exists and is loadable. Exact malformed checkpoint IDs
 	// should report a load failure rather than "not found".
@@ -1092,7 +1101,7 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 // handleImportCheckpoint imports a checkpoint from an archive.
 func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) {
-	s.handleImportCheckpointWithImporter(w, r, checkpoint.NewStorage().Import)
+	s.handleImportCheckpointWithImporter(w, r, s.checkpointStorage().Import)
 }
 
 // Keep the import dependency local to the request so publication failure tests
@@ -1305,7 +1314,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		checkpointRef = "latest"
 	}
 
-	storage := checkpoint.NewStorage()
+	storage := s.checkpointStorage()
 	capturer := checkpoint.NewCapturerWithStorage(storage)
 
 	// Parse checkpoint reference

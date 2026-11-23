@@ -27,9 +27,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-func checkpointDisclosureFixture(t *testing.T, kind string) (*checkpoint.Checkpoint, string) {
+func checkpointDisclosureFixture(t *testing.T, kind string) (*checkpoint.Checkpoint, *checkpoint.Storage, string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
 	cp := &checkpoint.Checkpoint{
 		Version: 1, ID: "disclosure-checkpoint", Name: "recovery", SessionName: "disclosure-source",
 		WorkingDir: t.TempDir(), CreatedAt: time.Now(), PaneCount: 1,
@@ -38,7 +37,7 @@ func checkpointDisclosureFixture(t *testing.T, kind string) (*checkpoint.Checkpo
 			LaunchSpec: &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model preserved"},
 		}}},
 	}
-	storage := checkpoint.NewStorage()
+	storage := &checkpoint.Storage{BaseDir: t.TempDir()}
 	dir := storage.CheckpointDir(cp.SessionName, cp.ID)
 	if err := os.MkdirAll(filepath.Join(dir, checkpoint.PanesDir), 0700); err != nil {
 		t.Fatal(err)
@@ -77,7 +76,7 @@ func checkpointDisclosureFixture(t *testing.T, kind string) (*checkpoint.Checkpo
 	if err := storage.Save(cp); err != nil {
 		t.Fatal(err)
 	}
-	return cp, artifact
+	return cp, storage, artifact
 }
 
 func checkpointDisclosureExport(t *testing.T, s *Server, cp *checkpoint.Checkpoint, format string, download, redactScrollback bool) *httptest.ResponseRecorder {
@@ -177,14 +176,15 @@ func TestCheckpointArchiveDisclosureRejectsLaunchMetadataAcrossWireForms(t *test
 			for _, download := range []bool{false, true} {
 				for _, explicit := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/%s/download=%t/explicit=%t", mode, format, download, explicit), func(t *testing.T) {
-						cp, _ := checkpointDisclosureFixture(t, "launch")
+						cp, storage, _ := checkpointDisclosureFixture(t, "launch")
 						s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+						s.checkpointDir = storage.BaseDir
 						var logs lockedBuffer
 						previous := log.Writer()
 						log.SetOutput(&logs)
 						defer log.SetOutput(previous)
 						assertCheckpointDisclosureRefusal(t, checkpointDisclosureExport(t, s, cp, format, download, explicit))
-						stored, err := checkpoint.NewStorage().Load(cp.SessionName, cp.ID)
+						stored, err := storage.Load(cp.SessionName, cp.ID)
 						if err != nil || stored.Session.Panes[0].LaunchSpec.Command != cp.Session.Panes[0].LaunchSpec.Command {
 							t.Fatal("refused export changed the recovery command")
 						}
@@ -199,15 +199,18 @@ func TestCheckpointArchiveDisclosureRejectsLaunchMetadataAcrossWireForms(t *test
 }
 
 func TestCheckpointArchiveDisclosureInspectsPatchAndCompressedScrollback(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"patch", "scrollback", "compressed scrollback"} {
 		for _, format := range []string{"tar.gz", "zip"} {
 			t.Run(kind+"/"+format, func(t *testing.T) {
-				cp, artifact := checkpointDisclosureFixture(t, kind)
+				t.Parallel()
+				cp, storage, artifact := checkpointDisclosureFixture(t, kind)
 				before, err := os.ReadFile(artifact)
 				if err != nil {
 					t.Fatal(err)
 				}
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})
+				s.checkpointDir = storage.BaseDir
 				assertCheckpointDisclosureRefusal(t, checkpointDisclosureExport(t, s, cp, format, true, false))
 				if kind == "patch" {
 					assertCheckpointDisclosureRefusal(t, checkpointDisclosureExport(t, s, cp, format, true, true))
@@ -239,12 +242,14 @@ func TestCheckpointArchiveDisclosureInspectsPatchAndCompressedScrollback(t *test
 }
 
 func TestCheckpointArchiveDisclosureRejectsImportBeforeCreationOrOverwrite(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, format := range []string{"tar.gz", "zip"} {
 			t.Run(string(mode)+"/"+format, func(t *testing.T) {
-				cp, _ := checkpointDisclosureFixture(t, "launch")
+				t.Parallel()
+				cp, storage, _ := checkpointDisclosureFixture(t, "launch")
 				path := filepath.Join(t.TempDir(), "source."+format)
-				if _, err := checkpoint.NewStorage().Export(cp.SessionName, cp.ID, path, checkpoint.ExportOptions{Format: checkpoint.ExportFormat(format)}); err != nil {
+				if _, err := storage.Export(cp.SessionName, cp.ID, path, checkpoint.ExportOptions{Format: checkpoint.ExportFormat(format)}); err != nil {
 					t.Fatal(err)
 				}
 				archive, err := os.ReadFile(path)
@@ -252,7 +257,7 @@ func TestCheckpointArchiveDisclosureRejectsImportBeforeCreationOrOverwrite(t *te
 					t.Fatal(err)
 				}
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
-				storage := checkpoint.NewStorage()
+				s.checkpointDir = storage.BaseDir
 				old := *cp
 				old.SessionName, old.Name = "existing-target", "keep original checkpoint"
 				old.Session = checkpoint.SessionState{}
@@ -286,18 +291,21 @@ func TestCheckpointArchiveDisclosureRejectsImportBeforeCreationOrOverwrite(t *te
 }
 
 func TestCheckpointArchiveDisclosureCleanRoundTripPreservesRecoveryCommand(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"tar.gz", "zip"} {
 		for _, download := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/download=%t", format, download), func(t *testing.T) {
-				cp, _ := checkpointDisclosureFixture(t, "clean")
+				t.Parallel()
+				cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}})
+				s.checkpointDir = storage.BaseDir
 				archive := decodeCheckpointDisclosureArchive(t, checkpointDisclosureExport(t, s, cp, format, download, false), download)
 				rec := httptest.NewRecorder()
 				s.Router().ServeHTTP(rec, wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/clean-copy/checkpoints/import", ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive)}))
 				if rec.Code != http.StatusCreated {
 					t.Fatalf("clean import status=%d body=%s", rec.Code, rec.Body)
 				}
-				imported, err := checkpoint.NewStorage().Load("clean-copy", cp.ID)
+				imported, err := storage.Load("clean-copy", cp.ID)
 				if err != nil || imported.Session.Panes[0].LaunchSpec.Command != cp.Session.Panes[0].LaunchSpec.Command {
 					t.Fatal("clean archive changed recovery commands")
 				}
@@ -306,9 +314,9 @@ func TestCheckpointArchiveDisclosureCleanRoundTripPreservesRecoveryCommand(t *te
 	}
 }
 
-func checkpointScanLimitFixture(t *testing.T, cfg redaction.Config, aggregate bool) (*checkpoint.Checkpoint, map[string][]byte) {
+func checkpointScanLimitFixture(t *testing.T, cfg redaction.Config, aggregate bool) (*checkpoint.Checkpoint, *checkpoint.Storage, map[string][]byte) {
 	t.Helper()
-	cp, _ := checkpointDisclosureFixture(t, "clean")
+	cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 	limits := redaction.DefaultScanLimits()
 	count := limits.MaxCandidates + 1
 	if aggregate {
@@ -320,7 +328,6 @@ func checkpointScanLimitFixture(t *testing.T, cfg redaction.Config, aggregate bo
 	if !aggregate {
 		cp.Description += " " + wiringFakeSecret
 	}
-	storage := checkpoint.NewStorage()
 	snapshots := make(map[string][]byte)
 	if aggregate {
 		cp.Session.Panes[0].ScrollbackFile = "panes/pane-0.txt"
@@ -352,7 +359,7 @@ func checkpointScanLimitFixture(t *testing.T, cfg redaction.Config, aggregate bo
 	} else {
 		requireServeScanLimit(t, string(metadata), cfg)
 	}
-	return cp, snapshots
+	return cp, storage, snapshots
 }
 
 func assertCheckpointScanLimit(t *testing.T, rec *httptest.ResponseRecorder) {
@@ -385,8 +392,9 @@ func TestCheckpointScanLimitRefusesExportAcrossWireForms(t *testing.T) {
 		for _, aggregate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/aggregate=%t", mode, aggregate), func(t *testing.T) {
 				cfg := serveScanLimitConfig(mode)
-				cp, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
+				cp, storage, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+				s.checkpointDir = storage.BaseDir
 				var logs lockedBuffer
 				previous := log.Writer()
 				log.SetOutput(&logs)
@@ -410,8 +418,7 @@ func TestCheckpointScanLimitRefusesImportBeforeOverwriteAndCanRetry(t *testing.T
 		for _, aggregate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/aggregate=%t", mode, aggregate), func(t *testing.T) {
 				cfg := serveScanLimitConfig(mode)
-				cp, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
-				storage := checkpoint.NewStorage()
+				cp, storage, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
 				old := *cp
 				old.SessionName, old.Description = "existing-budget-target", "preserve original recovery state"
 				old.Session = checkpoint.SessionState{}
@@ -425,6 +432,7 @@ func TestCheckpointScanLimitRefusesImportBeforeOverwriteAndCanRetry(t *testing.T
 				}
 				snapshots[oldPath] = oldBytes
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+				s.checkpointDir = storage.BaseDir
 				var logs lockedBuffer
 				previous := log.Writer()
 				log.SetOutput(&logs)
@@ -518,8 +526,7 @@ func TestCheckpointImportPublicationOutcomeIsRetained(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeOff} {
 		for _, published := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/published=%t", mode, published), func(t *testing.T) {
-				cp, _ := checkpointDisclosureFixture(t, "clean")
-				storage := checkpoint.NewStorage()
+				cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 				archivePath := filepath.Join(t.TempDir(), "source.zip")
 				if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
 					t.Fatal(err)
@@ -539,6 +546,7 @@ func TestCheckpointImportPublicationOutcomeIsRetained(t *testing.T) {
 					t.Fatal(err)
 				}
 				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+				s.checkpointDir = storage.BaseDir
 				var logs lockedBuffer
 				originalLogOutput := log.Writer()
 				log.SetOutput(&logs)
@@ -644,8 +652,8 @@ func TestCheckpointImportPublicationOutcomeIsRetained(t *testing.T) {
 }
 
 func TestCheckpointImportOrdinaryRefusalCanRetry(t *testing.T) {
-	cp, _ := checkpointDisclosureFixture(t, "clean")
-	storage := checkpoint.NewStorage()
+	t.Parallel()
+	cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 	archivePath := filepath.Join(t.TempDir(), "source.zip")
 	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
 		t.Fatal(err)
@@ -655,6 +663,7 @@ func TestCheckpointImportOrdinaryRefusalCanRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}})
+	s.checkpointDir = storage.BaseDir
 	calls := 0
 	router := chi.NewRouter()
 	router.Use(s.redactionMiddleware, s.idempotencyMiddleware)
@@ -688,8 +697,8 @@ func TestCheckpointImportOrdinaryRefusalCanRetry(t *testing.T) {
 }
 
 func TestCheckpointImportPublicationWithholdsSensitiveReference(t *testing.T) {
-	cp, _ := checkpointDisclosureFixture(t, "clean")
-	storage := checkpoint.NewStorage()
+	t.Parallel()
+	cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 	archivePath := filepath.Join(t.TempDir(), "source.zip")
 	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
 		t.Fatal(err)
@@ -701,6 +710,7 @@ func TestCheckpointImportPublicationWithholdsSensitiveReference(t *testing.T) {
 	// Even in permissive mode, error diagnostics must not expose a secret or
 	// replace a recovery identifier with a plausible but incorrect placeholder.
 	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeOff}})
+	s.checkpointDir = storage.BaseDir
 	router := chi.NewRouter()
 	router.Post("/api/v1/sessions/{sessionName}/checkpoints/import", func(w http.ResponseWriter, r *http.Request) {
 		s.handleImportCheckpointWithImporter(w, r, func(path string, opts checkpoint.ImportOptions) (*checkpoint.Checkpoint, error) {
@@ -730,10 +740,12 @@ func TestCheckpointImportPublicationWithholdsSensitiveReference(t *testing.T) {
 }
 
 func TestCheckpointArchiveDisclosureNeverSubstitutesInsideBase64(t *testing.T) {
-	cp, _ := checkpointDisclosureFixture(t, "clean")
+	t.Parallel()
+	cp, storage, _ := checkpointDisclosureFixture(t, "clean")
 	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{
 		Mode: redaction.ModeRedact, ExtraPatterns: map[redaction.Category][]string{"CUSTOM": {`"data":"[A-Za-z0-9+/=]+"`}},
 	}})
+	s.checkpointDir = storage.BaseDir
 	assertCheckpointDisclosureRefusal(t, checkpointDisclosureExport(t, s, cp, "zip", false, false))
 	archive := decodeCheckpointDisclosureArchive(t, checkpointDisclosureExport(t, s, cp, "zip", true, false), true)
 	if len(checkpointDisclosureArchiveEntry(t, archive, "zip", checkpoint.MetadataFile)) == 0 {
@@ -742,6 +754,7 @@ func TestCheckpointArchiveDisclosureNeverSubstitutesInsideBase64(t *testing.T) {
 }
 
 func TestCheckpointArchiveDisclosureHonorsPermissiveModesAndExplicitAllowlist(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		cfg  RedactionConfig
@@ -752,8 +765,10 @@ func TestCheckpointArchiveDisclosureHonorsPermissiveModesAndExplicitAllowlist(t 
 		{"explicit allowlist", RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock, Allowlist: []string{"^" + wiringFakeSecret + "$"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cp, _ := checkpointDisclosureFixture(t, "launch")
+			t.Parallel()
+			cp, storage, _ := checkpointDisclosureFixture(t, "launch")
 			s := newWiringTestServer(t, &tc.cfg)
+			s.checkpointDir = storage.BaseDir
 			archive := decodeCheckpointDisclosureArchive(t, checkpointDisclosureExport(t, s, cp, "zip", true, false), true)
 			metadata := checkpointDisclosureArchiveEntry(t, archive, "zip", checkpoint.MetadataFile)
 			if !bytes.Contains(metadata, []byte(wiringFakeSecret)) {
@@ -764,7 +779,7 @@ func TestCheckpointArchiveDisclosureHonorsPermissiveModesAndExplicitAllowlist(t 
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("permitted import status=%d body=%s", rec.Code, rec.Body)
 			}
-			imported, err := checkpoint.NewStorage().Load("permitted-copy", cp.ID)
+			imported, err := storage.Load("permitted-copy", cp.ID)
 			if err != nil || imported.Session.Panes[0].LaunchSpec.Command != cp.Session.Panes[0].LaunchSpec.Command {
 				t.Fatal("permitted import changed recovery values")
 			}

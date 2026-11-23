@@ -72,8 +72,9 @@ type Server struct {
 	idempotencyStore *IdempotencyStore
 
 	// Job management
-	jobStore    *JobStore
-	jobExecutor jobExecutor
+	jobStore      *JobStore
+	jobExecutor   jobExecutor
+	checkpointDir string
 
 	// Active managed workflow runs keyed by canonical (projectDir, session).
 	workflowRunsMu  sync.Mutex

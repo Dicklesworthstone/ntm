@@ -81,7 +81,7 @@ func pollJobTerminal(t *testing.T, srv *Server, jobID string) jobEnvelope {
 		if time.Now().After(deadline) {
 			t.Fatalf("job %s did not reach a terminal state (last=%s)", jobID, env.Job.Status)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
