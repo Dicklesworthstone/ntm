@@ -169,17 +169,28 @@ func (a *JFPAdapter) ListByTag(ctx context.Context, tag string) (json.RawMessage
 
 // Search performs fuzzy search for prompts
 func (a *JFPAdapter) Search(ctx context.Context, query string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "search", "--json", "--", query)
+	if strings.HasPrefix(query, "-") {
+		// jfp uses CAC, which does not accept "--" before positional args;
+		// prefixing a space prevents CAC from interpreting a dash-prefixed query as a flag.
+		query = " " + query
+	}
+	return a.runCommand(ctx, "search", query, "--json")
 }
 
 // Show returns details for a specific prompt
 func (a *JFPAdapter) Show(ctx context.Context, id string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "show", "--json", "--", id)
+	if strings.HasPrefix(strings.TrimSpace(id), "-") {
+		return nil, fmt.Errorf("invalid prompt id %q: must not start with '-'", id)
+	}
+	return a.runCommand(ctx, "show", id, "--json")
 }
 
 // Suggest returns prompt suggestions for a task
 func (a *JFPAdapter) Suggest(ctx context.Context, task string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "suggest", "--json", "--", task)
+	if strings.HasPrefix(task, "-") {
+		task = " " + task
+	}
+	return a.runCommand(ctx, "suggest", task, "--json")
 }
 
 // Status returns registry cache status and settings
@@ -204,12 +215,17 @@ func (a *JFPAdapter) Bundles(ctx context.Context) (json.RawMessage, error) {
 
 // Export exports one or more prompts by ID.
 func (a *JFPAdapter) Export(ctx context.Context, ids []string, format string) (json.RawMessage, error) {
-	args := []string{"export", "--json"}
+	for _, id := range ids {
+		if strings.HasPrefix(strings.TrimSpace(id), "-") {
+			return nil, fmt.Errorf("invalid prompt id %q: must not start with '-'", id)
+		}
+	}
+	args := []string{"export"}
 	if format != "" {
 		args = append(args, "--format="+format)
 	}
-	args = append(args, "--")
 	args = append(args, ids...)
+	args = append(args, "--json")
 	return a.runCommand(ctx, args...)
 }
 

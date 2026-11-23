@@ -103,7 +103,7 @@ case "$1" in
         exit 0
         ;;
     export)
-        if [[ "$*" == *"--format skill"* ]]; then
+        if [[ "$*" == *"--format skill"* || "$*" == *"--format=skill"* ]]; then
             moved "Skill export moved to jsm. Run: jsm --help"
         fi
         if [[ "$*" == *"--json"* ]]; then

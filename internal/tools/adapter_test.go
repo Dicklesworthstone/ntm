@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -217,5 +220,53 @@ func TestBaseAdapterBasics(t *testing.T) {
 	}
 	if adapter.Timeout() != 30*time.Second {
 		t.Errorf("Timeout() = %v, want %v", adapter.Timeout(), 30*time.Second)
+	}
+}
+
+func TestJFPAdapter_FlagEqualsAndOptionTerminator(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "jfp-args.txt")
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + "'" + argsFile + "'" + "\nprintf '[]\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "jfp"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter := NewJFPAdapter()
+	readArgs := func() []string {
+		t.Helper()
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(strings.TrimSpace(string(raw)), "\n")
+	}
+
+	if _, err := adapter.ListByCategory(context.Background(), "--evil-cat"); err != nil {
+		t.Fatalf("ListByCategory: %v", err)
+	}
+	if got, want := readArgs(), []string{"list", "--category=--evil-cat", "--json"}; !slices.Equal(got, want) {
+		t.Fatalf("ListByCategory argv = %q, want %q", got, want)
+	}
+
+	if _, err := adapter.Search(context.Background(), "--dash-query"); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got, want := readArgs(), []string{"search", " --dash-query", "--json"}; !slices.Equal(got, want) {
+		t.Fatalf("Search argv = %q, want %q", got, want)
+	}
+
+	if _, err := adapter.Show(context.Background(), "--evil-id"); err == nil {
+		t.Fatal("Show(--evil-id) succeeded, want flag-injection rejection")
+	}
+	if _, err := adapter.Export(context.Background(), []string{"--id-1"}, "md"); err == nil {
+		t.Fatal("Export(--id-1) succeeded, want flag-injection rejection")
+	}
+
+	if _, err := adapter.Export(context.Background(), []string{"idea-wizard"}, "--fmt"); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if got, want := readArgs(), []string{"export", "--format=--fmt", "idea-wizard", "--json"}; !slices.Equal(got, want) {
+		t.Fatalf("Export argv = %q, want %q", got, want)
 	}
 }
