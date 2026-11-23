@@ -1204,11 +1204,9 @@ func (s *Server) handleMetricsExportV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session"))
-	if sessionID == "" {
-		sessionID = "default"
-	}
 
 	collector := metrics.NewCollector(s.stateStore, sessionID)
+	collector.SetProjectDir(s.projectDirSnapshot())
 	report, err := collector.GenerateReport()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,

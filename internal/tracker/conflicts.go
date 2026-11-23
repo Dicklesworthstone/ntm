@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -101,6 +102,24 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 // not launched inside the one it is reporting on.
 func ConflictsForProject(projectDir string, window time.Duration) []Conflict {
 	return DetectConflicts(ChangesForProjectSince(projectDir, time.Now().Add(-window)))
+}
+
+// ConflictsForProjectSince returns files changed by more than one agent in
+// projectDir since ts, optionally filtered to a single session. When
+// projectDir is empty it falls back to ConflictsSince.
+func ConflictsForProjectSince(projectDir string, ts time.Time, session string) []Conflict {
+	if strings.TrimSpace(projectDir) == "" {
+		return ConflictsSince(ts, session)
+	}
+	changes := ChangesForProjectSince(projectDir, ts)
+	var filtered []RecordedFileChange
+	for _, c := range changes {
+		if session != "" && c.Session != session {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return DetectConflicts(filtered)
 }
 
 // ConflictsSince returns files changed by more than one agent since the timestamp.

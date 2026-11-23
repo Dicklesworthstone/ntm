@@ -207,8 +207,6 @@ func runMetricsShow(sessionID string, showTargets bool) error {
 	if store != nil {
 		defer store.Close()
 	}
-	if collector != nil {
-	}
 
 	report, err := collector.GenerateReport()
 	if err != nil {
@@ -270,8 +268,6 @@ func runMetricsCompare(sessionID, baselineName string) error {
 	}
 	if store != nil {
 		defer store.Close()
-	}
-	if collector != nil {
 	}
 
 	currentReport, err := collector.GenerateReport()
@@ -395,14 +391,13 @@ func runMetricsExport(sessionID, format, outputFile string) error {
 
 // runMetricsSnapshotSave saves current metrics as a named snapshot.
 func runMetricsSnapshotSave(sessionID, name string) error {
+	sessionID = strings.TrimSpace(sessionID)
 	store, collector, err := getMetricsCollector(sessionID)
 	if err != nil {
 		return err
 	}
 	if store != nil {
 		defer store.Close()
-	}
-	if collector != nil {
 	}
 
 	if err := collector.SaveSnapshot(name); err != nil {
@@ -423,17 +418,13 @@ func runMetricsSnapshotSave(sessionID, name string) error {
 
 // runMetricsSnapshotList lists saved snapshots from the metric_snapshots table.
 func runMetricsSnapshotList(sessionID string) error {
-	if sessionID == "" {
-		sessionID = "default" // keep in sync with getMetricsCollector's default
-	}
+	sessionID = strings.TrimSpace(sessionID)
 	store, collector, err := getMetricsCollector(sessionID)
 	if err != nil {
 		return err
 	}
 	if store != nil {
 		defer store.Close()
-	}
-	if collector != nil {
 	}
 	if store == nil {
 		// state.Open failed, so there is no metric_snapshots table to query.
@@ -446,13 +437,17 @@ func runMetricsSnapshotList(sessionID string) error {
 		return fmt.Errorf("listing snapshots: %w", err)
 	}
 
+	displaySession := sessionID
+	if displaySession == "" {
+		displaySession = "all"
+	}
 	slog.Debug("metrics snapshot list",
-		"session", sessionID,
+		"session", displaySession,
 		"count", len(snapshots))
 
 	if IsJSONOutput() {
 		return output.PrintJSON(map[string]interface{}{
-			"session":   sessionID,
+			"session":   displaySession,
 			"count":     len(snapshots),
 			"snapshots": snapshots, // ListSnapshots returns a non-nil slice (arrays-never-null)
 		})
@@ -471,10 +466,9 @@ func runMetricsSnapshotList(sessionID string) error {
 }
 
 // getMetricsCollector returns a metrics collector for the given session.
+// An empty sessionID aggregates read-only metrics across all sessions.
 func getMetricsCollector(sessionID string) (*state.Store, *metrics.Collector, error) {
-	if sessionID == "" {
-		sessionID = "default"
-	}
+	sessionID = strings.TrimSpace(sessionID)
 
 	// Try to open the state store
 	store, err := state.Open("")

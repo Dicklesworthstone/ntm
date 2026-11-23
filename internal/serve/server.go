@@ -1332,6 +1332,12 @@ func (s *Server) projectDirSnapshot() string {
 	return s.projectDir
 }
 
+// ProjectDirSnapshot returns the server's currently active project directory
+// safely under s.mu, reflecting any runtime PATCH /api/v1/config updates.
+func (s *Server) ProjectDirSnapshot() string {
+	return s.projectDirSnapshot()
+}
+
 // parseCSVParam parses a comma-separated query parameter into a slice.
 func parseCSVParam(value string) []string {
 	if value == "" {

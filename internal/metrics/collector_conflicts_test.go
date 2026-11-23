@@ -12,16 +12,24 @@ import (
 // read the developer's real database — and a test asserting "0 conflicts" would
 // otherwise pass or fail depending on what their agents happened to be doing.
 func TestMain(m *testing.M) {
+	fileConflictsMu.Lock()
 	countFileConflicts = func(string) int64 { return 0 }
+	fileConflictsMu.Unlock()
 	os.Exit(m.Run())
 }
 
 // stubFileConflicts makes the conflict source return n for one test.
 func stubFileConflicts(t *testing.T, n int64) {
 	t.Helper()
+	fileConflictsMu.Lock()
 	previous := countFileConflicts
 	countFileConflicts = func(string) int64 { return n }
-	t.Cleanup(func() { countFileConflicts = previous })
+	fileConflictsMu.Unlock()
+	t.Cleanup(func() {
+		fileConflictsMu.Lock()
+		countFileConflicts = previous
+		fileConflictsMu.Unlock()
+	})
 }
 
 // The metric must follow the tracker rather than a counter of its own. Nothing
@@ -89,13 +97,19 @@ func TestFileConflictTargetMetWhenClean(t *testing.T) {
 // The count is scoped to the collector's session so a per-session report does
 // not inherit another session's conflicts.
 func TestGenerateReportPassesSessionToConflictSource(t *testing.T) {
+	fileConflictsMu.Lock()
 	previous := countFileConflicts
 	var gotSession string
 	countFileConflicts = func(session string) int64 {
 		gotSession = session
 		return 0
 	}
-	t.Cleanup(func() { countFileConflicts = previous })
+	fileConflictsMu.Unlock()
+	t.Cleanup(func() {
+		fileConflictsMu.Lock()
+		countFileConflicts = previous
+		fileConflictsMu.Unlock()
+	})
 
 	c := NewCollector(nil, "my-session")
 	if _, err := c.GenerateReport(); err != nil {

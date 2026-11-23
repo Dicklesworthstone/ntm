@@ -21,17 +21,38 @@ import (
 // the default window of `ntm conflicts` so the two agree.
 const FileConflictWindow = 24 * time.Hour
 
-// countFileConflicts is the conflict source, injectable for tests.
-var countFileConflicts = func(session string) int64 {
-	return int64(len(tracker.ConflictsSince(time.Now().Add(-FileConflictWindow), session)))
+var (
+	fileConflictsMu sync.RWMutex
+
+	// countFileConflicts is the conflict source, injectable for tests.
+	countFileConflicts = func(session string) int64 {
+		return int64(len(tracker.ConflictsSince(time.Now().Add(-FileConflictWindow), session)))
+	}
+
+	// countProjectFileConflicts is the project-scoped conflict source, injectable for tests.
+	countProjectFileConflicts = func(projectDir, session string) int64 {
+		return int64(len(tracker.ConflictsForProjectSince(projectDir, time.Now().Add(-FileConflictWindow), session)))
+	}
+)
+
+func resolveFileConflicts(projectDir, session string) int64 {
+	fileConflictsMu.RLock()
+	projectFn := countProjectFileConflicts
+	defaultFn := countFileConflicts
+	fileConflictsMu.RUnlock()
+	if projectDir != "" {
+		return projectFn(projectDir, session)
+	}
+	return defaultFn(session)
 }
 
 // Collector tracks success metrics for NTM orchestration and persists them to
 // the state store.
 type Collector struct {
-	store     *state.Store
-	sessionID string
-	mu        sync.RWMutex
+	store      *state.Store
+	sessionID  string
+	projectDir string
+	mu         sync.RWMutex
 
 	// In-memory counters for fast access
 	apiCalls        map[string]int64 // tool:operation -> count
@@ -44,14 +65,23 @@ type Collector struct {
 }
 
 // NewCollector creates a new metrics collector for the given session.
+// An empty sessionID aggregates read-only metrics across all sessions.
 func NewCollector(store *state.Store, sessionID string) *Collector {
 	c := &Collector{
 		store:     store,
-		sessionID: sessionID,
+		sessionID: strings.TrimSpace(sessionID),
 		apiCalls:  make(map[string]int64),
 		latencies: make(map[string][]float64),
 	}
 	return c
+}
+
+// SetProjectDir scopes file-conflict lookups to an explicit project directory
+// instead of the process working directory.
+func (c *Collector) SetProjectDir(dir string) {
+	c.mu.Lock()
+	c.projectDir = strings.TrimSpace(dir)
+	c.mu.Unlock()
 }
 
 // RecordBlockedCommand records a blocked command event. Its producers are the
@@ -124,8 +154,12 @@ func (c *Collector) GenerateReport() (*MetricsReport, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	reportSession := c.sessionID
+	if reportSession == "" {
+		reportSession = "all"
+	}
 	report := &MetricsReport{
-		SessionID:     c.sessionID,
+		SessionID:     reportSession,
 		GeneratedAt:   time.Now().UTC(),
 		APICallCounts: make(map[string]int64),
 		LatencyStats:  make(map[string]LatencyStats),
@@ -160,7 +194,7 @@ func (c *Collector) GenerateReport() (*MetricsReport, error) {
 	// file_conflicts target built on it — reported 0 and a green "met" for every
 	// session regardless of what the agents did. A safety target that cannot
 	// fail is worse than an absent one.
-	report.FileConflicts = countFileConflicts(c.sessionID)
+	report.FileConflicts = resolveFileConflicts(c.projectDir, c.sessionID)
 
 	// Generate target comparisons from the resolved report values, not from the
 	// in-memory counters: the counters are what made both Tier-0 targets report
@@ -336,12 +370,21 @@ func (c *Collector) ListSnapshots() ([]SnapshotInfo, error) {
 		return nil, fmt.Errorf("no database connection")
 	}
 
-	rows, err := db.Query(`
-		SELECT id, COALESCE(session_id, ''), snapshot_name, created_at
-		FROM metric_snapshots
-		WHERE session_id = ?
-		ORDER BY created_at ASC, id ASC`,
-		c.sessionID)
+	var rows *sql.Rows
+	var err error
+	if c.sessionID == "" {
+		rows, err = db.Query(`
+			SELECT id, COALESCE(session_id, ''), snapshot_name, created_at
+			FROM metric_snapshots
+			ORDER BY created_at ASC, id ASC`)
+	} else {
+		rows, err = db.Query(`
+			SELECT id, COALESCE(session_id, ''), snapshot_name, created_at
+			FROM metric_snapshots
+			WHERE session_id = ?
+			ORDER BY created_at ASC, id ASC`,
+			c.sessionID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query snapshots: %w", err)
 	}
@@ -453,10 +496,16 @@ func (c *Collector) persistedBlockedCommands() (int64, bool) {
 		return 0, false
 	}
 	var count int64
-	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM blocked_commands WHERE session_id = ?`,
-		c.sessionID).Scan(&count); err != nil {
-		log.Printf("metrics: counting blocked commands for session %s: %v", c.sessionID, err)
+	var err error
+	if c.sessionID == "" {
+		err = db.QueryRow(`SELECT COUNT(*) FROM blocked_commands`).Scan(&count)
+	} else {
+		err = db.QueryRow(
+			`SELECT COUNT(*) FROM blocked_commands WHERE session_id = ?`,
+			c.sessionID).Scan(&count)
+	}
+	if err != nil {
+		log.Printf("metrics: counting blocked commands for session %q: %v", c.sessionID, err)
 		return 0, false
 	}
 	return count, true
@@ -468,10 +517,14 @@ func (c *Collector) insertSnapshot(name, data string) error {
 		return fmt.Errorf("no database connection")
 	}
 
+	sessionID := c.sessionID
+	if sessionID == "" {
+		sessionID = "all"
+	}
 	_, err := db.Exec(`
 		INSERT INTO metric_snapshots (session_id, snapshot_name, snapshot_data)
 		VALUES (?, ?, ?)`,
-		c.sessionID, name, data)
+		sessionID, name, data)
 	return err
 }
 
@@ -482,11 +535,20 @@ func (c *Collector) querySnapshot(name string) (string, error) {
 	}
 
 	var data string
-	err := db.QueryRow(`
-		SELECT snapshot_data FROM metric_snapshots
-		WHERE session_id = ? AND snapshot_name = ?
-		ORDER BY created_at DESC, id DESC LIMIT 1`,
-		c.sessionID, name).Scan(&data)
+	var err error
+	if c.sessionID == "" {
+		err = db.QueryRow(`
+			SELECT snapshot_data FROM metric_snapshots
+			WHERE snapshot_name = ?
+			ORDER BY CASE WHEN session_id = 'all' THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 1`,
+			name).Scan(&data)
+	} else {
+		err = db.QueryRow(`
+			SELECT snapshot_data FROM metric_snapshots
+			WHERE session_id = ? AND snapshot_name = ?
+			ORDER BY created_at DESC, id DESC LIMIT 1`,
+			c.sessionID, name).Scan(&data)
+	}
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("snapshot not found: %s", name)
 	}

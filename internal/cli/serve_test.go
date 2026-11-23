@@ -53,7 +53,7 @@ func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		serveStateMaintenance(ctx, store, "", time.Hour, time.Hour, nil)
+		serveStateMaintenance(ctx, store, nil, time.Hour, time.Hour, nil)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 

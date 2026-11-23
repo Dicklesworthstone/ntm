@@ -119,3 +119,45 @@ func TestNilStoreDoesNotPanic(t *testing.T) {
 		t.Fatalf("GenerateReport with a nil store: %v", err)
 	}
 }
+
+func TestEmptySessionAggregatesAllSessionsAndHonorsProjectDir(t *testing.T) {
+	store := openMetricsStore(t)
+
+	NewCollector(store, "alpha").RecordBlockedCommand("a1", "rm -rf /", "destructive")
+	NewCollector(store, "beta").RecordBlockedCommand("b1", "git reset --hard", "safety")
+	NewCollector(store, "beta").RecordBlockedCommand("b2", "drop table", "safety")
+
+	fileConflictsMu.Lock()
+	prevProjectConflicts := countProjectFileConflicts
+	var gotProjectDir, gotSession string
+	countProjectFileConflicts = func(projectDir, session string) int64 {
+		gotProjectDir = projectDir
+		gotSession = session
+		return 2
+	}
+	fileConflictsMu.Unlock()
+	t.Cleanup(func() {
+		fileConflictsMu.Lock()
+		countProjectFileConflicts = prevProjectConflicts
+		fileConflictsMu.Unlock()
+	})
+
+	allCollector := NewCollector(store, "")
+	allCollector.SetProjectDir("/tmp/custom-metrics-project")
+	report, err := allCollector.GenerateReport()
+	if err != nil {
+		t.Fatalf("GenerateReport(all): %v", err)
+	}
+	if report.SessionID != "all" {
+		t.Errorf("SessionID = %q, want %q", report.SessionID, "all")
+	}
+	if report.BlockedCommands != 3 {
+		t.Errorf("BlockedCommands = %d, want 3 across alpha+beta", report.BlockedCommands)
+	}
+	if report.FileConflicts != 2 {
+		t.Errorf("FileConflicts = %d, want 2 from project-scoped conflict source", report.FileConflicts)
+	}
+	if gotProjectDir != "/tmp/custom-metrics-project" || gotSession != "" {
+		t.Errorf("project conflict source got (%q, %q), want (%q, %q)", gotProjectDir, gotSession, "/tmp/custom-metrics-project", "")
+	}
+}

@@ -144,7 +144,7 @@ type serveOptions struct {
 // state-store GC (stale projections and source health, resolved incidents,
 // expired attention and audit rows, compacted audit_decision_log, completed
 // send operations, idle output watermarks) at start and every gcEvery.
-func serveStateMaintenance(ctx context.Context, store *state.Store, projectDir string, refreshEvery, gcEvery time.Duration, setProjectionState func(string)) {
+func serveStateMaintenance(ctx context.Context, store *state.Store, projectDirFn func() string, refreshEvery, gcEvery time.Duration, setProjectionState func(string)) {
 	collect := func() {
 		if ctx.Err() != nil {
 			return
@@ -159,6 +159,10 @@ func serveStateMaintenance(ctx context.Context, store *state.Store, projectDir s
 	refreshOnce := func() {
 		if ctx.Err() != nil {
 			return
+		}
+		projectDir := ""
+		if projectDirFn != nil {
+			projectDir = projectDirFn()
 		}
 		refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
 		err := robot.RefreshNormalizedProjection(refreshCtx, store, projectDir, "")
@@ -423,7 +427,7 @@ func runServe(opts serveOptions) error {
 
 	go func() {
 		defer close(maintenanceDone)
-		serveStateMaintenance(ctx, stateStore, projectDir, 15*time.Second, time.Hour, srv.SetProjectionState)
+		serveStateMaintenance(ctx, stateStore, srv.ProjectDirSnapshot, 15*time.Second, time.Hour, srv.SetProjectionState)
 	}()
 
 	sigCh := make(chan os.Signal, 1)
