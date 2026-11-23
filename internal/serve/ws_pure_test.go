@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -375,7 +376,7 @@ func setupServeGitRepo(t *testing.T) string {
 
 func TestRunGit_Status(t *testing.T) {
 	repoDir := setupServeGitRepo(t)
-	out, err := runGit(repoDir, "status", "--porcelain")
+	out, err := runGit(context.Background(), repoDir, "status", "--porcelain")
 	if err != nil {
 		t.Fatalf("runGit: %v", err)
 	}
@@ -386,7 +387,7 @@ func TestRunGit_Status(t *testing.T) {
 }
 
 func TestRunGit_InvalidDir(t *testing.T) {
-	_, err := runGit("/nonexistent-serve-test-dir", "status")
+	_, err := runGit(context.Background(), "/nonexistent-serve-test-dir", "status")
 	if err == nil {
 		t.Error("expected error for invalid dir")
 	}
@@ -396,13 +397,13 @@ func TestGitCheckout_ValidRef(t *testing.T) {
 	repoDir := setupServeGitRepo(t)
 
 	// Get the initial commit hash
-	out, err := runGit(repoDir, "rev-parse", "HEAD")
+	out, err := runGit(context.Background(), repoDir, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("rev-parse: %v", err)
 	}
 
 	// Checkout that same commit (detached HEAD)
-	if err := gitCheckout(repoDir, strings.TrimSpace(out)); err != nil {
+	if err := gitCheckout(context.Background(), repoDir, strings.TrimSpace(out)); err != nil {
 		t.Errorf("gitCheckout: %v", err)
 	}
 }
@@ -410,7 +411,7 @@ func TestGitCheckout_ValidRef(t *testing.T) {
 func TestGitStashIfDirty_CleanRepo(t *testing.T) {
 	repoDir := setupServeGitRepo(t)
 
-	stashMsg, err := gitStashIfDirty(repoDir)
+	stashMsg, err := gitStashIfDirty(context.Background(), repoDir)
 	if err != nil {
 		t.Fatalf("gitStashIfDirty: %v", err)
 	}

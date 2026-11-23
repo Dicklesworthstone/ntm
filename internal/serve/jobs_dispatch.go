@@ -338,6 +338,8 @@ type jobSwarmSpawnParams struct {
 	GrokReasoningEffort string   `json:"grok_reasoning_effort,omitempty"`
 	OmpModel            string   `json:"omp_model,omitempty"`
 	OmpReasoningEffort  string   `json:"omp_reasoning_effort,omitempty"`
+	PiModel             string   `json:"pi_model,omitempty"`
+	PiReasoningEffort   string   `json:"pi_reasoning_effort,omitempty"`
 	OcModel             string   `json:"oc_model,omitempty"`
 	OllamaModel         string   `json:"ollama_model,omitempty"`
 	AiderModel          string   `json:"aider_model,omitempty"`
@@ -463,7 +465,11 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	}
 	if req.PiCount != 0 {
 		opts.PluginAgents = map[string]robot.PluginSpawnSpec{
-			"pi": {Count: req.PiCount},
+			"pi": {
+				Count:           req.PiCount,
+				Model:           req.PiModel,
+				ReasoningEffort: req.PiReasoningEffort,
+			},
 		}
 	}
 	if err := req.applyDeliveryOptions(&opts); err != nil {
@@ -651,6 +657,14 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if strings.TrimSpace(req.CustomDirectory) != "" {
+		resolvedDir, err := s.resolveCheckpointWorkDir(req.CustomDirectory)
+		if err != nil {
+			return nil, fmt.Errorf("custom_directory is not usable: %w", err)
+		}
+		req.CustomDirectory = resolvedDir
 	}
 
 	restorer := checkpoint.NewRestorerWithStorage(storage)

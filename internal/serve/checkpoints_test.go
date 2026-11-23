@@ -800,7 +800,7 @@ func TestRestoreCheckpointHTTP_TargetSessionPreservesSource(t *testing.T) {
 	cp, logPath := restoreCheckpointHTTPFixture(t, 1)
 	req := checkpointRestoreRequest(context.Background(), cp, `{"target_session":"restore-copy","skip_git_check":true}`)
 	rec := httptest.NewRecorder()
-	(&Server{}).handleRestoreCheckpoint(rec, req)
+	(&Server{projectDir: cp.WorkingDir}).handleRestoreCheckpoint(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -834,7 +834,7 @@ func TestRestoreCheckpointHTTP_CancellationRetainsPartialProgress(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&Server{}).handleRestoreCheckpoint(rec, req)
+		(&Server{projectDir: cp.WorkingDir}).handleRestoreCheckpoint(rec, req)
 	}()
 	deadline := time.After(5 * time.Second)
 	for {
@@ -1243,5 +1243,49 @@ func TestHandleExportCheckpointValidatesSessionName(t *testing.T) {
 		if got := rec.Header().Get("X-Injected"); got != "" {
 			t.Errorf("session name %q injected a response header", name)
 		}
+	}
+}
+
+func TestCheckpointRestoreAndImportConfinement(t *testing.T) {
+	cp, logPath := restoreCheckpointHTTPFixture(t, 1)
+	outside := t.TempDir()
+
+	// Restore with custom_directory outside projectDir must be rejected with 400 before touching tmux.
+	body := fmt.Sprintf(`{"target_session":"escape-copy","custom_directory":%q,"skip_git_check":true}`, outside)
+	req := checkpointRestoreRequest(context.Background(), cp, body)
+	rec := httptest.NewRecorder()
+	(&Server{projectDir: cp.WorkingDir}).handleRestoreCheckpoint(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("restore outside projectDir status=%d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if data, err := os.ReadFile(logPath); err == nil && len(data) != 0 {
+		t.Fatalf("out-of-project restore reached tmux: %s", data)
+	}
+
+	// Import of an archive whose embedded WorkingDir is outside projectDir (even with empty target_dir)
+	// must be rejected before reaching checkpoint storage.
+	storage := checkpoint.NewStorage()
+	archivePath := filepath.Join(t.TempDir(), "escape.zip")
+	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+		t.Fatalf("export fixture: %v", err)
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	scoped := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: outside})
+	t.Cleanup(scoped.Stop)
+	impRec := httptest.NewRecorder()
+	scoped.Router().ServeHTTP(impRec, wiringJSONRequest(
+		t,
+		http.MethodPost,
+		"/api/v1/sessions/escape-import/checkpoints/import",
+		ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive)},
+	))
+	if impRec.Code != http.StatusBadRequest {
+		t.Fatalf("out-of-project archive import status=%d, want 400; body=%s", impRec.Code, impRec.Body.String())
+	}
+	if _, err := storage.Load("escape-import", cp.ID); err == nil {
+		t.Fatal("out-of-project archive import unexpectedly persisted checkpoint")
 	}
 }

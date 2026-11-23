@@ -731,6 +731,20 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	effectiveDir := strings.TrimSpace(req.CustomDirectory)
+	if effectiveDir != "" || strings.TrimSpace(s.projectDirSnapshot()) != "" {
+		if effectiveDir == "" {
+			effectiveDir = cp.WorkingDir
+		}
+		resolvedDir, err := s.resolveCheckpointWorkDir(effectiveDir)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("restore working directory is not usable: %v", err), nil, reqID)
+			return
+		}
+		req.CustomDirectory = resolvedDir
+	}
+
 	opts := checkpoint.RestoreOptions{
 		TargetSession:   req.TargetSession,
 		Force:           req.Force,
@@ -1159,11 +1173,15 @@ func (s *Server) handleImportCheckpointWithImporter(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// A caller-supplied target_dir becomes the checkpoint's WorkingDir, which
-	// rollback later runs git commands in. Reject an out-of-project directory
-	// here as well as at rollback, so the bad value never reaches storage.
+	// A caller-supplied target_dir (or the archive's own WorkingDir when
+	// target_dir is omitted) becomes the checkpoint's WorkingDir, which
+	// restore and rollback later run tmux/git commands in. Reject an
+	// out-of-project directory before it can reach storage.
+	resolvedTargetDir := req.TargetDir
 	if strings.TrimSpace(req.TargetDir) != "" {
-		if _, err := s.resolveCheckpointWorkDir(req.TargetDir); err != nil {
+		var err error
+		resolvedTargetDir, err = s.resolveCheckpointWorkDir(req.TargetDir)
+		if err != nil {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 				fmt.Sprintf("target_dir is not usable: %v", err), nil, reqID)
 			return
@@ -1172,9 +1190,13 @@ func (s *Server) handleImportCheckpointWithImporter(w http.ResponseWriter, r *ht
 
 	opts := checkpoint.ImportOptions{
 		TargetSession:   sessionName,
-		TargetDir:       req.TargetDir,
+		TargetDir:       resolvedTargetDir,
 		VerifyChecksums: true,
 		AllowOverwrite:  req.AllowOverwrite,
+	}
+	if projectDir := strings.TrimSpace(s.projectDirSnapshot()); projectDir != "" {
+		opts.DefaultWorkingDir = projectDir
+		opts.ValidateWorkingDir = s.resolveCheckpointWorkDir
 	}
 	if req.VerifyChecksums != nil {
 		opts.VerifyChecksums = *req.VerifyChecksums
@@ -1371,7 +1393,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	if plan != nil {
 		// Stash current changes if dirty and not skipped
 		if !req.NoStash {
-			stashRef, err := gitStashIfDirty(workDir)
+			stashRef, err := gitStashIfDirty(ctx, workDir)
 			if err != nil {
 				writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 					fmt.Sprintf("failed to stash current work; rollback stopped: %v", err), rollbackResponseToMap(resp), reqID)
@@ -1383,7 +1405,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Checkout the checkpoint commit
-		if err := gitCheckout(workDir, plan.Commit); err != nil {
+		if err := gitCheckout(ctx, workDir, plan.Commit); err != nil {
 			log.Printf("REST: rollback checkout failed session=%s commit=%s error=%v request_id=%s",
 				sessionName, cp.Git.Commit, err, reqID)
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
@@ -1486,9 +1508,9 @@ func formatAge(d time.Duration) string {
 }
 
 // gitStashIfDirty stashes changes if the working tree is dirty.
-func gitStashIfDirty(workDir string) (string, error) {
+func gitStashIfDirty(ctx context.Context, workDir string) (string, error) {
 	// Check if dirty
-	out, err := runGit(workDir, "status", "--porcelain=v1", "--untracked-files=all")
+	out, err := runGit(ctx, workDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return "", err
 	}
@@ -1498,11 +1520,11 @@ func gitStashIfDirty(workDir string) (string, error) {
 
 	// Stash changes
 	stashMsg := fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
-	if _, err := runGit(workDir, "stash", "push", "--include-untracked", "-m", stashMsg); err != nil {
+	if _, err := runGit(ctx, workDir, "stash", "push", "--include-untracked", "-m", stashMsg); err != nil {
 		return "", err
 	}
 
-	ref, err := runGit(workDir, "rev-parse", "--verify", "refs/stash")
+	ref, err := runGit(ctx, workDir, "rev-parse", "--verify", "refs/stash")
 	if err != nil {
 		return "", fmt.Errorf("stash command completed but its reference is unavailable; inspect before retrying: %w", err)
 	}
@@ -1510,15 +1532,18 @@ func gitStashIfDirty(workDir string) (string, error) {
 }
 
 // gitCheckout checks out a specific commit.
-func gitCheckout(workDir, ref string) error {
-	_, err := runGit(workDir, "checkout", "--no-overwrite-ignore", ref)
+func gitCheckout(ctx context.Context, workDir, ref string) error {
+	_, err := runGit(ctx, workDir, "checkout", "--no-overwrite-ignore", ref)
 	return err
 }
 
-// runGit runs a git command and returns the output.
-func runGit(workDir string, args ...string) (string, error) {
+// runGit runs a git command with the caller's context and returns the output.
+func runGit(ctx context.Context, workDir string, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	allArgs := append([]string{"-C", workDir}, args...)
-	cmd := exec.Command("git", allArgs...)
+	cmd := exec.CommandContext(ctx, "git", allArgs...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
