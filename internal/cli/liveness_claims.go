@@ -8,6 +8,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/session"
@@ -330,6 +331,10 @@ func init() {
 	config.RegisterReader("cass.context.min_relevance", robotSendCASSOptions)
 	config.RegisterReader("cass.context.skip_if_context_above", robotSendCASSOptions)
 	config.RegisterReader("cass.context.prefer_same_project", robotSendCASSOptions)
+
+	// [retry.alerts] override, applied at startup to internal/notify's webhook retry loop (policy_wiring.go).
+	config.RegisterReader("retry.alerts.max_attempts", notify.ApplyAlertRetryPolicy)
+	config.RegisterReader("retry.alerts.initial_delay_ms", notify.ApplyAlertRetryPolicy)
 
 	// HTTP/WS admission rate limiting ([serve.rate_limit], validated and wired
 	// into serve.Config by runServe in internal/cli/serve.go).

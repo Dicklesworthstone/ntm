@@ -27,7 +27,49 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
-var notificationCommandTimeout = 10 * time.Second
+const (
+	defaultAlertRetryMaxRetries   = 3
+	defaultAlertRetryInitialDelay = time.Second
+	maxAlertWebhookRetryDelay     = 30 * time.Second
+)
+
+var (
+	notificationCommandTimeout = 10 * time.Second
+
+	// Alert/notification webhook retry policy governed by [retry] / [retry.alerts]
+	// via ApplyAlertRetryPolicy (called after config load in internal/cli/policy_wiring.go).
+	// Compiled-in defaults preserve historical retry semantics (3 retries after the
+	// initial attempt with 1s initial backoff, doubling up to 30s).
+	alertRetryMu           sync.RWMutex
+	alertRetryMaxRetries   = defaultAlertRetryMaxRetries
+	alertRetryInitialDelay = defaultAlertRetryInitialDelay
+)
+
+// ApplyAlertRetryPolicy configures the alert/notification webhook retry loop from
+// cfg.Retry.RetryPolicyFor("alerts"). maxAttempts is the number of retries after
+// the first request; initialDelayMs is the base delay in milliseconds (doubling
+// per retry). Non-positive values restore the compiled-in defaults.
+func ApplyAlertRetryPolicy(maxAttempts, initialDelayMs int) {
+	alertRetryMu.Lock()
+	defer alertRetryMu.Unlock()
+	if maxAttempts > 0 {
+		alertRetryMaxRetries = maxAttempts
+	} else {
+		alertRetryMaxRetries = defaultAlertRetryMaxRetries
+	}
+	if initialDelayMs > 0 {
+		alertRetryInitialDelay = time.Duration(initialDelayMs) * time.Millisecond
+	} else {
+		alertRetryInitialDelay = defaultAlertRetryInitialDelay
+	}
+}
+
+// AlertRetryPolicy returns the active alert webhook retry budget and initial backoff.
+func AlertRetryPolicy() (maxRetries int, initialDelay time.Duration) {
+	alertRetryMu.RLock()
+	defer alertRetryMu.RUnlock()
+	return alertRetryMaxRetries, alertRetryInitialDelay
+}
 
 // EventType represents the type of notification event
 type EventType string
@@ -705,41 +747,84 @@ func (n *Notifier) sendWebhook(event Event) error {
 		return fmt.Errorf("template execution failed: %w", err)
 	}
 
-	// Create request
+	// Create request template inputs once so retries replay the exact body.
 	method := n.config.Webhook.Method
 	if method == "" {
 		method = "POST"
 	}
-
-	req, err := http.NewRequest(method, webhookURL, &body)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range n.config.Webhook.Headers {
-		req.Header.Set(k, v)
-	}
+	payloadBytes := body.Bytes()
 
 	// Send request (never follow redirects that could forward credentials or hit metadata IPs)
 	clientCopy := *n.httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	resp, err := clientCopy.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
+	maxRetries, initialDelay := AlertRetryPolicy()
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := initialDelay
+			if delay > maxAlertWebhookRetryDelay {
+				delay = maxAlertWebhookRetryDelay
+			}
+			for step := 1; step < attempt && delay < maxAlertWebhookRetryDelay; step++ {
+				delay *= 2
+				if delay > maxAlertWebhookRetryDelay {
+					delay = maxAlertWebhookRetryDelay
+				}
+			}
+			time.Sleep(delay)
+		}
+
+		req, err := http.NewRequest(method, webhookURL, bytes.NewReader(payloadBytes))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range n.config.Webhook.Headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := clientCopy.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			if isRetryableNotifyError(err) && attempt < maxRetries {
+				continue
+			}
+			return lastErr
+		}
+
+		if resp.StatusCode < 300 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil
+		}
+
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
+		resp.Body.Close()
+		lastErr = fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
+		if isRetryableNotifyStatus(resp.StatusCode) && attempt < maxRetries {
+			continue
+		}
+		return lastErr
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
-	return nil
+	return lastErr
+}
+
+func isRetryableNotifyStatus(code int) bool {
+	return code == http.StatusTooManyRequests || (code >= 500 && code <= 599)
+}
+
+func isRetryableNotifyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "blocked by SSRF policy") {
+		return false
+	}
+	return true
 }
 
 // sendShell executes a shell command notification

@@ -10,8 +10,8 @@ package cli
 import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
-	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
@@ -29,7 +29,7 @@ func applyConfiguredPolicies(cfg *config.Config) {
 	agentmail.UseConfiguredEndpoint(cfg.AgentMail.URL, cfg.AgentMail.Token)
 	// [retry] → the three real retry loops (WS6-wire).
 	agentmail.ApplyRetryPolicy(cfg.Retry.RetryPolicyFor("agent_mail"))
-	robot.ApplyAlertRetryPolicy(cfg.Retry.RetryPolicyFor("alerts"))
+	notify.ApplyAlertRetryPolicy(cfg.Retry.RetryPolicyFor("alerts"))
 	webhookAttempts, webhookDelay := cfg.Retry.RetryPolicyFor("webhook")
 	webhook.ApplyRetryPolicy(webhookAttempts, webhookDelay,
 		cfg.Retry.MaxDelayMs, cfg.Retry.BackoffFactor, cfg.Retry.Jitter)
