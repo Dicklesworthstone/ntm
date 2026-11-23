@@ -288,6 +288,9 @@ func pushedFiles(repoPath string, stdin io.Reader) ([]string, error) {
 			sawRefLine = true
 			localOID := fields[1]
 			remoteOID := fields[3]
+			if !isValidGitOID(localOID) || !isValidGitOID(remoteOID) {
+				return nil, fmt.Errorf("invalid git object ID in pre-push ref line: local=%q remote=%q", localOID, remoteOID)
+			}
 			if isZeroGitOID(localOID) {
 				// Remote branch/tag deletion: no local commit contents pushed.
 				continue
@@ -326,8 +329,21 @@ func pushedFiles(repoPath string, stdin io.Reader) ([]string, error) {
 	return paths, nil
 }
 
+func isValidGitOID(oid string) bool {
+	if len(oid) < 40 || len(oid) > 64 {
+		return false
+	}
+	for i := 0; i < len(oid); i++ {
+		c := oid[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func gitDiffRangePaths(repoPath, baseOID, headOID string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--no-renames", "--diff-filter=ACDM", "-z", baseOID+".."+headOID)
+	cmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--no-renames", "--diff-filter=ACDM", "-z", baseOID+".."+headOID, "--")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s..%s: %w", baseOID, headOID, err)
@@ -346,7 +362,7 @@ func pushedFilesForUnpushedCommits(repoPath, localRef string) ([]string, error) 
 		return nil, nil
 	}
 
-	diffCmd := exec.Command("git", "-C", repoPath, "diff-tree", "--stdin", "--no-commit-id", "--name-only", "-r", "--root", "--no-renames", "--diff-filter=ACDM", "-z")
+	diffCmd := exec.Command("git", "-C", repoPath, "diff-tree", "-m", "--stdin", "--no-commit-id", "--name-only", "-r", "--root", "--no-renames", "--diff-filter=ACDM", "-z")
 	diffCmd.Stdin = bytes.NewBufferString(commits + "\n")
 	diffOut, err := diffCmd.Output()
 	if err != nil {
