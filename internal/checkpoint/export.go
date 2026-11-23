@@ -87,6 +87,13 @@ type ImportOptions struct {
 	TargetSession string
 	// TargetDir overrides the working directory on import
 	TargetDir string
+	// DefaultWorkingDir is used to expand "${WORKING_DIR}" when TargetDir is
+	// empty. When empty, os.Getwd() is used.
+	DefaultWorkingDir string
+	// ValidateWorkingDir, when non-nil, validates and optionally canonicalizes
+	// the effective checkpoint WorkingDir before the imported checkpoint is
+	// serialized and published to disk.
+	ValidateWorkingDir func(string) (string, error)
 	// VerifyChecksums validates file integrity on import
 	VerifyChecksums bool
 	// AllowOverwrite permits overwriting existing checkpoints. Replacement
@@ -740,13 +747,25 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 	if opts.TargetDir != "" {
 		cp.WorkingDir = opts.TargetDir
 	} else if cp.WorkingDir == "${WORKING_DIR}" {
-		// No explicit target dir and checkpoint was exported with path rewriting
-		// Use current working directory as default
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get current directory for path expansion: %w", err)
+		// No explicit target dir and checkpoint was exported with path rewriting.
+		// Prefer caller-provided DefaultWorkingDir (e.g., scoped server project),
+		// falling back to current working directory.
+		if strings.TrimSpace(opts.DefaultWorkingDir) != "" {
+			cp.WorkingDir = opts.DefaultWorkingDir
+		} else {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get current directory for path expansion: %w", err)
+			}
+			cp.WorkingDir = cwd
 		}
-		cp.WorkingDir = cwd
+	}
+	if opts.ValidateWorkingDir != nil {
+		validatedDir, err := opts.ValidateWorkingDir(cp.WorkingDir)
+		if err != nil {
+			return nil, fmt.Errorf("invalid checkpoint working directory: %w", err)
+		}
+		cp.WorkingDir = validatedDir
 	}
 
 	cpJSON, err := json.MarshalIndent(cp, "", "  ")
