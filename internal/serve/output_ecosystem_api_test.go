@@ -215,6 +215,18 @@ func TestOutputEcosystemRESTEndpointsEndToEnd(t *testing.T) {
 	if missingPatRec.Result().StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 when pattern omitted, got %d", missingPatRec.Result().StatusCode)
 	}
+	if badLinesRec := doReq(http.MethodGet, "/api/v1/grep?pattern=ok&lines=99999", ""); badLinesRec.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when grep lines exceeds cap, got %d (%s)", badLinesRec.Result().StatusCode, badLinesRec.Body.String())
+	}
+	if badCtxRec := doReq(http.MethodGet, "/api/v1/grep?pattern=ok&context=99", ""); badCtxRec.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when grep context exceeds cap, got %d (%s)", badCtxRec.Result().StatusCode, badCtxRec.Body.String())
+	}
+	if badExtractRec := doReq(http.MethodGet, "/api/v1/sessions/demo/extract?lines=99999", ""); badExtractRec.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when extract lines exceeds cap, got %d (%s)", badExtractRec.Result().StatusCode, badExtractRec.Body.String())
+	}
+	if badErrorsRec := doReq(http.MethodGet, "/api/v1/sessions/demo/errors?context=99", ""); badErrorsRec.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when errors context exceeds cap, got %d (%s)", badErrorsRec.Result().StatusCode, badErrorsRec.Body.String())
+	}
 	missingSessRec := doReq(http.MethodGet, "/api/v1/sessions/nonexistent_wave16_sess/errors", "")
 	if missingSessRec.Result().StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing session errors, got %d (%s)", missingSessRec.Result().StatusCode, missingSessRec.Body.String())

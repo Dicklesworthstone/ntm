@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,24 +174,33 @@ func parseGrepOptionsFromRequest(w http.ResponseWriter, r *http.Request, session
 		allSessions = allVal
 	}
 
+	if len(pattern) > robot.MaxScrollbackPatternBytes {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("pattern exceeds maximum length (%d bytes)", robot.MaxScrollbackPatternBytes), nil, reqID)
+		return robot.GrepOptions{}, false
+	}
 	ctxLines, err := parseOptionalNonNegIntParam(r, "context", 0)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "context must be a non-negative integer", nil, reqID)
+	if err != nil || ctxLines > robot.MaxScrollbackContextLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("context must be an integer between 0 and %d", robot.MaxScrollbackContextLines), nil, reqID)
 		return robot.GrepOptions{}, false
 	}
 	beforeLines, err := parseOptionalNonNegIntParam(r, "before", 0)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "before must be a non-negative integer", nil, reqID)
+	if err != nil || beforeLines > robot.MaxScrollbackContextLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("before must be an integer between 0 and %d", robot.MaxScrollbackContextLines), nil, reqID)
 		return robot.GrepOptions{}, false
 	}
 	afterLines, err := parseOptionalNonNegIntParam(r, "after", 0)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "after must be a non-negative integer", nil, reqID)
+	if err != nil || afterLines > robot.MaxScrollbackContextLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("after must be an integer between 0 and %d", robot.MaxScrollbackContextLines), nil, reqID)
 		return robot.GrepOptions{}, false
 	}
 	maxLines, err := parseOptionalNonNegIntParam(r, "lines", 1000)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lines must be a non-negative integer", nil, reqID)
+	if err != nil || maxLines > robot.MaxScrollbackLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("lines must be an integer between 0 and %d", robot.MaxScrollbackLines), nil, reqID)
 		return robot.GrepOptions{}, false
 	}
 
@@ -235,7 +245,7 @@ func (s *Server) handleSessionGrepV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts.AllSessions = false
-	out, err := robot.GetGrep(opts)
+	out, err := robot.GetGrepContext(r.Context(), opts)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -260,7 +270,7 @@ func (s *Server) handleGlobalGrepV1(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := robot.GetGrep(opts)
+	out, err := robot.GetGrepContext(r.Context(), opts)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -282,8 +292,9 @@ func (s *Server) handleSessionExtractV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	lines, err := parseOptionalNonNegIntParam(r, "lines", 500)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lines must be a non-negative integer", nil, reqID)
+	if err != nil || lines > robot.MaxScrollbackLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("lines must be an integer between 0 and %d", robot.MaxScrollbackLines), nil, reqID)
 		return
 	}
 	selectBlock, err := parseOptionalNonNegIntParam(r, "select", 0)
@@ -292,7 +303,7 @@ func (s *Server) handleSessionExtractV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	out, err := robot.GetExtract(robot.ExtractOptions{
+	out, err := robot.GetExtractContext(r.Context(), robot.ExtractOptions{
 		Session:     sessName,
 		Pane:        strings.TrimSpace(firstQueryParam(r, "pane")),
 		Language:    strings.TrimSpace(firstQueryParam(r, "lang")),
@@ -316,13 +327,15 @@ func (s *Server) handleSessionErrorsV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lines, err := parseOptionalNonNegIntParam(r, "lines", 1000)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lines must be a non-negative integer", nil, reqID)
+	if err != nil || lines > robot.MaxScrollbackLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("lines must be an integer between 0 and %d", robot.MaxScrollbackLines), nil, reqID)
 		return
 	}
 	ctxLines, err := parseOptionalNonNegIntParam(r, "context", 2)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "context must be a non-negative integer", nil, reqID)
+	if err != nil || ctxLines > robot.MaxScrollbackContextLines {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("context must be an integer between 0 and %d", robot.MaxScrollbackContextLines), nil, reqID)
 		return
 	}
 
@@ -339,7 +352,7 @@ func (s *Server) handleSessionErrorsV1(w http.ResponseWriter, r *http.Request) {
 		agentType = strings.TrimSpace(firstQueryParam(r, "type"))
 	}
 
-	out, err := robot.GetErrors(robot.ErrorsOptions{
+	out, err := robot.GetErrorsContext(r.Context(), robot.ErrorsOptions{
 		Session:   sessName,
 		Panes:     paneSelectors,
 		Lines:     lines,
