@@ -1067,3 +1067,37 @@ func TestHandleScannerScanEndpointAndIncrementalModes(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleBugsEmptyArrayAndCreateBeadArgValidation(t *testing.T) {
+	resetScannerStoreForTest()
+	srv, _ := setupTestServer(t)
+
+	// Empty bugs response must serialize "bugs":[] rather than JSON null.
+	reqBugs := httptest.NewRequest(http.MethodGet, "/api/v1/bugs", nil)
+	recBugs := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recBugs, reqBugs)
+	if recBugs.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/bugs status=%d body=%s", recBugs.Code, recBugs.Body.String())
+	}
+	if strings.Contains(recBugs.Body.String(), `"bugs":null`) || !strings.Contains(recBugs.Body.String(), `"bugs":[]`) {
+		t.Fatalf("expected non-null empty bugs array, got %s", recBugs.Body.String())
+	}
+
+	// Leading-dash title or label must be rejected with 400 before invoking br.
+	addTestFinding("scan-dash", "finding-dash", scanner.SeverityCritical, "main.go", "security", false, "")
+	for _, body := range []string{
+		`{"title":"--db=/tmp/evil.db"}`,
+		`{"title":"valid title","labels":["--evil-flag"]}`,
+		`{"title":"valid title","priority":"--bad"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/scanner/findings/finding-dash/bead", strings.NewReader(body))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "finding-dash")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rec := httptest.NewRecorder()
+		srv.handleCreateBeadFromFinding(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s -> status=%d (%s), want 400", body, rec.Code, rec.Body.String())
+		}
+	}
+}

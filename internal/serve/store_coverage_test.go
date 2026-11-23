@@ -236,3 +236,69 @@ func TestWSClient_Topics_SingleTopic(t *testing.T) {
 		t.Errorf("expected [events], got %v", topics)
 	}
 }
+
+func TestMemoryStore_TryBeginStartAndStopHardening(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+
+	// Stopping from nil/stopped must fail.
+	if _, _, ok := store.TryBeginStop(nil); ok {
+		t.Fatal("TryBeginStop(nil) succeeded on empty store")
+	}
+
+	// Start -> MarkRunning.
+	_, gen1, ok := store.TryBeginStart(8123, "sess-1")
+	if !ok {
+		t.Fatal("initial TryBeginStart failed")
+	}
+	// Stopping while starting must fail.
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"}); ok {
+		t.Fatal("TryBeginStop succeeded while starting")
+	}
+	store.SetStartingPID(gen1, "sess-1", 42)
+	if !store.MarkRunningIfStarting(gen1, &MemoryDaemonInfo{
+		PID:       42,
+		Port:      8123,
+		SessionID: "sess-1",
+		State:     DaemonStateRunning,
+	}, "sess-1", 42) {
+		t.Fatal("MarkRunningIfStarting failed")
+	}
+
+	// TryBeginStart must reject an already-running daemon without bumping daemonGen.
+	store.mu.RLock()
+	genBefore := store.daemonGen
+	store.mu.RUnlock()
+	if info, _, ok := store.TryBeginStart(8123, "sess-2"); ok || info == nil || info.PID != 42 {
+		t.Fatalf("TryBeginStart on running daemon = (%+v, ok=%v), want rejected with PID 42", info, ok)
+	}
+	store.mu.RLock()
+	genAfter := store.daemonGen
+	store.mu.RUnlock()
+	if genAfter != genBefore {
+		t.Fatalf("rejected TryBeginStart mutated daemonGen: %d -> %d", genBefore, genAfter)
+	}
+
+	// TryBeginStop must reject mismatched PID or SessionID.
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 99, SessionID: "sess-1"}); ok {
+		t.Fatal("TryBeginStop succeeded with mismatched PID")
+	}
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "other"}); ok {
+		t.Fatal("TryBeginStop succeeded with mismatched SessionID")
+	}
+
+	// Matching running daemon transitions cleanly to stopping.
+	conflict, stopGen, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"})
+	if !ok || conflict != nil || stopGen == 0 {
+		t.Fatalf("TryBeginStop(matching) = (%+v, gen=%d, ok=%v), want ok with nil conflict", conflict, stopGen, ok)
+	}
+	if got := store.GetDaemonInfo(); got == nil || got.State != DaemonStateStopping {
+		t.Fatalf("expected stopping state after TryBeginStop, got %+v", got)
+	}
+	if !store.MarkStoppedIfStoppingGen(stopGen) {
+		t.Fatal("MarkStoppedIfStoppingGen failed")
+	}
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"}); ok {
+		t.Fatal("TryBeginStop succeeded after stopped")
+	}
+}
