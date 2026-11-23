@@ -1,8 +1,10 @@
 package caut
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -371,5 +373,17 @@ func TestSupportedProviders(t *testing.T) {
 		if !expected[p] {
 			t.Errorf("unexpected provider: %s", p)
 		}
+	}
+}
+
+func TestLimitedBuffer_IOCopyEnforcesLimit(t *testing.T) {
+	t.Parallel()
+	buf := &limitedBuffer{limit: 16}
+	if _, ok := any(buf).(io.ReaderFrom); ok {
+		t.Fatal("caut limitedBuffer must not implement io.ReaderFrom")
+	}
+	_, err := io.Copy(buf, bytes.NewReader(bytes.Repeat([]byte("x"), 128)))
+	if err == nil || !strings.Contains(err.Error(), "exceeded limit") {
+		t.Fatalf("io.Copy error = %v, want limit exceeded error", err)
 	}
 }
