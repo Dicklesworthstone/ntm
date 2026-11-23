@@ -385,10 +385,15 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	canonicalProvider := strings.TrimSpace(output.Switch.Provider)
+	if canonicalProvider == "" {
+		canonicalProvider = strings.TrimSpace(req.Provider)
+	}
+
 	// Record in history
 	event := AccountRotationEvent{
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-		Provider:        req.Provider,
+		Provider:        canonicalProvider,
 		PreviousAccount: output.Switch.PreviousAccount,
 		NewAccount:      output.Switch.NewAccount,
 		Reason:          req.Reason,
@@ -408,8 +413,8 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 
 	// Publish WebSocket event for rotation
 	if s.wsHub != nil {
-		s.wsHub.Publish("accounts:"+req.Provider, "account.rotated", map[string]interface{}{
-			"provider":         req.Provider,
+		s.wsHub.Publish("accounts:"+canonicalProvider, "account.rotated", map[string]interface{}{
+			"provider":         canonicalProvider,
 			"previous_account": output.Switch.PreviousAccount,
 			"new_account":      output.Switch.NewAccount,
 			"success":          output.Switch.Success,
@@ -419,14 +424,14 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("REST: account rotated provider=%s previous=%s new=%s success=%v automatic=%v request_id=%s",
-		req.Provider,
+		canonicalProvider,
 		output.Switch.PreviousAccount,
 		output.Switch.NewAccount,
 		output.Switch.Success,
 		false,
 		reqID,
 	)
-	logAccountQuotaSnapshot(reqID, req.Provider)
+	logAccountQuotaSnapshot(reqID, canonicalProvider)
 
 	if !output.Success {
 		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{
@@ -515,10 +520,15 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	canonicalProvider := strings.TrimSpace(output.Switch.Provider)
+	if canonicalProvider == "" {
+		canonicalProvider = strings.TrimSpace(provider)
+	}
+
 	// Record in history
 	event := AccountRotationEvent{
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-		Provider:        provider,
+		Provider:        canonicalProvider,
 		PreviousAccount: output.Switch.PreviousAccount,
 		NewAccount:      output.Switch.NewAccount,
 		Reason:          req.Reason,
@@ -537,8 +547,8 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 
 	// Publish WebSocket event for rotation
 	if s.wsHub != nil {
-		s.wsHub.Publish("accounts:"+provider, "account.rotated", map[string]interface{}{
-			"provider":         provider,
+		s.wsHub.Publish("accounts:"+canonicalProvider, "account.rotated", map[string]interface{}{
+			"provider":         canonicalProvider,
 			"previous_account": output.Switch.PreviousAccount,
 			"new_account":      output.Switch.NewAccount,
 			"success":          output.Switch.Success,
@@ -548,14 +558,14 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 	}
 
 	log.Printf("REST: account rotated provider=%s previous=%s new=%s success=%v automatic=%v request_id=%s",
-		provider,
+		canonicalProvider,
 		output.Switch.PreviousAccount,
 		output.Switch.NewAccount,
 		output.Switch.Success,
 		false,
 		reqID,
 	)
-	logAccountQuotaSnapshot(reqID, provider)
+	logAccountQuotaSnapshot(reqID, canonicalProvider)
 
 	if !output.Success {
 		writeErrorResponse(w, accountRobotErrorStatus(output.ErrorCode), output.ErrorCode, output.Error, map[string]interface{}{

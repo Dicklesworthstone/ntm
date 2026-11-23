@@ -343,11 +343,12 @@ func resolveBoundedProjectFile(projectDir, rawFile string) (string, error) {
 	if baseDir == "" {
 		return "", fmt.Errorf("prompt_file requires a configured server project_dir")
 	}
-	cleanBase, err := filepath.Abs(baseDir)
+	rawBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve project_dir: %w", err)
 	}
-	if resolvedBase, err := filepath.EvalSymlinks(cleanBase); err == nil {
+	cleanBase := rawBase
+	if resolvedBase, err := filepath.EvalSymlinks(rawBase); err == nil {
 		cleanBase = resolvedBase
 	}
 	var candidate string
@@ -356,8 +357,7 @@ func resolveBoundedProjectFile(projectDir, rawFile string) (string, error) {
 	} else {
 		candidate = filepath.Clean(filepath.Join(cleanBase, trimmed))
 	}
-	rel, err := filepath.Rel(cleanBase, candidate)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !pathWithinRoot(cleanBase, candidate) && !pathWithinRoot(rawBase, candidate) {
 		return "", fmt.Errorf("prompt_file must reside within active project_dir")
 	}
 	// Resolve symlinks on the target so a link inside project_dir cannot read

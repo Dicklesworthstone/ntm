@@ -659,6 +659,10 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 		return nil, err
 	}
 
+	// Explicit custom_directory overrides must stay confined within the
+	// server's active project root; omitted custom_directory intentionally
+	// preserves global checkpoint replay semantics (restoring the checkpoint's
+	// own saved WorkingDir — see TestJobHTTPProjectScopeKeepsCheckpointReplayGlobal).
 	if strings.TrimSpace(req.CustomDirectory) != "" {
 		resolvedDir, err := s.resolveCheckpointWorkDir(req.CustomDirectory)
 		if err != nil {

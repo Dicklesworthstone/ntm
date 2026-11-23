@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -247,21 +248,23 @@ func TestMemoryStore_TryBeginStartAndStopHardening(t *testing.T) {
 	}
 
 	// Start -> MarkRunning.
+	livePID := os.Getpid()
+	otherPID := livePID + 1
 	_, gen1, ok := store.TryBeginStart(8123, "sess-1")
 	if !ok {
 		t.Fatal("initial TryBeginStart failed")
 	}
 	// Stopping while starting must fail.
-	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"}); ok {
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: livePID, SessionID: "sess-1"}); ok {
 		t.Fatal("TryBeginStop succeeded while starting")
 	}
-	store.SetStartingPID(gen1, "sess-1", 42)
+	store.SetStartingPID(gen1, "sess-1", livePID)
 	if !store.MarkRunningIfStarting(gen1, &MemoryDaemonInfo{
-		PID:       42,
+		PID:       livePID,
 		Port:      8123,
 		SessionID: "sess-1",
 		State:     DaemonStateRunning,
-	}, "sess-1", 42) {
+	}, "sess-1", livePID) {
 		t.Fatal("MarkRunningIfStarting failed")
 	}
 
@@ -269,8 +272,8 @@ func TestMemoryStore_TryBeginStartAndStopHardening(t *testing.T) {
 	store.mu.RLock()
 	genBefore := store.daemonGen
 	store.mu.RUnlock()
-	if info, _, ok := store.TryBeginStart(8123, "sess-2"); ok || info == nil || info.PID != 42 {
-		t.Fatalf("TryBeginStart on running daemon = (%+v, ok=%v), want rejected with PID 42", info, ok)
+	if info, _, ok := store.TryBeginStart(8123, "sess-2"); ok || info == nil || info.PID != livePID {
+		t.Fatalf("TryBeginStart on running daemon = (%+v, ok=%v), want rejected with PID %d", info, ok, livePID)
 	}
 	store.mu.RLock()
 	genAfter := store.daemonGen
@@ -280,15 +283,15 @@ func TestMemoryStore_TryBeginStartAndStopHardening(t *testing.T) {
 	}
 
 	// TryBeginStop must reject mismatched PID or SessionID.
-	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 99, SessionID: "sess-1"}); ok {
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: otherPID, SessionID: "sess-1"}); ok {
 		t.Fatal("TryBeginStop succeeded with mismatched PID")
 	}
-	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "other"}); ok {
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: livePID, SessionID: "other"}); ok {
 		t.Fatal("TryBeginStop succeeded with mismatched SessionID")
 	}
 
 	// Matching running daemon transitions cleanly to stopping.
-	conflict, stopGen, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"})
+	conflict, stopGen, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: livePID, SessionID: "sess-1"})
 	if !ok || conflict != nil || stopGen == 0 {
 		t.Fatalf("TryBeginStop(matching) = (%+v, gen=%d, ok=%v), want ok with nil conflict", conflict, stopGen, ok)
 	}
@@ -298,7 +301,7 @@ func TestMemoryStore_TryBeginStartAndStopHardening(t *testing.T) {
 	if !store.MarkStoppedIfStoppingGen(stopGen) {
 		t.Fatal("MarkStoppedIfStoppingGen failed")
 	}
-	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: 42, SessionID: "sess-1"}); ok {
+	if _, _, ok := store.TryBeginStop(&MemoryDaemonInfo{PID: livePID, SessionID: "sess-1"}); ok {
 		t.Fatal("TryBeginStop succeeded after stopped")
 	}
 }

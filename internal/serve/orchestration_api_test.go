@@ -253,9 +253,21 @@ func TestSessionControllerPathTraversalAndQueryValidation(t *testing.T) {
 	if _, err := resolveBoundedProjectFile(projDir, "/etc/passwd"); err == nil {
 		t.Fatal("expected absolute path outside projectDir to be rejected")
 	}
+	wantInsidePrompt := insidePrompt
+	if resolved, err := filepath.EvalSymlinks(insidePrompt); err == nil {
+		wantInsidePrompt = resolved
+	}
 	got, err := resolveBoundedProjectFile(projDir, "prompts/controller.txt")
-	if err != nil || got != insidePrompt {
-		t.Fatalf("resolveBoundedProjectFile valid relative path = (%q, %v), want (%q, nil)", got, err, insidePrompt)
+	if err != nil || got != wantInsidePrompt {
+		t.Fatalf("resolveBoundedProjectFile valid relative path = (%q, %v), want (%q, nil)", got, err, wantInsidePrompt)
+	}
+	symlinkBase := filepath.Join(t.TempDir(), "proj-link")
+	if err := os.Symlink(projDir, symlinkBase); err == nil {
+		absViaLink := filepath.Join(symlinkBase, "prompts", "controller.txt")
+		gotViaLink, err := resolveBoundedProjectFile(symlinkBase, absViaLink)
+		if err != nil || gotViaLink != wantInsidePrompt {
+			t.Fatalf("resolveBoundedProjectFile absolute path under symlinked projectDir = (%q, %v), want (%q, nil)", gotViaLink, err, wantInsidePrompt)
+		}
 	}
 	outsideSecret := filepath.Join(t.TempDir(), "outside-secret.txt")
 	if err := os.WriteFile(outsideSecret, []byte("top-secret"), 0o600); err != nil {
