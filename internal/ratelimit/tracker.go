@@ -3,6 +3,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -388,6 +389,9 @@ func (t *RateLimitTracker) LoadFromDir(dir string) error {
 				}
 				if ps.LastRateLimit.After(existing.LastRateLimit) {
 					existing.LastRateLimit = ps.LastRateLimit
+					existing.ConsecutiveSuccess = ps.ConsecutiveSuccess
+				} else if ps.LastRateLimit.Equal(existing.LastRateLimit) && ps.ConsecutiveSuccess < existing.ConsecutiveSuccess {
+					existing.ConsecutiveSuccess = ps.ConsecutiveSuccess
 				}
 				if ps.CooldownUntil.After(existing.CooldownUntil) {
 					existing.CooldownUntil = ps.CooldownUntil
@@ -400,14 +404,22 @@ func (t *RateLimitTracker) LoadFromDir(dir string) error {
 	}
 
 	if pd.History != nil {
-		// Merge history instead of overwriting, normalizing alias keys.
-		for rawProvider, events := range pd.History {
+		// Merge history deterministically instead of overwriting, normalizing alias keys.
+		rawHistoryKeys := make([]string, 0, len(pd.History))
+		for k := range pd.History {
+			rawHistoryKeys = append(rawHistoryKeys, k)
+		}
+		sort.Strings(rawHistoryKeys)
+
+		for _, rawProvider := range rawHistoryKeys {
+			events := pd.History[rawProvider]
 			provider := NormalizeProvider(rawProvider)
 			if provider == "" {
 				continue
 			}
 			existing := t.history[provider]
 			for _, newEv := range events {
+				newEv.Provider = provider
 				// Simple deduplication: avoid adding if an event with same action
 				// exists within 1 second of this timestamp.
 				duplicate := false
@@ -553,9 +565,15 @@ var exitCodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)status[:\s]+(\d+)`),
 }
 
-// maxWaitSeconds is the largest whole-second value representable as a positive
-// time.Duration without overflowing int64 nanoseconds.
-const maxWaitSeconds = math.MaxInt64 / int64(time.Second)
+// maxWaitSecondsInt returns the largest whole-second value representable both
+// as a platform int and as a positive time.Duration without int64 overflow.
+func maxWaitSecondsInt() int {
+	const maxDurSec = int64(math.MaxInt64) / int64(time.Second)
+	if int64(math.MaxInt) < maxDurSec {
+		return math.MaxInt
+	}
+	return int(maxDurSec)
+}
 
 // ParseWaitSeconds extracts a suggested wait time in seconds from output.
 // Returns 0 if no wait time is found.
@@ -565,13 +583,17 @@ func ParseWaitSeconds(output string) int {
 	}
 	output = status.StripANSI(output)
 
+	capSec := maxWaitSecondsInt()
 	for _, pattern := range waitTimePatterns {
 		if matches := pattern.re.FindStringSubmatch(output); len(matches) > 1 {
 			seconds, err := strconv.Atoi(matches[1])
+			if errors.Is(err, strconv.ErrRange) {
+				return capSec
+			}
 			if err == nil && seconds > 0 {
-				limit := maxWaitSeconds / int64(pattern.multiplier)
+				limit := int64(capSec) / int64(pattern.multiplier)
 				if int64(seconds) >= limit {
-					return int(maxWaitSeconds)
+					return capSec
 				}
 				return seconds * pattern.multiplier
 			}

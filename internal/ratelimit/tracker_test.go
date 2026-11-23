@@ -733,12 +733,17 @@ func TestLoadFromDir_HandlesNullProviderStateAndNormalizesKeys(t *testing.T) {
 
 func TestParseWaitSeconds_DoesNotOverflowMinutesMultiplier(t *testing.T) {
 	t.Parallel()
-	got := ParseWaitSeconds("retry after 999999999999999999 minutes")
-	if got <= 0 {
-		t.Fatalf("ParseWaitSeconds overflowed to %d", got)
-	}
-	if time.Duration(got)*time.Second <= 0 {
-		t.Fatalf("ParseWaitSeconds(%d) overflows time.Duration multiplication", got)
+	for _, input := range []string{
+		"retry after 999999999999999999 minutes",
+		"retry after 99999999999999999999999 minutes",
+	} {
+		got := ParseWaitSeconds(input)
+		if got <= 0 {
+			t.Fatalf("ParseWaitSeconds(%q) overflowed/dropped to %d", input, got)
+		}
+		if time.Duration(got)*time.Second <= 0 {
+			t.Fatalf("ParseWaitSeconds(%q)=%d overflows time.Duration multiplication", input, got)
+		}
 	}
 }
 
