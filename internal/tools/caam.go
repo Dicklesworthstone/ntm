@@ -632,13 +632,33 @@ func (a *CAAMAdapter) GetCurrentCredentials(ctx context.Context, provider string
 }
 
 // SwitchAccount activates a named profile for a provider.
-func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID string) error {
-	path, installed := a.Detect()
-	if !installed {
-		return ErrToolNotInstalled
+func validateCAAMProviderOperand(provider string) (string, error) {
+	trimmed := strings.TrimSpace(provider)
+	if trimmed == "" {
+		return "", fmt.Errorf("provider is required")
 	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", fmt.Errorf("provider %q begins with '-'; refusing flag-shaped operand", provider)
+	}
+	for _, r := range trimmed {
+		if r <= 0x20 || r == 0x7f {
+			return "", fmt.Errorf("provider contains invalid character 0x%02x", r)
+		}
+	}
+	mapped := strings.TrimSpace(ntmProviderForCAAM(trimmed))
+	if mapped == "" || strings.HasPrefix(mapped, "-") {
+		return "", fmt.Errorf("provider %q resolved to invalid operand %q", provider, mapped)
+	}
+	return mapped, nil
+}
+
+func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID string) error {
 	if strings.TrimSpace(provider) == "" || strings.TrimSpace(accountID) == "" {
 		return fmt.Errorf("provider and account ID are required")
+	}
+	caamProvider, err := validateCAAMProviderOperand(provider)
+	if err != nil {
+		return err
 	}
 	// The account ID is passed as a caam positional operand. IDs come from
 	// `caam list --json` output or operator-provided flags; refuse flag-shaped
@@ -652,11 +672,15 @@ func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID str
 			return fmt.Errorf("account ID contains control character 0x%02x", r)
 		}
 	}
+	path, installed := a.Detect()
+	if !installed {
+		return ErrToolNotInstalled
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "activate", ntmProviderForCAAM(provider), accountID, "--json")
+	cmd := exec.CommandContext(ctx, path, "activate", caamProvider, accountID, "--json")
 	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -700,6 +724,10 @@ func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID str
 // It calls CAAM's current `activate <provider> --auto --json` command.
 // This is the preferred method for automatic account switching on rate limit.
 func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) (*SwitchResult, error) {
+	caamProvider, err := validateCAAMProviderOperand(provider)
+	if err != nil {
+		return nil, err
+	}
 	path, installed := a.Detect()
 	if !installed {
 		return nil, ErrToolNotInstalled
@@ -708,14 +736,14 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "activate", ntmProviderForCAAM(provider), "--auto", "--json")
+	cmd := exec.CommandContext(ctx, path, "activate", caamProvider, "--auto", "--json")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	// Parse JSON response even on error (CAAM emits structured error details).
 	output := bytes.TrimSpace(stdout.Bytes())

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -673,5 +674,21 @@ func TestGetCurrentCredentialsNotInstalled(t *testing.T) {
 
 	if err != ErrToolNotInstalled {
 		t.Errorf("Expected ErrToolNotInstalled, got %v", err)
+	}
+}
+
+func TestCAAMAdapter_RejectsLeadingDashProviderAndProfile(t *testing.T) {
+	t.Parallel()
+	adapter := NewCAAMAdapter()
+	ctx := context.Background()
+
+	if err := adapter.SwitchAccount(ctx, "--help", "acct-1"); err == nil || errors.Is(err, ErrToolNotInstalled) || !strings.Contains(err.Error(), "flag-shaped") {
+		t.Fatalf("SwitchAccount(--help) = %v, want flag-shaped rejection before Detect()", err)
+	}
+	if err := adapter.SwitchAccount(ctx, "claude", "--auto"); err == nil || errors.Is(err, ErrToolNotInstalled) || !strings.Contains(err.Error(), "flag-shaped") {
+		t.Fatalf("SwitchAccount(profile=--auto) = %v, want flag-shaped rejection before Detect()", err)
+	}
+	if _, err := adapter.SwitchToNextAccount(ctx, "-v"); err == nil || errors.Is(err, ErrToolNotInstalled) || !strings.Contains(err.Error(), "flag-shaped") {
+		t.Fatalf("SwitchToNextAccount(-v) = %v, want flag-shaped rejection before Detect()", err)
 	}
 }
