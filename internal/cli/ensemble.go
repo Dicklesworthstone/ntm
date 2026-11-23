@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2433,7 +2434,16 @@ func defaultBrCommand(ctx context.Context, dir string, args ...string) ([]byte, 
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
-	return cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return stderr.Bytes(), err
+		}
+		return stdout.Bytes(), err
+	}
+	return stdout.Bytes(), nil
 }
 
 func truncateWithEllipsis(s string, max int) string {
