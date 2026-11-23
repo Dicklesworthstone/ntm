@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 )
 
@@ -26,10 +26,14 @@ const (
 
 var outboxPollInterval = time.Second
 
-func init() {
-	if testing.Testing() {
-		outboxPollInterval = 25 * time.Millisecond
+func effectiveOutboxPollInterval() time.Duration {
+	if outboxPollInterval != time.Second {
+		return outboxPollInterval
 	}
+	if flag.Lookup("test.v") != nil {
+		return 25 * time.Millisecond
+	}
+	return outboxPollInterval
 }
 
 // An outbox record contains the already-redacted event and frozen wire payload,
@@ -336,7 +340,7 @@ func (m *WebhookManager) dispatchOutbox(event Event, webhooks []*WebhookConfig) 
 // process can then retry the same delivery ID, never a concurrent second send.
 func (m *WebhookManager) outboxFeeder() {
 	defer m.wg.Done()
-	timer := time.NewTimer(outboxPollInterval)
+	timer := time.NewTimer(effectiveOutboxPollInterval())
 	defer timer.Stop()
 	for {
 		wait := m.feedOutbox()
@@ -357,7 +361,7 @@ func (m *WebhookManager) outboxFeeder() {
 }
 
 func (m *WebhookManager) feedOutbox() time.Duration {
-	nextWait := outboxPollInterval
+	nextWait := effectiveOutboxPollInterval()
 	entries, err := os.ReadDir(m.outbox.dir)
 	if err != nil {
 		slog.Warn("cannot scan webhook outbox", "error", err)
