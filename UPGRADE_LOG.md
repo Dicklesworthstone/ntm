@@ -1,5 +1,23 @@
 # Dependency Upgrade Log
 
+**Date:** 2026-11-22  |  **Project:** ntm  |  **Language:** Go
+
+## Summary (2026-11-22)
+
+- **Method:** `go get -u ./...`, then holds (below), `go mod tidy`. `web/` and `vscode/` were refreshed on 2026-11-20 and were not touched.
+- **Go toolchain:** `go.mod` `go 1.26.10` -> `go 1.26.11`, with the workflow `GO_VERSION` pins and the version notes in `AGENTS.md`, `README.md` and `CONTRIBUTING.md` kept in sync. `govulncheck` reported GO-2026-6859 in `net/http@go1.26.10` (reachable from `internal/context`), fixed in go1.26.11. Go 1.27 was not adopted in this pass.
+- **Updated (direct):** `charmbracelet/x/ansi` v0.11.8 -> v0.11.10, `go-chi/chi/v5` v5.3.2 -> v5.5.0, `mattn/go-runewidth` v0.0.30 -> v0.0.31, `sergi/go-diff` v1.4.0 -> v1.4.5, `shirou/gopsutil/v4` v4.26.9 -> v4.26.10, `spf13/pflag` v1.0.10 -> v1.1.0, `yuin/goldmark` v1.8.2 -> v1.8.7, `golang.org/x/sys` v0.49.0 -> v0.50.0, `golang.org/x/term` v0.47.0 -> v0.48.0, `golang.org/x/tools` v0.51.0 -> v0.53.0.
+- **Updated (indirect):** go-humanize v1.1.0, purego v0.11.3, go-colorful v1.4.1, go-strftime v1.1.0, sahilm/fuzzy v0.1.3, xo/terminfo v1.3.1, charmbracelet/x/exp/slice v0.1.0, x/mod v0.43.0, x/net v0.63.0, x/sync v0.25.0, x/text v0.44.0, x/telemetry, plan9stats, perfstat. `golang.org/x/exp` dropped by tidy.
+- **Held:**
+  - `chromedp/chromedp` v0.16.0 and `chromedp/cdproto`: v0.17+ is an API redesign (an earlier bump was reverted for the e2e and serve web UI tests).
+  - `alecthomas/chroma/v2` v2.24.1: v2.27.0 (which moves to `dlclark/regexp2/v2`) made glamour rendering of a code-heavy document use about 7.5% more CPU (300 renders, 7 interleaved rounds, median CPU 3071 ms -> 3302 ms; wall 2327 -> 2368 ms). glamour renders markdown in the dashboard, so it stays.
+  - `modernc.org/sqlite` v1.60.1 and `modernc.org/libc` v1.77.1: v1.63.0 (with the libc v1.80.1 it requires) is faster on an sqlite workload (median 3094 -> 2889 ms, CPU 2594 -> 2316 ms), but in two separate interleaved runs of the dashboard benchmarks the binaries linking it were slower (`BenchmarkUltraLayout_100` +9.5% and +9.7%, `BenchmarkDashboardUpdate` +9.9% and +2.7%, with identical allocations), while the same update set without it was flat. Held until that is understood.
+- **Performance gate (dashboard/components benchmarks, 6 interleaved rounds with alternating order, median vs base):** the shipped set is within -3.4%..+1.7% on every benchmark (`DashboardUpdate` -3.4%, `DashboardView` -1.5%, `DashboardViewWide` -2.5%, `MegaLayout_100` -0.3%, `PaneList_Wide_1000` -2.5%, `UltraLayout_100` +1.7%, `StylesProgressBar` -0.6%, `StylesProgressBar3Color` -2.6%). An A/A control of two identical base builds moved by up to 6% on this host, so differences under that are noise.
+- **Gates (macOS, `go test -short -p 4 -count=1 ./...`, final tree on go1.26.11):** build clean; 110 packages pass. The same 18 packages fail before and after the update, all failing at the base commit on this host too (91 failing tests at base, 93 with the update; the 2 extra, `TestRestoreLifecyclePreservesPaneAfterUncertainStartup` and `TestSendCASSCommandCapacityMeasurementLifecycle`, pass 3/3 when run alone). `go vet ./...` fails before and after on `internal/pipeline/process_group_unix_test.go`, which uses a Linux-only symbol under a `linux || darwin` build tag. `gofmt -l` lists `internal/cli/resume.go` and `internal/robot/markdown.go`, unchanged by this update. `go mod tidy -diff` is clean.
+- **Audit:** `govulncheck ./...`: no vulnerabilities after the toolchain bump (1 standard-library finding before it).
+
+---
+
 **Date:** 2026-11-20  |  **Project:** ntm  |  **Languages:** Go + `web/` Next.js Cockpit + `vscode/` Extension
 
 ## Summary (2026-11-20)
