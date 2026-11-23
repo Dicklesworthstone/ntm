@@ -459,14 +459,17 @@ func IsAlive(pid int) bool {
 	// Signal 0 succeeded — but on macOS that includes zombies, which
 	// /proc would have rejected on Linux. Cross-check the ps state so
 	// the two platforms agree on what "alive" means.
-	if cmd := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)); cmd != nil {
-		if out, perr := cmd.Output(); perr == nil {
-			state := strings.TrimSpace(string(out))
-			if state != "" {
-				short := string(state[0])
-				if short == "Z" || short == "X" || short == "x" {
-					return false
-				}
+	psCtx, psCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	cmd := exec.CommandContext(psCtx, "ps", "-o", "state=", "-p", strconv.Itoa(pid))
+	cmd.WaitDelay = time.Second
+	out, perr := cmd.Output()
+	psCancel()
+	if perr == nil {
+		state := strings.TrimSpace(string(out))
+		if state != "" {
+			short := string(state[0])
+			if short == "Z" || short == "X" || short == "x" {
+				return false
 			}
 		}
 	}
@@ -587,12 +590,15 @@ func getChildPIDs(parentPID int) []int {
 	}
 
 	// Fallback for systems without /proc or Linux kernels lacking CONFIG_PROC_CHILDREN.
-	if cmd := exec.Command("pgrep", "-P", strconv.Itoa(parentPID)); cmd != nil {
-		if out, err := cmd.Output(); err == nil {
-			for _, raw := range strings.Fields(string(out)) {
-				if pid, perr := strconv.Atoi(raw); perr == nil {
-					add(pid)
-				}
+	pgrepCtx, pgrepCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	cmd := exec.CommandContext(pgrepCtx, "pgrep", "-P", strconv.Itoa(parentPID))
+	cmd.WaitDelay = time.Second
+	out, pgrepErr := cmd.Output()
+	pgrepCancel()
+	if pgrepErr == nil {
+		for _, raw := range strings.Fields(string(out)) {
+			if pid, perr := strconv.Atoi(raw); perr == nil {
+				add(pid)
 			}
 		}
 	}
@@ -849,7 +855,10 @@ func GetProcessState(pid int) (string, string, error) {
 
 	// Fallback to ps (macOS and Linux)
 	// 'state' column provides the process state
-	cmd := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid))
+	psCtx, psCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer psCancel()
+	cmd := exec.CommandContext(psCtx, "ps", "-o", "state=", "-p", strconv.Itoa(pid))
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err == nil {
 		state := strings.TrimSpace(string(out))
