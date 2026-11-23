@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2141,18 +2142,41 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 	return vars
 }
 
-func resolveRestartPiCommandTemplate() string {
+func resolveRestartPiCommandAndEnv() (string, map[string]string) {
 	agentsDir := filepath.Join(filepath.Dir(config.DefaultPath()), "agents")
 	if loaded, err := plugins.LoadAgentPluginsWithDefaults(agentsDir); err == nil {
 		for _, p := range loaded {
 			if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
 				if strings.TrimSpace(p.Command) != "" {
-					return p.Command
+					return p.Command, p.Env
 				}
 			}
 		}
 	}
-	return plugins.ShippedPiPlugin().Command
+	shipped := plugins.ShippedPiPlugin()
+	return shipped.Command, shipped.Env
+}
+
+func prefixRestartPluginEnv(command string, env map[string]string) string {
+	if len(env) == 0 || strings.TrimSpace(command) == "" {
+		return command
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !restartEnvironmentName(k) {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k, tmux.ShellQuote(env[k])))
+	}
+	if len(parts) == 0 {
+		return command
+	}
+	return strings.Join(parts, " ") + " " + command
 }
 
 // restartAgentLaunchCommandWithOverride resolves the command used to relaunch
@@ -2204,8 +2228,9 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 			tmpl = cfg.Agents.Ollama
 		}
 	}
+	var piPluginEnv map[string]string
 	if strings.TrimSpace(tmpl) == "" && resolved == "pi" {
-		tmpl = resolveRestartPiCommandTemplate()
+		tmpl, piPluginEnv = resolveRestartPiCommandAndEnv()
 	}
 	appendArgs := func(cmd string) string {
 		if override.Args != "" {
@@ -2271,6 +2296,7 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 		}
 		return "", fmt.Errorf("render relaunch command with override: %w", err)
 	}
+	rendered = prefixRestartPluginEnv(rendered, piPluginEnv)
 
 	if override.Model != "" || override.Effort != "" {
 		if err := validateRestartOverrideCommand(rendered, resolved); err != nil {

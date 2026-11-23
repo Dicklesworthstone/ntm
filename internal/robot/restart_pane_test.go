@@ -2360,6 +2360,42 @@ func TestRestartAgentLaunchCommandWithOverride_PiAndOpenCode(t *testing.T) {
 		t.Fatalf("pi restart command = %q, want --model and --thinking", piCmd)
 	}
 
+	// Custom agents/pi.toml with [agent.env]: valid env vars must be preserved
+	// as shell-quoted prefixes and invalid POSIX keys dropped, even through
+	// override validation, scalar-override removal, and command sanitization.
+	agentsDir := filepath.Join(xdg, "ntm", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agentsDir: %v", err)
+	}
+	customPiTOML := `[agent]
+name = "pi"
+alias = "pi"
+command = "pi --model old-model --thinking low --verbose"
+
+[agent.env]
+PI_CUSTOM_FLAG = "hello world"
+"BAD-KEY" = "drop-me"
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "pi.toml"), []byte(customPiTOML), 0o644); err != nil {
+		t.Fatalf("write pi.toml: %v", err)
+	}
+	piEnvCmd, err := restartAgentLaunchCommandWithOverride(cfg, "pi", "", restartLaunchOverride{
+		Model:  "claude-sonnet-4-6",
+		Effort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("restartAgentLaunchCommandWithOverride(pi with env): %v", err)
+	}
+	if !strings.HasPrefix(piEnvCmd, "PI_CUSTOM_FLAG='hello world' ") {
+		t.Fatalf("pi restart command with env = %q, want PI_CUSTOM_FLAG prefix", piEnvCmd)
+	}
+	if strings.Contains(piEnvCmd, "BAD-KEY") || strings.Contains(piEnvCmd, "drop-me") {
+		t.Fatalf("pi restart command with env = %q, must drop invalid env key", piEnvCmd)
+	}
+	if strings.Contains(piEnvCmd, "old-model") || !strings.Contains(piEnvCmd, "--verbose") || !strings.Contains(piEnvCmd, "claude-sonnet-4-6") || !strings.Contains(piEnvCmd, "medium") {
+		t.Fatalf("pi restart command with env = %q, want old overrides stripped and new overrides appended", piEnvCmd)
+	}
+
 	strippedPi, err := removeRestartScalarOverrides("pi --model old --thinking low --verbose", "pi", true, true)
 	if err != nil {
 		t.Fatalf("removeRestartScalarOverrides(pi): %v", err)
