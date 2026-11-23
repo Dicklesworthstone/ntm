@@ -977,6 +977,13 @@ func (e *beadsCommandError) Error() string {
 
 func (e *beadsCommandError) Unwrap() error { return e.err }
 
+type brCommandOverrideKey struct{}
+
+type brCommandOverride struct {
+	binary string
+	env    []string
+}
+
 func runBdCommandContext(parent context.Context, dir string, options beadsCommandOptions, args ...string) (string, error) {
 	if parent == nil {
 		return "", errors.New("br command context is required")
@@ -1022,12 +1029,21 @@ func runBdCommandContext(parent context.Context, dir string, options beadsComman
 		args = append([]string{"--lock-timeout", "5000"}, args...)
 	}
 
+	brBin := "br"
+	var extraEnv []string
+	if override, ok := parent.Value(brCommandOverrideKey{}).(brCommandOverride); ok {
+		if override.binary != "" {
+			brBin = override.binary
+		}
+		extraEnv = override.env
+	}
+
 	const maxAttempts = 6 // Canonical default: config.RetryConfig.DB.MaxAttempts
 	retryDeadline := time.Now().Add(transientBeadsRetryBudget)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(parent, DefaultTimeout)
 
-		cmd := exec.CommandContext(ctx, "br", args...)
+		cmd := exec.CommandContext(ctx, brBin, args...)
 		cmd.WaitDelay = time.Second // Prevent hanging on open pipes
 		cmd.Dir = dir
 		if options.projectBound {
@@ -1035,6 +1051,12 @@ func runBdCommandContext(parent context.Context, dir string, options beadsComman
 				cancel()
 				return "", err
 			}
+		}
+		if len(extraEnv) > 0 {
+			if len(cmd.Env) == 0 {
+				cmd.Env = os.Environ()
+			}
+			cmd.Env = append(cmd.Env, extraEnv...)
 		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout

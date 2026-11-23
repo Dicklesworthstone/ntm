@@ -74,6 +74,7 @@ func mutexRefusal(t *testing.T, err error, groups ...string) {
 }
 
 func TestAssignmentMutexClaimsSerializeAcrossConnections(t *testing.T) {
+	t.Parallel()
 	path, db := assignmentMutexFixture(t)
 	const count = 16
 	for i := 0; i < count; i++ {
@@ -131,6 +132,7 @@ func TestAssignmentMutexClaimsSerializeAcrossConnections(t *testing.T) {
 }
 
 func TestAssignmentMutexOwnerLifecycleAndNormalization(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		status, owner string
 		held          bool
@@ -141,7 +143,9 @@ func TestAssignmentMutexOwnerLifecycleAndNormalization(t *testing.T) {
 		{"closed", "historical actor", false}, {" TOMBSTONE ", "historical actor", false},
 		{"open", "\t\u2003", false}, {"deferred", "", false},
 	} {
+		tc := tc
 		t.Run(tc.status+"/"+tc.owner, func(t *testing.T) {
+			t.Parallel()
 			path, db := assignmentMutexFixture(t)
 			mutexIssue(t, db, "candidate", "open", "", "\t MuTeX: \u2003ÄREA\u00a0", "mutex:ÄREA", "mutex:")
 			mutexIssue(t, db, "private-holder", tc.status, tc.owner, "\u2003MUTEX:ärea\t", "private")
@@ -168,6 +172,7 @@ func TestAssignmentMutexOwnerLifecycleAndNormalization(t *testing.T) {
 }
 
 func TestAssignmentMutexExactRetryReleaseAndIndependentWork(t *testing.T) {
+	t.Parallel()
 	path, db := assignmentMutexFixture(t)
 	mutexIssue(t, db, "first", "open", "", "mutex:db")
 	mutexIssue(t, db, "second", "open", "", "mutex:db", "mutex:docs")
@@ -208,6 +213,7 @@ func TestAssignmentMutexExactRetryReleaseAndIndependentWork(t *testing.T) {
 }
 
 func TestAssignmentMutexFailedWriteDoesNotHoldGroups(t *testing.T) {
+	t.Parallel()
 	path, db := assignmentMutexFixture(t)
 	mutexIssue(t, db, "failing", "open", "", "mutex:db")
 	mutexIssue(t, db, "next", "open", "", "mutex:db")
@@ -230,6 +236,7 @@ func TestAssignmentMutexFailedWriteDoesNotHoldGroups(t *testing.T) {
 }
 
 func TestAssignmentMutexStaleRecoveryAndIdempotentRecheck(t *testing.T) {
+	t.Parallel()
 	path, db := assignmentMutexFixture(t)
 	mutexIssue(t, db, "stale", "in_progress", "", "mutex:db")
 	mutexIssue(t, db, "holder", "open", "owner", "mutex:db")

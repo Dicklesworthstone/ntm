@@ -1496,8 +1496,10 @@ func TestGuardedClaimCorruptionRecoveryRejectsInvalidJSONL(t *testing.T) {
 }
 
 func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	t.Run("ordinary read remains read only and executing preflight repairs", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "operator approval required after read recovery")
@@ -1507,9 +1509,9 @@ func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
 		beforeJSONL := realBRRecoveryBytes(t, jsonlPath)
 		offset, size := corruptRealBRIssuesRootPage(t, databasePath)
 		damaged := realBRRecoveryBytes(t, databasePath)
-		calls := traceRealBRRecovery(t, "")
+		ctx, calls := traceRealBRRecovery(t, t.Context(), "")
 
-		if _, err := GetBeadAssignmentDetailsContext(t.Context(), dir, beadID); err == nil || !isBeadsReadCorruptionError(err) {
+		if _, err := GetBeadAssignmentDetailsContext(ctx, dir, beadID); err == nil || !isBeadsReadCorruptionError(err) {
 			t.Fatalf("ordinary details error=%v, want structured database corruption", err)
 		}
 		unchanged := realBRRecoveryBytes(t, databasePath)
@@ -1521,14 +1523,14 @@ func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
 		}
 
 		reads := 0
-		details, err := ReadForMutationContext(t.Context(), dir, func() (*BeadAssignmentDetails, error) {
+		details, err := ReadForMutationContext(ctx, dir, func() (*BeadAssignmentDetails, error) {
 			reads++
-			return GetBeadAssignmentDetailsContext(t.Context(), dir, beadID)
+			return GetBeadAssignmentDetailsContext(ctx, dir, beadID)
 		})
 		if err != nil || details == nil || details.Status != "open" || reads != 2 {
 			t.Fatalf("details=%+v error=%v reads=%d, want fresh open evidence after one retry", details, err, reads)
 		}
-		if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "ReadRecoveryActor"); !errors.Is(err, ErrBeadAssignmentIneligible) {
+		if _, err := ClaimBeadForAssignment(ctx, dir, beadID, "ReadRecoveryActor"); !errors.Is(err, ErrBeadAssignmentIneligible) {
 			t.Fatalf("claim after read recovery error=%v, want preserved operator gate", err)
 		}
 		commands := readRealBRRecoveryCalls(t, calls)
@@ -1540,6 +1542,7 @@ func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
 		}
 	})
 	t.Run("invalid JSONL stops before rereading", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "invalid source must preserve failed index evidence")
@@ -1571,7 +1574,7 @@ func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
 
 // traceRealBRRecovery delegates to the installed br, except for an optional
 // doctor interception used to test failures at that process boundary.
-func traceRealBRRecovery(t *testing.T, doctorScript string) string {
+func traceRealBRRecovery(t *testing.T, parent context.Context, doctorScript string, extraEnv ...string) (context.Context, string) {
 	t.Helper()
 	realBR, err := exec.LookPath("br")
 	if err != nil {
@@ -1585,11 +1588,15 @@ func traceRealBRRecovery(t *testing.T, doctorScript string) string {
 		script += "case \" $* \" in\n  *\" doctor --repair --json \"*)\n" + doctorScript + "\n;;\nesac\n"
 	}
 	script += "exec \"$real_br\" \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0755); err != nil {
+	wrapper := filepath.Join(binDir, "br")
+	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return calls
+	ctx := context.WithValue(parent, brCommandOverrideKey{}, brCommandOverride{
+		binary: wrapper,
+		env:    extraEnv,
+	})
+	return ctx, calls
 }
 
 func readRealBRRecoveryCalls(t *testing.T, path string) string {
@@ -1639,6 +1646,7 @@ func omitRealBRJSONLRow(t *testing.T, path, id string) []byte {
 }
 
 func TestGuardedClaimRecoveryPreservesExportedTombstone(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1647,8 +1655,8 @@ func TestGuardedClaimRecoveryPreservesExportedTombstone(t *testing.T) {
 	runRealBR(t, dir, "delete", deletedID, "--force", "--json")
 	databasePath := realBRDatabasePath(t, dir)
 	corruptRealBRIssuesRootPage(t, databasePath)
-	calls := traceRealBRRecovery(t, "")
-	if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor"); err != nil {
+	ctx, calls := traceRealBRRecovery(t, t.Context(), "")
+	if _, err := ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor"); err != nil {
 		t.Fatalf("claim with exported tombstone: %v", err)
 	}
 	assertAssignmentClaimDatabaseState(t, databasePath, deletedID, "tombstone", "")
@@ -1659,9 +1667,12 @@ func TestGuardedClaimRecoveryPreservesExportedTombstone(t *testing.T) {
 }
 
 func TestGuardedClaimRecoveryRefusesUnreadableUnflushedState(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	for _, mutation := range []string{"edit", "creation", "deletion"} {
+		mutation := mutation
 		t.Run("pending "+mutation, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			runRealBR(t, dir, "init", "--quiet")
 			beadID := createRealBRBead(t, dir, "claim with unreadable pending state")
@@ -1678,8 +1689,8 @@ func TestGuardedClaimRecoveryRefusesUnreadableUnflushedState(t *testing.T) {
 			corruptRealBRIssuesRootPage(t, databasePath)
 			jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
 			beforeDB, beforeJSONL := realBRRecoveryBytes(t, databasePath), realBRRecoveryBytes(t, jsonlPath)
-			calls := traceRealBRRecovery(t, "")
-			if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor"); err == nil || !strings.Contains(err.Error(), "preservation") {
+			ctx, calls := traceRealBRRecovery(t, t.Context(), "")
+			if _, err := ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor"); err == nil || !strings.Contains(err.Error(), "preservation") {
 				t.Fatalf("claim with unreadable unflushed %s error=%v, want preservation refusal", mutation, err)
 			}
 			if strings.Contains(readRealBRRecoveryCalls(t, calls), "doctor") {
@@ -1693,13 +1704,16 @@ func TestGuardedClaimRecoveryRefusesUnreadableUnflushedState(t *testing.T) {
 }
 
 func TestGuardedClaimRecoveryRefusesCleanOmittedTombstone(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	for _, staleIndex := range []bool{false, true} {
+		staleIndex := staleIndex
 		name := "intact tombstone indexes"
 		if staleIndex {
 			name = "stale tombstone index"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			runRealBR(t, dir, "init", "--quiet")
 			beadID := createRealBRBead(t, dir, "claim with omitted deletion")
@@ -1754,8 +1768,8 @@ func TestGuardedClaimRecoveryRefusesCleanOmittedTombstone(t *testing.T) {
 			}
 			corruptRealBRIssuesRootPage(t, databasePath)
 			beforeDB, beforeJSONL := realBRRecoveryBytes(t, databasePath), realBRRecoveryBytes(t, jsonlPath)
-			calls := traceRealBRRecovery(t, "")
-			_, err = ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor")
+			ctx, calls := traceRealBRRecovery(t, t.Context(), "")
+			_, err = ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor")
 			if err == nil || !strings.Contains(err.Error(), "tombstone") {
 				t.Fatalf("omitted tombstone claim error=%v", err)
 			}
@@ -1773,6 +1787,7 @@ func TestGuardedClaimRecoveryRefusesCleanOmittedTombstone(t *testing.T) {
 }
 
 func TestGuardedClaimRebuildPreservesReadableUnflushedState(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1784,8 +1799,8 @@ func TestGuardedClaimRebuildPreservesReadableUnflushedState(t *testing.T) {
 	databasePath := realBRDatabasePath(t, dir)
 	// Corrupt a derived event index, leaving issues and dirty markers readable.
 	corruptRealBRBTreeRootPage(t, databasePath, "idx_events_issue")
-	calls := traceRealBRRecovery(t, "")
-	if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor"); err != nil {
+	ctx, calls := traceRealBRRecovery(t, t.Context(), "")
+	if _, err := ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor"); err != nil {
 		t.Fatal(err)
 	}
 	assertAssignmentClaimDatabaseState(t, databasePath, deletedID, "tombstone", "")
@@ -1802,6 +1817,7 @@ func TestGuardedClaimRebuildPreservesReadableUnflushedState(t *testing.T) {
 }
 
 func TestGuardedClaimRecoveryRejectsUnverifiedDoctorRepair(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1810,9 +1826,9 @@ func TestGuardedClaimRecoveryRejectsUnverifiedDoctorRepair(t *testing.T) {
 	corruptRealBRIssuesRootPage(t, databasePath)
 	jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
 	beforeDB, beforeJSONL := realBRRecoveryBytes(t, databasePath), realBRRecoveryBytes(t, jsonlPath)
-	calls := traceRealBRRecovery(t, `printf '%s\n' '{"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":false}'
+	ctx, calls := traceRealBRRecovery(t, t.Context(), `printf '%s\n' '{"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":false}'
 exit 2`)
-	if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor"); err == nil || !strings.Contains(err.Error(), "doctor") {
+	if _, err := ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor"); err == nil || !strings.Contains(err.Error(), "doctor") {
 		t.Fatalf("unverified repair accepted: %v", err)
 	}
 	commands := strings.Split(strings.TrimSpace(readRealBRRecoveryCalls(t, calls)), "\n")
@@ -1825,6 +1841,7 @@ exit 2`)
 }
 
 func TestGuardedClaimRecoveryRejectsTombstoneLostDuringDoctor(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	source, dir := t.TempDir(), t.TempDir()
 	runRealBR(t, source, "init", "--prefix", "recovery", "--quiet")
@@ -1859,15 +1876,16 @@ func TestGuardedClaimRecoveryRejectsTombstoneLostDuringDoctor(t *testing.T) {
 	}
 	reportPath := filepath.Join(t.TempDir(), "doctor.json")
 	corruptRealBRIssuesRootPage(t, databasePath)
-	t.Setenv("NTM_TEST_CHANGED_JSONL", changedSource)
-	t.Setenv("NTM_TEST_JSONL", jsonlPath)
-	t.Setenv("NTM_TEST_DOCTOR_REPORT", reportPath)
-	calls := traceRealBRRecovery(t, `cp "$NTM_TEST_CHANGED_JSONL" "$NTM_TEST_JSONL"
+	ctx, calls := traceRealBRRecovery(t, t.Context(), `cp "$NTM_TEST_CHANGED_JSONL" "$NTM_TEST_JSONL"
 "$real_br" "$@" > "$NTM_TEST_DOCTOR_REPORT"
 result=$?
 cat "$NTM_TEST_DOCTOR_REPORT"
-exit "$result"`)
-	_, err = ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor")
+exit "$result"`,
+		"NTM_TEST_CHANGED_JSONL="+changedSource,
+		"NTM_TEST_JSONL="+jsonlPath,
+		"NTM_TEST_DOCTOR_REPORT="+reportPath,
+	)
+	_, err = ClaimBeadForAssignment(ctx, dir, beadID, "RecoveryActor")
 	if err == nil || !strings.Contains(err.Error(), "lost tombstone "+deletedID) {
 		t.Fatalf("tombstone disappearance was not rejected: %v", err)
 	}

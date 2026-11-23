@@ -300,6 +300,7 @@ func TestFileResponsesDecodeBVShapes(t *testing.T) {
 // bare array left the recovery prompt's and --robot-health's Top Blockers
 // empty. Run the installed br on a workspace with one blocked issue.
 func TestGetDependencyContextReadsBrBlockedEnvelope(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("br"); err != nil {
 		t.Skip("br not installed")
 	}
@@ -338,6 +339,7 @@ func TestGetDependencyContextReadsBrBlockedEnvelope(t *testing.T) {
 
 // The live contract: run the installed bv on a workspace with a cycle.
 func TestGetInsightsReadsCyclesFromInstalledBV(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bv"); err != nil {
 		t.Skip("bv not installed")
 	}
