@@ -343,7 +343,13 @@ func resolveBoundedProjectFile(projectDir, rawFile string) (string, error) {
 	if baseDir == "" {
 		return "", fmt.Errorf("prompt_file requires a configured server project_dir")
 	}
-	cleanBase := filepath.Clean(baseDir)
+	cleanBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve project_dir: %w", err)
+	}
+	if resolvedBase, err := filepath.EvalSymlinks(cleanBase); err == nil {
+		cleanBase = resolvedBase
+	}
 	var candidate string
 	if filepath.IsAbs(trimmed) {
 		candidate = filepath.Clean(trimmed)
@@ -354,7 +360,16 @@ func resolveBoundedProjectFile(projectDir, rawFile string) (string, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("prompt_file must reside within active project_dir")
 	}
-	return candidate, nil
+	// Resolve symlinks on the target so a link inside project_dir cannot read
+	// arbitrary host files outside the project root.
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("prompt_file is not accessible within active project_dir: %w", err)
+	}
+	if !pathWithinRoot(cleanBase, resolvedCandidate) {
+		return "", fmt.Errorf("prompt_file must reside within active project_dir")
+	}
+	return resolvedCandidate, nil
 }
 
 // handleSessionControllerV1 handles POST /api/v1/sessions/{id}/controller.
