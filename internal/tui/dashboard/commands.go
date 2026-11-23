@@ -591,7 +591,7 @@ func computeDashboardEnsembleMetrics(sessionName string) (panels.MetricsData, er
 }
 
 func buildEnsembleCoverageReport(sess *ensemble.EnsembleSession, catalog *ensemble.ModeCatalog) *ensemble.CoverageReport {
-	if sess == nil || len(sess.Assignments) == 0 {
+	if sess == nil || catalog == nil || len(sess.Assignments) == 0 {
 		return nil
 	}
 
@@ -751,16 +751,24 @@ func buildEnsembleConflictDensity(auditReport *ensemble.AuditReport, modeCount i
 		if conflict.Severity != ensemble.ConflictHigh || len(conflict.Positions) < 2 {
 			continue
 		}
-		a := conflict.Positions[0].ModeID
-		b := conflict.Positions[1].ModeID
-		if a > b {
-			a, b = b, a
+		topic := strings.TrimSpace(conflict.Topic)
+		for i := 0; i < len(conflict.Positions); i++ {
+			for j := i + 1; j < len(conflict.Positions); j++ {
+				a := conflict.Positions[i].ModeID
+				b := conflict.Positions[j].ModeID
+				if a == "" || b == "" || a == b {
+					continue
+				}
+				if a > b {
+					a, b = b, a
+				}
+				label := fmt.Sprintf("%s <-> %s", a, b)
+				if topic != "" {
+					label = fmt.Sprintf("%s (%s)", label, topic)
+				}
+				highPairsSet[label] = struct{}{}
+			}
 		}
-		label := fmt.Sprintf("%s <-> %s", a, b)
-		if topic := strings.TrimSpace(conflict.Topic); topic != "" {
-			label = fmt.Sprintf("%s (%s)", label, topic)
-		}
-		highPairsSet[label] = struct{}{}
 	}
 	highPairs := make([]string, 0, len(highPairsSet))
 	for pair := range highPairsSet {

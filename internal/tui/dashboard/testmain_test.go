@@ -1,9 +1,13 @@
 package dashboard
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 )
 
 var attentionFeedTestMu sync.Mutex
@@ -20,5 +24,21 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("NTM_NO_COLOR", "0")
 	_ = os.Setenv("NTM_THEME", "mocha")
 
-	os.Exit(m.Run())
+	// Isolate HOME/XDG dirs so dashboard commands that touch state.db (such as
+	// fetchMetricsCmd -> ensemble.LoadSession) never read or mutate the
+	// developer's real ~/.config/ntm/state.db.
+	tmpRoot, err := os.MkdirTemp("", "ntm-dashboard-test-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create dashboard test root: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("HOME", tmpRoot)
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpRoot, "config"))
+	_ = os.Setenv("XDG_DATA_HOME", filepath.Join(tmpRoot, "data"))
+	ensemble.CloseDefaultStateStore()
+
+	code := m.Run()
+	ensemble.CloseDefaultStateStore()
+	_ = os.RemoveAll(tmpRoot)
+	os.Exit(code)
 }

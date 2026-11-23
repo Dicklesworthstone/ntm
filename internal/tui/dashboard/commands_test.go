@@ -846,6 +846,8 @@ func TestFetchMetricsCmdComputesRealEnsembleMetrics(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("HOME", tmpDir)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
 
 	outA := filepath.Join(tmpDir, "deductive.json")
 	outB := filepath.Join(tmpDir, "inductive.json")
