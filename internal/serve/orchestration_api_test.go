@@ -257,6 +257,17 @@ func TestSessionControllerPathTraversalAndQueryValidation(t *testing.T) {
 	if err != nil || got != insidePrompt {
 		t.Fatalf("resolveBoundedProjectFile valid relative path = (%q, %v), want (%q, nil)", got, err, insidePrompt)
 	}
+	outsideSecret := filepath.Join(t.TempDir(), "outside-secret.txt")
+	if err := os.WriteFile(outsideSecret, []byte("top-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escapeLink := filepath.Join(projDir, "prompts", "escape-link.txt")
+	if err := os.Symlink(outsideSecret, escapeLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveBoundedProjectFile(projDir, "prompts/escape-link.txt"); err == nil {
+		t.Fatal("expected symlink escaping projectDir to be rejected")
+	}
 
 	srv, _ := setupTestServer(t)
 	router := srv.Router()

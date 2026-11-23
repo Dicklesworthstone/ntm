@@ -6264,7 +6264,7 @@
           {
             "name": "type",
             "in": "query",
-            "description": "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "description": "Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama).",
             "schema": {
               "type": "string"
             }
@@ -9962,7 +9962,7 @@
           {
             "name": "agent",
             "in": "query",
-            "description": "Optional 11-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "description": "Optional 12-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama).",
             "schema": {
               "type": "string"
             }
@@ -11555,6 +11555,32 @@
         "summary": "Policy decisions",
         "description": "Served route `GET /api/v1/policy/decisions`. Handler: `handlePolicyDecisionsV1`. Response shape joined from robot schema registry type `policy_decisions`; the envelope fields success/timestamp/request_id are merged at the top level.",
         "operationId": "get_api_v1_policy_decisions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum policy decision records to return (positive integer, default 100).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "entity_type",
+            "in": "query",
+            "description": "Optional filter by decision entity type (e.g. session, pane, approval).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "description": "Optional filter by decision entity identifier.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -11598,6 +11624,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Runtime state store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -16903,7 +16939,7 @@
           {
             "name": "agent_type",
             "in": "query",
-            "description": "Optional 11-harness agent filter (alias: ?type=).",
+            "description": "Optional 12-harness agent filter (alias: ?type=).",
             "schema": {
               "type": "string"
             }
@@ -17324,7 +17360,7 @@
           {
             "name": "type",
             "in": "query",
-            "description": "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "description": "Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama).",
             "schema": {
               "type": "string"
             }
@@ -23874,6 +23910,9 @@
           "other": {
             "type": "integer"
           },
+          "pi": {
+            "type": "integer"
+          },
           "total": {
             "type": "integer"
           },
@@ -23895,6 +23934,7 @@
           "ollama",
           "omp",
           "opencode",
+          "pi",
           "total",
           "windsurf"
         ]

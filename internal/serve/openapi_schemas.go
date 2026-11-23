@@ -1508,7 +1508,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Response: PersonasEnvelopeResponse{},
 		Envelope: true,
 		QueryParams: []routeQueryParam{
-			{Name: "agent", Type: "string", Description: "Optional 11-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "agent", Type: "string", Description: "Optional 12-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama)."},
 			{Name: "tag", Type: "string", Description: "Optional persona tag filter."},
 			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
 		},
@@ -1653,7 +1653,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Envelope: true,
 		QueryParams: []routeQueryParam{
 			{Name: "pattern", Type: "string", Required: true, Description: "Go regular expression to search across captured pane scrollback."},
-			{Name: "type", Type: "string", Description: "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "type", Type: "string", Description: "Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama)."},
 			{Name: "ignore_case", Type: "boolean", Description: "Case-insensitive regular expression matching."},
 			{Name: "invert", Type: "boolean", Description: "Invert matching to return non-matching lines."},
 			{Name: "context", Type: "integer", Description: "Symmetric context lines before and after each match."},
@@ -1670,7 +1670,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 			{Name: "pattern", Type: "string", Required: true, Description: "Go regular expression to search across captured pane scrollback."},
 			{Name: "session", Type: "string", Description: "Optional target session name (defaults to searching all active sessions when omitted)."},
 			{Name: "all", Type: "boolean", Description: "Explicitly search across all active tmux sessions."},
-			{Name: "type", Type: "string", Description: "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "type", Type: "string", Description: "Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama)."},
 			{Name: "ignore_case", Type: "boolean", Description: "Case-insensitive regular expression matching."},
 			{Name: "invert", Type: "boolean", Description: "Invert matching to return non-matching lines."},
 			{Name: "context", Type: "integer", Description: "Symmetric context lines before and after each match."},
@@ -1696,7 +1696,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Envelope: true,
 		QueryParams: []routeQueryParam{
 			{Name: "panes", Type: "string", Description: "Optional comma-separated N, W.P, or %N pane selectors."},
-			{Name: "agent_type", Type: "string", Description: "Optional 11-harness agent filter (alias: ?type=)."},
+			{Name: "agent_type", Type: "string", Description: "Optional 12-harness agent filter (alias: ?type=)."},
 			{Name: "lines", Type: "integer", Description: "Maximum scrollback lines captured per pane (default 1000)."},
 			{Name: "context", Type: "integer", Description: "Context lines before and after each error signature (default 2)."},
 		},

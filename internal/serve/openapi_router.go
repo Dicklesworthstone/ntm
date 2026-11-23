@@ -391,6 +391,28 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 	case "handleCancelJob":
 		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
 		op.Responses["503"] = errorResponse("Cancellation signalled but its receipt could not be checkpointed")
+	case "handlePolicyDecisionsV1":
+		op.Parameters = append(op.Parameters,
+			Parameter{
+				Name:        "limit",
+				In:          "query",
+				Description: "Maximum policy decision records to return (positive integer, default 100).",
+				Schema:      &Schema{Type: "integer"},
+			},
+			Parameter{
+				Name:        "entity_type",
+				In:          "query",
+				Description: "Optional filter by decision entity type (e.g. session, pane, approval).",
+				Schema:      &Schema{Type: "string"},
+			},
+			Parameter{
+				Name:        "entity_id",
+				In:          "query",
+				Description: "Optional filter by decision entity identifier.",
+				Schema:      &Schema{Type: "string"},
+			},
+		)
+		op.Responses["503"] = errorResponse("Runtime state store not available")
 	case "handleMetricsExportV1":
 		op.Parameters = append(op.Parameters,
 			Parameter{

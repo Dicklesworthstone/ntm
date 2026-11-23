@@ -5459,6 +5459,7 @@ export interface components {
             omp: number;
             opencode: number;
             other?: number;
+            pi: number;
             total: number;
             user?: number;
             windsurf: number;
@@ -20122,7 +20123,7 @@ export interface operations {
                 session?: string;
                 /** @description Explicitly search across all active tmux sessions. */
                 all?: boolean;
-                /** @description Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama). */
+                /** @description Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama). */
                 type?: string;
                 /** @description Case-insensitive regular expression matching. */
                 ignore_case?: boolean;
@@ -23027,7 +23028,7 @@ export interface operations {
     get_api_v1_personas: {
         parameters: {
             query?: {
-                /** @description Optional 11-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama). */
+                /** @description Optional 12-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama). */
                 agent?: string;
                 /** @description Optional persona tag filter. */
                 tag?: string;
@@ -24339,7 +24340,14 @@ export interface operations {
     };
     get_api_v1_policy_decisions: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum policy decision records to return (positive integer, default 100). */
+                limit?: number;
+                /** @description Optional filter by decision entity type (e.g. session, pane, approval). */
+                entity_type?: string;
+                /** @description Optional filter by decision entity identifier. */
+                entity_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -24384,6 +24392,15 @@ export interface operations {
             };
             /** @description Internal server error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Runtime state store not available */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -28666,7 +28683,7 @@ export interface operations {
             query?: {
                 /** @description Optional comma-separated N, W.P, or %N pane selectors. */
                 panes?: string;
-                /** @description Optional 11-harness agent filter (alias: ?type=). */
+                /** @description Optional 12-harness agent filter (alias: ?type=). */
                 agent_type?: string;
                 /** @description Maximum scrollback lines captured per pane (default 1000). */
                 lines?: number;
@@ -28963,7 +28980,7 @@ export interface operations {
             query: {
                 /** @description Go regular expression to search across captured pane scrollback. */
                 pattern: string;
-                /** @description Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama). */
+                /** @description Comma-separated 12-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama). */
                 type?: string;
                 /** @description Case-insensitive regular expression matching. */
                 ignore_case?: boolean;
