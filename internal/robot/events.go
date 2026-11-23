@@ -62,6 +62,9 @@ type EventsOptions struct {
 	// SeverityFilter restricts to specific severity levels.
 	SeverityFilter []string
 
+	// Feed overrides the process-global attention feed when non-nil.
+	Feed *AttentionFeed `json:"-"`
+
 	// Store overrides the process-global projection store when ExplicitStore is true.
 	Store         *state.Store `json:"-"`
 	ExplicitStore bool         `json:"-"`
@@ -129,7 +132,10 @@ func PrintEvents(opts EventsOptions) error {
 
 // BuildEventsOutput resolves a robot attention replay request and returns the JSON payload plus suggested HTTP status.
 func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	if feed == nil {
 		return EventsOutput{
 			RobotResponse: NewErrorResponse(
@@ -751,6 +757,9 @@ type DigestOptions struct {
 	// IncludeTrace enables detailed decision tracing for debugging.
 	IncludeTrace bool
 
+	// Feed overrides the process-global attention feed when non-nil.
+	Feed *AttentionFeed `json:"-"`
+
 	// Store overrides the process-global projection store when ExplicitStore is true.
 	Store         *state.Store `json:"-"`
 	ExplicitStore bool         `json:"-"`
@@ -814,7 +823,10 @@ func printDigestResponse(output DigestResponse) error {
 // PrintDigest outputs a token-efficient digest of what changed since a cursor.
 // This is the default delta surface for operators that don't need raw event replay.
 func PrintDigest(opts DigestOptions) error {
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	if feed == nil {
 		return printDigestResponse(DigestResponse{
 			RobotResponse: NewErrorResponse(
@@ -939,7 +951,10 @@ func PrintDigest(opts DigestOptions) error {
 // GetDigest returns a token-efficient digest of what changed since a cursor.
 // This returns the data struct directly for REST/API parity with CLI.
 func GetDigest(opts DigestOptions) (*DigestResponse, error) {
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	if feed == nil {
 		return &DigestResponse{
 			RobotResponse: NewErrorResponse(
@@ -1102,6 +1117,9 @@ type AttentionOptions struct {
 	// IncludeTrace enables detailed decision tracing for debugging.
 	IncludeTrace bool
 
+	// Feed overrides the process-global attention feed when non-nil.
+	Feed *AttentionFeed `json:"-"`
+
 	// Store overrides the process-global projection store when ExplicitStore is true.
 	Store         *state.Store `json:"-"`
 	ExplicitStore bool         `json:"-"`
@@ -1179,7 +1197,10 @@ func PrintAttention(opts AttentionOptions) int {
 		opts.BackgroundLimit = 0
 	}
 
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	if feed == nil {
 		return printAttentionResponse(AttentionResponse{
 			RobotResponse: NewErrorResponse(
