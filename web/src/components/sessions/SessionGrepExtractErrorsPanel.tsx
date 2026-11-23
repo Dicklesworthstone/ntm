@@ -56,6 +56,7 @@ export interface SessionGrepResponse extends ApiEnvelope {
   total_lines_searched: number;
   match_count: number;
   panes_searched: number;
+  warnings?: string[];
 }
 
 export interface ExtractedCodeBlockItem {
@@ -99,6 +100,7 @@ export interface SessionErrorsResponse extends ApiEnvelope {
     by_type?: Record<string, number>;
     by_agent?: Record<string, number>;
   };
+  truncated?: boolean;
 }
 
 export function SessionGrepExtractErrorsPanel({
@@ -322,6 +324,12 @@ export function SessionGrepExtractErrorsPanel({
                 {grepMutation.data.panes_searched} pane(s) (
                 {grepMutation.data.total_lines_searched} lines scanned).
               </div>
+              {Array.isArray(grepMutation.data.warnings) &&
+                grepMutation.data.warnings.length > 0 && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                    {grepMutation.data.warnings.join(" · ")}
+                  </div>
+                )}
               {grepMutation.data.matches.length > 0 && (
                 <div className="max-h-64 space-y-2 overflow-y-auto">
                   {grepMutation.data.matches.map((m, idx) => (
@@ -426,6 +434,11 @@ export function SessionGrepExtractErrorsPanel({
                 {errorsQuery.data.summary.panes_searched} pane(s) (
                 {errorsQuery.data.summary.total_lines_searched} lines).
               </div>
+              {errorsQuery.data.truncated && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                  Results truncated at the maximum error limit; narrow pane, agent, or line filters to inspect earlier errors.
+                </div>
+              )}
               {errorsQuery.data.errors.map((errItem, idx) => (
                 <div
                   key={`${errItem.pane_id}-${errItem.line_number}-${idx}`}

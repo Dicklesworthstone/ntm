@@ -48,9 +48,10 @@ type SessionExtractEnvelopeResponse struct {
 // SessionErrorsEnvelopeResponse is the REST JSON envelope for GET /api/v1/sessions/{id}/errors.
 type SessionErrorsEnvelopeResponse struct {
 	APIResponse
-	Session string              `json:"session"`
-	Errors  []robot.ErrorEntry  `json:"errors"`
-	Summary robot.ErrorsSummary `json:"summary"`
+	Session   string              `json:"session"`
+	Errors    []robot.ErrorEntry  `json:"errors"`
+	Summary   robot.ErrorsSummary `json:"summary"`
+	Truncated bool                `json:"truncated,omitempty"`
 }
 
 // ConfigValidateRequest is the JSON request body for POST /api/v1/config/validate.

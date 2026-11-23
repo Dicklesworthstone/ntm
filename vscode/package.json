@@ -178,7 +178,7 @@
       },
       {
         "command": "ntm.scaleSession",
-        "title": "NTM: Scale Session Agents (11 Harnesses)",
+        "title": "NTM: Scale Session Agents (12 Harnesses)",
         "icon": "$(layers)"
       },
       {
@@ -198,7 +198,7 @@
       },
       {
         "command": "ntm.adoptSession",
-        "title": "NTM: Adopt External Tmux Session (12 Types)",
+        "title": "NTM: Adopt External Tmux Session (13 Types)",
         "icon": "$(plug)"
       },
       {
@@ -228,7 +228,7 @@
       },
       {
         "command": "ntm.grepPanes",
-        "title": "NTM: Grep Pane Scrollback (11 Harnesses)",
+        "title": "NTM: Grep Pane Scrollback (12 Harnesses)",
         "icon": "$(search)"
       },
       {
@@ -238,7 +238,7 @@
       },
       {
         "command": "ntm.validateConfig",
-        "title": "NTM: Validate Config, Policy & 11 Harnesses",
+        "title": "NTM: Validate Config, Policy & 12 Harnesses",
         "icon": "$(check-all)"
       },
       {

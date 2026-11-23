@@ -30,6 +30,7 @@ export interface GrepPanesResult {
     total_lines_searched: number;
     match_count: number;
     panes_searched: number;
+    warnings?: string[];
 }
 
 export interface ExtractCodeBlocksOptions {
@@ -221,6 +222,9 @@ export function normalizeGrepPanesResult(raw: unknown): GrepPanesResult {
     const matchingPanes = Array.isArray(obj.matching_panes)
         ? obj.matching_panes.map(String)
         : [];
+    const warnings = Array.isArray(obj.warnings)
+        ? obj.warnings.map(String).filter(w => w.length > 0)
+        : undefined;
     return {
         success: Boolean(obj.success ?? true),
         pattern: String(obj.pattern ?? ''),
@@ -230,6 +234,7 @@ export function normalizeGrepPanesResult(raw: unknown): GrepPanesResult {
         total_lines_searched: Number(obj.total_lines_searched ?? 0),
         match_count: Number(obj.match_count ?? matches.length),
         panes_searched: Number(obj.panes_searched ?? 0),
+        warnings: warnings && warnings.length > 0 ? warnings : undefined,
     };
 }
 
@@ -365,8 +370,13 @@ export function formatGrepPanesMarkdown(res: GrepPanesResult): string {
         '',
         `- **Session:** ${res.session}`,
         `- **Matches:** ${res.match_count} across ${res.panes_searched} pane(s) (${res.total_lines_searched} lines scanned)`,
-        '',
     ];
+    if (res.warnings && res.warnings.length > 0) {
+        for (const warning of res.warnings) {
+            lines.push(`- **Warning:** ${warning}`);
+        }
+    }
+    lines.push('');
     if (res.matches.length === 0) {
         lines.push('No matching lines found.');
         return lines.join('\n') + '\n';

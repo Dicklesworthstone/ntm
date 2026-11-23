@@ -194,13 +194,13 @@ func (s *Server) handleRobotStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, output)
 }
 
-// handleRobotHealth handles /api/robot/health by delegating to real robot.GetHealth().
+// handleRobotHealth handles /api/robot/health by delegating to real robot.GetHealthContextForProject().
 func (s *Server) handleRobotHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	output, err := robot.GetHealth()
+	output, err := robot.GetHealthContextForProject(r.Context(), s.projectDirSnapshot())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -443,7 +443,7 @@ func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotHealthV1 handles GET /api/v1/robot/health.
 func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetHealth()
+	output, err := robot.GetHealthContextForProject(r.Context(), s.projectDirSnapshot())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -485,12 +485,97 @@ func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotDigestV1 handles GET /api/v1/robot/digest.
 func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	q := r.URL.Query()
+
+	var sinceCursor int64
+	rawCursor := strings.TrimSpace(q.Get("cursor"))
+	if rawCursor == "" {
+		rawCursor = strings.TrimSpace(q.Get("since_cursor"))
+	}
+	if rawCursor != "" {
+		parsed, err := strconv.ParseInt(rawCursor, 10, 64)
+		if err != nil || parsed < 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid cursor parameter", nil, reqID)
+			return
+		}
+		sinceCursor = parsed
+	}
+
+	parseOptionalDigestLimit := func(name string) (int, bool) {
+		raw := strings.TrimSpace(q.Get(name))
+		if raw == "" {
+			return 0, true
+		}
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid "+name+" parameter", nil, reqID)
+			return 0, false
+		}
+		return parsed, true
+	}
+
+	actionRequiredLimit, ok := parseOptionalDigestLimit("action_required_limit")
+	if !ok {
+		return
+	}
+	interestingLimit, ok := parseOptionalDigestLimit("interesting_limit")
+	if !ok {
+		return
+	}
+	backgroundLimit, ok := parseOptionalDigestLimit("background_limit")
+	if !ok {
+		return
+	}
+
+	var includeTrace bool
+	if rawTrace := strings.TrimSpace(q.Get("include_trace")); rawTrace != "" {
+		parsed, err := strconv.ParseBool(rawTrace)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid include_trace parameter", nil, reqID)
+			return
+		}
+		includeTrace = parsed
+	}
+
+	feed := s.getAttentionFeed()
 	output, err := robot.GetDigest(robot.DigestOptions{
-		Store:         s.stateStore,
-		ExplicitStore: true,
+		SinceCursor:         sinceCursor,
+		Session:             strings.TrimSpace(q.Get("session")),
+		Profile:             strings.TrimSpace(q.Get("profile")),
+		ActionRequiredLimit: actionRequiredLimit,
+		InterestingLimit:    interestingLimit,
+		BackgroundLimit:     backgroundLimit,
+		IncludeTrace:        includeTrace,
+		Feed:                feed,
+		Store:               s.stateStore,
+		ExplicitStore:       true,
 	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	if !output.Success && output.ErrorCode == robot.ErrCodeCursorExpired {
+		oldestCursor := int64(0)
+		newestCursor := int64(0)
+		retention := time.Duration(0)
+		if feed != nil {
+			newestCursor = feed.CurrentCursor()
+		}
+		if output.ReplayWindow != nil {
+			oldestCursor = output.ReplayWindow.OldestCursor
+			if parsed, err := time.ParseDuration(output.ReplayWindow.RetentionPeriod); err == nil {
+				retention = parsed
+			}
+		}
+		payload := attentionCursorExpiredPayload(&robot.CursorExpiredError{
+			RequestedCursor: sinceCursor,
+			EarliestCursor:  oldestCursor,
+			RetentionPeriod: retention,
+		}, newestCursor)
+		if reqID != "" {
+			payload["request_id"] = reqID
+		}
+		writeJSON(w, http.StatusConflict, payload)
 		return
 	}
 	data, err := toJSONMap(output)

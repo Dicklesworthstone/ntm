@@ -85,6 +85,7 @@ func TestParallelServersProjectionStoreIsolation(t *testing.T) {
 
 		srv := New(Config{
 			Port:       0,
+			ProjectDir: t.TempDir(),
 			EventBus:   events.NewEventBus(16),
 			StateStore: st,
 		})

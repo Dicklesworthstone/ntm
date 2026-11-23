@@ -369,6 +369,7 @@ func TestApprovalEndpointsFailClosedWithoutStateStore(t *testing.T) {
 }
 
 func TestRobotHealthAndAttentionParityPolicyDecisionsAndMTLSClientCN(t *testing.T) {
+	t.Parallel()
 	s, store := setupTestServer(t)
 
 	// 1. GET /api/robot/health delegates to real robot.GetHealth() with deprecation headers and zero stub notes.
@@ -389,15 +390,11 @@ func TestRobotHealthAndAttentionParityPolicyDecisionsAndMTLSClientCN(t *testing.
 	}
 
 	// 2. GET /api/v1/robot/attention returns cursor-replayable AttentionOutput sorted by severity.
-	prevFeed := robot.GetAttentionFeed()
 	feedCfg := robot.DefaultAttentionFeedConfig()
 	feedCfg.JournalSize = 4
 	feed := robot.NewAttentionFeed(feedCfg)
-	robot.SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		feed.Stop()
-		robot.SetAttentionFeed(prevFeed)
-	})
+	s.attentionFeed = feed
+	t.Cleanup(feed.Stop)
 
 	feed.Append(robot.AttentionEvent{
 		Session:       "alpha",
@@ -650,5 +647,70 @@ func TestSafetyInstallPreChecksAllFilesAndPolicyResetUsesHardenedYAML(t *testing
 	// OPERATION_CANCELED must map to 409 Conflict.
 	if got := robotErrorHTTPStatus("OPERATION_CANCELED"); got != http.StatusConflict {
 		t.Fatalf("robotErrorHTTPStatus(OPERATION_CANCELED) = %d, want %d", got, http.StatusConflict)
+	}
+}
+
+func TestRobotDigestV1_QueryParamsIsolationAndCursorExpired(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	feedCfg := robot.DefaultAttentionFeedConfig()
+	feedCfg.JournalSize = 3
+	feed := robot.NewAttentionFeed(feedCfg)
+	s.attentionFeed = feed
+	t.Cleanup(feed.Stop)
+
+	feed.Append(robot.AttentionEvent{
+		Session:       "sess-a",
+		Category:      robot.EventCategoryAlert,
+		Type:          robot.EventTypeAlertAttentionRequired,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityCritical,
+		Summary:       "alpha critical",
+	})
+	feed.Append(robot.AttentionEvent{
+		Session:       "sess-b",
+		Category:      robot.EventCategoryAlert,
+		Type:          robot.EventTypeAlertWarning,
+		Actionability: robot.ActionabilityInteresting,
+		Severity:      robot.SeverityWarning,
+		Summary:       "beta warning",
+	})
+
+	// Invalid cursor must return 400 Bad Request.
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/robot/digest?cursor=-5", nil)
+	badRec := httptest.NewRecorder()
+	s.handleRobotDigestV1(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status = %d, want 400: %s", badRec.Code, badRec.Body.String())
+	}
+
+	// Session filter must isolate sess-a from server-scoped feed.
+	okReq := httptest.NewRequest(http.MethodGet, "/api/v1/robot/digest?cursor=0&session=sess-a&action_required_limit=2", nil)
+	okRec := httptest.NewRecorder()
+	s.handleRobotDigestV1(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("valid digest status = %d, want 200: %s", okRec.Code, okRec.Body.String())
+	}
+	if !strings.Contains(okRec.Body.String(), "alpha critical") || strings.Contains(okRec.Body.String(), "beta warning") {
+		t.Fatalf("digest did not honor server feed + session filter: %s", okRec.Body.String())
+	}
+
+	// Overflow ring buffer so cursor=1 expires -> 409 Conflict with CURSOR_EXPIRED.
+	for i := 0; i < 5; i++ {
+		feed.Append(robot.AttentionEvent{
+			Session:       "sess-a",
+			Category:      robot.EventCategorySystem,
+			Type:          robot.EventTypeAlertWarning,
+			Actionability: robot.ActionabilityBackground,
+			Severity:      robot.SeverityInfo,
+			Summary:       "churn",
+		})
+	}
+	expReq := httptest.NewRequest(http.MethodGet, "/api/v1/robot/digest?cursor=1", nil)
+	expRec := httptest.NewRecorder()
+	s.handleRobotDigestV1(expRec, expReq)
+	if expRec.Code != http.StatusConflict || !strings.Contains(expRec.Body.String(), robot.ErrCodeCursorExpired) {
+		t.Fatalf("expired digest cursor = %d body=%s, want 409 CURSOR_EXPIRED", expRec.Code, expRec.Body.String())
 	}
 }

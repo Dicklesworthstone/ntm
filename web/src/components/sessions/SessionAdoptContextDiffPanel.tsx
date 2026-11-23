@@ -3,7 +3,7 @@
 /**
  * SessionAdoptContextDiffPanel
  *
- * Surfaces external session adoption across all 12 pane types plus live context
+ * Surfaces external session adoption across all 13 pane types plus live context
  * window gauges, pane activity/conflict diffing, and file change attribution on /sessions:
  *   - POST /api/v1/sessions/{id}/adopt
  *   - GET  /api/v1/sessions/{id}/context?lines=200
@@ -216,7 +216,7 @@ export function SessionAdoptContextDiffPanel({
       {/* Adopt External Session */}
       <div className="rounded-md border border-gray-200 dark:border-gray-700 p-4 space-y-3">
         <div className="text-sm font-medium text-gray-900 dark:text-white">
-          12-Type External Session Adoption
+          13-Type External Session Adoption
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <label className="text-xs text-gray-600 dark:text-gray-300 space-y-1">

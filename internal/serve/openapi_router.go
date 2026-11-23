@@ -424,7 +424,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 			Parameter{
 				Name:        "session",
 				In:          "query",
-				Description: "Optional session identifier to scope exported metrics (defaults to 'default').",
+				Description: "Optional session identifier to scope exported metrics (defaults to all sessions).",
 				Schema:      &Schema{Type: "string"},
 			},
 		)

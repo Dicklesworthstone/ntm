@@ -9733,7 +9733,7 @@
           {
             "name": "session",
             "in": "query",
-            "description": "Optional session identifier to scope exported metrics (defaults to 'default').",
+            "description": "Optional session identifier to scope exported metrics (defaults to all sessions).",
             "schema": {
               "type": "string"
             }
@@ -46668,6 +46668,9 @@
           },
           "timestamp": {
             "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
           }
         },
         "required": [

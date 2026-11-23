@@ -94,6 +94,9 @@ func TestServeMemoryDaemonHelperProcess(t *testing.T) {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+	if readyPath := os.Getenv("NTM_SERVE_HELPER_READY_FILE"); readyPath != "" {
+		_ = os.WriteFile(readyPath, []byte("ready\n"), 0o600)
+	}
 	select {
 	case <-sigCh:
 		os.Exit(0)
@@ -4473,8 +4476,12 @@ func TestHandleMemoryDaemonStop_RunningDaemon(t *testing.T) {
 		t.Fatalf("MkdirAll pidsDir: %v", err)
 	}
 
+	readyPath := filepath.Join(tmpDir, "helper.ready")
 	cmd := exec.Command(os.Args[0], "-test.run=TestServeMemoryDaemonHelperProcess")
-	cmd.Env = append(os.Environ(), "NTM_SERVE_HELPER_PROCESS=memory-daemon")
+	cmd.Env = append(os.Environ(),
+		"NTM_SERVE_HELPER_PROCESS=memory-daemon",
+		"NTM_SERVE_HELPER_READY_FILE="+readyPath,
+	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper: %v", err)
 	}
@@ -4491,6 +4498,21 @@ func TestHandleMemoryDaemonStop_RunningDaemon(t *testing.T) {
 		case <-time.After(2 * time.Second):
 		}
 	})
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		select {
+		case err := <-waitDone:
+			t.Fatalf("helper exited before signaling ready: %v", err)
+		default:
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("helper process did not become ready to handle SIGINT")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// Use a disposable live PID so checkMemoryDaemon reports the daemon as running
 	// without interrupting the test process itself.

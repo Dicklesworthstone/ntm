@@ -12547,6 +12547,7 @@ export interface components {
             success: boolean;
             summary: components["schemas"]["ErrorsSummary"];
             timestamp: string;
+            truncated?: boolean;
         };
         SessionEventsEnvelopeResponse: {
             count: number;
@@ -22849,7 +22850,7 @@ export interface operations {
             query?: {
                 /** @description Export format: json (default), csv, md (alias: markdown), or prometheus (alias: prom). */
                 format?: string;
-                /** @description Optional session identifier to scope exported metrics (defaults to 'default'). */
+                /** @description Optional session identifier to scope exported metrics (defaults to all sessions). */
                 session?: string;
             };
             header?: never;
