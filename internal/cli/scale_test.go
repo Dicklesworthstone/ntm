@@ -616,6 +616,7 @@ func TestScaleMultiHarnessSupport(t *testing.T) {
 		{tmux.AgentType("grok-build"), "grok"},
 		{tmux.AgentOmp, "omp"},
 		{tmux.AgentType("oh-my-pi"), "omp"},
+		{tmux.AgentPi, "pi"},
 		{tmux.AgentOpencode, "oc"},
 		{tmux.AgentType("opencode"), "oc"},
 	} {
@@ -633,8 +634,8 @@ func TestScaleMultiHarnessSupport(t *testing.T) {
 		noTargetCmd.SetErr(io.Discard)
 		noTargetCmd.SetArgs([]string{session})
 		err := noTargetCmd.Execute()
-		if err == nil || !strings.Contains(err.Error(), "--grok, --omp, or --oc") {
-			t.Fatalf("expected no-targets error mentioning --grok, --omp, or --oc, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "--grok, --omp, --pi, or --oc") {
+			t.Fatalf("expected no-targets error mentioning --grok, --omp, --pi, or --oc, got: %v", err)
 		}
 	})
 

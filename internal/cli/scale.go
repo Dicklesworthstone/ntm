@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -52,6 +54,7 @@ var scaleHarnessOrder = []AgentType{
 	AgentTypeAider,
 	AgentTypeGrok,
 	AgentTypeOmp,
+	AgentTypePi,
 	AgentTypeOpencode,
 }
 
@@ -66,15 +69,16 @@ var scaleHarnessLabels = map[string]string{
 	"aider":    "Aider",
 	"grok":     "Grok",
 	"omp":      "Oh My Pi",
+	"pi":       "Pi",
 	"oc":       "OpenCode",
 }
 
-const scaleNoTargetsUsage = "no target counts specified (use --cc, --cod, --gmi, --agy, --ollama, --cursor, --windsurf, --aider, --grok, --omp, or --oc)"
+const scaleNoTargetsUsage = "no target counts specified (use --cc, --cod, --gmi, --agy, --ollama, --cursor, --windsurf, --aider, --grok, --omp, --pi, or --oc)"
 
 func registerScaleKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.scale",
-		Description: "Scale agents in a session to target harness counts across all 11 supported harnesses",
+		Description: "Scale agents in a session to target harness counts across all 12 supported harnesses",
 		Category:    "sessions",
 		Input: &kernel.SchemaRef{
 			Name: "ScaleInput",
@@ -137,6 +141,7 @@ func newScaleCmd() *cobra.Command {
 		targetAider    int
 		targetGrok     int
 		targetOmp      int
+		targetPi       int
 		targetOc       int
 		dryRun         bool
 		force          bool
@@ -150,6 +155,7 @@ func newScaleCmd() *cobra.Command {
 		setAider       bool
 		setGrok        bool
 		setOmp         bool
+		setPi          bool
 		setOc          bool
 	)
 
@@ -180,6 +186,7 @@ Examples:
 			setAider = cmd.Flags().Changed("aider")
 			setGrok = cmd.Flags().Changed("grok")
 			setOmp = cmd.Flags().Changed("omp")
+			setPi = cmd.Flags().Changed("pi")
 			setOc = cmd.Flags().Changed("oc")
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -196,6 +203,7 @@ Examples:
 				{agentType: AgentTypeAider, count: targetAider, set: setAider},
 				{agentType: AgentTypeGrok, count: targetGrok, set: setGrok},
 				{agentType: AgentTypeOmp, count: targetOmp, set: setOmp},
+				{agentType: AgentTypePi, count: targetPi, set: setPi},
 				{agentType: AgentTypeOpencode, count: targetOc, set: setOc},
 			}
 
@@ -213,6 +221,7 @@ Examples:
 	cmd.Flags().IntVar(&targetAider, "aider", 0, "Target Aider agent count")
 	cmd.Flags().IntVar(&targetGrok, "grok", 0, "Target Grok Build agent count")
 	cmd.Flags().IntVar(&targetOmp, "omp", 0, "Target Oh My Pi (omp) agent count")
+	cmd.Flags().IntVar(&targetPi, "pi", 0, "Target Pi (pi) agent count")
 	cmd.Flags().IntVar(&targetOc, "oc", 0, "Target OpenCode (oc) agent count")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without executing")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation on scale-down")
@@ -348,6 +357,17 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 			Agents:  specs,
 			Outcome: &outcome,
 		}
+		if action.AgentType == string(AgentTypePi) {
+			loadedPlugins, _ := plugins.LoadAgentPluginsWithDefaults(filepath.Join(selectedConfigDir(), "agents"))
+			pluginMap := make(map[string]plugins.AgentPlugin, len(loadedPlugins))
+			for _, p := range loadedPlugins {
+				pluginMap[p.Name] = p
+				if p.Alias != "" {
+					pluginMap[p.Alias] = p
+				}
+			}
+			opts.PluginMap = pluginMap
+		}
 		if err := executeAdd(ctx, opts, false); err != nil {
 			stop := recordOperationError(fmt.Sprintf("spawn %s", action.AgentType), err)
 			if emitHuman {
@@ -479,6 +499,8 @@ func normalizeScaleTargetKey(raw string) (AgentType, bool) {
 		return AgentTypeGrok, true
 	case tmux.AgentOmp:
 		return AgentTypeOmp, true
+	case tmux.AgentPi:
+		return AgentTypePi, true
 	case tmux.AgentOpencode:
 		return AgentTypeOpencode, true
 	default:
@@ -904,6 +926,8 @@ func scaleAgentTypeLabel(t tmux.AgentType) string {
 		return "grok"
 	case tmux.AgentOmp:
 		return "omp"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentOpencode:
 		return "oc"
 	case tmux.AgentUser:
