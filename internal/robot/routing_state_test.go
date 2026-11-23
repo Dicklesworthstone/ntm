@@ -13,13 +13,7 @@ import (
 // applied, matching what openRoutingStateStore does in production.
 func routingStateTestStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

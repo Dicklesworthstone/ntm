@@ -584,14 +584,8 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 
 func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("store.Migrate: %v", err)
-	}
 
 	// 1. Unknown ID -> NOT_FOUND across status/wait/cancel.
 	missing, err := GetActionStatusWithStore("req_unknown", store, true, "")
@@ -714,14 +708,8 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 
 func newRequestIdentityScopeStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatal(err)
-	}
 	return store
 }
 

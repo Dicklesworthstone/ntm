@@ -13,7 +13,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
-	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -882,50 +881,72 @@ func TestRoutingPreservesUnsubmittedAndQueuedInput(t *testing.T) {
 	const script = `#!/bin/sh
 set -eu
 case "$1" in
-  has-session) [ "$3" = '=route-composer' ] ;;
+  has-session)
+    sess="${3#=}"
+    [ -f "$NTM_TEST_ROUTE_COMPOSER_ROOT/list-$sess" ]
+    ;;
   list-panes)
-    printf '%s\n' "%41_NTM_SEP_1_NTM_SEP_route-composer__${NTM_TEST_ROUTE_AGENT}_1_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP_240_NTM_SEP_${NTM_TEST_ROUTE_HEIGHT}_NTM_SEP_1_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP__NTM_SEP__NTM_SEP_0"
-    printf '%s\n' "%42_NTM_SEP_2_NTM_SEP_route-composer__${NTM_TEST_ROUTE_AGENT}_2_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP_240_NTM_SEP_${NTM_TEST_ROUTE_HEIGHT}_NTM_SEP_0_NTM_SEP_1042_NTM_SEP_0_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP__NTM_SEP__NTM_SEP_0"
+    sess="${4#=}"
+    cat "$NTM_TEST_ROUTE_COMPOSER_ROOT/list-$sess"
     ;;
   capture-pane)
-    case "$3" in
-      %41|%42) cat "$NTM_TEST_ROUTE_COMPOSER_ROOT/$3" ;;
-      *) exit 98 ;;
-    esac
+    [ -f "$NTM_TEST_ROUTE_COMPOSER_ROOT/pane-$3" ] || exit 98
+    cat "$NTM_TEST_ROUTE_COMPOSER_ROOT/pane-$3"
     ;;
   *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
 esac
 `
-	for _, tc := range cases {
+	hermeticGlobalConfig(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	binary := filepath.Join(root, "tmux")
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	t.Setenv("NTM_TEST_ROUTE_COMPOSER_ROOT", root)
+	previousClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = previousClient })
+
+	for i, tc := range cases {
+		i, tc := i, tc
 		t.Run(tc.name, func(t *testing.T) {
-			hermeticGlobalConfig(t)
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			t.Setenv("XDG_DATA_HOME", t.TempDir())
-			root := t.TempDir()
-			other := tc.other
-			if other == "" {
-				other = empty[tc.agent]
-			}
-			for name, capture := range map[string]string{"%41": tc.capture, "%42": other} {
-				if err := os.WriteFile(filepath.Join(root, name), []byte(capture), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			binary := filepath.Join(root, "tmux")
-			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			t.Parallel()
+			session := fmt.Sprintf("route-composer-%d", i)
+			firstPane := fmt.Sprintf("%%%d", 100+2*i)
+			secondPane := fmt.Sprintf("%%%d", 101+2*i)
 			height := tc.height
 			if height == 0 {
 				height = 60
 			}
-			t.Setenv("NTM_TMUX_BINARY", binary)
-			t.Setenv("NTM_TEST_ROUTE_COMPOSER_ROOT", root)
-			t.Setenv("NTM_TEST_ROUTE_AGENT", tc.agent)
-			t.Setenv("NTM_TEST_ROUTE_HEIGHT", fmt.Sprint(height))
-			previousClient := tmux.DefaultClient
-			tmux.DefaultClient = tmux.NewClient("")
-			t.Cleanup(func() { tmux.DefaultClient = previousClient })
+			other := tc.other
+			if other == "" {
+				other = empty[tc.agent]
+			}
+			listPayload := fmt.Sprintf(
+				"%s_NTM_SEP_1_NTM_SEP_%s__%s_1_NTM_SEP_%s_NTM_SEP_240_NTM_SEP_%d_NTM_SEP_1_NTM_SEP_%d_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n"+
+					"%s_NTM_SEP_2_NTM_SEP_%s__%s_2_NTM_SEP_%s_NTM_SEP_240_NTM_SEP_%d_NTM_SEP_0_NTM_SEP_%d_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n",
+				firstPane, session, tc.agent, tc.agent, height, 1041+2*i, tc.agent,
+				secondPane, session, tc.agent, tc.agent, height, 1042+2*i, tc.agent,
+			)
+			for name, data := range map[string]string{
+				"list-" + session:    listPayload,
+				"pane-" + firstPane:  tc.capture,
+				"pane-" + secondPane: other,
+			} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantPane := ""
+			switch tc.want {
+			case "%41":
+				wantPane = firstPane
+			case "%42":
+				wantPane = secondPane
+			}
 
 			// Composer occupancy is a routing constraint even when the caller
 			// deliberately permits busy, rate-limited, and error-state agents.
@@ -935,11 +956,11 @@ esac
 			cfg.Routing.ExcludeIfErrorState = false
 			cfg.Routing.ExcludeContextAbove = 100
 			scorer := NewAgentScorerFromConfig(cfg)
-			scored, err := scorer.ScoreAgents("route-composer", "")
+			scored, err := scorer.ScoreAgents(session, "")
 			if err != nil || len(scored) != 2 {
 				t.Fatalf("scored agents = %+v, %v; want both physical panes", scored, err)
 			}
-			reasons := map[string]string{"%41": tc.firstReason, "%42": tc.secondReason}
+			reasons := map[string]string{firstPane: tc.firstReason, secondPane: tc.secondReason}
 			wantCandidates := 0
 			for _, agent := range scored {
 				reason := reasons[agent.PaneID]
@@ -951,7 +972,7 @@ esac
 				}
 			}
 			opts := RouteOptions{
-				Session: "route-composer", Strategy: StrategySticky, LastAgent: "%41",
+				Session: session, Strategy: StrategySticky, LastAgent: firstPane,
 				Config: cfg, NoPersist: true,
 			}
 			output, code := GetRoute(opts)
@@ -968,31 +989,31 @@ esac
 				t.Fatal(err)
 			}
 			for surface, rec := range map[string]*RouteRecommendation{"robot": output.Recommendation, "send": recommendation} {
-				if tc.want == "" {
+				if wantPane == "" {
 					if rec != nil {
 						t.Errorf("%s selected an occupied pane: %+v", surface, rec)
 					}
-				} else if rec == nil || rec.PaneID != tc.want {
-					t.Errorf("%s recommendation = %+v, want %s", surface, rec, tc.want)
+				} else if rec == nil || rec.PaneID != wantPane {
+					t.Errorf("%s recommendation = %+v, want %s", surface, rec, wantPane)
 				}
 			}
 			if tc.firstReason != "" {
-				if err := os.WriteFile(filepath.Join(root, "%41"), []byte(empty[tc.agent]), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "pane-"+firstPane), []byte(empty[tc.agent]), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				// Reuse the classifier to prove occupancy is refreshed rather
 				// than remaining latched after the user clears the composer.
-				refreshed, err := scorer.ScoreAgents("route-composer", "")
+				refreshed, err := scorer.ScoreAgents(session, "")
 				if err != nil || len(refreshed) != 2 {
 					t.Fatalf("refreshed scores = %+v, %v", refreshed, err)
 				}
 				for _, agent := range refreshed {
-					if agent.PaneID == "%41" && (agent.Excluded || agent.UnsubmittedInput || agent.QueuedMessages) {
+					if agent.PaneID == firstPane && (agent.Excluded || agent.UnsubmittedInput || agent.QueuedMessages) {
 						t.Fatalf("cleared composer stayed occupied: %+v", agent)
 					}
 				}
 				recovered, err := GetRouteRecommendation(opts)
-				if err != nil || recovered == nil || recovered.PaneID != "%41" {
+				if err != nil || recovered == nil || recovered.PaneID != firstPane {
 					t.Fatalf("cleared pane was not selectable: %+v, %v", recovered, err)
 				}
 			}
@@ -1138,14 +1159,8 @@ esac
 		return &ntmctx.TranscriptUsage{Tokens: 180000, ContextWindow: 200000, UpdatedAt: time.Now()}, true
 	}
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("store.Migrate: %v", err)
-	}
 	cfg := config.Default()
 	cfg.Routing.ExcludeContextAbove = 85
 

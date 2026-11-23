@@ -97,14 +97,7 @@ func TestWaitForPollOrCancellationInterruptsPendingPoll(t *testing.T) {
 
 func TestGetWaitCancelTargetsOnlyActiveHandle(t *testing.T) {
 	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
-	store, err := state.Open("")
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		_ = store.Close()
-		t.Fatalf("migrate state store: %v", err)
-	}
+	store := openFastRobotStateStore(t, "")
 	t.Cleanup(func() { _ = store.Close() })
 	if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "active-wait", SessionName: "project"}); err != nil {
 		t.Fatalf("create active wait: %v", err)

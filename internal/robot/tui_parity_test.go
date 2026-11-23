@@ -1637,13 +1637,7 @@ func TestInspectAgentOutputStructure(t *testing.T) {
 func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -1728,13 +1722,7 @@ func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
 func TestGetInspectAgentUsesProjectionStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -1978,13 +1966,7 @@ func TestInspectIncidentOutputStructure(t *testing.T) {
 func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -2044,13 +2026,7 @@ func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
 func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -2130,13 +2106,7 @@ func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
 func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -2187,13 +2157,7 @@ func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
 func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -2229,13 +2193,7 @@ func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
 func TestGetInspectIncidentUsesStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()

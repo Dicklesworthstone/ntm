@@ -72,14 +72,7 @@ func TestDoctor_GuardHookDegradedLedgerAndUnhealthyConfig(t *testing.T) {
 	t.Setenv("NTM_CONFIG", "")
 
 	dbPath := state.DefaultPath()
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		_ = store.Close()
-		t.Fatalf("store.Migrate: %v", err)
-	}
+	store := openFastRobotStateStore(t, dbPath)
 	for _, reason := range []string{"agent-mail-unreachable", "agent-mail-error"} {
 		if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
 			RepoPath:   "/repo",

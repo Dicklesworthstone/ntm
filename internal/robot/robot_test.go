@@ -266,6 +266,77 @@ func stubRobotWork(t *testing.T, collect func(ctx context.Context, store *state.
 // data there (cass) restore it.
 var developerDataHome string
 
+var (
+	robotSchemaSnapshotOnce sync.Once
+	robotSchemaSnapshotData []byte
+	robotSchemaSnapshotErr  error
+)
+
+// robotSchemaSnapshot builds one migrated SQLite state.db image once per test
+// binary so tests needing isolated on-disk state DBs skip re-running all
+// schema migrations while exercising the exact migrated schema.
+func robotSchemaSnapshot(t testing.TB) []byte {
+	t.Helper()
+	robotSchemaSnapshotOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ntm-robot-schema-*")
+		if err != nil {
+			robotSchemaSnapshotErr = err
+			return
+		}
+		defer os.RemoveAll(dir)
+		dbPath := filepath.Join(dir, "schema.db")
+		st, err := state.Open(dbPath)
+		if err != nil {
+			robotSchemaSnapshotErr = err
+			return
+		}
+		if err := st.Migrate(); err != nil {
+			_ = st.Close()
+			robotSchemaSnapshotErr = err
+			return
+		}
+		if err := st.Close(); err != nil {
+			robotSchemaSnapshotErr = err
+			return
+		}
+		robotSchemaSnapshotData, robotSchemaSnapshotErr = os.ReadFile(dbPath)
+	})
+	if robotSchemaSnapshotErr != nil {
+		t.Fatalf("build robot state schema snapshot: %v", robotSchemaSnapshotErr)
+	}
+	return robotSchemaSnapshotData
+}
+
+func seedRobotStateDB(t testing.TB, dbPath string) {
+	t.Helper()
+	if dbPath == "" {
+		dbPath = state.DefaultPath()
+	}
+	if _, err := os.Stat(dbPath); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir state db dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, robotSchemaSnapshot(t), 0o600); err != nil {
+		t.Fatalf("seed state db: %v", err)
+	}
+}
+
+func openFastRobotStateStore(t testing.TB, dbPath string) *state.Store {
+	t.Helper()
+	seedRobotStateDB(t, dbPath)
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open(%q): %v", dbPath, err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("store.Migrate(%q): %v", dbPath, err)
+	}
+	return store
+}
+
 func TestMain(m *testing.M) {
 	collectRobotWork = func(context.Context, *state.Store, adapters.WorkCoordinationAdapterConfig, bool) (*adapters.WorkSection, error) {
 		return nil, errNoTestWorkSource
@@ -3019,13 +3090,7 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 		t.Fatalf("write hermetic config: %v", err)
 	}
 	t.Setenv("NTM_CONFIG", configPath)
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -3389,13 +3454,7 @@ func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
 func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
@@ -3678,13 +3737,7 @@ func seedRuntimeProjectionLoadLab(t *testing.T, store *state.Store, sessionCount
 func TestBuildProjectionAgentMailPaneMapUsesRuntimeProjection(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
@@ -4287,13 +4340,7 @@ func TestSnapshotFinalizeBuildsSummary(t *testing.T) {
 func TestSnapshotIncidentsFromStore(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
@@ -4342,13 +4389,7 @@ func TestSnapshotIncidentsFromStore(t *testing.T) {
 func TestPersistNormalizedIncidents_AutoResolvesClearedPromotedIncidents(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(tmpDir, "state.db"))
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
@@ -6915,14 +6956,8 @@ func TestGetPaneAddresses(t *testing.T) {
 func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	store, err := state.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(dir, "state.db"))
 	defer store.Close()
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
 
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)

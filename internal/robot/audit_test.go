@@ -186,14 +186,7 @@ func TestAuditListShowSearchVerifyAndPagination(t *testing.T) {
 
 func TestAuditSourcesErrorCasesAndSchemaRegistry(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		_ = store.Close()
-		t.Fatalf("store.Migrate: %v", err)
-	}
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() { _ = store.Close() })
 
 	now := time.Now().UTC().Truncate(time.Second)

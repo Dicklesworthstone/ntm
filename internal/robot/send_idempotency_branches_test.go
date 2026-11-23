@@ -38,14 +38,7 @@ import (
 func installIdempotencyBranchStore(t *testing.T) *state.Store {
 	t.Helper()
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("Open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate state store: %v", err)
-	}
-
+	store := openFastRobotStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
