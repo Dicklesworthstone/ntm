@@ -172,6 +172,11 @@ func LoadOrDefaultWithSource() (*Policy, string, bool, error) {
 	if !exists {
 		return DefaultPolicy(), path, true, nil
 	}
+	if !filepath.IsAbs(path) {
+		if absPath, absErr := filepath.Abs(path); absErr == nil {
+			path = absPath
+		}
+	}
 	p, err := Load(path)
 	if err != nil {
 		return nil, path, false, err

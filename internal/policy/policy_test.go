@@ -1135,3 +1135,55 @@ func TestPolicyWave10Hardening(t *testing.T) {
 		t.Error("ResolveEffectivePathForProject(whitespace) = nil error, want error")
 	}
 }
+
+func TestPolicyWaveJHardening(t *testing.T) {
+	t.Parallel()
+	p := DefaultPolicy()
+
+	mustBlock := []string{
+		`git push -o k=--force-with-lease origin +main`,
+		`git push -o "x --force-with-lease" origin +main`,
+		`git push --force-with-lease=other origin +main`,
+		`git push --repo=https://host/--force-with-lease origin +main`,
+		`git -C"/tmp/my repo" reset --hard`,
+		`git -cuser.name="a b" push --force`,
+		`rm - -rf /`,
+		`rm -r - -f /`,
+	}
+	for _, cmd := range mustBlock {
+		if got := checkAction(p, cmd); got != ActionBlock {
+			t.Errorf("Check(%q) = %q, want %q", cmd, got, ActionBlock)
+		}
+	}
+
+	if got := checkAction(p, `rm - -rf /tmp/project`); got != ActionApprove {
+		t.Errorf("Check(rm - -rf /tmp/project) = %q, want %q", got, ActionApprove)
+	}
+}
+
+func TestLoadOrDefaultWithSource_ProjectPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	ntmDir := filepath.Join(dir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	policyPath := filepath.Join(ntmDir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte(DefaultPolicyYAML()), 0o600); err != nil {
+		t.Fatalf("write project policy: %v", err)
+	}
+	t.Chdir(dir)
+
+	pol, resolvedPath, isDefault, err := LoadOrDefaultWithSource()
+	if err != nil {
+		t.Fatalf("LoadOrDefaultWithSource() error = %v", err)
+	}
+	if pol == nil || isDefault {
+		t.Fatalf("expected custom project policy (isDefault=false), got pol=%v isDefault=%v path=%q", pol != nil, isDefault, resolvedPath)
+	}
+	wantAbs, _ := filepath.EvalSymlinks(policyPath)
+	gotAbs, _ := filepath.EvalSymlinks(resolvedPath)
+	if gotAbs != wantAbs {
+		t.Fatalf("resolvedPath = %q (eval %q), want %q (eval %q)", resolvedPath, gotAbs, policyPath, wantAbs)
+	}
+}
