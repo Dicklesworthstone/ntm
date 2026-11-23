@@ -619,7 +619,7 @@ func removeRestartScalarOverrides(command, resolvedType string, model, effort bo
 	for i := 0; i < len(words); i++ {
 		word := words[i]
 		flag, _, inline := strings.Cut(word.Value, "=")
-		remove := model && (flag == "--model" || (resolvedType == "codex" || resolvedType == "gemini") && flag == "-m")
+		remove := model && (flag == "--model" || (resolvedType == "codex" || resolvedType == "gemini" || resolvedType == "oc") && flag == "-m")
 		if model && resolvedType == "codex" && strings.HasPrefix(word.Value, "-m") && !strings.HasPrefix(word.Value, "--") && len(word.Value) > 2 {
 			remove, inline = true, true
 		}
@@ -627,7 +627,7 @@ func removeRestartScalarOverrides(command, resolvedType string, model, effort bo
 			switch resolvedType {
 			case "claude", "grok":
 				remove = remove || flag == "--effort" || resolvedType == "grok" && flag == "--reasoning-effort"
-			case "omp":
+			case "omp", "pi":
 				remove = remove || flag == "--thinking"
 			}
 		}
