@@ -14,15 +14,23 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
 const (
 	outboxVersion      = 1
 	outboxRecordLimit  = 2 * 1024 * 1024
-	outboxPollInterval = time.Second
 	outboxMinRetryWait = 5 * time.Millisecond
 )
+
+var outboxPollInterval = time.Second
+
+func init() {
+	if testing.Testing() {
+		outboxPollInterval = 25 * time.Millisecond
+	}
+}
 
 // An outbox record contains the already-redacted event and frozen wire payload,
 // never the endpoint URL, headers, or signing secret. Replay requires the same
