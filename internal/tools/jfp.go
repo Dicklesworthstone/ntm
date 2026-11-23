@@ -159,27 +159,27 @@ func (a *JFPAdapter) List(ctx context.Context) (json.RawMessage, error) {
 
 // ListByCategory returns prompts filtered by category
 func (a *JFPAdapter) ListByCategory(ctx context.Context, category string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "list", "--category", category, "--json")
+	return a.runCommand(ctx, "list", "--category="+category, "--json")
 }
 
 // ListByTag returns prompts filtered by tag
 func (a *JFPAdapter) ListByTag(ctx context.Context, tag string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "list", "--tag", tag, "--json")
+	return a.runCommand(ctx, "list", "--tag="+tag, "--json")
 }
 
 // Search performs fuzzy search for prompts
 func (a *JFPAdapter) Search(ctx context.Context, query string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "search", query, "--json")
+	return a.runCommand(ctx, "search", "--json", "--", query)
 }
 
 // Show returns details for a specific prompt
 func (a *JFPAdapter) Show(ctx context.Context, id string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "show", id, "--json")
+	return a.runCommand(ctx, "show", "--json", "--", id)
 }
 
 // Suggest returns prompt suggestions for a task
 func (a *JFPAdapter) Suggest(ctx context.Context, task string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "suggest", task, "--json")
+	return a.runCommand(ctx, "suggest", "--json", "--", task)
 }
 
 // Status returns registry cache status and settings
@@ -204,12 +204,12 @@ func (a *JFPAdapter) Bundles(ctx context.Context) (json.RawMessage, error) {
 
 // Export exports one or more prompts by ID.
 func (a *JFPAdapter) Export(ctx context.Context, ids []string, format string) (json.RawMessage, error) {
-	args := []string{"export"}
+	args := []string{"export", "--json"}
 	if format != "" {
-		args = append(args, "--format", format)
+		args = append(args, "--format="+format)
 	}
+	args = append(args, "--")
 	args = append(args, ids...)
-	args = append(args, "--json")
 	return a.runCommand(ctx, args...)
 }
 
