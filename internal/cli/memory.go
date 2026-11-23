@@ -255,6 +255,7 @@ func newMemoryContextCmd() *cobra.Command {
 						// memory results into each other (#132).
 						ctxResult, rpcErr := client.GetContext(ctx, task, dir)
 						if rpcErr == nil {
+							truncateCMContextResult(ctxResult, maxRules)
 							return output.PrintJSON(ctxResult)
 						}
 					}
@@ -338,27 +339,46 @@ func newMemoryOutcomeCmd() *cobra.Command {
 				RuleIDs: rules,
 			}
 
-			return client.RecordOutcome(context.Background(), report)
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return client.RecordOutcome(ctx, report)
 		},
 	}
 	cmd.Flags().StringSliceVar(&rules, "rules", nil, "Comma-separated list of rule IDs applied")
 	return cmd
 }
 
+func truncateCMContextResult(res *cm.ContextResult, maxRules int) {
+	if res == nil || maxRules <= 0 {
+		return
+	}
+	if len(res.RelevantBullets) > maxRules {
+		res.RelevantBullets = res.RelevantBullets[:maxRules]
+	}
+	if len(res.AntiPatterns) > maxRules {
+		res.AntiPatterns = res.AntiPatterns[:maxRules]
+	}
+}
+
 func findSessionID(dir string) (string, error) {
-	pidsDir := ".ntm/pids"
+	pidsDir := filepath.Join(dir, ".ntm", "pids")
+	if dir == "" {
+		pidsDir = filepath.Join(".ntm", "pids")
+	}
 	entries, err := os.ReadDir(pidsDir)
 	if err != nil {
-		return "", fmt.Errorf("could not find .ntm/pids in current directory (run from project root): %w", err)
+		return "", fmt.Errorf("could not find %s (run from project root): %w", pidsDir, err)
 	}
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if len(name) > 3 && name[:3] == "cm-" && name[len(name)-4:] == ".pid" {
+		if len(name) > 7 && name[:3] == "cm-" && name[len(name)-4:] == ".pid" {
 			return name[3 : len(name)-4], nil
 		}
 	}
-	return "", fmt.Errorf("no running memory daemon found in current directory")
+	return "", fmt.Errorf("no running memory daemon found in %s", pidsDir)
 }
 
 func newMemoryPrivacyCmd() *cobra.Command {
