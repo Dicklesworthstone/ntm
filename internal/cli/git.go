@@ -523,6 +523,9 @@ type AgentMailStatus struct {
 }
 
 func runGitStatus(ctx context.Context, session string, allAgents bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	session, workDir, err := resolveGitProjectDir(ctx, session)
 	if err != nil {
 		return err
@@ -536,7 +539,10 @@ func runGitStatus(ctx context.Context, session string, allAgents bool) error {
 	}
 
 	// Get git status
-	gitInfo, gitErr := getGitInfo(workDir)
+	gitInfo, gitErr := getGitInfoContext(ctx, workDir)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if gitErr != nil {
 		result.Git = nil
 	} else {
@@ -557,9 +563,12 @@ func runGitStatus(ctx context.Context, session string, allAgents bool) error {
 				result.AgentMail.RegisteredAgent = sessionAgent.AgentName
 
 				// Fetch file reservations for this agent
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				locks, err := fetchAgentLocks(ctx, client, agentMailProjectKey, sessionAgent.AgentName, allAgents)
+				lockCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				locks, err := fetchAgentLocks(lockCtx, client, agentMailProjectKey, sessionAgent.AgentName, allAgents)
 				cancel()
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				if err == nil {
 					result.Locks = locks
 					result.AgentMail.LockCount = len(locks)
