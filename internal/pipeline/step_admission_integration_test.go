@@ -655,8 +655,9 @@ func TestStepAdmissionFinalizationExhaustionPreservesLaterCleanupRoot(t *testing
 	t.Parallel()
 	for _, failure := range []string{"cancellation", "checkpoint"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			cfg := stepAdmissionIntegrationConfig(t)
-			work := "trap 'exit 0' TERM; printf ready > ready; while :; do sleep 0.01; done"
+			work := "trap 'exit 0' TERM; printf ready > ready; sleep 30 & wait $!"
 			if failure == "checkpoint" {
 				work = awaitOwnLaunchJournal(cfg.RunID) + "; mv .ntm/pipelines/run-step-admission.json .ntm/pipelines/original-checkpoint.saved && mkdir .ntm/pipelines/run-step-admission.json && printf done > ready"
 			}

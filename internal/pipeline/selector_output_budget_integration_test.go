@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -91,9 +92,16 @@ func TestSelectorOutputBudgetConcurrentAdmissionWaitsAndCancels(t *testing.T) {
 			e := selectorBudgetExecutor(t, 8)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			release := filepath.Join(e.config.ProjectDir, "first-release")
+			releasePath := filepath.Join(e.config.ProjectDir, "first-release.fifo")
+			if err := syscall.Mkfifo(releasePath, 0600); err != nil {
+				t.Fatal(err)
+			}
+			releaseGate, err := os.OpenFile(releasePath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
 			firstStep := &Step{ID: "first", Branch: "$(blocking source)"}
-			first := selectorBudgetCommand(e, "printf ready > first-ready; while [ ! -f first-release ]; do sleep 0.01; done")
+			first := selectorBudgetCommand(e, "printf ready > first-ready; read _ < first-release.fifo")
 			firstDone := make(chan selectorBudgetOutcome, 1)
 			go func() {
 				output, err := runCommandOutput(e.commandEvaluationContext(ctx, firstStep), first, 8, 64)
@@ -101,7 +109,8 @@ func TestSelectorOutputBudgetConcurrentAdmissionWaitsAndCancels(t *testing.T) {
 				close(firstDone)
 			}()
 			t.Cleanup(func() {
-				_ = os.WriteFile(release, []byte("finish"), 0600)
+				_, _ = releaseGate.WriteString("finish\n")
+				_ = releaseGate.Close()
 				cancel()
 				selectorBudgetAwait(t, firstDone)
 			})
@@ -161,7 +170,7 @@ func TestSelectorOutputBudgetConcurrentAdmissionWaitsAndCancels(t *testing.T) {
 				}
 				selectorBudgetNoEffect(t, e, "second-effects")
 			}
-			if err := os.WriteFile(release, []byte("finish"), 0600); err != nil {
+			if _, err := releaseGate.WriteString("finish\n"); err != nil {
 				t.Fatal(err)
 			}
 			if result := selectorBudgetAwait(t, firstDone); result.err != nil || len(result.output) != 0 {
