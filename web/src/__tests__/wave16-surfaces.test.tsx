@@ -126,7 +126,7 @@ describe("Wave 16 Web Cockpit Surfaces", () => {
 
     renderWithClient(<SessionGrepExtractErrorsPanel sessionId="proj_w16" />);
 
-    fireEvent.change(screen.getByLabelText("11-Harness pane filter"), {
+    fireEvent.change(screen.getByLabelText("12-Harness pane filter"), {
       target: { value: "agy" },
     });
     fireEvent.change(screen.getByLabelText("Pane grep regex pattern"), {

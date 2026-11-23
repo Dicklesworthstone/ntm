@@ -138,7 +138,14 @@ export class NtmWebSocket {
   private eventHandlers = new Set<EventHandler>();
   private stateHandlers = new Set<StateHandler>();
   private errorHandlers = new Set<ErrorHandler>();
-  private pendingAcks = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
+  private pendingAcks = new Map<
+    string,
+    {
+      resolve: () => void;
+      reject: (err: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private lastSeq: number | null = null;
   private lastAttentionCursor: number | null = null;
   private refCounter = 0;
@@ -307,16 +314,14 @@ export class NtmWebSocket {
     const payload: Record<string, unknown> = { topics: [topic], ...options };
 
     return new Promise((resolve, reject) => {
-      this.pendingAcks.set(ref, { resolve, reject });
-      this.sendMessage("subscribe", ref, payload);
-
-      // Timeout for ack
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pendingAcks.has(ref)) {
           this.pendingAcks.delete(ref);
           reject(new Error(`Subscribe timeout for topic: ${topic}`));
         }
       }, 10000);
+      this.pendingAcks.set(ref, { resolve, reject, timer });
+      this.sendMessage("subscribe", ref, payload);
     });
   }
 
@@ -332,15 +337,14 @@ export class NtmWebSocket {
 
     const ref = this.nextRef();
     return new Promise((resolve, reject) => {
-      this.pendingAcks.set(ref, { resolve, reject });
-      this.sendMessage("unsubscribe", ref, { topics: [topic] });
-
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pendingAcks.has(ref)) {
           this.pendingAcks.delete(ref);
           reject(new Error(`Unsubscribe timeout for topic: ${topic}`));
         }
       }, 10000);
+      this.pendingAcks.set(ref, { resolve, reject, timer });
+      this.sendMessage("unsubscribe", ref, { topics: [topic] });
     });
   }
 
@@ -452,8 +456,10 @@ export class NtmWebSocket {
           case "ack": {
             const ref = message.request_id;
             if (ref && this.pendingAcks.has(ref)) {
-              this.pendingAcks.get(ref)!.resolve();
+              const entry = this.pendingAcks.get(ref)!;
+              clearTimeout(entry.timer);
               this.pendingAcks.delete(ref);
+              entry.resolve();
             }
             break;
           }
@@ -462,8 +468,10 @@ export class NtmWebSocket {
             const error = message as WSError;
             const ref = error.request_id;
             if (ref && this.pendingAcks.has(ref)) {
-              this.pendingAcks.get(ref)!.reject(new Error(error.message));
+              const entry = this.pendingAcks.get(ref)!;
+              clearTimeout(entry.timer);
               this.pendingAcks.delete(ref);
+              entry.reject(new Error(error.message));
             }
             this.errorHandlers.forEach((h) => h(error));
             break;
@@ -563,6 +571,7 @@ export class NtmWebSocket {
     const pending = Array.from(this.pendingAcks.values());
     this.pendingAcks.clear();
     for (const entry of pending) {
+      clearTimeout(entry.timer);
       entry.reject(new Error(message));
     }
   }

@@ -117,7 +117,7 @@ export const ADOPT_MODE_OPTIONS: readonly AdoptModeQuickPickOption[] = [
     {
         label: '$(eye) Preview Session Adoption (Dry Run)',
         description: '--robot-adopt=<session> --dry-run',
-        detail: 'Validate 2D window.pane or bare indices across all 12 pane types without mutating tmux',
+        detail: 'Validate 2D window.pane or bare indices across all 13 pane types without mutating tmux',
         mode: 'dryRun',
     },
     {

@@ -141,7 +141,7 @@ export const CONFIG_VALIDATE_MODE_OPTIONS: readonly ConfigValidateQuickPickOptio
     {
         label: '$(check) Validate Active Configs & Policy',
         description: '--robot-validate',
-        detail: 'Validate main config.toml, .ntm/* manifests, and 11-harness executables',
+        detail: 'Validate main config.toml, .ntm/* manifests, and 12-harness executables',
         mode: 'validateActive',
     },
     {

@@ -114,7 +114,7 @@ export interface DoctorQuickPickOption extends vscode.QuickPickItem {
 
 export const DOCTOR_MODE_OPTIONS: readonly DoctorQuickPickOption[] = [
     {
-        label: '$(stethoscope) Full Ecosystem Health Check',
+        label: '$(pulse) Full Ecosystem Health Check',
         description: '--robot-doctor --doctor-verbose',
         detail: 'Verify required dependencies, optional tools, daemons, invariants, safety defaults, and guard hooks',
         mode: 'standard',
@@ -165,13 +165,13 @@ export interface AssignStrategyQuickPickOption extends vscode.QuickPickItem {
 
 export const ASSIGN_STRATEGY_OPTIONS: readonly AssignStrategyQuickPickOption[] = [
     {
-        label: '$(balance) Balanced Planner (Recommended)',
+        label: '$(law) Balanced Planner (Recommended)',
         description: '--strategy=balanced',
         detail: 'Balance workload across idle agents weighted by task-type affinity',
         strategy: 'balanced',
     },
     {
-        label: '$(git-PullRequest) Dependency-Unblocking Planner',
+        label: '$(git-pull-request) Dependency-Unblocking Planner',
         description: '--strategy=dependency',
         detail: 'Prioritize ready beads that unblock the largest downstream dependency subgraphs',
         strategy: 'dependency',

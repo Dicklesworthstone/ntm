@@ -166,10 +166,27 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
     // Extract session name from topic or event
     const sessionMatch = topic.match(/^sessions:(.+)$/);
     if (sessionMatch) {
+      const sessionName = sessionMatch[1];
       queryClient.invalidateQueries({
-        queryKey: ["sessions", sessionMatch[1]],
+        queryKey: ["sessions", sessionName],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["session-panes", sessionName],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["session-health", sessionName],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["session-checkpoints", sessionName],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["session-handoffs", sessionName],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["session-agent-mapping", sessionName],
       });
     }
+    queryClient.invalidateQueries({ queryKey: ["worktrees"] });
   }
 
   // Pane events

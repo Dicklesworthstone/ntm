@@ -3145,7 +3145,7 @@ export class NtmClient {
     }
 
     /**
-     * Adopt an external tmux session into NTM management across all 12 pane types via
+     * Adopt an external tmux session into NTM management across all 13 pane types via
      * `ntm --robot-adopt=<session> [--adopt-<harness>=<panes> | --adopt-by-window=<harness>] [--adopt-auto-name=false] [--dry-run] --robot-format=json`.
      */
     async adoptSession(options: AdoptSessionOptions): Promise<AdoptSessionResult> {
@@ -3385,7 +3385,7 @@ export class NtmClient {
     }
 
     /**
-     * Validate NTM configuration, manifests, policy, and 11-harness executables via `ntm --robot-validate`.
+     * Validate NTM configuration, manifests, policy, and 12-harness executables via `ntm --robot-validate`.
      */
     async validateConfig(options: ConfigValidateOptions = {}): Promise<ConfigValidateResult> {
         const args: string[] = ['--robot-validate'];

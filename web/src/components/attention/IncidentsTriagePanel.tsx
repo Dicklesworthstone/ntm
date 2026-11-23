@@ -195,15 +195,33 @@ export function IncidentsTriagePanel() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={effectiveIncludeResolved}
-              onChange={(e) => setIncludeResolved(e.target.checked)}
-              className="rounded border-gray-300 dark:border-gray-600"
-            />
-            Include resolved &amp; muted
-          </label>
+          {(() => {
+            const forcedResolved =
+              statusFilter === "resolved" || statusFilter === "muted";
+            return (
+              <label
+                className={`inline-flex items-center gap-2 text-xs ${
+                  forcedResolved
+                    ? "text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                    : "text-gray-700 dark:text-gray-300"
+                }`}
+                title={
+                  forcedResolved
+                    ? "Automatically enabled when filtering by resolved or muted status"
+                    : undefined
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={effectiveIncludeResolved}
+                  disabled={forcedResolved}
+                  onChange={(e) => setIncludeResolved(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600 disabled:opacity-60"
+                />
+                Include resolved &amp; muted
+              </label>
+            );
+          })()}
 
           <select
             aria-label="Incident status filter"

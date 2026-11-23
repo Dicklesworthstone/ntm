@@ -106,7 +106,7 @@ export function PersonasAndRecipesPanel({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            11-Harness Agent Personas &amp; Spawn Recipes
+            12-Harness Agent Personas &amp; Spawn Recipes
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Browse built-in, user, and project personas, profile sets, and multi-agent spawn recipes.

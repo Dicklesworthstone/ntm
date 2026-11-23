@@ -11,6 +11,7 @@ export type ScaleHarness =
     | 'aider'
     | 'grok'
     | 'omp'
+    | 'pi'
     | 'oc';
 
 export const SUPPORTED_SCALE_HARNESSES: readonly ScaleHarness[] = [
@@ -24,6 +25,7 @@ export const SUPPORTED_SCALE_HARNESSES: readonly ScaleHarness[] = [
     'aider',
     'grok',
     'omp',
+    'pi',
     'oc',
 ] as const;
 
@@ -143,7 +145,7 @@ export const SCALE_MODE_OPTIONS: readonly ScaleModeQuickPickOption[] = [
     {
         label: '$(eye) Preview Scale Plan (Dry Run)',
         description: '--robot-scale=<session> --dry-run',
-        detail: 'Compute multi-harness spawn/terminate delta across all 11 harnesses without mutating panes',
+        detail: 'Compute multi-harness spawn/terminate delta across all 12 harnesses without mutating panes',
         mode: 'dryRun',
     },
     {
@@ -155,7 +157,7 @@ export const SCALE_MODE_OPTIONS: readonly ScaleModeQuickPickOption[] = [
     {
         label: '$(globe) Open Swarm Scaler in Web Cockpit',
         description: 'Web Cockpit (/swarm)',
-        detail: 'Open interactive 11-harness session scaler in browser',
+        detail: 'Open interactive 12-harness session scaler in browser',
         mode: 'openSwarmCockpit',
     },
 ];
@@ -223,7 +225,7 @@ export interface SummaryWindowQuickPickOption extends vscode.QuickPickItem {
 
 export const SUMMARY_WINDOW_OPTIONS: readonly SummaryWindowQuickPickOption[] = [
     {
-        label: '$(Pulse) Last 30 Minutes',
+        label: '$(pulse) Last 30 Minutes',
         description: '--robot-summary=<session> --since=30m',
         detail: 'Summarize recent agent pane output, files modified, commands run, and conflicts',
         mode: 'since',

@@ -198,7 +198,7 @@ export function SessionAdoptContextDiffPanel({
             Adopt External Session, Context Gauges, Activity Diff &amp; File Attribution
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Adopt external tmux sessions across all 12 pane types and inspect context usage, cross-pane diffs, and file edits.
+            Adopt external tmux sessions across all 13 pane types and inspect context usage, cross-pane diffs, and file edits.
           </p>
         </div>
         {!sessionId && (

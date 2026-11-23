@@ -4,7 +4,7 @@
  * SwarmScaleRebalanceReviewPanel
  *
  * Operator workbench on /swarm for:
- *   - 11-Harness Session Scaling (POST /api/v1/sessions/{id}/scale)
+ *   - 12-Harness Session Scaling (POST /api/v1/sessions/{id}/scale)
  *   - Workload Imbalance Analysis & Rebalancing (POST /api/v1/sessions/{id}/rebalance)
  *   - Cross-Agent Peer Review Queue (POST /api/v1/sessions/{id}/review-queue)
  *   - Session Coordinator Status, Digest & File Conflicts
@@ -28,6 +28,7 @@ const SCALE_HARNESSES = [
   { key: "agy", label: "Antigravity (agy)" },
   { key: "grok", label: "Grok (grok)" },
   { key: "omp", label: "Oh My Pi (omp)" },
+  { key: "pi", label: "Pi (pi)" },
   { key: "oc", label: "OpenCode (oc)" },
   { key: "ollama", label: "Ollama" },
   { key: "cursor", label: "Cursor" },
@@ -285,7 +286,7 @@ export function SwarmScaleRebalanceReviewPanel() {
             Swarm Scale, Rebalance, Review Queue &amp; Coordinator
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Scale 11 agent harnesses to exact target counts, rebalance active
+            Scale 12 agent harnesses to exact target counts, rebalance active
             Beads across idle panes, dispatch peer code reviews, and inspect the
             session coordinator.
           </p>
@@ -316,14 +317,14 @@ export function SwarmScaleRebalanceReviewPanel() {
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        {/* 1. 11-Harness Session Scaler */}
+        {/* 1. 12-Harness Session Scaler */}
         <form
           onSubmit={handleScaleSubmit}
           className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 p-4 space-y-3"
         >
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-              11-Harness Session Scaler
+              12-Harness Session Scaler
             </h3>
             <span className="text-[11px] font-mono text-gray-500 dark:text-gray-400">
               POST /api/v1/sessions/&#123;id&#125;/scale

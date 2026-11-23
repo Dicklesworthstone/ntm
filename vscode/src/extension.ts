@@ -313,7 +313,7 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         command: 'ntm.generateSupportBundle',
     },
     {
-        label: '$(stethoscope) Run Ecosystem Doctor',
+        label: '$(pulse) Run Ecosystem Doctor',
         description: 'NTM: Run Ecosystem Doctor',
         detail: 'Inspect required CLI tools, daemons, invariants, safety defaults, and SQLite/Beads lock contention',
         actionId: 'runDoctor',
@@ -334,9 +334,9 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         command: 'ntm.assignWork',
     },
     {
-        label: '$(layers) Scale Session Agents (11 Harnesses)',
+        label: '$(layers) Scale Session Agents (12 Harnesses)',
         description: 'NTM: Scale Session Agents',
-        detail: 'Preview or execute multi-harness agent scaling across cc, cod, gmi, agy, ollama, cursor, windsurf, aider, grok, omp, and oc',
+        detail: 'Preview or execute multi-harness agent scaling across cc, cod, gmi, agy, ollama, cursor, windsurf, aider, grok, omp, pi, and oc',
         actionId: 'scaleSession',
         command: 'ntm.scaleSession',
     },
@@ -362,9 +362,9 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         command: 'ntm.showSummary',
     },
     {
-        label: '$(plug) Adopt External Tmux Session (12 Types)',
+        label: '$(plug) Adopt External Tmux Session (13 Types)',
         description: 'NTM: Adopt External Tmux Session',
-        detail: 'Adopt external tmux session panes across all 11 agent harnesses plus user shell panes',
+        detail: 'Adopt external tmux session panes across all 12 agent harnesses plus user shell panes',
         actionId: 'adoptSession',
         command: 'ntm.adoptSession',
     },
@@ -922,7 +922,7 @@ export const AUDIT_MODE_OPTIONS: readonly AuditQuickPickOption[] = [
         mode: 'verify',
     },
     {
-        label: '$(ServerProcess) Check Projection Source Health',
+        label: '$(server-process) Check Projection Source Health',
         description: '--robot-audit --audit-sources',
         detail: 'Inspect state.db runtime projection data-source availability and health',
         mode: 'sources',
@@ -2539,7 +2539,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         async (sessionArg?: string | NtmTreeItem) => {
             try {
                 const modePick = await vscode.window.showQuickPick(SCALE_MODE_OPTIONS, {
-                    placeHolder: 'Select session scaling mode across all 11 harnesses',
+                    placeHolder: 'Select session scaling mode across all 12 harnesses',
                 });
                 if (!modePick) {
                     return;

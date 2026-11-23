@@ -121,7 +121,7 @@ export const SAVED_SESSIONS_MODE_OPTIONS: readonly SavedSessionsModeQuickPickOpt
     {
         label: '$(list-unordered) List Active Saved Sessions',
         description: '--robot-saved-sessions',
-        detail: 'List saved session snapshots with 11-harness pane counts and git context',
+        detail: 'List saved session snapshots with 12-harness pane counts and git context',
         mode: 'listActive',
     },
     {
@@ -139,7 +139,7 @@ export const SAVED_SESSIONS_MODE_OPTIONS: readonly SavedSessionsModeQuickPickOpt
     {
         label: '$(eye) Inspect Snapshot & Resume Readiness',
         description: '--robot-saved-sessions --saved-action=show',
-        detail: 'Inspect full 11-harness breakdown and resumable pane bindings for a saved snapshot',
+        detail: 'Inspect full 12-harness breakdown and resumable pane bindings for a saved snapshot',
         mode: 'showSnapshot',
     },
     {

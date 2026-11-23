@@ -202,7 +202,7 @@ export function SessionGrepExtractErrorsPanel({
             Pane Scrollback Grep, Code-Block Extract &amp; Error Signatures
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Search pane scrollback with regex across 11 agent harnesses, extract
+            Search pane scrollback with regex across 12 agent harnesses, extract
             fenced Markdown code blocks, or isolate panics and stack traces.
           </p>
         </div>
@@ -240,9 +240,9 @@ export function SessionGrepExtractErrorsPanel({
           />
         </label>
         <label className="block text-xs text-gray-600 dark:text-gray-300">
-          11-Harness Filter
+          12-Harness Filter
           <select
-            aria-label="11-Harness pane filter"
+            aria-label="12-Harness pane filter"
             value={harnessType}
             onChange={(e) => setHarnessType(e.target.value)}
             className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-white"

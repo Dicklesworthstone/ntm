@@ -142,7 +142,7 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
         resetVscodeMock();
     });
 
-    it('constructs exact CLI argv across all 11 harnesses and normalizes scale, rebalance, review-queue, and summary JSON', async () => {
+    it('constructs exact CLI argv across all 12 harnesses and normalizes scale, rebalance, review-queue, and summary JSON', async () => {
         const calls: string[][] = [];
         const client = new NtmClient({
             execFile: async (_file, args) => {
@@ -163,13 +163,13 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
             },
         });
 
-        assert.equal(SUPPORTED_SCALE_HARNESSES.length, 11);
-        const parsed = parseScaleSpec('cc=3, cursor=1 ollama=1 --scale-windsurf=2');
-        assert.deepEqual(parsed, { cc: 3, cursor: 1, ollama: 1, windsurf: 2 });
+        assert.equal(SUPPORTED_SCALE_HARNESSES.length, 12);
+        const parsed = parseScaleSpec('cc=3, cursor=1 ollama=1 pi=2 --scale-windsurf=2');
+        assert.deepEqual(parsed, { cc: 3, cursor: 1, ollama: 1, pi: 2, windsurf: 2 });
 
         const scaleRes = await client.scaleSession({
             session: 'wave13-swarm',
-            targets: { cc: 3, cursor: 1, ollama: 1 },
+            targets: { cc: 3, cursor: 1, ollama: 1, pi: 2 },
             dryRun: true,
         });
         assert.deepEqual(calls[0], [
@@ -177,6 +177,7 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
             '--scale-cc=3',
             '--scale-ollama=1',
             '--scale-cursor=1',
+            '--scale-pi=2',
             '--dry-run',
             '--robot-format=json',
         ]);

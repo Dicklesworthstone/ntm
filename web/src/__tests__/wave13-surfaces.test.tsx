@@ -356,7 +356,9 @@ describe("Wave 13 Web Cockpit Surfaces", () => {
             JSON.stringify({
               success: true,
               active_streams: 2,
-              dropped_chunks: 0,
+              pipe_pane_count: 2,
+              fallback_count: 0,
+              flush_interval_ms: 50,
               active_targets: ["alpha:0.1", "alpha:0.2"],
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }

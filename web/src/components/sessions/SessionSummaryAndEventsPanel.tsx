@@ -73,6 +73,7 @@ export interface LatestHandoffResponse extends ApiEnvelope {
   handoff?: LatestHandoffRecord;
   quality?: {
     score?: number;
+    status?: string;
     grade?: string;
   };
 }
@@ -312,6 +313,9 @@ export function SessionSummaryAndEventsPanel({
           latestHandoffQuery.data.latest ?? latestHandoffQuery.data.handoff;
         const latestPath =
           latestHandoffQuery.data.latest_path ?? latestHandoffQuery.data.path;
+        const qualityLabel =
+          latestHandoffQuery.data.quality?.status ??
+          latestHandoffQuery.data.quality?.grade;
         return (
           <div
             data-testid="latest-handoff-snapshot"
@@ -320,9 +324,9 @@ export function SessionSummaryAndEventsPanel({
             <div className="font-semibold text-gray-900 dark:text-white">
               Latest Handoff ({latestHandoffQuery.data.session})
               {latestHandoff?.status ? ` · ${latestHandoff.status}` : ""}
-              {latestHandoffQuery.data.quality?.grade
-                ? ` · Quality ${latestHandoffQuery.data.quality.grade}${
-                    typeof latestHandoffQuery.data.quality.score === "number"
+              {qualityLabel
+                ? ` · Quality ${qualityLabel}${
+                    typeof latestHandoffQuery.data.quality?.score === "number"
                       ? ` (${latestHandoffQuery.data.quality.score})`
                       : ""
                   }`

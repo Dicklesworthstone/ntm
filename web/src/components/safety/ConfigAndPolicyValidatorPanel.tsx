@@ -82,13 +82,13 @@ export function ConfigAndPolicyValidatorPanel() {
 
   return (
     <section
-      aria-label="Configuration, Manifest & 11-Harness Validator"
+      aria-label="Configuration, Manifest & 12-Harness Validator"
       className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800 space-y-4"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-            Configuration, Recipes, Personas &amp; 11-Harness Validator
+            Configuration, Recipes, Personas &amp; 12-Harness Validator
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Validate main config.toml, .ntm/config.toml, recipes.toml,
