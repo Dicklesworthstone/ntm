@@ -441,6 +441,10 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           if (!subscribedTopics.has(serverTopic)) {
             subscribedTopics.add(serverTopic);
             await ws.subscribe(serverTopic, { mode: "lines" });
+            if (cancelled) {
+              void ws.unsubscribe(serverTopic).catch(() => {});
+              return;
+            }
           }
           if (!cancelled) {
             setStreamActive(true);

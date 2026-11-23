@@ -9,6 +9,7 @@
  */
 
 import {
+  DEFAULT_API_TIMEOUT_MS,
   apiRequestSignal,
   getBaseUrl,
   getConnectionConfig,
@@ -194,6 +195,9 @@ export class NtmWebSocket {
     const controller =
       typeof AbortController !== "undefined" ? new AbortController() : null;
     this.ticketAbortController = controller;
+    const timeoutId = controller
+      ? setTimeout(() => controller.abort(), DEFAULT_API_TIMEOUT_MS)
+      : null;
 
     try {
       const response = await fetch(`${baseUrl}/api/v1/auth/ws-ticket`, {
@@ -256,6 +260,10 @@ export class NtmWebSocket {
       }
       console.error("[WS] Ticket exchange error:", err);
       this.scheduleReconnect();
+    } finally {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
