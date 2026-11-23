@@ -532,7 +532,7 @@ func interruptedAPIDetachedResume(t *testing.T, root string) *pipeline.Execution
 				{ID: "once_body", When: "false", Command: "exit 91"},
 			}}},
 			{ID: "delay", DependsOn: []string{"once"}, Loop: &pipeline.LoopConfig{
-				Items: `[0,1,2]`, Delay: pipeline.Duration{Duration: 300 * time.Millisecond},
+				Items: `[0,1,2]`, Delay: pipeline.Duration{Duration: time.Second},
 				Steps: []pipeline.Step{{ID: "tick", When: "false", Command: "exit 92"}},
 			}},
 			{ID: "finish", DependsOn: []string{"delay"}, Loop: &pipeline.LoopConfig{Times: 1, Steps: []pipeline.Step{
