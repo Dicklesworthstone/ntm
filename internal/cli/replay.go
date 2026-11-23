@@ -105,22 +105,21 @@ func selectReplayEntry(entries []history.HistoryEntry, arg string, last bool) (*
 	return nil, fmt.Errorf("no entry found matching ID prefix %q", arg)
 }
 
-func selectReplayTargets(panes []tmux.Pane, targetCC, targetCod, targetGmi, targetAgy, targetAll bool) []tmux.Pane {
+func selectReplayTargets(panes []tmux.Pane, filter AgentFilter) []tmux.Pane {
 	targets := make([]tmux.Pane, 0, len(panes))
-	noFilter := !targetCC && !targetCod && !targetGmi && !targetAgy && !targetAll
+	noFilter := filter.IsEmpty()
 	for _, pane := range panes {
 		if pane.IsServicePane() {
 			continue
 		}
-		if targetAll || (noFilter && pane.Type.Canonical() != tmux.AgentUser) {
+		if filter.All || (noFilter && pane.Type.Canonical() != tmux.AgentUser) {
 			targets = append(targets, pane)
 			continue
 		}
 		if noFilter {
 			continue
 		}
-		if matchesLegacySendTypeFilter(pane, targetCC, targetCod, targetGmi) ||
-			(targetAgy && tmux.AgentType(pane.Type).Canonical() == tmux.AgentAntigravity) {
+		if matchesLegacySendTypeFilter(pane, filter.Claude, filter.Codex, filter.Gemini) || filter.Matches(pane.Type) {
 			targets = append(targets, pane)
 		}
 	}
@@ -160,13 +159,13 @@ func replayHistoryWarnings(noHistory bool, session string, targetNames, targetAg
 
 func newReplayCmd() *cobra.Command {
 	var (
-		targetCC, targetCod, targetGmi, targetAgy, targetAll bool
-		sessionOverride                                      string
-		edit                                                 bool
-		dryRun                                               bool
-		noHistory                                            bool
-		last                                                 bool
-		yes                                                  bool
+		filter          AgentFilter
+		sessionOverride string
+		edit            bool
+		dryRun          bool
+		noHistory       bool
+		last            bool
+		yes             bool
 	)
 
 	cmd := &cobra.Command{
@@ -261,7 +260,7 @@ Examples:
 				return fail(robot.ErrCodeInternalError, fmt.Errorf("getting panes: %w", err))
 			}
 
-			targets := selectReplayTargets(panes, targetCC, targetCod, targetGmi, targetAgy, targetAll)
+			targets := selectReplayTargets(panes, filter)
 			response.Targets = replayTargetKeys(panes, targets)
 			if len(targets) == 0 {
 				return fail(robot.ErrCodePaneNotFound, errors.New("no matching panes found"))
@@ -321,11 +320,8 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&last, "last", false, "replay most recent prompt")
-	cmd.Flags().BoolVar(&targetCC, "cc", false, "send to Claude agents only")
-	cmd.Flags().BoolVar(&targetCod, "cod", false, "send to Codex agents only")
-	cmd.Flags().BoolVar(&targetGmi, "gmi", false, "send to Gemini agents only")
-	cmd.Flags().BoolVar(&targetAgy, "agy", false, "send to Antigravity agents only")
-	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all panes")
+	bindAgentFilterFlags(cmd, &filter, "send to %s agents only")
+	cmd.Flags().BoolVar(&filter.All, "all", false, "send to all panes")
 	cmd.Flags().StringVar(&sessionOverride, "session", "", "override target session")
 	cmd.Flags().BoolVar(&edit, "edit", false, "edit prompt before sending")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be sent without sending")

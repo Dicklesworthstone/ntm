@@ -81,21 +81,24 @@ func TestSelectReplayTargetsAndCanonicalKeys(t *testing.T) {
 		{ID: "%4", WindowIndex: 1, Index: 1, Type: tmux.AgentGemini},
 		{ID: "%5", WindowIndex: 1, Index: 2, Type: tmux.AgentAntigravity},
 		{ID: "%6", WindowIndex: 1, Index: 3, Type: tmux.AgentClaude, Service: "cm"},
+		{ID: "%7", WindowIndex: 1, Index: 4, Type: tmux.AgentPi},
+		{ID: "%8", WindowIndex: 1, Index: 5, Type: tmux.AgentOpencode},
 	}
 	tests := []struct {
-		name                   string
-		cc, cod, gmi, agy, all bool
-		want                   []string
+		name   string
+		filter AgentFilter
+		want   []string
 	}{
-		{name: "default excludes user and service", want: []string{"0.1", "1.0", "1.1", "1.2"}},
-		{name: "claude excludes service", cc: true, want: []string{"0.1"}},
-		{name: "codex and gemini", cod: true, gmi: true, want: []string{"1.0", "1.1"}},
-		{name: "antigravity", agy: true, want: []string{"1.2"}},
-		{name: "all includes user but excludes service", all: true, want: []string{"0.0", "0.1", "1.0", "1.1", "1.2"}},
+		{name: "default excludes user and service", want: []string{"0.1", "1.0", "1.1", "1.2", "1.4", "1.5"}},
+		{name: "claude excludes service", filter: AgentFilter{Claude: true}, want: []string{"0.1"}},
+		{name: "codex and gemini", filter: AgentFilter{Codex: true, Gemini: true}, want: []string{"1.0", "1.1"}},
+		{name: "antigravity", filter: AgentFilter{Antigravity: true}, want: []string{"1.2"}},
+		{name: "pi and opencode", filter: AgentFilter{Pi: true, Opencode: true}, want: []string{"1.4", "1.5"}},
+		{name: "all includes user but excludes service", filter: AgentFilter{All: true}, want: []string{"0.0", "0.1", "1.0", "1.1", "1.2", "1.4", "1.5"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			targets := selectReplayTargets(panes, test.cc, test.cod, test.gmi, test.agy, test.all)
+			targets := selectReplayTargets(panes, test.filter)
 			if got := replayTargetKeys(panes, targets); !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("keys=%v, want %v", got, test.want)
 			}

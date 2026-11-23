@@ -30,6 +30,14 @@ func newWatchCmd() *cobra.Command {
 		filterCodex       bool
 		filterGemini      bool
 		filterAntigravity bool
+		filterGrok        bool
+		filterCursor      bool
+		filterWindsurf    bool
+		filterAider       bool
+		filterOpencode    bool
+		filterOmp         bool
+		filterPi          bool
+		filterOllama      bool
 		filterPane        string
 		activityOnly      bool
 		tailLines         int
@@ -75,6 +83,14 @@ Examples:
 				filterCodex:       filterCodex,
 				filterGemini:      filterGemini,
 				filterAntigravity: filterAntigravity,
+				filterGrok:        filterGrok,
+				filterCursor:      filterCursor,
+				filterWindsurf:    filterWindsurf,
+				filterAider:       filterAider,
+				filterOpencode:    filterOpencode,
+				filterOmp:         filterOmp,
+				filterPi:          filterPi,
+				filterOllama:      filterOllama,
 				filterPane:        filterPane,
 				activityOnly:      activityOnly,
 				tailLines:         tailLines,
@@ -95,6 +111,14 @@ Examples:
 	cmd.Flags().BoolVar(&filterCodex, "cod", false, "Only watch Codex agents")
 	cmd.Flags().BoolVar(&filterGemini, "gmi", false, "Only watch Gemini agents")
 	cmd.Flags().BoolVar(&filterAntigravity, "agy", false, "Only watch Antigravity agents")
+	cmd.Flags().BoolVar(&filterGrok, "grok", false, "Only watch Grok Build agents")
+	cmd.Flags().BoolVar(&filterCursor, "cursor", false, "Only watch Cursor agents")
+	cmd.Flags().BoolVar(&filterWindsurf, "windsurf", false, "Only watch Windsurf agents")
+	cmd.Flags().BoolVar(&filterAider, "aider", false, "Only watch Aider agents")
+	cmd.Flags().BoolVar(&filterOpencode, "oc", false, "Only watch OpenCode (oc) agents")
+	cmd.Flags().BoolVar(&filterOmp, "omp", false, "Only watch Oh My Pi (omp) agents")
+	cmd.Flags().BoolVar(&filterPi, "pi", false, "Only watch Pi Coding Agent (pi) agents")
+	cmd.Flags().BoolVar(&filterOllama, "ollama", false, "Only watch Ollama agents")
 	cmd.Flags().StringVar(&filterPane, "pane", "", "Watch specific pane (by name or index)")
 	cmd.Flags().BoolVar(&activityOnly, "activity", false, "Only print when new output appears")
 	cmd.Flags().IntVar(&tailLines, "tail", 20, "Start with last N lines of output")
@@ -115,6 +139,14 @@ type watchOptions struct {
 	filterCodex       bool
 	filterGemini      bool
 	filterAntigravity bool
+	filterGrok        bool
+	filterCursor      bool
+	filterWindsurf    bool
+	filterAider       bool
+	filterOpencode    bool
+	filterOmp         bool
+	filterPi          bool
+	filterOllama      bool
 	filterPane        string
 	activityOnly      bool
 	tailLines         int
@@ -504,9 +536,27 @@ func runBeadWatch(ctx context.Context, session, projectDir string, opts watchOpt
 	}
 }
 
+func (opts watchOptions) agentFilter() AgentFilter {
+	return AgentFilter{
+		Claude:      opts.filterClaude,
+		Codex:       opts.filterCodex,
+		Gemini:      opts.filterGemini,
+		Antigravity: opts.filterAntigravity,
+		Grok:        opts.filterGrok,
+		Cursor:      opts.filterCursor,
+		Windsurf:    opts.filterWindsurf,
+		Aider:       opts.filterAider,
+		Opencode:    opts.filterOpencode,
+		Omp:         opts.filterOmp,
+		Pi:          opts.filterPi,
+		Ollama:      opts.filterOllama,
+	}
+}
+
 func filterPanes(panes []tmux.Pane, opts watchOptions) []tmux.Pane {
+	af := opts.agentFilter()
 	// If no filters, return all panes
-	if !opts.filterClaude && !opts.filterCodex && !opts.filterGemini && !opts.filterAntigravity && opts.filterPane == "" {
+	if af.IsEmpty() && opts.filterPane == "" {
 		return panes
 	}
 
@@ -523,7 +573,7 @@ func filterPanes(panes []tmux.Pane, opts watchOptions) []tmux.Pane {
 
 		// Filter by agent type
 		if matchesLegacySendTypeFilter(p, opts.filterClaude, opts.filterCodex, opts.filterGemini) ||
-			(opts.filterAntigravity && tmux.AgentType(p.Type).Canonical() == tmux.AgentAntigravity) {
+			af.Matches(p.Type) {
 			filtered = append(filtered, p)
 		}
 	}

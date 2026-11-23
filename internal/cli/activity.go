@@ -30,6 +30,12 @@ func newActivityCmd() *cobra.Command {
 		filterAntigravity bool
 		filterGrok        bool
 		filterOmp         bool
+		filterPi          bool
+		filterOpencode    bool
+		filterCursor      bool
+		filterWindsurf    bool
+		filterAider       bool
+		filterOllama      bool
 		filterPane        string
 		watchMode         bool
 		interval          int
@@ -76,6 +82,12 @@ Examples:
 				filterAntigravity: filterAntigravity,
 				filterGrok:        filterGrok,
 				filterOmp:         filterOmp,
+				filterPi:          filterPi,
+				filterOpencode:    filterOpencode,
+				filterCursor:      filterCursor,
+				filterWindsurf:    filterWindsurf,
+				filterAider:       filterAider,
+				filterOllama:      filterOllama,
 				filterPane:        filterPane,
 				watchMode:         watchMode,
 				interval:          time.Duration(interval) * time.Millisecond,
@@ -91,6 +103,12 @@ Examples:
 	cmd.Flags().BoolVar(&filterAntigravity, "agy", false, "Only show Antigravity agents")
 	cmd.Flags().BoolVar(&filterGrok, "grok", false, "Only show Grok Build agents")
 	cmd.Flags().BoolVar(&filterOmp, "omp", false, "Only show Oh My Pi (omp) agents")
+	cmd.Flags().BoolVar(&filterPi, "pi", false, "Only show Pi Coding Agent (pi) agents")
+	cmd.Flags().BoolVar(&filterOpencode, "oc", false, "Only show OpenCode (oc) agents")
+	cmd.Flags().BoolVar(&filterCursor, "cursor", false, "Only show Cursor agents")
+	cmd.Flags().BoolVar(&filterWindsurf, "windsurf", false, "Only show Windsurf agents")
+	cmd.Flags().BoolVar(&filterAider, "aider", false, "Only show Aider agents")
+	cmd.Flags().BoolVar(&filterOllama, "ollama", false, "Only show Ollama agents")
 	cmd.Flags().StringVar(&filterPane, "pane", "", "Show specific pane (by name or index)")
 	cmd.Flags().BoolVarP(&watchMode, "watch", "w", false, "Auto-refresh display")
 	cmd.Flags().IntVar(&interval, "interval", 2000, "Refresh interval in milliseconds (with --watch)")
@@ -107,6 +125,12 @@ type activityOptions struct {
 	filterAntigravity bool
 	filterGrok        bool
 	filterOmp         bool
+	filterPi          bool
+	filterOpencode    bool
+	filterCursor      bool
+	filterWindsurf    bool
+	filterAider       bool
+	filterOllama      bool
 	filterPane        string
 	watchMode         bool
 	interval          time.Duration
@@ -391,6 +415,8 @@ func detectAgentTypeFromPane(pane tmux.Pane) string {
 		return "oc"
 	case tmux.AgentOmp:
 		return "omp"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:
@@ -423,7 +449,9 @@ func passesFilter(agentType string, pane tmux.Pane, opts activityOptions, multiW
 	}
 
 	// If no type filters, allow all
-	if !opts.filterClaude && !opts.filterCodex && !opts.filterGemini && !opts.filterAntigravity && !opts.filterGrok && !opts.filterOmp {
+	if !opts.filterClaude && !opts.filterCodex && !opts.filterGemini && !opts.filterAntigravity &&
+		!opts.filterGrok && !opts.filterOmp && !opts.filterPi && !opts.filterOpencode &&
+		!opts.filterCursor && !opts.filterWindsurf && !opts.filterAider && !opts.filterOllama {
 		return true
 	}
 
@@ -444,6 +472,24 @@ func passesFilter(agentType string, pane tmux.Pane, opts activityOptions, multiW
 		return true
 	}
 	if opts.filterOmp && agentType == "omp" {
+		return true
+	}
+	if opts.filterPi && agentType == "pi" {
+		return true
+	}
+	if opts.filterOpencode && (agentType == "oc" || agentType == "opencode") {
+		return true
+	}
+	if opts.filterCursor && agentType == "cursor" {
+		return true
+	}
+	if opts.filterWindsurf && agentType == "windsurf" {
+		return true
+	}
+	if opts.filterAider && agentType == "aider" {
+		return true
+	}
+	if opts.filterOllama && agentType == "ollama" {
 		return true
 	}
 
