@@ -125,13 +125,13 @@ func registerRobotExtFlags() {
 	rootCmd.Flags().StringVar(&robotHooksType, "hooks-type", "pre-commit", "Hook type for --hooks-action=run: pre-commit (default), pre-push, commit-msg, post-commit, post-checkout")
 	rootCmd.Flags().BoolVar(&robotHooksFailOnWarning, "hooks-fail-on-warning", true, "Treat UBS warnings as errors when running pre-commit (default true, use with --robot-hooks)")
 
-	// Robot-personas flags for listing personas and profile sets across all 11 harnesses
-	rootCmd.Flags().BoolVar(&robotPersonas, "robot-personas", false, "List built-in, user, and project agent personas and profile sets with 11-harness filtering (JSON)")
-	rootCmd.Flags().StringVar(&robotPersonasAgent, "personas-agent", "", "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)")
+	// Robot-personas flags for listing personas and profile sets across all 12 harnesses
+	rootCmd.Flags().BoolVar(&robotPersonas, "robot-personas", false, "List built-in, user, and project agent personas and profile sets with 12-harness filtering (JSON)")
+	rootCmd.Flags().StringVar(&robotPersonasAgent, "personas-agent", "", "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, pi, ollama)")
 	rootCmd.Flags().StringVar(&robotPersonasTag, "personas-tag", "", "Filter personas by tag (use with --robot-personas)")
 
 	// Robot-saved-sessions flags for saved session inspection, capture, archive, and unarchive
-	rootCmd.Flags().BoolVar(&robotSavedSessions, "robot-saved-sessions", false, "List, inspect (with 11-harness counts and casr/native resume readiness), save, archive, or unarchive saved sessions (JSON)")
+	rootCmd.Flags().BoolVar(&robotSavedSessions, "robot-saved-sessions", false, "List, inspect (with 12-harness counts and casr/native resume readiness), save, archive, or unarchive saved sessions (JSON)")
 	rootCmd.Flags().StringVar(&robotSavedAction, "saved-action", "list", "Saved-session action: list (default), show, save, archive, or unarchive (use with --robot-saved-sessions)")
 	rootCmd.Flags().StringVar(&robotSavedName, "saved-name", "", "Saved snapshot name for show/archive/unarchive, or custom save name (use with --robot-saved-sessions)")
 	rootCmd.Flags().StringVar(&robotSavedSession, "saved-session", "", "Live tmux session name to capture when --saved-action=save (use with --robot-saved-sessions)")
@@ -150,8 +150,8 @@ func registerRobotExtFlags() {
 	rootCmd.Flags().BoolVar(&robotSessionTemplates, "robot-session-templates", false, "List built-in, user, and project session templates or inspect a template by name (JSON)")
 	rootCmd.Flags().StringVar(&robotTemplateName, "template-name", "", "Session template name to inspect in detail (use with --robot-session-templates)")
 
-	// Robot-grep flags for regex search across pane scrollback with 11-harness filtering
-	rootCmd.Flags().StringVar(&robotGrep, "robot-grep", "", "Search pane scrollback with Go regular expressions across one or all sessions and all 11 agent harnesses (JSON). Required: PATTERN")
+	// Robot-grep flags for regex search across pane scrollback with 12-harness filtering
+	rootCmd.Flags().StringVar(&robotGrep, "robot-grep", "", "Search pane scrollback with Go regular expressions across one or all sessions and all 12 agent harnesses (JSON). Required: PATTERN")
 	rootCmd.Flags().StringVar(&robotGrepSession, "grep-session", "", "Target session name for --robot-grep (or pass --all for all sessions)")
 	rootCmd.Flags().BoolVar(&robotGrepIgnoreCase, "grep-ignore-case", false, "Case-insensitive regex search (use with --robot-grep)")
 	rootCmd.Flags().BoolVar(&robotGrepInvert, "grep-invert", false, "Invert regex matching (use with --robot-grep)")
@@ -168,7 +168,7 @@ func registerRobotExtFlags() {
 	rootCmd.Flags().IntVar(&robotExtractSelect, "extract-select", 0, "Select a single extracted block by 1-based index (use with --robot-extract)")
 
 	// Robot-validate flags for config/recipes/personas/policy validation
-	rootCmd.Flags().BoolVar(&robotValidate, "robot-validate", false, "Validate user and project NTM config, recipes, personas, policy, and 11-harness executables (JSON)")
+	rootCmd.Flags().BoolVar(&robotValidate, "robot-validate", false, "Validate user and project NTM config, recipes, personas, policy, and 12-harness executables (JSON)")
 	rootCmd.Flags().BoolVar(&robotValidateAll, "validate-all", false, "Include absent optional config locations when running --robot-validate")
 	rootCmd.Flags().BoolVar(&robotValidateFix, "validate-fix", false, "Auto-create missing fixable directories when running --robot-validate")
 

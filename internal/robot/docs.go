@@ -223,8 +223,8 @@ func getCommandsContent() *DocsContent {
 			{
 				Heading: "Session Management",
 				Body: `--robot-spawn=SESSION: Create session with agents
---robot-adopt=SESSION: Adopt an external tmux session across all 11 harnesses plus user panes (--adopt-cc..--adopt-user, --adopt-by-window, --adopt-auto-name)
---robot-scale=SESSION: Scale agent counts per harness across all 11 built-in harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-oc)
+--robot-adopt=SESSION: Adopt an external tmux session across all 12 harnesses plus user panes (--adopt-cc..--adopt-user, --adopt-by-window, --adopt-auto-name)
+--robot-scale=SESSION: Scale agent counts per harness across all 12 built-in harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-pi, --scale-oc)
 --robot-ensemble-spawn=SESSION: Spawn reasoning ensemble
 --robot-ensemble-synthesize=SESSION: Synthesize ensemble reasoning outputs
 --robot-recipes: List available spawn presets
@@ -233,9 +233,9 @@ func getCommandsContent() *DocsContent {
 --robot-saved-sessions: List, inspect, capture, archive, or unarchive saved session snapshots (--saved-action, --saved-name, --saved-session, --saved-archived, --saved-overwrite)
 --robot-mapping=SESSION: Resolve Agent Mail names to live tmux panes and reconcile border badges
 --robot-workflows: List or inspect workflow coordination templates with trigger validation (--workflows-name, --workflows-role)
---robot-grep=PATTERN: Search pane scrollback with regex across 11 harnesses (--grep-session, --all, --type, --grep-ignore-case, --grep-context)
+--robot-grep=PATTERN: Search pane scrollback with regex across 12 harnesses (--grep-session, --all, --type, --grep-ignore-case, --grep-context)
 --robot-extract=SESSION: Extract fenced code blocks and file hints from pane scrollback (--extract-pane, --extract-lang, --extract-last, --lines)
---robot-validate: Validate user/project config, recipes, personas, policy, and 11-harness executables (--validate-all, --validate-fix, --project)
+--robot-validate: Validate user/project config, recipes, personas, policy, and 12-harness executables (--validate-all, --validate-fix, --project)
 --robot-plugins: List installed agent and command plugins
 --robot-models: Recommend local models from GPU VRAM or list installed Ollama models (--models-action, --models-host)`,
 			},
@@ -452,7 +452,7 @@ func getExamplesContent() *DocsContent {
 				Name:        "scale_session",
 				Description: "Scale harness counts up or down non-interactively",
 				Command:     "ntm --robot-scale=proj --scale-cc=4 --scale-cod=2 --dry-run",
-				Notes:       "Supports all 11 harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-oc)",
+				Notes:       "Supports all 12 harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-pi, --scale-oc)",
 			},
 			{
 				Name:        "rebalance_session",

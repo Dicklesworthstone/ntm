@@ -260,23 +260,25 @@ func runDashboardPlain(w io.Writer, errW io.Writer, session string) error {
 
 func dashboardPaneTypeSummary(panes []tmux.Pane) string {
 	counts := map[string]int{
-		"claude":   0,
-		"codex":    0,
-		"gemini":   0,
-		"grok":     0,
-		"cursor":   0,
-		"windsurf": 0,
-		"aider":    0,
-		"oc":       0,
-		"omp":      0,
-		"ollama":   0,
-		"user":     0,
-		"other":    0,
+		"claude":      0,
+		"codex":       0,
+		"gemini":      0,
+		"antigravity": 0,
+		"grok":        0,
+		"cursor":      0,
+		"windsurf":    0,
+		"aider":       0,
+		"oc":          0,
+		"omp":         0,
+		"pi":          0,
+		"ollama":      0,
+		"user":        0,
+		"other":       0,
 	}
 
 	for _, pane := range panes {
 		switch normalizedType := normalizeAgentType(string(pane.Type)); normalizedType {
-		case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama", "user":
+		case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "pi", "ollama", "user":
 			counts[normalizedType]++
 		default:
 			counts["other"]++
@@ -284,16 +286,18 @@ func dashboardPaneTypeSummary(panes []tmux.Pane) string {
 	}
 
 	return fmt.Sprintf(
-		"Claude=%d Codex=%d Gemini=%d Grok=%d Cursor=%d Windsurf=%d Aider=%d Opencode=%d Omp=%d Ollama=%d User=%d Other=%d",
+		"Claude=%d Codex=%d Gemini=%d Antigravity=%d Grok=%d Cursor=%d Windsurf=%d Aider=%d Opencode=%d Omp=%d Pi=%d Ollama=%d User=%d Other=%d",
 		counts["claude"],
 		counts["codex"],
 		counts["gemini"],
+		counts["antigravity"],
 		counts["grok"],
 		counts["cursor"],
 		counts["windsurf"],
 		counts["aider"],
 		counts["oc"],
 		counts["omp"],
+		counts["pi"],
 		counts["ollama"],
 		counts["user"],
 		counts["other"],

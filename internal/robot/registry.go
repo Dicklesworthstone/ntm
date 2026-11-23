@@ -1106,7 +1106,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "scale",
 			Sections:   []string{"sessions", "next_actions"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "Scale session agent counts up or down across all 11 built-in harnesses in one structured call",
+				IntendedUse: "Scale session agent counts up or down across all 12 built-in harnesses in one structured call",
 				SummaryHint: "Read before, after, actions, and errors; pass --dry-run to preview or --force when scaling down active panes",
 			},
 			Boundedness: &BoundednessInfo{
@@ -1172,7 +1172,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "adopt",
 			Sections:   []string{"sessions", "next_actions"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",
+				IntendedUse: "Adopt an external tmux session into NTM management across all 12 agent harnesses plus user panes",
 				SummaryHint: "Read adopted_panes, total_panes, and agents; pass --dry-run first or --adopt-by-window for window-per-agent sessions",
 			},
 			Boundedness: &BoundednessInfo{
@@ -1211,7 +1211,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "personas",
 			Sections:   []string{"sessions"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering",
+				IntendedUse: "List built-in, user, and project agent personas and profile sets with 12-harness alias and tag filtering",
 				SummaryHint: "Read personas, profile_sets, count, and builtin_count; filter with --personas-agent or --personas-tag",
 			},
 			Boundedness: &BoundednessInfo{
@@ -1224,7 +1224,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "saved_sessions",
 			Sections:   []string{"sessions"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "List, inspect (with 11-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots",
+				IntendedUse: "List, inspect (with 12-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots",
 				SummaryHint: "Read sessions and count on list, or state and resumable_panes on show/save",
 			},
 			Boundedness: &BoundednessInfo{
@@ -1276,7 +1276,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "grep",
 			Sections:   []string{"sessions"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "Search captured tmux pane scrollback with regular expressions across one or all sessions and all 11 agent harnesses",
+				IntendedUse: "Search captured tmux pane scrollback with regular expressions across one or all sessions and all 12 agent harnesses",
 				SummaryHint: "Read matches, matching_panes, match_count, and panes_searched",
 			},
 			Boundedness: &BoundednessInfo{
@@ -1302,7 +1302,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaType: "validate",
 			Sections:   []string{"summary"},
 			ConsumerGuidance: &ConsumerGuidance{
-				IntendedUse: "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, policy.yaml, and 11-harness executables",
+				IntendedUse: "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, policy.yaml, and 12-harness executables",
 				SummaryHint: "Read valid, summary, and results[].errors / results[].warnings",
 			},
 			Boundedness: &BoundednessInfo{

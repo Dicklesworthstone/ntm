@@ -46,7 +46,7 @@ Validation types:
   - Schema: Required fields, valid types, value ranges
   - References: File paths exist, directories accessible
   - Consistency: Cross-field dependencies, logical constraints
-  - Executables: Agent commands are valid across all 11 harnesses
+  - Executables: Agent commands are valid across all 12 harnesses
 
 Examples:
   ntm config validate           # Validate applicable configs

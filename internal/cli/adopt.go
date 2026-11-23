@@ -22,7 +22,7 @@ import (
 func registerAdoptKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.adopt",
-		Description: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",
+		Description: "Adopt an external tmux session into NTM management across all 12 agent harnesses plus user panes",
 		Category:    "sessions",
 		Input: &kernel.SchemaRef{
 			Name: "AdoptInput",
