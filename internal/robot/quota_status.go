@@ -93,7 +93,7 @@ func canonicalRobotProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude", "anthropic", "cc":
 		return "claude"
-	case "gemini", "gmi", "google", "google-ai", "google_gemini", "google-gemini":
+	case "gemini", "gmi", "google", "google-ai", "google_gemini", "google-gemini", "antigravity", "agy":
 		return "gemini"
 	case "openai", "codex", "cod", "chatgpt", "openai-codex", "openai_codex":
 		return "openai"
