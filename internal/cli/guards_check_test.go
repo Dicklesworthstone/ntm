@@ -618,3 +618,52 @@ func TestGuardsCheckPush_ConflictBlocksAndCleanPasses(t *testing.T) {
 		t.Fatalf("expected branch deletion push to pass, got %v", err)
 	}
 }
+
+func TestGuardsCheckPush_MergeCommitAndInvalidOID(t *testing.T) {
+	isolateGuardState(t)
+	repo := guardTestRepo(t)
+
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	guardStageFile(t, repo, "base.txt", "base\n")
+	runGit("commit", "-q", "-m", "base")
+	runGit("checkout", "-q", "-b", "feature")
+	guardStageFile(t, repo, "internal/secret.go", "package internal\n")
+	runGit("commit", "-q", "-m", "touch reserved on feature")
+	runGit("checkout", "-q", "-")
+	guardStageFile(t, repo, "other.txt", "other\n")
+	runGit("commit", "-q", "-m", "diverge main")
+	runGit("merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+	mergeOID := runGit("rev-parse", "HEAD")
+
+	srv := startFakeAgentMail(t, []map[string]any{
+		exclusiveReservation(9, "BlueLake", "internal/secret.go"),
+	})
+	t.Setenv("AGENT_MAIL_URL", srv.URL)
+
+	// New-branch push whose tip is a merge commit must still inspect files via diff-tree -m.
+	var stdout, stderr bytes.Buffer
+	zeroOID := strings.Repeat("0", len(mergeOID))
+	stdin := strings.NewReader("refs/heads/newbranch " + mergeOID + " refs/heads/newbranch " + zeroOID + "\n")
+	if err := runGuardsCheckPush(&stdout, &stderr, stdin, repo); err == nil {
+		t.Fatalf("expected merge-commit new-branch push to block on reserved file, got nil (stdout=%q stderr=%q)", stdout.String(), stderr.String())
+	} else if !strings.Contains(stderr.String(), "CONFLICT: internal/secret.go") {
+		t.Fatalf("stderr missing conflict detail: %q", stderr.String())
+	}
+
+	// Leading-dash fake OID must be rejected as invalid rather than passed to git as a flag.
+	stdout.Reset()
+	stderr.Reset()
+	stdin = strings.NewReader("refs/heads/main --output=/tmp/pwn refs/heads/main " + zeroOID + "\n")
+	if err := runGuardsCheckPush(&stdout, &stderr, stdin, repo); err == nil {
+		t.Fatal("expected invalid leading-dash OID to fail")
+	}
+}
