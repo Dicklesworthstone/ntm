@@ -164,7 +164,15 @@ func enrichAgentContext(agent *Agent, modelName, content string, transcript *ntm
 			agent.ContextModel = usage.Model
 		}
 	}
-	usage, fromGauge := ompStatusBarUsage(agent.Type, status.StripANSI(content), time.Now())
+	cleanCapture := status.StripANSI(content)
+	now := time.Now()
+	usage, fromGauge := ompStatusBarUsage(agent.Type, cleanCapture, now)
+	if !fromGauge {
+		usage, fromGauge = opencodeStatusBarUsage(agent.Type, cleanCapture, agent.ContextLimit, now)
+	}
+	if !fromGauge {
+		usage, fromGauge = piStatusBarUsage(agent.Type, cleanCapture, now)
+	}
 	if !fromGauge {
 		usage = transcript
 	}

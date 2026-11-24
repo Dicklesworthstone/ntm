@@ -853,6 +853,13 @@ func opencodeStatusBarUsage(agentType, cleanCapture string, fallbackLimit int, c
 	return ntmctx.OpencodeStatusBarUsage(cleanCapture, fallbackLimit, capturedAt)
 }
 
+func piStatusBarUsage(agentType, cleanCapture string, capturedAt time.Time) (*ntmctx.TranscriptUsage, bool) {
+	if agent.AgentType(agentType).Canonical() != agent.AgentTypePi {
+		return nil, false
+	}
+	return ntmctx.PiStatusBarUsage(cleanCapture, capturedAt)
+}
+
 // GetContext retrieves context window usage information for all agents in a session.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetContext(session string, lines int) (*ContextOutput, error) {
@@ -965,6 +972,13 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			agentInfo.UsagePercent = float64(gauge.Tokens) * 100 / float64(gauge.ContextWindow)
 			agentInfo.Confidence = "high"
 		} else if gauge, ok := opencodeStatusBarUsage(agentType, cleanText, contextLimit, output.CapturedAt); ok {
+			agentInfo.Source = "status_bar"
+			agentInfo.EstimatedTokens = gauge.Tokens
+			agentInfo.WithOverhead = gauge.Tokens
+			agentInfo.ContextLimit = gauge.ContextWindow
+			agentInfo.UsagePercent = float64(gauge.Tokens) * 100 / float64(gauge.ContextWindow)
+			agentInfo.Confidence = "high"
+		} else if gauge, ok := piStatusBarUsage(agentType, cleanText, output.CapturedAt); ok {
 			agentInfo.Source = "status_bar"
 			agentInfo.EstimatedTokens = gauge.Tokens
 			agentInfo.WithOverhead = gauge.Tokens
