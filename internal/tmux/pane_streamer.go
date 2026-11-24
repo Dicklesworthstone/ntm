@@ -200,6 +200,16 @@ func (ps *PaneStreamer) Start(ctx context.Context) (err error) {
 		}
 	}()
 
+	// pipe-pane opens its output on the tmux server's host. A remote tmux
+	// server cannot write our local FIFO. Poll through the same SSH client
+	// that owns the pane, without touching either host's pipe-pane.
+	if ps.client.Remote != "" {
+		ps.useFallback.Store(true)
+		ps.wg.Add(1)
+		go ps.runPollingLoop()
+		return nil
+	}
+
 	// Ensure FIFO directory exists
 	if err = os.MkdirAll(ps.config.FIFODir, 0755); err != nil {
 		return fmt.Errorf("create fifo dir: %w", err)
