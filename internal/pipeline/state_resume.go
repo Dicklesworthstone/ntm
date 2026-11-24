@@ -105,11 +105,22 @@ type ForeachIterationState struct {
 	ItemsFingerprint      string         `json:"items_fingerprint,omitempty"`
 	CollectedOutputs      []interface{}  `json:"collected_outputs,omitempty"`
 	CompletedRounds       map[string]int `json:"completed_rounds,omitempty"`
+
+	Break *LoopBreakCheckpoint `json:"break,omitempty"`
 	// Accepted failures are checkpointed before the next body step, so an
 	// interruption inside an iteration cannot turn them into retries.
 	ConsumedFailures map[string]LoopFailureCheckpoint `json:"consumed_failures,omitempty"`
 	StartedAt        time.Time                        `json:"started_at,omitempty"`
 	UpdatedAt        time.Time                        `json:"updated_at,omitempty"`
+}
+
+// LoopBreakCheckpoint records an explicit successful break before the enclosing
+// scheduler commits its result. PriorOutputs identifies the terminal iteration's
+// contribution when an operator explicitly rewinds to this iteration.
+type LoopBreakCheckpoint struct {
+	Iteration      int    `json:"iteration"`
+	DefinitionHash string `json:"definition_hash"`
+	PriorOutputs   int    `json:"prior_outputs"`
 }
 
 // LoopFailureCheckpoint binds an accepted failure to its authored and
@@ -2908,6 +2919,10 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 		return fmt.Errorf("force-iter step %q must use foreach, foreach_pane, or loop.items; while/times loops have no durable iteration cursor", opts.StepID)
 	}
 	if prior, ok := state.ForeachState[opts.StepID]; ok {
+		if marker := prior.Break; marker != nil && (opts.Iteration > marker.Iteration ||
+			marker.PriorOutputs < 0 || marker.PriorOutputs > len(prior.CollectedOutputs)) {
+			return fmt.Errorf("force-iter cannot rewind %q beyond its terminal break or with inconsistent collected output", opts.StepID)
+		}
 		if prior.StepID != "" && prior.StepID != opts.StepID {
 			return fmt.Errorf("force-iter checkpoint for %q names a different step %q", opts.StepID, prior.StepID)
 		}
@@ -3459,6 +3474,12 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	}
 	state := e.state.ForeachState[stepID]
 	state.StepID = stepID
+	if marker := state.Break; marker != nil && iteration <= marker.Iteration {
+		if marker.PriorOutputs >= 0 && marker.PriorOutputs <= len(state.CollectedOutputs) {
+			state.CollectedOutputs = state.CollectedOutputs[:marker.PriorOutputs]
+		}
+		state.Break = nil
+	}
 	state.CurrentIteration = iteration
 	state.CompletedIterationIDs = filterCompletedIterationsBefore(state.CompletedIterationIDs, stepID, iteration)
 	prefix := fmt.Sprintf("%s_iter", stepID)

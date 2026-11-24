@@ -4397,6 +4397,10 @@ func (e *Executor) snapshotState() *ExecutionState {
 			// aliasing live state can be written concurrently — and a shared map
 			// makes that an unrecoverable "concurrent map iteration and map
 			// write" fatal error rather than a recoverable race.
+			if value.Break != nil {
+				marker := *value.Break
+				value.Break = &marker
+			}
 			value.CompletedIterationIDs = append([]string(nil), value.CompletedIterationIDs...)
 			value.CollectedOutputs = append([]interface{}(nil), value.CollectedOutputs...)
 			value.CompletedRounds = maps.Clone(value.CompletedRounds)
