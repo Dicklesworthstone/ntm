@@ -2057,6 +2057,7 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
 			calls := 0
 			getActionableRecommendationsForWatch = func(_ context.Context, gotProject string, limit int) ([]bv.TriageRecommendation, error) {
 				calls++
