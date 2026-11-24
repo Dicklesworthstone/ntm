@@ -14378,6 +14378,7 @@ func TestHandlePolicyAutomationGetV1_LoadOrDefaultError(t *testing.T) {
 func TestHandlePolicyAutomationUpdateV1_InvalidForceReleaseBranch(t *testing.T) {
 	t.Parallel()
 	s, _ := setupTestServer(t)
+	s.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	badValue := "bogus"
 	body := fmt.Sprintf(`{"force_release":"%s"}`, badValue)
