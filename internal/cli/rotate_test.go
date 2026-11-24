@@ -857,12 +857,48 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 			command.SetOut(&out)
 			command.SetErr(new(bytes.Buffer))
 			command.SetArgs([]string{pending.AgentID, "--action=rotate"})
-			timeout := 350 * time.Millisecond
-			if tc.bound && tc.kind == "assistant" {
-				timeout = 15 * time.Second
+			wantSuccess := tc.bound && tc.kind == "assistant"
+			var ctx context.Context
+			var cancel context.CancelFunc
+			stopCancelWatcher := make(chan struct{})
+			var cancelWatcherDone chan struct{}
+			if wantSuccess {
+				ctx, cancel = context.WithTimeout(t.Context(), 15*time.Second)
+			} else {
+				ctx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
+				commandsPath := filepath.Join(caseDir, "commands")
+				cancelWatcherDone = make(chan struct{})
+				go func() {
+					defer close(cancelWatcherDone)
+					ticker := time.NewTicker(10 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						if data, readErr := os.ReadFile(commandsPath); readErr == nil && strings.Contains(string(data), "TRANSCRIPT_SUMMARY_WRITTEN") {
+							select {
+							case <-stopCancelWatcher:
+								return
+							case <-time.After(150 * time.Millisecond):
+								cancel()
+								return
+							}
+						}
+						select {
+						case <-stopCancelWatcher:
+							return
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+						}
+					}
+				}()
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), timeout)
-			defer cancel()
+			defer func() {
+				close(stopCancelWatcher)
+				cancel()
+				if cancelWatcherDone != nil {
+					<-cancelWatcherDone
+				}
+			}()
 			err := command.ExecuteContext(ctx)
 			var result ConfirmRotationResult
 			if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &result); decodeErr != nil {
@@ -877,7 +913,6 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 			if getErr != nil {
 				t.Fatal(getErr)
 			}
-			wantSuccess := tc.bound && tc.kind == "assistant"
 			if wantSuccess {
 				if err != nil || !result.Success || result.Rotation == nil || result.Rotation.NewPaneID != newPane || stored != nil {
 					t.Fatalf("exact assistant reply did not complete rotation: %+v, %v; pending=%+v\n%s", result, err, stored, log)
