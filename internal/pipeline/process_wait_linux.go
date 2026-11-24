@@ -599,7 +599,32 @@ func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, err
 			if ctx.Err() != nil {
 				return false, errCommandGroupBirthRace
 			}
-			if attempt&15 == 0 {
+			if attempt%64 == 0 {
+				// Avoid unbounded 100% CPU spinning on long-lived caller
+				// contexts under sustained host fork storms, and refresh mount
+				// visibility + birth counters before the next retry wave.
+				backoff := effectiveCommandGroupPollInterval()
+				if backoff > 5*time.Millisecond {
+					backoff = 5 * time.Millisecond
+				}
+				timer := time.NewTimer(backoff)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return false, errCommandGroupBirthRace
+				case <-timer.C:
+				}
+				refreshedMount, mountErr := readCommandProcfsVisibility(os.ReadFile)
+				if mountErr != nil {
+					return false, mountErr
+				}
+				mountBefore = refreshedMount
+				freshBirths, readErr := readCommandProcessBirthsFD(statFD, &scratch.statBuf)
+				if readErr != nil {
+					return false, readErr
+				}
+				birthsBefore = freshBirths
+			} else if attempt&15 == 0 {
 				runtime.Gosched()
 				if freshBirths, readErr := readCommandProcessBirthsFD(statFD, &scratch.statBuf); readErr != nil {
 					return false, readErr
