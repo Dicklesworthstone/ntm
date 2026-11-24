@@ -742,6 +742,10 @@ func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatus
 	if poll <= 0 {
 		poll = 100 * time.Millisecond
 	}
+	const minWaitRequestPollInterval = 10 * time.Millisecond
+	if poll < minWaitRequestPollInterval {
+		poll = minWaitRequestPollInterval
+	}
 
 	started := time.Now()
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
