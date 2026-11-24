@@ -14,7 +14,6 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
-	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // setupTestDB opens a temp state store and applies the REAL managed
@@ -23,15 +22,7 @@ import (
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		store.Close()
-		t.Fatalf("apply migrations: %v", err)
-	}
+	store := openFastServeStateStore(t, dbPath)
 
 	cleanup := func() {
 		if err := store.Close(); err != nil {
@@ -1354,6 +1345,67 @@ func TestWSAttentionSubscriptionProfileAndMuteSnoozeFilters(t *testing.T) {
 
 	if !isValidTopic("workflows:*") || !isValidTopic("workflows:demo") {
 		t.Fatal("workflows:* and workflows:<session> must be valid WebSocket topics")
+	}
+}
+
+func TestWSAttentionSessionScopedTopicsIsolateAndUnsubscribe(t *testing.T) {
+	t.Parallel()
+
+	sub := WSAttentionSub{
+		Active: true,
+		topics: []string{"attention:projA"},
+	}
+	evA := robot.AttentionEvent{Cursor: 1, Session: "projA", Category: robot.EventCategoryAlert, Actionability: robot.ActionabilityActionRequired}
+	evB := robot.AttentionEvent{Cursor: 2, Session: "projB", Category: robot.EventCategoryAlert, Actionability: robot.ActionabilityActionRequired}
+	evGlobal := robot.AttentionEvent{Cursor: 3, Session: "", Category: robot.EventCategoryAlert, Actionability: robot.ActionabilityActionRequired}
+
+	if !matchesAttentionSub(sub, evA) {
+		t.Fatal("attention:projA must match projA events")
+	}
+	if matchesAttentionSub(sub, evB) {
+		t.Fatal("attention:projA must NOT leak projB events")
+	}
+	if matchesAttentionSub(sub, evGlobal) {
+		t.Fatal("attention:projA must NOT leak unscoped global events")
+	}
+
+	wildcard := WSAttentionSub{Active: true, topics: []string{"attention:*"}}
+	if !matchesAttentionSub(wildcard, evA) || !matchesAttentionSub(wildcard, evB) || !matchesAttentionSub(wildcard, evGlobal) {
+		t.Fatal("attention:* must match all sessions and global events")
+	}
+
+	// Verify replay and live unsubscribe isolation via WSClient.
+	hub := NewWSHub()
+	client := &WSClient{
+		id:   "test-session-scope",
+		hub:  hub,
+		send: make(chan []byte, 16),
+	}
+	liveSub := &WSAttentionSub{
+		Active:      true,
+		SinceCursor: 0,
+		topics:      []string{"attention:projA", "attention:projB"},
+	}
+	client.attentionSub = liveSub
+
+	replayed, err := client.deliverAttentionReplay([]robot.AttentionEvent{evA, evB, evGlobal}, liveSub.topics, liveSub)
+	if err != nil || replayed != 2 {
+		t.Fatalf("deliverAttentionReplay(projA+projB) = (%d, %v), want (2, nil)", replayed, err)
+	}
+	for len(client.send) > 0 {
+		<-client.send
+	}
+
+	// Unsubscribe projA while keeping projB; subsequent projA live events must not be delivered.
+	client.removeAttentionTopics([]string{"attention:projA"})
+	liveSub.Cursor = 3
+	client.deliverAttentionEvent(robot.AttentionEvent{Cursor: 4, Session: "projA", Category: robot.EventCategoryAlert, Actionability: robot.ActionabilityActionRequired}, liveSub)
+	if len(client.send) != 0 {
+		t.Fatalf("projA event leaked after unsubscribing attention:projA (%d messages sent)", len(client.send))
+	}
+	client.deliverAttentionEvent(robot.AttentionEvent{Cursor: 5, Session: "projB", Category: robot.EventCategoryAlert, Actionability: robot.ActionabilityActionRequired}, liveSub)
+	if len(client.send) != 1 {
+		t.Fatalf("projB event should still be delivered after unsubscribing projA, got %d messages", len(client.send))
 	}
 }
 
