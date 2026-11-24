@@ -114,6 +114,9 @@ func (le *LoopExecutor) finishLoopBreak(step *Step, result LoopResult, iteration
 
 func (le *LoopExecutor) restoreLoopBreak(step *Step) (LoopResult, bool) {
 	e := le.executor
+	if err := e.checkpointFailure(); err != nil {
+		return loopBreakError(step, err), true
+	}
 	e.stateMu.RLock()
 	if e.state == nil {
 		e.stateMu.RUnlock()

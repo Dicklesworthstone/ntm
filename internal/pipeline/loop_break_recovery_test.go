@@ -83,3 +83,31 @@ steps:
 		})
 	}
 }
+
+func TestLoopBreakCannotRestoreAfterFailedPersistence(t *testing.T) {
+	t.Parallel()
+
+	wf := &Workflow{Name: "break-persist", Settings: DefaultWorkflowSettings(), Steps: []Step{{
+		ID: "batch", Loop: &LoopConfig{Times: 2, Collect: "answers", Steps: []Step{{ID: "work", Command: "printf result"}}},
+	}}}
+	e := createForeachTestExecutor(t, wf)
+	e.beginForeachState("batch", 2)
+	e.markForeachIterationStarted("batch", 0, 2)
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, ".ntm"), []byte("block checkpoint directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	le := NewLoopExecutor(e)
+	first := le.finishLoopBreak(&wf.Steps[0], LoopResult{}, 0, []StepResult{{Status: StatusCompleted, Output: "result"}})
+	if first.Status != StatusFailed || e.checkpointFailure() == nil {
+		t.Fatalf("failed save returned success: %+v", first)
+	}
+	if e.state.ForeachState["batch"].Break == nil {
+		t.Fatal("failed save discarded terminal evidence")
+	}
+	if got := le.ExecuteLoop(context.Background(), &wf.Steps[0], wf); got.Status != StatusFailed {
+		t.Fatalf("in-memory marker hid the persistence failure: %+v", got)
+	}
+	if _, published := e.state.Variables["answers"]; published {
+		t.Fatal("failed checkpoint published collected output")
+	}
+}
