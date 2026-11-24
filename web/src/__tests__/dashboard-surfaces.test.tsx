@@ -495,17 +495,26 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
         if (url.pathname === "/api/v1/sessions/my%2Fproj%231/panes") {
           return reply({
             session_id: sessionId,
-            count: 1,
-            panes: [{ index: 0, title: "claude-0", type: "cc", active: true }],
+            count: 2,
+            panes: [
+              { index: 0, window_index: 1, id: "%7", title: "claude-0", type: "cc", active: true },
+              { index: 0, window_index: 2, id: "%8", title: "codex-0", type: "cod" },
+            ],
           });
         }
-        if (url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/output") {
+        if (url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%257/output") {
           outputFetchCount += 1;
           return reply({
             pane: "0",
             output: backfillOutput,
             lines: 2,
           });
+        }
+        if (url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%258/output") {
+          return reply({ pane: "%8", output: "other window output", lines: 1 });
+        }
+        if (url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%258/stream") {
+          return reply({ target: "%8", topic: "panes:%8" });
         }
         if (url.pathname === "/api/v1/sessions/my%2Fproj%231/checkpoints") {
           return reply({
@@ -524,7 +533,7 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
           });
         }
         if (
-          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/stream" &&
+          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%257/stream" &&
           (options?.method === "POST" || options?.method === "DELETE")
         ) {
           return reply(
@@ -534,13 +543,13 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
           );
         }
         if (
-          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/input" &&
+          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%258/input" &&
           options?.method === "POST"
         ) {
           return reply({ sent: true, pane: "0" });
         }
         if (
-          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/interrupt" &&
+          url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/%258/interrupt" &&
           options?.method === "POST"
         ) {
           return reply({});
@@ -572,13 +581,13 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     expect(requestedPaths).toContain("GET /api/v1/sessions/my%2Fproj%231");
     expect(requestedPaths).toContain("GET /api/v1/sessions/my%2Fproj%231/panes");
     expect(requestedPaths).toContain(
-      "GET /api/v1/sessions/my%2Fproj%231/panes/0/output?lines=200"
+      "GET /api/v1/sessions/my%2Fproj%231/panes/%257/output?lines=200"
     );
 
-    // Starts server PaneStreamer and subscribes to both fallback and authoritative server topic panes:%7
+    // Subscribe to the physical pane's topic before starting its stream.
     await waitFor(() => {
       expect(requestedPaths).toContain(
-        "POST /api/v1/sessions/my%2Fproj%231/panes/0/stream"
+        "POST /api/v1/sessions/my%2Fproj%231/panes/%257/stream"
       );
       expect(
         socket.sentFrames.some(
@@ -682,21 +691,30 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     expect(await screen.findByText("resumed prompt")).toBeInTheDocument();
     expect(screen.getByText("fresh authoritative snapshot")).toBeInTheDocument();
 
-    // Verify sendPrompt and interruptPane also encode sessionId
+    // Select the other window's pane zero. Output and both controls must
+    // follow %8, even though its window-local index is identical to %7's.
+    fireEvent.click(screen.getByRole("button", { name: /Pane 2\.0/ }));
+    expect(await screen.findByText("other window output")).toBeInTheDocument();
+    expect(screen.queryByText("resumed prompt")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(requestedPaths).toContain("DELETE /api/v1/sessions/my%2Fproj%231/panes/%257/stream");
+      expect(requestedPaths).toContain("POST /api/v1/sessions/my%2Fproj%231/panes/%258/stream");
+    });
+
     fireEvent.change(screen.getByPlaceholderText("Send a prompt to this pane..."), {
       target: { value: "status check" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
       expect(requestedPaths).toContain(
-        "POST /api/v1/sessions/my%2Fproj%231/panes/0/input"
+        "POST /api/v1/sessions/my%2Fproj%231/panes/%258/input"
       );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
     await waitFor(() => {
       expect(requestedPaths).toContain(
-        "POST /api/v1/sessions/my%2Fproj%231/panes/0/interrupt"
+        "POST /api/v1/sessions/my%2Fproj%231/panes/%258/interrupt"
       );
     });
   }, 10000);
