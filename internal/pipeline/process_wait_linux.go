@@ -618,7 +618,9 @@ func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, err
 				if mountErr != nil {
 					return false, mountErr
 				}
-				mountBefore = refreshedMount
+				if refreshedMount != mountBefore {
+					return false, errCommandGroupMountRace
+				}
 				freshBirths, readErr := readCommandProcessBirthsFD(statFD, &scratch.statBuf)
 				if readErr != nil {
 					return false, readErr
