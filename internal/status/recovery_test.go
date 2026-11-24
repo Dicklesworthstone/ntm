@@ -112,7 +112,7 @@ func (rm *RecoveryManager) HandleCompactionEvent(event *CompactionEvent, session
 	if !strings.HasPrefix(paneID, "%") {
 		paneID = makePaneID(session, paneIndex)
 	}
-	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, event.MatchedText, agent.AgentType(event.AgentType))
+	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, paneID, event.MatchedText, agent.AgentType(event.AgentType))
 }
 
 // ResetAll resets all tracked recovery state (test-only helper).
@@ -323,7 +323,7 @@ func TestRecoveryManager_SendRecoveryPromptByID_Cooldown(t *testing.T) {
 	rm.mu.Lock()
 	rm.lastRecovery["test:0"] = time.Now()
 	rm.mu.Unlock()
-	sent, err := rm.sendRecoveryPromptByIDForAgent("test", 0, "test:0", "trigger", agent.AgentTypeClaudeCode)
+	sent, err := rm.sendRecoveryPromptByIDForAgent("test", 0, "test:0", "test:0", "trigger", agent.AgentTypeClaudeCode)
 	if sent {
 		t.Error("should not send when in cooldown")
 	}
@@ -337,7 +337,7 @@ func TestRecoveryManager_SendRecoveryPromptByID_MaxRecoveries(t *testing.T) {
 	rm.recoveryCount["test:0"] = 3
 	rm.mu.Unlock()
 	time.Sleep(5 * time.Millisecond)
-	sent, err := rm.sendRecoveryPromptByIDForAgent("test", 0, "test:0", "trigger", agent.AgentTypeClaudeCode)
+	sent, err := rm.sendRecoveryPromptByIDForAgent("test", 0, "test:0", "test:0", "trigger", agent.AgentTypeClaudeCode)
 	if sent {
 		t.Error("should not send when max recoveries reached")
 	}
@@ -366,6 +366,35 @@ func TestRecoveryManagerExportedPromptDeliversToGrok(t *testing.T) {
 	case <-sendCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Grok recovery prompt never reached the sender")
+	}
+}
+
+func TestRecoveryManagerTracksCallerKeyWhileDeliveringToPhysicalPaneID(t *testing.T) {
+	rm := NewRecoveryManager(RecoveryConfig{Cooldown: time.Hour, Prompt: "recover", MaxRecoveries: 3})
+	rm.includeBeadContext = false
+	var deliveredTarget string
+	rm.sendPrompt = func(target, _ string, _ bool) error {
+		deliveredTarget = target
+		return nil
+	}
+
+	const callerKey = "proj:.1"
+	const physicalID = "%17"
+	sent, err := rm.sendRecoveryPromptByIDForAgent("proj", 1, callerKey, physicalID, "compacted", agent.AgentTypeClaudeCode)
+	if err != nil || !sent {
+		t.Fatalf("sendRecoveryPromptByIDForAgent = %t, %v, want true, nil", sent, err)
+	}
+	if deliveredTarget != physicalID {
+		t.Fatalf("delivered target = %q, want %q", deliveredTarget, physicalID)
+	}
+	if got := rm.GetRecoveryCount(callerKey); got != 1 {
+		t.Fatalf("GetRecoveryCount(%q) = %d, want 1", callerKey, got)
+	}
+	if _, ok := rm.GetLastRecoveryTime(callerKey); !ok {
+		t.Fatalf("GetLastRecoveryTime(%q) = false, want true", callerKey)
+	}
+	if can, reason := rm.CanSendRecovery(callerKey); can || !strings.Contains(reason, "cooldown") {
+		t.Fatalf("CanSendRecovery(%q) = (%v, %q), want (false, cooldown...)", callerKey, can, reason)
 	}
 }
 

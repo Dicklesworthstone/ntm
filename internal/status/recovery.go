@@ -108,15 +108,15 @@ func (rm *RecoveryManager) SendRecoveryPrompt(session string, paneIndex int) (bo
 
 // SendRecoveryPromptByID preserves an explicit tmux pane ID across window changes.
 func (rm *RecoveryManager) SendRecoveryPromptByID(session string, paneIndex int, paneID, triggerText string) (bool, error) {
-	kind, err := rm.recoveryPaneType(session, paneIndex, paneID)
+	kind, resolvedID, err := rm.recoveryPaneInfo(session, paneIndex, paneID)
 	if err != nil {
 		return false, err
 	}
-	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, triggerText, kind)
+	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, resolvedID, triggerText, kind)
 }
 
-func (rm *RecoveryManager) sendRecoveryPromptByIDForAgent(session string, paneIndex int, paneID, triggerText string, kind agent.AgentType) (bool, error) {
-	return rm.deliverRecovery(context.Background(), session, paneIndex, paneID, triggerText, kind,
+func (rm *RecoveryManager) sendRecoveryPromptByIDForAgent(session string, paneIndex int, paneID, sendTarget, triggerText string, kind agent.AgentType) (bool, error) {
+	return rm.deliverRecoveryToTarget(context.Background(), session, paneIndex, paneID, sendTarget, triggerText, kind,
 		func(_ context.Context, prompt string, include bool) string {
 			return BuildContextAwarePrompt(prompt, include)
 		}, nil)
@@ -127,6 +127,15 @@ func (rm *RecoveryManager) sendRecoveryPromptByIDForAgent(session string, paneIn
 // such an error does not prove no input reached the agent. Pre-send failures do
 // not consume the attempt budget. No state mutex is held during external I/O.
 func (rm *RecoveryManager) deliverRecovery(ctx context.Context, session string, paneIndex int, paneID, triggerText string, kind agent.AgentType,
+	build func(context.Context, string, bool) string, authorize func(context.Context) error,
+) (bool, error) {
+	return rm.deliverRecoveryToTarget(ctx, session, paneIndex, paneID, paneID, triggerText, kind, build, authorize)
+}
+
+// deliverRecoveryToTarget keeps cooldown/count accounting keyed by paneID (the
+// caller's tracking key, e.g. "session:.N" or "%17") while delivering keystrokes
+// to sendTarget (the resolved physical tmux pane ID "%N" when available).
+func (rm *RecoveryManager) deliverRecoveryToTarget(ctx context.Context, session string, paneIndex int, paneID, sendTarget, triggerText string, kind agent.AgentType,
 	build func(context.Context, string, bool) string, authorize func(context.Context) error,
 ) (bool, error) {
 	if ctx == nil {
@@ -165,7 +174,9 @@ func (rm *RecoveryManager) deliverRecovery(ctx context.Context, session string, 
 	}
 
 	target := makePaneID(session, paneIndex)
-	if strings.HasPrefix(paneID, "%") {
+	if strings.HasPrefix(sendTarget, "%") {
+		target = sendTarget
+	} else if strings.HasPrefix(paneID, "%") {
 		target = paneID
 	}
 	now := time.Now()
@@ -185,13 +196,14 @@ func (rm *RecoveryManager) deliverRecovery(ctx context.Context, session string, 
 	return true, nil
 }
 
-func (rm *RecoveryManager) recoveryPaneType(session string, paneIndex int, paneID string) (agent.AgentType, error) {
+func (rm *RecoveryManager) recoveryPaneInfo(session string, paneIndex int, paneID string) (agent.AgentType, string, error) {
 	if rm.resolvePaneType != nil {
-		return rm.resolvePaneType(session, paneIndex, paneID)
+		kind, err := rm.resolvePaneType(session, paneIndex, paneID)
+		return kind, paneID, err
 	}
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
-		return agent.AgentTypeUnknown, fmt.Errorf("resolve recovery pane type: %w", err)
+		return agent.AgentTypeUnknown, paneID, fmt.Errorf("resolve recovery pane type: %w", err)
 	}
 	var match *tmux.Pane
 	for i := range panes {
@@ -204,14 +216,18 @@ func (rm *RecoveryManager) recoveryPaneType(session string, paneIndex int, paneI
 			continue
 		}
 		if match != nil {
-			return agent.AgentTypeUnknown, errors.New("recovery pane index is ambiguous; use its tmux ID")
+			return agent.AgentTypeUnknown, paneID, errors.New("recovery pane index is ambiguous; use its tmux ID")
 		}
 		match = p
 	}
 	if match == nil {
-		return agent.AgentTypeUnknown, fmt.Errorf("recovery pane %q not found in session %q", paneID, session)
+		return agent.AgentTypeUnknown, paneID, fmt.Errorf("recovery pane %q not found in session %q", paneID, session)
 	}
-	return match.Type, nil
+	resolvedID := paneID
+	if strings.HasPrefix(match.ID, "%") {
+		resolvedID = match.ID
+	}
+	return match.Type, resolvedID, nil
 }
 
 // sendRecoveryPrompt retains agent-aware multiline buffering for explicit sends.
