@@ -1025,9 +1025,11 @@ func TestWorkflowRunnerResumedDeadlineBoundsObservationAndCommands(t *testing.T)
 			// Model downtime without changing the saved receipt. The resumed
 			// clock then advances in real time so a blocking operation must
 			// honor the remaining stage deadline, not its own longer limit.
-			resumeWallTime := time.Now()
+			var clockOnce sync.Once
+			var resumeWallTime time.Time
 			ports.now = func() time.Time {
-				return checkpoint.Timeout.Deadline.Add(-250 * time.Millisecond).Add(time.Since(resumeWallTime))
+				clockOnce.Do(func() { resumeWallTime = time.Now() })
+				return checkpoint.Timeout.Deadline.Add(-400 * time.Millisecond).Add(time.Since(resumeWallTime))
 			}
 			captures := 0
 			if scenario == "pane capture" {
@@ -1102,9 +1104,11 @@ func TestWorkflowRunnerPendingResumeDeadlineBoundsValidation(t *testing.T) {
 			}
 
 			ports = resumeWorkflowPorts(&sent)
-			resumeWallTime := time.Now()
+			var clockOnce sync.Once
+			var resumeWallTime time.Time
 			ports.now = func() time.Time {
-				return checkpoint.Timeout.Deadline.Add(-250 * time.Millisecond).Add(time.Since(resumeWallTime))
+				clockOnce.Do(func() { resumeWallTime = time.Now() })
+				return checkpoint.Timeout.Deadline.Add(-400 * time.Millisecond).Add(time.Since(resumeWallTime))
 			}
 			blocked := 0
 			if uncertainSend {

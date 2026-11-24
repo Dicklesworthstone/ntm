@@ -18,6 +18,17 @@ import (
 // variables or prompt contents, which may contain sensitive project context.
 type WorkflowCheckpointResult = workflowrun.CheckpointResult
 
+type workflowJSONOutputKey struct{}
+
+func workflowJSONMode(ctx context.Context) bool {
+	if ctx != nil {
+		if override, ok := ctx.Value(workflowJSONOutputKey{}).(bool); ok {
+			return override
+		}
+	}
+	return jsonOutput
+}
+
 // newWorkflowCheckpointCmd builds the read-only status and explicit recovery
 // surfaces over the same checkpoint used by workflow run. Neither sends keys
 // or needs a running tmux server; --project-root defaults to the current dir.
@@ -28,16 +39,17 @@ func newWorkflowCheckpointCmd(action string) *cobra.Command {
 		Args:  cobra.NoArgs,
 		Short: "Inspect a saved workflow execution checkpoint",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			asJSON := workflowJSONMode(cmd.Context())
 			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
 			defer cancel()
 			result, err := getWorkflowCheckpoint(ctx, projectRoot, session, pane, token, outcome, action == "recover")
 			if err != nil {
-				if jsonOutput {
+				if asJSON {
 					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), map[string]interface{}{"success": false, "error": err.Error()}, err)
 				}
 				return err
 			}
-			if jsonOutput {
+			if asJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 			}
 			out := cmd.OutOrStdout()
@@ -132,8 +144,9 @@ a conflicting choice is refused. Only an authored manual edge can be selected.
 Example:
   ntm workflow trigger --session myproj --token=TOKEN_FROM_STATUS --transition=0 --reason="Design reviewed and ready for implementation"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			asJSON := workflowJSONMode(cmd.Context())
 			fail := func(err error) error {
-				if jsonOutput {
+				if asJSON {
 					return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), map[string]interface{}{"success": false, "error": err.Error()}, err)
 				}
 				return err
@@ -152,7 +165,7 @@ Example:
 			if err != nil {
 				return fail(err)
 			}
-			if jsonOutput {
+			if asJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
 					Success bool `json:"success"`
 					*workflow.ManualDecision

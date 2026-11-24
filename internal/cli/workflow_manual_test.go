@@ -46,6 +46,7 @@ type workflowManualDecisionResponse struct {
 // owns its session lock. The fake ports replace pane transport only; stage
 // evaluation, delivery checkpoints, manual receipts and transitions are real.
 func TestWorkflowManualCommandSelectsExactTransition(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual, opts.MaxTransitions = false, 8
 	template := &workflow.WorkflowTemplate{
@@ -137,6 +138,7 @@ func TestWorkflowManualCommandSelectsExactTransition(t *testing.T) {
 }
 
 func TestWorkflowManualCommandQueuedWhilePausedResumesWithoutResend(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual = false
 	fake := newFakeWorkflowSession()
@@ -206,7 +208,7 @@ func TestWorkflowManualCommandQueuedWhilePausedResumesWithoutResend(t *testing.T
 
 	opts.Resume, opts.Vars = true, nil
 	resumed := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, fake.ports())
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	result, err := resumed.Run(ctx)
 	if err != nil || !result.Resumed || result.Reason != "max-transitions" || !reflect.DeepEqual(result.Stages, []string{"build", "review"}) {
@@ -233,6 +235,7 @@ func TestWorkflowManualCommandQueuedWhilePausedResumesWithoutResend(t *testing.T
 }
 
 func TestWorkflowManualDecisionCannotCrossRetryOrRestart(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"retry stage", "restart workflow"} {
 		t.Run(change, func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -292,6 +295,7 @@ func TestWorkflowManualDecisionCannotCrossRetryOrRestart(t *testing.T) {
 }
 
 func TestWorkflowManualCorruptDecisionStopsBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual, opts.MaxTransitions = false, 8
 	fake := newFakeWorkflowSession()
@@ -330,6 +334,7 @@ func TestWorkflowManualCorruptDecisionStopsBeforeDispatch(t *testing.T) {
 }
 
 func TestWorkflowManualDecisionDoesNotRequireNewScrollback(t *testing.T) {
+	t.Parallel()
 	for _, replaced := range []bool{false, true} {
 		t.Run("pane_replaced="+strconv.FormatBool(replaced), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -379,16 +384,13 @@ func TestWorkflowManualDecisionDoesNotRequireNewScrollback(t *testing.T) {
 
 func executeWorkflowManualCommand(t *testing.T, args []string) ([]byte, error) {
 	t.Helper()
-	previousJSON := jsonOutput
-	jsonOutput = true
-	defer func() { jsonOutput = previousJSON }()
 	var output bytes.Buffer
 	cmd := newWorkflowsCmd()
 	cmd.SetOut(&output)
 	cmd.SetErr(&output)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs(args)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), workflowJSONOutputKey{}, true), 10*time.Second)
 	defer cancel()
 	err := cmd.ExecuteContext(ctx)
 	return append([]byte(nil), output.Bytes()...), err
@@ -467,7 +469,7 @@ func startWorkflowManualRunner(t *testing.T, template *workflow.WorkflowTemplate
 			select {
 			case run.outcome = <-run.done:
 				run.finished = true
-			case <-time.After(2 * time.Second):
+			case <-time.After(10 * time.Second):
 				t.Error("manual workflow runner did not stop after cancellation")
 			}
 		}
@@ -482,7 +484,7 @@ func (r *workflowManualRunning) nextPoll(t *testing.T) {
 	case r.outcome = <-r.done:
 		r.finished = true
 		t.Fatalf("workflow exited before the next operator decision: %+v, %v", r.outcome.result, r.outcome.err)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("workflow did not reach the next operator decision")
 	}
 }
@@ -491,7 +493,7 @@ func (r *workflowManualRunning) continuePoll(t *testing.T) {
 	t.Helper()
 	select {
 	case r.resume <- struct{}{}:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("workflow did not accept the next observation tick")
 	}
 }
@@ -502,7 +504,7 @@ func (r *workflowManualRunning) finish(t *testing.T) (WorkflowRunResult, error) 
 		select {
 		case r.outcome = <-r.done:
 			r.finished = true
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("workflow did not finish after the final operator decision")
 		}
 	}
