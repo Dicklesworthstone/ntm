@@ -3709,3 +3709,39 @@ func TestPiComposerHoldsPayload_ScrolledAndPasteToken(t *testing.T) {
 		t.Fatal("piComposerHoldsPayload(empty) = true, want false")
 	}
 }
+
+func TestZoomPaneByIDValidatesAndTargetsPhysicalPane(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tmux.log")
+	binPath := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NTM_TEST_ZOOM_LOG\"\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binPath)
+	t.Setenv("NTM_TEST_ZOOM_LOG", logPath)
+
+	client := NewClient("")
+
+	// Non-physical selectors must fail before invoking tmux.
+	for _, invalid := range []string{"", "0", "1.2", "%", "%abc", "  "} {
+		if err := client.ZoomPaneByID(invalid); err == nil {
+			t.Fatalf("ZoomPaneByID(%q) = nil, want validation error", invalid)
+		}
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("expected invalid ZoomPaneByID calls not to invoke tmux, stat err = %v", err)
+	}
+
+	if err := client.ZoomPaneByID(" %20 "); err != nil {
+		t.Fatalf("ZoomPaneByID(%%20) error = %v", err)
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read tmux log: %v", err)
+	}
+	want := "select-window -t %20\nselect-pane -t %20\nresize-pane -t %20 -Z\n"
+	if string(got) != want {
+		t.Fatalf("tmux invocations =\n%s\nwant:\n%s", string(got), want)
+	}
+}
