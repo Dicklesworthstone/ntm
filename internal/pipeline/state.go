@@ -21,8 +21,9 @@ const (
 	pipelineStateDirName = "pipelines"
 
 	// PipelineStateSchemaVersion is the on-disk schema version for persisted
-	// pipeline execution state files.
-	PipelineStateSchemaVersion = 1
+	// pipeline execution state files. Version 2 requires loop consumption
+	// receipts; older readers must not ignore them and repeat accepted effects.
+	PipelineStateSchemaVersion = 2
 )
 
 // ErrCheckpointFailed means execution stopped because recovery state could not
@@ -458,6 +459,9 @@ func decodeState(data []byte, runID string) (*ExecutionState, error) {
 	if err := validateSuccessHooks(&state); err != nil {
 		return nil, err
 	}
+	if err := validateConsumedLoopFailures(&state); err != nil {
+		return nil, err
+	}
 
 	return &state, nil
 }
@@ -470,6 +474,9 @@ func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
 		return nil, err
 	}
 	if err := validateSuccessHooks(state); err != nil {
+		return nil, err
+	}
+	if err := validateConsumedLoopFailures(state); err != nil {
 		return nil, err
 	}
 
@@ -731,6 +738,9 @@ func stateCleanupRetentionReason(state *ExecutionState) string {
 	}
 	if err := validateSuccessHooks(state); err != nil {
 		return "invalid_success_hook_receipt"
+	}
+	if err := validateConsumedLoopFailures(state); err != nil {
+		return "invalid_loop_failure_receipt"
 	}
 	for _, record := range state.SuccessHooks {
 		if !successHooksSettled(record) {

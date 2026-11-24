@@ -1,13 +1,19 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 func setTestDefaultFIFODir(t *testing.T) string {
@@ -27,6 +33,9 @@ func TestPaneStreamerConfig_Defaults(t *testing.T) {
 	}
 	if cfg.MaxLinesPerEvent != 100 {
 		t.Errorf("expected MaxLinesPerEvent 100, got %d", cfg.MaxLinesPerEvent)
+	}
+	if cfg.MaxBytesPerEvent != 64*1024 {
+		t.Errorf("expected MaxBytesPerEvent 65536, got %d", cfg.MaxBytesPerEvent)
 	}
 	if cfg.FlushInterval != 50*time.Millisecond {
 		t.Errorf("expected FlushInterval 50ms, got %v", cfg.FlushInterval)
@@ -59,6 +68,306 @@ func TestStreamEvent_Fields(t *testing.T) {
 	}
 	if !event.IsFull {
 		t.Error("expected IsFull=true")
+	}
+}
+
+func startTestOutputStream(t *testing.T, cfg PaneStreamerConfig) (*io.PipeWriter, <-chan StreamEvent, context.CancelFunc, <-chan error) {
+	t.Helper()
+	reader, writer := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan StreamEvent, 32)
+	ps := NewPaneStreamer(nil, "%123", func(event StreamEvent) {
+		events <- event
+	}, cfg)
+	done := make(chan error, 1)
+	go func() {
+		done <- ps.readOutputStream(ctx, nil, reader)
+		close(events)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = writer.Close()
+		// Drain callbacks as well as joining the worker if a failed assertion
+		// left output queued; cleanup itself must never strand a reader.
+		for range events {
+		}
+	})
+	return writer, events, cancel, done
+}
+
+func nextOutputEvent(t *testing.T, events <-chan StreamEvent) StreamEvent {
+	t.Helper()
+	select {
+	case event, ok := <-events:
+		if !ok {
+			t.Fatal("stream ended before output arrived")
+		}
+		return event
+	case <-time.After(2 * time.Second):
+		t.Fatal("output was not flushed while the writer remained open")
+		return StreamEvent{}
+	}
+}
+
+func TestPaneStreamerFlushesPromptAndProgressWithoutNewlines(t *testing.T) {
+	writer, events, _, _ := startTestOutputStream(t, PaneStreamerConfig{FlushInterval: 5 * time.Millisecond})
+	if _, err := io.WriteString(writer, "ready> "); err != nil {
+		t.Fatal(err)
+	}
+	prompt := nextOutputEvent(t, events)
+	if got := strings.Join(prompt.Lines, "\n"); got != "ready> " || !prompt.Partial || prompt.ContinuesLine {
+		t.Fatalf("prompt = %+v; want an unterminated initial fragment", prompt)
+	}
+
+	if _, err := io.WriteString(writer, "\rworking 50%\x1b[K"); err != nil {
+		t.Fatal(err)
+	}
+	progress := nextOutputEvent(t, events)
+	if got := strings.Join(progress.Lines, "\n"); got != "\rworking 50%\x1b[K" || !progress.Partial || !progress.ContinuesLine {
+		t.Fatalf("progress = %+v; CR/ANSI fragment must continue the same line", progress)
+	}
+
+	if _, err := io.WriteString(writer, "\ndone\nnext> "); err != nil {
+		t.Fatal(err)
+	}
+	ending := nextOutputEvent(t, events)
+	if got := strings.Join(ending.Lines, "\n"); got != "\ndone\nnext> " || !ending.Partial || !ending.ContinuesLine {
+		t.Fatalf("line boundaries were lost after partial flush: %+v", ending)
+	}
+	if prompt.Seq != 1 || progress.Seq != 2 || ending.Seq != 3 {
+		t.Fatalf("sequence order = %d, %d, %d", prompt.Seq, progress.Seq, ending.Seq)
+	}
+}
+
+func TestPaneStreamerBoundsGiantUnterminatedOutput(t *testing.T) {
+	const maxBytes = 1024
+	payload := strings.Repeat("prompt🙂", 20000)
+	var reconstructed strings.Builder
+	count := 0
+	ps := NewPaneStreamer(nil, "%123", func(event StreamEvent) {
+		count++
+		if !event.Partial || event.ContinuesLine != (count > 1) {
+			t.Errorf("incorrect giant-line framing: %+v", event)
+		}
+		fragment := strings.Join(event.Lines, "\n")
+		if len(fragment) > maxBytes || !utf8.ValidString(fragment) {
+			t.Errorf("unbounded or invalid UTF-8 fragment: bytes=%d valid=%v", len(fragment), utf8.ValidString(fragment))
+		}
+		reconstructed.WriteString(fragment)
+	}, PaneStreamerConfig{MaxBytesPerEvent: maxBytes, FlushInterval: time.Hour})
+	if err := ps.readOutputStream(context.Background(), nil, io.NopCloser(strings.NewReader(payload))); err != io.EOF {
+		t.Fatalf("readOutputStream = %v, want EOF", err)
+	}
+	if count < 100 || reconstructed.String() != payload {
+		t.Fatalf("large no-newline output was not preserved in bounded fragments: events=%d got_bytes=%d want_bytes=%d", count, reconstructed.Len(), len(payload))
+	}
+}
+
+func TestPaneStreamerRetainsSplitUTF8AcrossTimedFlush(t *testing.T) {
+	writer, events, _, _ := startTestOutputStream(t, PaneStreamerConfig{FlushInterval: 5 * time.Millisecond})
+	runeBytes := []byte("🙂")
+	if _, err := writer.Write(append([]byte("ready "), runeBytes[:2]...)); err != nil {
+		t.Fatal(err)
+	}
+	first := nextOutputEvent(t, events)
+	if len(first.Lines) != 1 || first.Lines[0] != "ready " || !first.Partial {
+		t.Fatalf("timed flush emitted an incomplete UTF-8 rune: %+v", first)
+	}
+	if _, err := writer.Write(append(runeBytes[2:], '\n')); err != nil {
+		t.Fatal(err)
+	}
+	last := nextOutputEvent(t, events)
+	if len(last.Lines) != 1 || last.Lines[0] != "🙂" || last.Partial || !last.ContinuesLine {
+		t.Fatalf("split UTF-8 rune or newline was lost: %+v", last)
+	}
+}
+
+func TestPaneOutputBufferPreservesBoundariesAtByteAndLineLimits(t *testing.T) {
+	for _, maxBytes := range []int{4, 5, 16, 64} {
+		for _, maxLines := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("bytes_%d_lines_%d", maxBytes, maxLines), func(t *testing.T) {
+				const input = "first\n\n🙂\rnext\nlast prompt> "
+				var reconstructed strings.Builder
+				previousPartial := false
+				buffer := paneOutputBuffer{
+					maxBytes: maxBytes, maxLines: maxLines,
+					emit: func(lines []string, continues, partial bool) {
+						if continues != previousPartial || len(lines) > maxLines {
+							t.Errorf("invalid framing: lines=%q continues=%v partial=%v", lines, continues, partial)
+						}
+						fragment := strings.Join(lines, "\n")
+						if !partial {
+							fragment += "\n"
+						}
+						if len(fragment) > maxBytes || !utf8.ValidString(fragment) {
+							t.Errorf("invalid fragment: %q", fragment)
+						}
+						reconstructed.WriteString(fragment)
+						previousPartial = partial
+					},
+				}
+				// One-byte writes force every possible UTF-8 read split.
+				for i := range len(input) {
+					buffer.write([]byte(input[i : i+1]))
+				}
+				buffer.flush(true)
+				if reconstructed.String() != input {
+					t.Fatalf("got %q, want %q", reconstructed.String(), input)
+				}
+			})
+		}
+	}
+}
+
+type outputReadError struct {
+	*bytes.Reader
+	err error
+}
+
+func (r outputReadError) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF || r.Reader.Len() == 0 {
+		return n, r.err
+	}
+	return n, err
+}
+
+func TestPaneStreamerFlushesDataReturnedWithReadError(t *testing.T) {
+	for _, readErr := range []error{io.EOF, errors.New("lost pipe")} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			var events []StreamEvent
+			ps := NewPaneStreamer(nil, "%123", func(event StreamEvent) {
+				events = append(events, event)
+			}, PaneStreamerConfig{FlushInterval: time.Hour})
+			reader := io.NopCloser(outputReadError{Reader: bytes.NewReader([]byte("line\nprompt> ")), err: readErr})
+			if err := ps.readOutputStream(context.Background(), nil, reader); err != readErr {
+				t.Fatalf("got error %v, want %v", err, readErr)
+			}
+			if len(events) != 1 || strings.Join(events[0].Lines, "\n") != "line\nprompt> " || !events[0].Partial {
+				t.Fatalf("read error discarded pending output: %+v", events)
+			}
+		})
+	}
+}
+
+func TestPaneStreamerCancellationClosesIdleReader(t *testing.T) {
+	writer, events, cancel, done := startTestOutputStream(t, PaneStreamerConfig{FlushInterval: 5 * time.Millisecond})
+	if _, err := io.WriteString(writer, "ready> "); err != nil {
+		t.Fatal(err)
+	}
+	nextOutputEvent(t, events)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cancel returned an error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation left the read goroutine blocked")
+	}
+	if _, err := io.WriteString(writer, "late output"); err != io.ErrClosedPipe {
+		t.Fatalf("reader remained open after cancellation: %v", err)
+	}
+}
+
+func TestPaneStreamerSnapshotsTrackPartialLineLifecycle(t *testing.T) {
+	writer, events, _, _ := startTestOutputStream(t, PaneStreamerConfig{
+		FlushInterval: 5 * time.Millisecond,
+	})
+	write := func(text string) StreamEvent {
+		t.Helper()
+		if _, err := io.WriteString(writer, text); err != nil {
+			t.Fatal(err)
+		}
+		return nextOutputEvent(t, events)
+	}
+	first := write("first\n")
+	if first.Partial || first.ContinuesLine || first.SnapshotLines != nil {
+		t.Fatalf("ordinary complete line unexpectedly needs a snapshot: %+v", first)
+	}
+	prompt := write("prompt> ")
+	if got := strings.Join(prompt.SnapshotLines, "\n"); got != "first\nprompt> " {
+		t.Fatalf("initial prompt snapshot = %q", got)
+	}
+	completed := write("working\n")
+	if !completed.ContinuesLine || completed.Partial {
+		t.Fatalf("completion lost partial-line boundary: %+v", completed)
+	}
+	if got := strings.Join(completed.SnapshotLines, "\n"); got != "first\nprompt> working" {
+		t.Fatalf("completed prompt snapshot = %q", got)
+	}
+	last := write("ordinary\n")
+	if last.Partial || last.ContinuesLine || last.SnapshotLines != nil ||
+		len(last.Lines) != 1 || last.Lines[0] != "ordinary" {
+		t.Fatalf("complete lines did not resume incremental delivery: %+v", last)
+	}
+	// Previously emitted snapshots must not change when later bytes arrive.
+	if got := strings.Join(prompt.SnapshotLines, "\n"); got != "first\nprompt> " {
+		t.Fatalf("later writes mutated an already published snapshot: %q", got)
+	}
+}
+
+func TestPaneOutputHistoryBoundsSnapshotsWithoutSplittingUTF8(t *testing.T) {
+	for _, maxBytes := range []int{4, 9, 64} {
+		for _, maxLines := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("bytes_%d_lines_%d", maxBytes, maxLines), func(t *testing.T) {
+				history := paneOutputHistory{maxBytes: maxBytes, maxLines: maxLines}
+				history.append([]string{"older", "recent", "prompt🙂"}, false)
+				history.append([]string{"🙂tail"}, true)
+				const all = "older\nrecent\nprompt🙂🙂tail"
+				got := strings.Join(history.lines, "\n")
+				if len(got) > maxBytes || len(history.lines) > maxLines || !utf8.ValidString(got) {
+					t.Fatalf("invalid bounded snapshot bytes=%d lines=%d value=%q", len(got), len(history.lines), got)
+				}
+				if got == "" || !strings.HasSuffix(all, got) {
+					t.Fatalf("snapshot is not a retained output tail: %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestPaneOutputHistoryReleasesDroppedOutput(t *testing.T) {
+	t.Run("line bound", func(t *testing.T) {
+		source := strings.Split(strings.Repeat("x", 64*1024)+"\nkept\nlast", "\n")
+		history := paneOutputHistory{maxBytes: 64 * 1024, maxLines: 2}
+		history.append(source, false)
+		if strings.Join(history.lines, "\n") != "kept\nlast" {
+			t.Fatalf("incorrect retained lines: %q", history.lines)
+		}
+		for i, line := range history.lines {
+			if unsafe.StringData(line) == unsafe.StringData(source[i+1]) {
+				t.Fatal("retained line keeps the dropped 64 KiB output allocation alive")
+			}
+		}
+	})
+	t.Run("byte bound", func(t *testing.T) {
+		source := strings.Repeat("x", 64*1024) + "tail"
+		history := paneOutputHistory{maxBytes: 4, maxLines: 2}
+		history.append([]string{source}, false)
+		if len(history.lines) != 1 || history.lines[0] != "tail" {
+			t.Fatalf("incorrect retained suffix: %q", history.lines)
+		}
+		if unsafe.StringData(history.lines[0]) == unsafe.StringData(source[len(source)-4:]) {
+			t.Fatal("retained suffix keeps the dropped 64 KiB output allocation alive")
+		}
+	})
+}
+
+func TestPaneStreamerSnapshotHistoryResetsBetweenReadLifecycles(t *testing.T) {
+	var events []StreamEvent
+	ps := NewPaneStreamer(nil, "%123", func(event StreamEvent) {
+		events = append(events, event)
+	}, PaneStreamerConfig{FlushInterval: time.Hour})
+	for _, input := range []string{"old prompt> ", "new prompt> "} {
+		if err := ps.readOutputStream(context.Background(), nil, io.NopCloser(strings.NewReader(input))); err != io.EOF {
+			t.Fatalf("readOutputStream = %v", err)
+		}
+	}
+	// Snapshots describe only the current reader's observed tail. They do not
+	// seed or reuse earlier capture-pane backfill or a previous reader's data.
+	if len(events) != 2 || strings.Join(events[1].SnapshotLines, "\n") != "new prompt> " || events[1].ContinuesLine {
+		t.Fatalf("restarted stream retained old partial output: %+v", events)
 	}
 }
 

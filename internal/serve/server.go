@@ -441,17 +441,29 @@ func New(cfg Config) *Server {
 	s.streamManager = tmux.NewStreamManager(tmux.DefaultClient, func(event tmux.StreamEvent) {
 		// Publish pane output to WebSocket subscribers
 		// Topic format: panes:session:pane_idx
-		s.wsHub.Publish(streamTopicForTarget(event.Target), "pane.output", map[string]interface{}{
-			"lines":   event.Lines,
-			"seq":     event.Seq,
-			"ts":      event.Timestamp.UTC().Format(time.RFC3339Nano),
-			"is_full": event.IsFull,
-		})
+		s.wsHub.Publish(streamTopicForTarget(event.Target), "pane.output", paneStreamEventData(event))
 	}, streamCfg)
 
 	s.router = s.buildRouter()
 	syncKernelCatalogFromRouter(s.router)
 	return s
+}
+
+// paneStreamEventData keeps the existing line-oriented wire contract. The
+// embedded dashboard already understands replacement snapshots, but does not
+// understand fragment metadata. Publish partial lines as a bounded stream-tail
+// snapshot rather than making older consumers invent a newline per fragment.
+func paneStreamEventData(event tmux.StreamEvent) map[string]interface{} {
+	lines, isFull := event.Lines, event.IsFull
+	if event.Partial || event.ContinuesLine {
+		lines, isFull = event.SnapshotLines, true
+	}
+	return map[string]interface{}{
+		"lines":   lines,
+		"seq":     event.Seq,
+		"ts":      event.Timestamp.UTC().Format(time.RFC3339Nano),
+		"is_full": isFull,
+	}
 }
 
 // ProjectionState returns the current runtime projection readiness state

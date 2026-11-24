@@ -1356,3 +1356,40 @@ func TestWSAttentionSubscriptionProfileAndMuteSnoozeFilters(t *testing.T) {
 		t.Fatal("workflows:* and workflows:<session> must be valid WebSocket topics")
 	}
 }
+
+func TestWSEventStore_GlobalGapResetsEveryTopicFilter(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			var db *sql.DB
+			if backend == "sqlite" {
+				var cleanup func()
+				db, cleanup = setupTestDB(t)
+				defer cleanup()
+			}
+			store := NewWSEventStore(db, WSEventStoreConfig{BufferSize: 8})
+			defer store.Stop()
+			if _, err := store.Store("panes:gap:0", "pane.output", "before"); err != nil {
+				t.Fatal(err)
+			}
+			gap, err := store.Store(wsStreamGapTopic, wsStreamGapEventType, map[string]string{"reason": wsIngressOverflowReason})
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := store.Store("panes:gap:0", "pane.output", "after")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, topics := range [][]string{nil, {"panes:gap:0"}, {"sessions:unrelated"}, {"panes:*", "sessions:*"}} {
+				events, reset, err := store.getSinceTopics(1, topics, 1)
+				if err != nil || !reset || len(events) != 0 {
+					t.Fatalf("gap hidden by topic filter %v: events=%v reset=%v err=%v", topics, events, reset, err)
+				}
+			}
+			events, reset, err := store.GetSince(gap.Seq, "panes:gap:0", 10)
+			if err != nil || reset || len(events) != 1 || events[0].Seq != after.Seq {
+				t.Fatalf("cannot resume after resync: events=%v reset=%v err=%v", events, reset, err)
+			}
+		})
+	}
+}

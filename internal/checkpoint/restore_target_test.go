@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,5 +327,75 @@ exec /bin/sh -c "$3"
 	if !strings.Contains(string(calls), "remote-host operator@remote.example") ||
 		!strings.Contains(string(calls), "kill-session -t =recovery") || !strings.Contains(string(calls), "new-session") {
 		t.Fatalf("remote destination was not replaced: %s", calls)
+	}
+}
+
+func TestRestoreRemotePaneDirectoriesAreValidatedOnOwningHost(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unavailable=%v", unavailable), func(t *testing.T) {
+			logPath := restoreTargetFixture(t)
+			dir := filepath.Dir(logPath)
+			t.Setenv("NTM_TARGET_TEST_EXISTS", "1")
+			t.Setenv("NTM_REMOTE_PATH_UNAVAILABLE", fmt.Sprint(unavailable))
+			const sshScript = `#!/bin/sh
+if [ "$1" != -- ] || [ "$2" != operator@remote.example ]; then exit 2; fi
+printf 'remote-shell %s\n' "$3" >> "$NTM_TARGET_TEST_LOG"
+case "$3" in
+  test\ *)
+    case "$3" in *agent-worktree*) if [ "$NTM_REMOTE_PATH_UNAVAILABLE" = true ]; then exit 1; fi ;; esac
+    exit 0 ;;
+esac
+exec /bin/sh -c "$3"
+`
+			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(sshScript), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+			cp := targetCheckpoint(t)
+			cp.RemoteHost = tmux.DefaultClient.Remote
+			cp.WorkingDir = "/ntm-remote-only/checkpoint-project"
+			cp.Session.Panes[0].WorkingDir = cp.WorkingDir + "/agent-worktree"
+			if _, err := os.Stat(cp.WorkingDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("remote-only fixture unexpectedly exists locally: %v", err)
+			}
+			out, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{
+				TargetSession: "recovery", Force: true, SkipGitCheck: true,
+			})
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !strings.Contains(string(calls), "test '-d' '"+cp.Session.Panes[0].WorkingDir+"'") {
+				t.Fatalf("pane directory was not checked remotely: %s", calls)
+			}
+			if unavailable {
+				if !errors.Is(err, ErrWorkingDirInvalid) || strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") {
+					t.Fatalf("missing remote worktree mutated target: %+v, %v, %s", out, err, calls)
+				}
+			} else if err != nil || out == nil || out.Stage != "completed" || !strings.Contains(string(calls), "new-session -d -s recovery -c "+cp.Session.Panes[0].WorkingDir) {
+				t.Fatalf("remote path was treated as local or discarded: %+v, %v, %s", out, err, calls)
+			}
+		})
+	}
+}
+
+func TestRestoreRemoteProvenanceRefusesLocalPreflight(t *testing.T) {
+	logPath := restoreTargetFixture(t)
+	cp := targetCheckpoint(t)
+	cp.RemoteHost = "operator@remote.example"
+	if _, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{Force: true}); err == nil || !strings.Contains(err.Error(), cp.RemoteHost) {
+		t.Fatalf("remote checkpoint restored without selecting its host: %v", err)
+	}
+	tmux.DefaultClient = tmux.NewClient(cp.RemoteHost)
+	called := false
+	_, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{
+		Force: true, ValidateWorkingDir: func(directory string) (string, error) { called = true; return directory, nil },
+	})
+	if !errors.Is(err, ErrWorkingDirInvalid) || called {
+		t.Fatalf("remote restore consulted a local directory validator: %v, called=%v", err, called)
+	}
+	if calls, err := os.ReadFile(logPath); err == nil && len(calls) != 0 {
+		t.Fatalf("host/provenance refusal reached tmux: %s", calls)
 	}
 }

@@ -741,6 +741,7 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 	}
 
 	effectiveDir := strings.TrimSpace(req.CustomDirectory)
+	var validateWorkingDir func(string) (string, error)
 	if effectiveDir != "" || strings.TrimSpace(s.projectDirSnapshot()) != "" {
 		if effectiveDir == "" {
 			effectiveDir = cp.WorkingDir
@@ -752,16 +753,18 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		req.CustomDirectory = resolvedDir
+		validateWorkingDir = s.resolveCheckpointWorkDir
 	}
 
 	opts := checkpoint.RestoreOptions{
-		TargetSession:   req.TargetSession,
-		Force:           req.Force,
-		SkipGitCheck:    req.SkipGitCheck,
-		InjectContext:   req.InjectContext,
-		DryRun:          req.DryRun,
-		CustomDirectory: req.CustomDirectory,
-		ScrollbackLines: req.ScrollbackLines,
+		TargetSession:      req.TargetSession,
+		Force:              req.Force,
+		SkipGitCheck:       req.SkipGitCheck,
+		InjectContext:      req.InjectContext,
+		DryRun:             req.DryRun,
+		CustomDirectory:    req.CustomDirectory,
+		ValidateWorkingDir: validateWorkingDir,
+		ScrollbackLines:    req.ScrollbackLines,
 	}
 
 	result, err := restorer.RestoreFromCheckpointContext(r.Context(), cp, opts)

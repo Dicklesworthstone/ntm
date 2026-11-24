@@ -156,11 +156,18 @@ type WSClient struct {
 
 // WSHub manages WebSocket connections and topic routing.
 type WSHub struct {
-	clients      map[*WSClient]struct{}
-	clientsMu    sync.RWMutex
-	register     chan *WSClient
-	unregister   chan *WSClient
-	broadcast    chan *WSEvent
+	clients    map[*WSClient]struct{}
+	clientsMu  sync.RWMutex
+	register   chan *WSClient
+	unregister chan *WSClient
+	broadcast  chan *WSEvent
+	// Once ingress loses an event, pause admission until the Run goroutine
+	// drains the accepted prefix and records a durable gap. Publishers only
+	// hold this mutex for channel admission, never for persistence or delivery.
+	ingressMu    sync.Mutex
+	ingressGap   bool
+	ingressWake  chan struct{}
+	resetWake    chan struct{} // Coalesced transport progress; owned by Run.
 	dropped      atomic.Int64
 	seq          int64
 	seqMu        sync.Mutex
@@ -190,6 +197,8 @@ func NewWSHub() *WSHub {
 		register:      make(chan *WSClient),
 		unregister:    make(chan *WSClient),
 		broadcast:     make(chan *WSEvent, 256),
+		ingressWake:   make(chan struct{}, 1),
+		resetWake:     make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		replayCh:      make(chan *wsReplayRequest),
 		pendingDrops:  make(map[*WSClient]map[string]*wsDropRange),
@@ -202,6 +211,7 @@ func (h *WSHub) Run() {
 	for {
 		select {
 		case <-h.done:
+			h.flushIngressGap()
 			// Persist any drop ranges still pending so slow-client gaps are
 			// visible in ws_dropped_events across a restart. Best-effort.
 			h.flushAllDrops()
@@ -223,6 +233,10 @@ func (h *WSHub) Run() {
 			total := len(h.clients)
 			h.clientsMu.Unlock()
 			log.Printf("ws client disconnected id=%s total=%d", client.id, total)
+		case <-h.ingressWake:
+			h.flushIngressGap()
+		case <-h.resetWake:
+			h.flushPendingResets()
 		case req := <-h.replayCh:
 			h.handleReplay(req)
 		case event := <-h.broadcast:
@@ -389,23 +403,46 @@ func redactWSEventData(data interface{}, cfg redaction.Config) (interface{}, err
 	return json.RawMessage(output), nil
 }
 
-// Publish publishes an event to a topic.
+// Publish publishes an event without waiting for consumers or persistence.
+// A full queue closes admission until the hub records the missing history;
+// otherwise a later accepted event could conceal an unrecorded ingress loss.
 func (h *WSHub) Publish(topic, eventType string, data interface{}) {
-	event := &WSEvent{
-		Type:      WSMsgEvent,
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		Topic:     topic,
-		EventType: eventType,
-		Data:      data,
-	}
+	h.ingressMu.Lock()
 	select {
 	case <-h.done:
+		h.ingressMu.Unlock()
 		return
-	case h.broadcast <- event:
 	default:
-		dropped := h.dropped.Add(1)
-		// The queue overflow occurs before redactEvent can inspect metadata.
-		log.Printf("ws broadcast buffer full, dropping event surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", len(h.broadcast), dropped)
+	}
+
+	if !h.ingressGap {
+		event := &WSEvent{
+			Type:      WSMsgEvent,
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Topic:     topic,
+			EventType: eventType,
+			Data:      data,
+		}
+		select {
+		case h.broadcast <- event:
+			h.ingressMu.Unlock()
+			return
+		default:
+		}
+	}
+
+	firstDrop := !h.ingressGap
+	h.ingressGap = true
+	dropped := h.dropped.Add(1)
+	select {
+	case h.ingressWake <- struct{}{}:
+	default:
+	}
+	h.ingressMu.Unlock()
+	if firstDrop {
+		// Metadata has not passed redaction. The loss marker and log must
+		// contain no caller-supplied topic, event type, or payload.
+		log.Printf("ws broadcast buffer full, resynchronization required surface=websocket queue_depth=%d dropped_count=%d decision=coalesce reason_codes=queue_depth,dropped_output", len(h.broadcast), dropped)
 	}
 }
 
@@ -796,6 +833,14 @@ func (c *WSClient) writePump() {
 
 			if err := w.Close(); err != nil {
 				return
+			}
+			// Draining the send queue may make a withheld reset deliverable,
+			// even when no publisher emits another event after the loss.
+			if c.hub != nil {
+				select {
+				case c.hub.resetWake <- struct{}{}:
+				default:
+				}
 			}
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {

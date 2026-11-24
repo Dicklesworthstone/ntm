@@ -323,6 +323,46 @@ func TestJobDispatchCheckpointRestore(t *testing.T) {
 	}
 }
 
+func TestJobCheckpointPaneDirectoriesRespectExplicitProjectScope(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("custom_directory=%v", explicit), func(t *testing.T) {
+			cp, logPath := restoreCheckpointHTTPFixture(t, 1)
+			outside := t.TempDir()
+			cp.Session.Panes[0].WorkingDir = outside
+			if explicit {
+				cp.Session.Panes[0].WorkingDir = filepath.Join(cp.WorkingDir, "outside-worktree")
+				if err := os.Symlink(outside, cp.Session.Panes[0].WorkingDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := checkpoint.NewStorage().Save(cp); err != nil {
+				t.Fatal(err)
+			}
+			srv := NewHermeticServer("checkpoint-pane-scope")
+			defer srv.Stop()
+			jobScopeHTTPPatchProject(t, srv, cp.WorkingDir)
+			params := map[string]interface{}{"session": cp.SessionName, "checkpoint_id": cp.ID, "target_session": "job-pane-copy", "force": true, "skip_git_check": true}
+			if explicit {
+				params["custom_directory"] = cp.WorkingDir
+			}
+			body, err := json.Marshal(CreateJobRequest{Type: JobTypeCheckpointRestore, Params: params})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := postJob(t, srv, string(body))
+			finished := pollJobTerminal(t, srv, created.Job.ID)
+			calls, _ := os.ReadFile(logPath)
+			if explicit {
+				if JobStatus(finished.Job.Status) != JobStatusFailed || !strings.Contains(finished.Job.Error, "pane 0.0") || len(calls) != 0 {
+					t.Fatalf("explicit job scope allowed pane escape: %+v, calls=%s", finished.Job, calls)
+				}
+			} else if JobStatus(finished.Job.Status) != JobStatusCompleted || !strings.Contains(string(calls), "new-session -d -s job-pane-copy -c "+outside) {
+				t.Fatalf("global checkpoint replay lost independent pane directory: %+v, calls=%s", finished.Job, calls)
+			}
+		})
+	}
+}
+
 // TestJobDispatchCheckpointRestoreFailure: restoring a checkpoint that does
 // not exist must land in FAILED with the real load error.
 func TestJobDispatchCheckpointRestoreFailure(t *testing.T) {

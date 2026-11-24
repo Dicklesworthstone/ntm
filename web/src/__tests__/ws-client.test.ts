@@ -199,6 +199,26 @@ describe("NtmWebSocket", () => {
       expect(ws.getLastSeq()).toBe(42);
     });
 
+    it("notifies consumers of global resets before accepting later output", async () => {
+      const events: { event_type: string; topic: string }[] = [];
+      ws.onEvent((event) => events.push(event));
+      ws.connect();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const mockWs = (ws as unknown as { ws: MockWebSocket }).ws;
+      mockWs.onmessage?.({
+        data: [
+          JSON.stringify({ type: "stream.reset", reason: "broadcast_overflow", current_seq: 8 }),
+          JSON.stringify({
+            type: "event", topic: "panes:%123", event_type: "pane.output",
+            data: { lines: ["fresh prompt> "], is_full: true }, seq: 9,
+          }),
+        ].join("\n"),
+      });
+      expect(events.map((event) => event.event_type)).toEqual(["stream.reset", "pane.output"]);
+      expect(events[0].topic).toBe("");
+      expect(ws.getLastSeq()).toBe(9);
+    });
+
     it("parses newline-batched websocket frames", async () => {
       const events: unknown[] = [];
       ws.onEvent((event) => events.push(event));
@@ -460,9 +480,46 @@ describe("applyPaneOutputEvent", () => {
     });
     expect(replaced).toEqual(["fresh 1", "fresh 2"]);
   });
+
+  it("replaces partial-line snapshots before appending ordinary complete lines", () => {
+    const prompt = applyPaneOutputEvent(["initial history"], {
+      lines: ["recent history", "ready> "], is_full: true,
+    });
+    const progress = applyPaneOutputEvent(prompt, {
+      lines: ["recent history", "ready> working"], is_full: true,
+    });
+    expect(progress).toEqual(["recent history", "ready> working"]);
+    expect(applyPaneOutputEvent(progress, {
+      lines: ["ordinary complete line"], is_full: false,
+    })).toEqual(["recent history", "ready> working", "ordinary complete line"]);
+  });
+
+  it("bounds giant snapshot lines and incremental output without splitting Unicode", () => {
+    const limit = 1024 * 1024;
+    const original = ["old", "x".repeat(limit - 1) + "🙂tail"];
+    const output = applyPaneOutputEvent(["obsolete"], { lines: original, is_full: true });
+    expect(output).toHaveLength(1);
+    expect(output[0].length).toBeLessThanOrEqual(limit);
+    expect(output[0].endsWith("🙂tail")).toBe(true);
+    expect(original[1].length).toBe(limit + 5);
+
+    const split = applyPaneOutputEvent([], { lines: ["🙂" + "x".repeat(limit - 1)] });
+    expect(split).toEqual(["x".repeat(limit - 1)]);
+  });
 });
 
 describe("handleWsEvent", () => {
+  it("refreshes authoritative queries after a global stream reset", () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    handleWsEvent(queryClient, {
+      type: "event", topic: "", event_type: "stream.reset", data: {},
+      ts: new Date().toISOString(),
+    });
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    expect(invalidateSpy).toHaveBeenCalledWith();
+  });
+
   it("invalidates pane output queries for pane websocket events", () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");

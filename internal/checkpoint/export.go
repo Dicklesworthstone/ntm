@@ -91,8 +91,8 @@ type ImportOptions struct {
 	// empty. When empty, os.Getwd() is used.
 	DefaultWorkingDir string
 	// ValidateWorkingDir, when non-nil, validates and optionally canonicalizes
-	// the effective checkpoint WorkingDir before the imported checkpoint is
-	// serialized and published to disk.
+	// every effective checkpoint/pane directory before publication. It describes
+	// a local project scope; SSH checkpoints require remote path validation.
 	ValidateWorkingDir func(string) (string, error)
 	// VerifyChecksums validates file integrity on import
 	VerifyChecksums bool
@@ -743,14 +743,24 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 		return nil, fmt.Errorf("checkpoint import blocked: %w", err)
 	}
 
-	// Apply TargetDir override or expand ${WORKING_DIR} placeholder
+	// Retain pane topology when relocating an archive. The manifest preserves
+	// the original root even when exported metadata uses portable placeholders.
+	originalDir := cp.WorkingDir
+	relocate := opts.TargetDir != "" || cp.WorkingDir == "${WORKING_DIR}"
+	if originalDir == "${WORKING_DIR}" && manifest != nil {
+		originalDir = manifest.OriginalPath
+	}
 	if opts.TargetDir != "" {
 		cp.WorkingDir = opts.TargetDir
 	} else if cp.WorkingDir == "${WORKING_DIR}" {
-		// No explicit target dir and checkpoint was exported with path rewriting.
-		// Prefer caller-provided DefaultWorkingDir (e.g., scoped server project),
-		// falling back to current working directory.
-		if strings.TrimSpace(opts.DefaultWorkingDir) != "" {
+		if cp.RemoteHost != "" {
+			// A local cwd/default project does not identify the SSH host's
+			// directory. Without an explicit override, retain the captured root.
+			if err := validateCheckpointDirectoryPath(originalDir, true); err != nil {
+				return nil, fmt.Errorf("remote checkpoint requires target_dir: %w", err)
+			}
+			cp.WorkingDir = originalDir
+		} else if strings.TrimSpace(opts.DefaultWorkingDir) != "" {
 			cp.WorkingDir = opts.DefaultWorkingDir
 		} else {
 			cwd, err := os.Getwd()
@@ -760,12 +770,47 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 			cp.WorkingDir = cwd
 		}
 	}
+	if cp.WorkingDir != "" && cp.RemoteHost == "" {
+		absoluteDir, err := filepath.Abs(cp.WorkingDir)
+		if err != nil {
+			return nil, fmt.Errorf("invalid checkpoint working directory: %w", err)
+		}
+		cp.WorkingDir = absoluteDir
+	}
 	if opts.ValidateWorkingDir != nil {
+		if cp.RemoteHost != "" {
+			return nil, fmt.Errorf("checkpoint belongs to SSH host %q; its paths cannot be validated against a local project", cp.RemoteHost)
+		}
 		validatedDir, err := opts.ValidateWorkingDir(cp.WorkingDir)
 		if err != nil {
 			return nil, fmt.Errorf("invalid checkpoint working directory: %w", err)
 		}
 		cp.WorkingDir = validatedDir
+	}
+	if cp.WorkingDir != "" {
+		if err := validateCheckpointDirectoryPath(cp.WorkingDir, cp.RemoteHost != ""); err != nil {
+			return nil, fmt.Errorf("invalid checkpoint working directory: %w", err)
+		}
+	}
+	for i := range cp.Session.Panes {
+		pane := &cp.Session.Panes[i]
+		if pane.WorkingDir == "" {
+			continue
+		}
+		directory, err := checkpointPaneDirectory(pane.WorkingDir, originalDir, cp.WorkingDir, relocate, cp.RemoteHost != "")
+		if err != nil {
+			return nil, fmt.Errorf("invalid checkpoint pane %d.%d directory: %w", pane.WindowIndex, pane.Index, err)
+		}
+		if err := validateCheckpointDirectoryPath(directory, cp.RemoteHost != ""); err != nil {
+			return nil, fmt.Errorf("invalid checkpoint pane %d.%d directory: %w", pane.WindowIndex, pane.Index, err)
+		}
+		if opts.ValidateWorkingDir != nil {
+			directory, err = opts.ValidateWorkingDir(directory)
+			if err != nil {
+				return nil, fmt.Errorf("invalid checkpoint pane %d.%d directory: %w", pane.WindowIndex, pane.Index, err)
+			}
+		}
+		pane.WorkingDir = directory
 	}
 
 	cpJSON, err := json.MarshalIndent(cp, "", "  ")
@@ -1043,10 +1088,17 @@ func rewriteCheckpointForExport(cp *Checkpoint, opts ExportOptions) *Checkpoint 
 	result.Session.Panes = clonePaneStatesForExport(cp.Session.Panes)
 	if opts.RewritePaths && result.WorkingDir != "" {
 		result.WorkingDir = "${WORKING_DIR}"
+		for i := range result.Session.Panes {
+			pane := &result.Session.Panes[i]
+			if rel, ok := relativeCheckpointDirectory(cp.WorkingDir, pane.WorkingDir, cp.RemoteHost != ""); ok {
+				pane.WorkingDir = "${WORKING_DIR}"
+				if rel != "." {
+					pane.WorkingDir += "/" + filepath.ToSlash(rel)
+				}
+			}
+		}
 	}
 	if !opts.IncludeScrollback && result.Session.Panes != nil {
-		result.Session.Panes = make([]PaneState, len(cp.Session.Panes))
-		copy(result.Session.Panes, cp.Session.Panes)
 		for i := range result.Session.Panes {
 			result.Session.Panes[i].ScrollbackFile = ""
 			result.Session.Panes[i].ScrollbackLines = 0

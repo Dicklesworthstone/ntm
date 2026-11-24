@@ -22,6 +22,9 @@ type Checkpoint struct {
 	Description string `json:"description,omitempty"`
 	// SessionName is the tmux session this checkpoint belongs to
 	SessionName string `json:"session_name"`
+	// RemoteHost identifies the SSH host that owns the captured pane paths.
+	// Empty denotes a local checkpoint or a legacy checkpoint without provenance.
+	RemoteHost string `json:"remote_host,omitempty"`
 	// WorkingDir is the working directory at checkpoint time. Empty when the
 	// session's active pane path could not be resolved; WorkingDirError then
 	// says why.
@@ -150,6 +153,9 @@ type PaneState struct {
 	AgentType string `json:"agent_type"`
 	// Command is the running command
 	Command string `json:"command,omitempty"`
+	// WorkingDir preserves this pane's project or worktree independently of the
+	// selected pane's session-level directory. Empty legacy values inherit it.
+	WorkingDir string `json:"working_dir,omitempty"`
 	// LaunchSpec preserves the rendered agent launch command and its settings.
 	// Command alone is tmux's foreground executable and may only name an
 	// interpreter. Older checkpoints without launch metadata use the legacy
@@ -213,6 +219,8 @@ const (
 	GitSkipNotRepository = "not_git_repository"
 	// GitSkipCaptureFailed: git commands failed; SkipDetail has the error.
 	GitSkipCaptureFailed = "capture_failed"
+	// GitSkipRemoteHost: a remote tmux path does not identify a local repository.
+	GitSkipRemoteHost = "remote_host"
 )
 
 // HasState reports whether the GitState carries real repository state.

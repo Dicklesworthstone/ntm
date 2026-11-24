@@ -105,8 +105,24 @@ type ForeachIterationState struct {
 	ItemsFingerprint      string         `json:"items_fingerprint,omitempty"`
 	CollectedOutputs      []interface{}  `json:"collected_outputs,omitempty"`
 	CompletedRounds       map[string]int `json:"completed_rounds,omitempty"`
-	StartedAt             time.Time      `json:"started_at,omitempty"`
-	UpdatedAt             time.Time      `json:"updated_at,omitempty"`
+	// Accepted failures are checkpointed before the next body step, so an
+	// interruption inside an iteration cannot turn them into retries.
+	ConsumedFailures map[string]LoopFailureCheckpoint `json:"consumed_failures,omitempty"`
+	StartedAt        time.Time                        `json:"started_at,omitempty"`
+	UpdatedAt        time.Time                        `json:"updated_at,omitempty"`
+}
+
+// LoopFailureCheckpoint binds an accepted failure to its authored and
+// materialized definitions, exact result, and native receipt identities.
+// StepResult carries the reverse binding so losing either side fails closed.
+type LoopFailureCheckpoint struct {
+	Version        int         `json:"version"`
+	Policy         ErrorAction `json:"policy"`
+	StepHash       string      `json:"step_hash"`
+	DefinitionHash string      `json:"definition_hash"`
+	LoopHash       string      `json:"loop_hash"`
+	ResultHash     string      `json:"result_hash"`
+	NativeHash     string      `json:"native_hash"`
 }
 
 // ParallelGroupState records the persisted progress of a parallel step group.
@@ -2438,8 +2454,20 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.stateMu.RUnlock()
 		return err
 	}
+	if err := validateConsumedLoopFailures(state); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
 	if opts.KeepState {
 		if _, _, _, err := prepareSuccessHookResume(graph, state); err != nil {
+			e.stateMu.RUnlock()
+			return err
+		}
+		var inherited *ErrorAction
+		if workflow != nil {
+			inherited = &workflow.Settings.OnError
+		}
+		if _, err := prepareConsumedLoopFailures(graph, state, inherited); err != nil {
 			e.stateMu.RUnlock()
 			return err
 		}
@@ -3135,6 +3163,18 @@ func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *Exec
 			}
 		}
 	}
+	for parentID, loop := range state.ForeachState {
+		for childID := range loop.ConsumedFailures {
+			if childID == stepID {
+				return refuse(parentID)
+			}
+			if child, ok := resolve(childID); ok {
+				if _, _, owns := resolveScopedRuntimeChildren(childID, stepID, child); owns {
+					return refuse(parentID)
+				}
+			}
+		}
+	}
 	for i := range workflow.Steps {
 		if workflow.Steps[i].ID == stepID && stepKind(&workflow.Steps[i]) == kind {
 			return nil // An independently scheduled leaf.
@@ -3247,7 +3287,18 @@ func (e *Executor) validateLegacyCommandResumeLocked(state *ExecutionState, opts
 			unfinished[stepID] = true
 		}
 	}
+	var inherited *ErrorAction
+	if workflow != nil {
+		inherited = &workflow.Settings.OnError
+	}
+	consumed, err := prepareConsumedLoopFailures(graph, state, inherited)
+	if err != nil {
+		return err
+	}
 	for stepID := range unfinished {
+		if consumed[stepID] {
+			continue // Its journal binds any explicit predispatch failure proof.
+		}
 		if _, recorded := state.CommandExecutions[stepID]; recorded || resumeResetsCommandExecution(state, opts, stepID) {
 			continue
 		}
@@ -3296,7 +3347,18 @@ func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts R
 	for stepID := range state.InFlightSteps {
 		unfinished[stepID] = true
 	}
+	var inherited *ErrorAction
+	if workflow != nil {
+		inherited = &workflow.Settings.OnError
+	}
+	consumed, err := prepareConsumedLoopFailures(graph, state, inherited)
+	if err != nil {
+		return err
+	}
 	for stepID := range unfinished {
+		if consumed[stepID] {
+			continue // Validated consumption, not a legacy marker-only inference.
+		}
 		if _, recorded := state.AgentDeliveries[stepID]; recorded || resumeResetsAgentDelivery(state, opts, stepID) {
 			continue
 		}
@@ -3403,6 +3465,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	// A forced iteration must restart its rounds too. Otherwise max_rounds
 	// can skip every round even after its StepResults have been removed.
 	removeIterationEntries(state.CompletedRounds, prefix, iteration)
+	removeIterationEntries(state.ConsumedFailures, prefix, iteration)
 	// bd-t3q8a: sequential foreach (loops.go) appends collected outputs in
 	// iteration order, so truncating to length=iteration drops the entries
 	// for the iterations that are about to rerun. Without this, the
@@ -3650,7 +3713,7 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 	}
 	prefix := fmt.Sprintf("%s_iter", stepID)
 	hasProgress := len(prior.CompletedIterationIDs) > 0 ||
-		len(prior.CompletedRounds) > 0 || len(prior.CollectedOutputs) > 0 ||
+		len(prior.CompletedRounds) > 0 || len(prior.CollectedOutputs) > 0 || len(prior.ConsumedFailures) > 0 ||
 		hasIterationEntries(e.state.Steps, prefix) ||
 		hasIterationEntries(e.state.AgentDeliveries, prefix) ||
 		hasIterationEntries(e.state.CommandExecutions, prefix) ||
@@ -3874,7 +3937,11 @@ func iterationSucceeded(results []StepResult, shouldBreak bool) bool {
 	}
 	for _, result := range results {
 		switch result.Status {
-		case StatusFailed, StatusCancelled, StatusRunning, StatusPending:
+		case StatusFailed:
+			if result.ConsumedByLoop == "" {
+				return false
+			}
+		case StatusCancelled, StatusRunning, StatusPending:
 			return false
 		}
 	}

@@ -78,10 +78,33 @@ export interface PaneOutputEventData {
   full?: boolean;
 }
 
+// A line limit alone cannot bound a terminal prompt/progress line that never
+// ends. Retain a bounded tail even when a snapshot contains one enormous line.
+const MAX_PANE_OUTPUT_CHARS = 1024 * 1024;
+
+function boundPaneOutput(lines: string[], maxLines: number): string[] {
+  const tail = lines.slice(-maxLines);
+  let remaining = MAX_PANE_OUTPUT_CHARS;
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (tail[i].length > remaining) {
+      let start = tail[i].length - remaining;
+      // Avoid retaining the low half of a surrogate pair at the tail boundary.
+      const first = tail[i].charCodeAt(start);
+      if (first >= 0xdc00 && first <= 0xdfff) start++;
+      tail[i] = tail[i].slice(start);
+      return tail.slice(i);
+    }
+    remaining -= tail[i].length;
+    if (remaining === 0) return tail.slice(i);
+  }
+  return tail;
+}
+
 /**
  * Apply a `pane.output` WebSocket payload from `PaneStreamer` to the current
  * line buffer. Full snapshots (`is_full: true`) replace the buffer; incremental
- * deltas (`is_full: false` or omitted) append lines bounded by `maxLines`.
+ * deltas (`is_full: false` or omitted) append lines bounded by `maxLines` and
+ * a character budget, including snapshots containing an unterminated prompt.
  */
 export function applyPaneOutputEvent(
   currentLines: string[],
@@ -109,9 +132,7 @@ export function applyPaneOutputEvent(
   }
 
   if (isFull) {
-    return incomingLines.length > limit
-      ? incomingLines.slice(-limit)
-      : incomingLines;
+    return boundPaneOutput(incomingLines, limit);
   }
 
   if (incomingLines.length === 0) {
@@ -119,7 +140,7 @@ export function applyPaneOutputEvent(
   }
 
   const combined = [...currentLines, ...incomingLines];
-  return combined.length > limit ? combined.slice(-limit) : combined;
+  return boundPaneOutput(combined, limit);
 }
 
 /**
@@ -517,12 +538,21 @@ export class NtmWebSocket {
           }
 
           case "stream.reset": {
-            // Server says our cursor is stale, reset subscriptions
+            // Replay cannot reconstruct current state. Notify consumers to
+            // refresh snapshots before resubscribing; clearing the cursor
+            // alone would leave their old state authoritative.
             if (process.env.NODE_ENV === "development") {
               console.log("[WS] Stream reset, resubscribing");
             }
             this.lastSeq = null;
             this.lastAttentionCursor = null;
+            this.eventHandlers.forEach((h) => h({
+              ...message,
+              type: "event",
+              topic: message.topic || "",
+              event_type: "stream.reset",
+              data: message.data ?? message,
+            }));
             this.resubscribeAll();
             break;
           }
