@@ -98,6 +98,7 @@ func TestGetSpawn_MonitorStartedEnvelope(t *testing.T) {
 // plus the error, and the degraded-event row lands in the state DB.
 func TestGetSpawn_MonitorFailureIsBestEffort(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	seedRobotStateDB(t, state.DefaultPath())
 
 	deps := testSpawnLifecycleDependencies(spawnMonitorTestPanes())
 	monitorErr := errors.New("monitor exploded")
@@ -149,6 +150,7 @@ func TestGetSpawn_MonitorFailureIsBestEffort(t *testing.T) {
 // reported but NOT treated as a degradation.
 func TestGetSpawn_MonitorDisabledEnvelope(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	seedRobotStateDB(t, state.DefaultPath())
 
 	deps := testSpawnLifecycleDependencies(spawnMonitorTestPanes())
 	deps.StartSessionMonitor = func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {

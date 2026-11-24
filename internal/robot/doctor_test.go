@@ -18,6 +18,7 @@ func TestDoctor_GetDoctorContractAndNonDestructiveState(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
 	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("PATH", t.TempDir())
 
 	cfg := config.Default()
 	cfg.Redaction.Mode = "redact"
@@ -70,6 +71,7 @@ func TestDoctor_GuardHookDegradedLedgerAndUnhealthyConfig(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
 	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("PATH", t.TempDir())
 
 	dbPath := state.DefaultPath()
 	store := openFastRobotStateStore(t, dbPath)
@@ -227,6 +229,7 @@ func TestDoctor_ScopesBeadsAndGuardChecksToSwarmCWD(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
 	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("PATH", t.TempDir())
 
 	noBeadsDir := t.TempDir()
 	out, err := GetDoctor(context.Background(), DoctorOptions{

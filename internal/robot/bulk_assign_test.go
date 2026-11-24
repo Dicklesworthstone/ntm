@@ -1657,7 +1657,10 @@ func TestBulkAssignDryRunSanitizesTitlesAndBlocksSensitiveReservationPaths(t *te
 
 func TestRobotAtomicReplayMatchesRawIntentAgainstRedactedDurablePrompt(t *testing.T) {
 	t.Parallel()
-	store := assignment.NewStore("redacted-replay")
+	store := &assignment.AssignmentStore{
+		SessionName: "redacted-replay",
+		Assignments: make(map[string]*assignment.Assignment),
+	}
 	rawPrompt := "token=raw-secret"
 	store.Assignments["bd-redacted"] = &assignment.Assignment{
 		BeadID: "bd-redacted", Status: assignment.StatusAssigned,
@@ -2146,7 +2149,10 @@ func TestRobotAtomicIdempotencyKeyDoesNotReplayTerminalAssignment(t *testing.T) 
 		assignment.StatusReassigned,
 	} {
 		t.Run(string(status), func(t *testing.T) {
-			store := assignment.NewStore("terminal-key-" + string(status))
+			store := &assignment.AssignmentStore{
+				SessionName: "terminal-key-" + string(status),
+				Assignments: make(map[string]*assignment.Assignment),
+			}
 			store.Assignments["bd-terminal"] = &assignment.Assignment{
 				BeadID: "bd-terminal", Status: status, Pane: 1, AgentType: "codex", AgentName: "AgentOne",
 				IdempotencyKey: "old-key", DispatchTarget: "%8", OccupancyKey: "%8",

@@ -28,6 +28,7 @@ func TestRobotRuntimeIsolationParallel(t *testing.T) {
 			defer wg.Done()
 
 			dbPath := filepath.Join(t.TempDir(), fmt.Sprintf("runtime-%d.db", workerID))
+			seedRobotStateDB(t, dbPath)
 			store, err := state.Open(dbPath)
 			if err != nil {
 				errs <- fmt.Errorf("worker %d open: %w", workerID, err)
