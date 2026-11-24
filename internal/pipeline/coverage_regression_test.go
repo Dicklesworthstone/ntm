@@ -234,8 +234,8 @@ func TestCoverageForeachPaneAssignmentAdditionalBranches(t *testing.T) {
 		t.Fatalf("ntm index assignment = %q/%d/%#v, want pane %%2", paneID, paneIndex, paneVars)
 	}
 	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "9"}, panes)
-	if paneID != "%9" || paneIndex != 9 || paneVars["index"] != 9 {
-		t.Fatalf("fallback pane assignment = %q/%d/%#v, want synthetic %%9", paneID, paneIndex, paneVars)
+	if paneID != "" || paneIndex != 9 || paneVars["index"] != 9 {
+		t.Fatalf("fallback pane assignment = %q/%d/%#v, want only index 9", paneID, paneIndex, paneVars)
 	}
 	if paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"other": "x"}, panes); paneID != "" || paneIndex != 0 || paneVars != nil {
 		t.Fatalf("empty pane assignment = %q/%d/%#v, want zero values", paneID, paneIndex, paneVars)

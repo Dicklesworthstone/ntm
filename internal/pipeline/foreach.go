@@ -460,8 +460,12 @@ func (e *Executor) materializeForeachSteps(ctx context.Context, parent *Step, co
 			materialized.ID = fmt.Sprintf("step%d", bodyIndex)
 		}
 		materialized.ID = fmt.Sprintf("%s_iter%d_%s", parent.ID, plan.Index, materialized.ID)
-		if plan.PaneIndex > 0 && materialized.Pane.Index == 0 && materialized.Pane.Expr == "" {
-			materialized.Pane.Index = plan.PaneIndex
+		if materialized.Pane.IsZero() {
+			if plan.PaneID != "" {
+				materialized.Pane.Expr = plan.PaneID
+			} else if plan.PaneIndex > 0 {
+				materialized.Pane.Index = plan.PaneIndex
+			}
 		}
 		e.substituteForeachStepFieldsProtected(iterCtx, &materialized, protected)
 		steps = append(steps, materialized)
@@ -2368,7 +2372,9 @@ func paneAssignmentFromItem(item interface{}, panes []tmux.Pane) (string, int, m
 					return pane.ID, pane.Index, paneMetadataFromTmuxPane(pane).variableMap()
 				}
 			}
-			return fmt.Sprintf("%%%d", index), index, map[string]interface{}{"id": fmt.Sprintf("%%%d", index), "index": index}
+			// Without a live match we know only the numeric index. An
+			// unrelated pane can have that number as its physical ID.
+			return "", index, map[string]interface{}{"index": index}
 		}
 	}
 	if paneID != "" {

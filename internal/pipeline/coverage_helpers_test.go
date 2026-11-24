@@ -79,8 +79,8 @@ func TestCoverageHelpersForeachPaneAssignmentHelpers(t *testing.T) {
 	}
 
 	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "44"}, nil)
-	if paneID != "%44" || paneIndex != 44 || paneVars["index"] != 44 {
-		t.Fatalf("fallback pane assignment = (%q,%d,%v), want %%44/44", paneID, paneIndex, paneVars)
+	if paneID != "" || paneIndex != 44 || paneVars["index"] != 44 {
+		t.Fatalf("fallback pane assignment = (%q,%d,%v), want only index 44", paneID, paneIndex, paneVars)
 	}
 
 	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"pane_id": "%missing"}, panes)
