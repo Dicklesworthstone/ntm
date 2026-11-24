@@ -60,6 +60,10 @@ export interface SubscribeOptions {
   mode?: "lines" | "raw";
 }
 
+function isAttentionTopic(topic: string): boolean {
+  return topic === "attention" || topic.startsWith("attention:");
+}
+
 // Connection state
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
 
@@ -340,7 +344,11 @@ export class NtmWebSocket {
     }
 
     const ref = this.nextRef();
-    const payload: Record<string, unknown> = { topics: [topic], ...options };
+    // The server replaces the entire attention subscription on each request.
+    // Join new topics at the cursor of the currently active feed.
+    const payload = isAttentionTopic(topic)
+      ? this.attentionSubscription(options)
+      : { topics: [topic], ...options };
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -359,6 +367,9 @@ export class NtmWebSocket {
    */
   async unsubscribe(topic: string): Promise<void> {
     this.subscriptions.delete(topic);
+    if (isAttentionTopic(topic) && !Array.from(this.subscriptions.keys()).some(isAttentionTopic)) {
+      this.lastAttentionCursor = null;
+    }
 
     if (this.state !== "connected" || !this.ws) {
       return;
@@ -473,11 +484,7 @@ export class NtmWebSocket {
         // Attention frames carry the AttentionFeed cursor in `seq`, which is
         // tracked separately in `lastAttentionCursor` so it never corrupts
         // the hub's event-sequence cursor.
-        const isAttentionTopic =
-          message.topic === "attention" ||
-          (typeof message.topic === "string" &&
-            message.topic.startsWith("attention:"));
-        if (message.seq !== undefined && !isAttentionTopic) {
+        if (message.seq !== undefined && !isAttentionTopic(message.topic || "")) {
           this.lastSeq = message.seq;
         }
 
@@ -515,20 +522,13 @@ export class NtmWebSocket {
                 (message as Partial<WSEvent>).event_type || message.type,
               topic: message.topic || "",
             };
-            if (
-              event.topic === "attention" ||
-              event.topic.startsWith("attention:")
-            ) {
-              const cursor =
-                event.data &&
-                typeof event.data === "object" &&
-                typeof (event.data as { cursor?: unknown }).cursor === "number"
-                  ? (event.data as { cursor: number }).cursor
-                  : null;
+            if (isAttentionTopic(event.topic)) {
+              // The envelope carries the durable cursor even if redaction
+              // transforms the payload. Older servers may only set data.cursor.
+              const cursor = event.seq ?? (event.data as { cursor?: unknown } | null)?.cursor;
               if (
-                cursor !== null &&
-                (this.lastAttentionCursor === null ||
-                  cursor > this.lastAttentionCursor)
+                typeof cursor === "number" && Number.isSafeInteger(cursor) && cursor >= 0 &&
+                (this.lastAttentionCursor === null || cursor > this.lastAttentionCursor)
               ) {
                 this.lastAttentionCursor = cursor;
               }
@@ -538,14 +538,12 @@ export class NtmWebSocket {
           }
 
           case "stream.reset": {
-            // Replay cannot reconstruct current state. Notify consumers to
-            // refresh snapshots before resubscribing; clearing the cursor
-            // alone would leave their old state authoritative.
-            if (process.env.NODE_ENV === "development") {
-              console.log("[WS] Stream reset, resubscribing");
-            }
-            this.lastSeq = null;
-            this.lastAttentionCursor = null;
+            // Hub resets leave memberships active. Refresh the snapshots and
+            // resume future hub replay at the reset boundary. Attention uses a
+            // separate journal and its cursor remains valid.
+            const boundary = (message as WSMessage & { current_seq?: number }).current_seq;
+            this.lastSeq = typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary >= 0
+              ? boundary : null;
             this.eventHandlers.forEach((h) => h({
               ...message,
               type: "event",
@@ -553,7 +551,6 @@ export class NtmWebSocket {
               event_type: "stream.reset",
               data: message.data ?? message,
             }));
-            this.resubscribeAll();
             break;
           }
 
@@ -637,25 +634,41 @@ export class NtmWebSocket {
     }, delay);
   }
 
-  private resubscribeAll(): void {
-    // Resubscribe to all topics with the appropriate cursor domain for replay:
-    // attention topics use attention cursor (since_cursor), while other topics
-    // use the hub's WS frame sequence (since).
-    for (const [topic, options] of this.subscriptions) {
-      const subscribeOptions: Record<string, unknown> = { ...options };
-      if (topic === "attention" || topic.startsWith("attention:")) {
-        if (this.lastAttentionCursor !== null) {
-          subscribeOptions.since_cursor = this.lastAttentionCursor;
-        }
-      } else if (this.lastSeq !== null) {
-        subscribeOptions.since = this.lastSeq;
-      }
+  private attentionSubscription(options?: SubscribeOptions): Record<string, unknown> {
+    const topics = Array.from(this.subscriptions.keys()).filter(isAttentionTopic);
+    const request: Record<string, unknown> = {
+      topics,
+      ...(options ?? this.subscriptions.get(topics[topics.length - 1])),
+    };
+    if (this.lastAttentionCursor !== null) request.since_cursor = this.lastAttentionCursor;
+    return request;
+  }
 
-      const ref = this.nextRef();
-      this.sendMessage("subscribe", ref, {
-        topics: [topic],
-        ...subscribeOptions,
-      });
+  private resubscribeAll(): void {
+    const regularGroups = new Map<string, { topics: string[]; options: SubscribeOptions }>();
+    let hasAttention = false;
+    for (const [topic, options] of this.subscriptions) {
+      if (isAttentionTopic(topic)) {
+        hasAttention = true;
+        continue;
+      }
+      // Replay matching hub topics together so a busy topic cannot advance
+      // the shared seq past another topic's undelivered history on reconnect.
+      const resume = { ...options };
+      if (this.lastSeq !== null) resume.since = this.lastSeq;
+      const key = JSON.stringify([resume.since, resume.throttle_ms, resume.max_lines_per_msg, resume.mode]);
+      const group = regularGroups.get(key);
+      if (group) {
+        group.topics.push(topic);
+      } else {
+        regularGroups.set(key, { topics: [topic], options: resume });
+      }
+    }
+    for (const { topics, options } of regularGroups.values()) {
+      this.sendMessage("subscribe", this.nextRef(), { topics, ...options });
+    }
+    if (hasAttention) {
+      this.sendMessage("subscribe", this.nextRef(), this.attentionSubscription());
     }
   }
 

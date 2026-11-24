@@ -219,6 +219,53 @@ describe("NtmWebSocket", () => {
       expect(ws.getLastSeq()).toBe(9);
     });
 
+    it("resumes every attention topic together from the accepted prefix after 1013", async () => {
+      vi.useFakeTimers();
+      try {
+        await ws.subscribe("attention:alpha");
+        await ws.subscribe("attention:beta");
+        await ws.subscribe("sessions:*");
+        await ws.subscribe("panes:*");
+        ws.connect();
+        await vi.advanceTimersByTimeAsync(10);
+
+        const first = MockWebSocket.instances[0];
+        const payloads = (socket: MockWebSocket) =>
+          socket.send.mock.calls.map((args) => JSON.parse(String(args[0])).data);
+        expect(payloads(first)).toEqual([
+          { topics: ["sessions:*", "panes:*"] },
+          { topics: ["attention:alpha", "attention:beta"] },
+        ]);
+        first.onmessage?.({ data: [
+          { type: "event", topic: "attention:alpha", seq: 11, data: {} },
+          { type: "event", topic: "attention:beta", seq: 12, data: { cursor: 999 } },
+          { type: "stream.reset", current_seq: 53, reason: "broadcast_overflow" },
+        ].map((frame) => JSON.stringify(frame)).join("\n") });
+        expect(first.send).toHaveBeenCalledTimes(2);
+        expect(ws.getLastSeq()).toBe(53);
+
+        first.close(1013, "attention overflow");
+        await vi.advanceTimersByTimeAsync(1010);
+        const second = MockWebSocket.instances[1];
+        expect(payloads(second)).toEqual([
+          { topics: ["sessions:*", "panes:*"], since: 53 },
+          { topics: ["attention:alpha", "attention:beta"], since_cursor: 12 },
+        ]);
+
+        const added = ws.subscribe("attention:gamma");
+        const request = JSON.parse(String(second.send.mock.lastCall?.[0]));
+        expect(request.data).toEqual({
+          topics: ["attention:alpha", "attention:beta", "attention:gamma"],
+          since_cursor: 12,
+        });
+        second.onmessage?.({ data: JSON.stringify({ type: "ack", request_id: request.request_id }) });
+        await added;
+      } finally {
+        ws.disconnect();
+        vi.useRealTimers();
+      }
+    });
+
     it("parses newline-batched websocket frames", async () => {
       const events: unknown[] = [];
       ws.onEvent((event) => events.push(event));
