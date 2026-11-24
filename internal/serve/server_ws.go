@@ -574,12 +574,12 @@ func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
-	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -607,12 +607,12 @@ func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
-	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -1420,11 +1420,37 @@ func (c *WSClient) removeAttentionTopics(topics []string) {
 	}
 }
 
+// matchesAttentionTopics reports whether an event satisfies the subscribed
+// attention topic scope. Wildcard topics ("attention", "attention:*") match
+// all sessions; session-scoped topics ("attention:<session>") only match
+// events belonging to one of those subscribed sessions.
+func matchesAttentionTopics(topics []string, event robot.AttentionEvent) bool {
+	if len(topics) == 0 {
+		return true
+	}
+	sessionTopic := ""
+	if event.Session != "" {
+		sessionTopic = "attention:" + event.Session
+	}
+	for _, t := range topics {
+		if t == "attention" || t == "attention:*" {
+			return true
+		}
+		if sessionTopic != "" && t == sessionTopic {
+			return true
+		}
+	}
+	return false
+}
+
 // deliverAttentionEvent delivers a single attention event to the client.
-// matchesAttentionSub applies session, profile, category, actionability, and
-// operator muted/snoozed exclusion filters consistently for both replay and
+// matchesAttentionSub applies topic, session, profile, category, actionability,
+// and operator muted/snoozed exclusion filters consistently for both replay and
 // live WebSocket attention delivery.
 func matchesAttentionSub(sub WSAttentionSub, event robot.AttentionEvent) bool {
+	if !matchesAttentionTopics(sub.topics, event) {
+		return false
+	}
 	if sub.Session != "" && event.Session != sub.Session {
 		return false
 	}
@@ -1599,7 +1625,7 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 	// invalidated the snapshot. Sending and committing the cursor must be one
 	// operation with respect to those changes.
 	c.attentionSubMu.Lock()
-	if c.attentionSub != expected || !expected.Active || event.Cursor <= expected.Cursor {
+	if c.attentionSub != expected || !expected.Active || event.Cursor <= expected.Cursor || !matchesAttentionTopics(expected.topics, event) {
 		c.attentionSubMu.Unlock()
 		return
 	}
@@ -1638,6 +1664,10 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 	}
 
 	c.attentionSubMu.Lock()
+	replayTopics := sub.topics
+	if len(replayTopics) == 0 {
+		replayTopics = topics
+	}
 	criteria := WSAttentionSub{
 		SinceCursor:         sub.SinceCursor,
 		Session:             sub.Session,
@@ -1646,6 +1676,7 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		ActionabilityFilter: sub.ActionabilityFilter,
 		ExcludeMuted:        sub.ExcludeMuted,
 		ExcludeSnoozed:      sub.ExcludeSnoozed,
+		topics:              append([]string(nil), replayTopics...),
 	}
 	c.attentionSubMu.Unlock()
 

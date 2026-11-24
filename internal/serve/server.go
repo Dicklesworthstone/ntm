@@ -104,7 +104,7 @@ type Server struct {
 	// recoveryConfig loads the selected policy for the saved project's agents.
 	// ConfigureSpawnPolicy binds the same operator-selected file to both paths.
 	recoveryConfig func(string) (*config.Config, error)
-	resolvePane    func(context.Context, string, int) (tmux.Pane, error)
+	resolvePane    func(context.Context, string, tmux.PaneSelector) (tmux.Pane, error)
 	// paneInputTimeout bounds lookup, ownership waits, and canonical delivery.
 	// Zero means defaultPaneInputTimeout; tests may shorten it.
 	paneInputTimeout time.Duration

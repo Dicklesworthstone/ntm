@@ -225,19 +225,19 @@ func validateSessionParam(w http.ResponseWriter, sessionID, reqID string) bool {
 	return true
 }
 
-// validatePaneIdx parses a pane index string and validates it is non-negative.
-// It writes an error response and returns -1 when validation fails.
-func validatePaneIdx(w http.ResponseWriter, paneIdxStr, reqID string) int {
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
-		return -1
+// validatePaneSelector parses a pane selector string (N, W.P, or %N) strictly.
+// It writes an error response and returns false when validation fails.
+func validatePaneSelector(w http.ResponseWriter, paneSelectorStr, reqID string) (tmux.PaneSelector, bool) {
+	selector, err := tmux.ParsePaneSelector(paneSelectorStr)
+	if err != nil {
+		msg := "invalid pane index"
+		if strings.HasPrefix(strings.TrimSpace(paneSelectorStr), "-") {
+			msg = "pane index must be non-negative"
+		}
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, msg, nil, reqID)
+		return tmux.PaneSelector{}, false
 	}
-	if paneIdx < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pane index must be non-negative", nil, reqID)
-		return -1
-	}
-	return paneIdx
+	return selector, true
 }
 
 // handleSessionsV1 handles GET /api/v1/sessions.
@@ -933,7 +933,8 @@ func (s *Server) handleSessionAttachV1(w http.ResponseWriter, r *http.Request) {
 
 // SessionZoomRequest is the request body for POST /sessions/{id}/zoom.
 type SessionZoomRequest struct {
-	Pane int `json:"pane"`
+	Pane   int    `json:"pane,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // handleSessionZoomV1 handles POST /api/v1/sessions/{id}/zoom.
@@ -951,10 +952,15 @@ func (s *Server) handleSessionZoomV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := kernel.Run(r.Context(), "sessions.zoom", map[string]interface{}{
+	input := map[string]interface{}{
 		"session": sessionID,
-		"pane":    req.Pane,
-	})
+	}
+	if strings.TrimSpace(req.Target) != "" {
+		input["target"] = strings.TrimSpace(req.Target)
+	} else {
+		input["pane"] = req.Pane
+	}
+	result, err := kernel.Run(r.Context(), "sessions.zoom", input)
 	if err != nil {
 		statusCode, errCode := kernelSessionErrorHTTP(err)
 		writeErrorResponse(w, statusCode, errCode, err.Error(), nil, reqID)
@@ -1020,15 +1026,16 @@ func (s *Server) handleListPanesV1(w http.ResponseWriter, r *http.Request) {
 	paneList := make([]map[string]interface{}, len(panes))
 	for i, p := range panes {
 		paneList[i] = map[string]interface{}{
-			"index":   p.Index,
-			"id":      p.ID,
-			"title":   p.Title,
-			"type":    string(p.Type),
-			"variant": p.Variant,
-			"active":  p.Active,
-			"width":   p.Width,
-			"height":  p.Height,
-			"command": p.Command,
+			"index":        p.Index,
+			"window_index": p.WindowIndex,
+			"id":           p.ID,
+			"title":        p.Title,
+			"type":         string(p.Type),
+			"variant":      p.Variant,
+			"active":       p.Active,
+			"width":        p.Width,
+			"height":       p.Height,
+			"command":      p.Command,
 		}
 	}
 
@@ -1049,38 +1056,30 @@ func (s *Server) handleGetPaneV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
-	panes, err := tmux.GetPanesContext(r.Context(), sessionID)
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+	p, ok := s.resolvePaneForRequest(w, r, sessionID, paneSelector, reqID)
+	if !ok {
 		return
 	}
 
-	// Find the pane by index
-	for _, p := range panes {
-		if p.Index == paneIdx {
-			writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-				"pane": map[string]interface{}{
-					"index":   p.Index,
-					"id":      p.ID,
-					"title":   p.Title,
-					"type":    string(p.Type),
-					"variant": p.Variant,
-					"active":  p.Active,
-					"width":   p.Width,
-					"height":  p.Height,
-					"command": p.Command,
-				},
-			}, reqID)
-			return
-		}
-	}
-
-	writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "pane not found", nil, reqID)
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"pane": map[string]interface{}{
+			"index":        p.Index,
+			"window_index": p.WindowIndex,
+			"id":           p.ID,
+			"title":        p.Title,
+			"type":         string(p.Type),
+			"variant":      p.Variant,
+			"active":       p.Active,
+			"width":        p.Width,
+			"height":       p.Height,
+			"command":      p.Command,
+		},
+	}, reqID)
 }
 
 // PaneInputRequest is the request body for POST /sessions/{id}/panes/{paneIdx}/input.
@@ -1101,8 +1100,8 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
@@ -1138,12 +1137,12 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("cannot verify project safety policy for a remote tmux pane"))
 		return
 	}
-	resolve := resolvePaneByIndex
+	resolve := resolvePaneBySelector
 	if s.resolvePane != nil {
 		resolve = s.resolvePane
 	}
 	lookup := func() (tmux.Pane, bool) {
-		pane, err := resolve(ctx, sessionID, paneIdx)
+		pane, err := resolve(ctx, sessionID, paneSelector)
 		if err != nil {
 			status, code := http.StatusNotFound, ErrCodeNotFound
 			var selectorErr *tmux.PaneSelectorError
@@ -1216,7 +1215,7 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	}
 	if match := p.Check(req.Text); match != nil && match.Action == policy.ActionBlock {
 		slog.Warn("pane input blocked by policy",
-			"session", sessionID, "pane", paneIdx,
+			"session", sessionID, "pane", paneSelector.Raw,
 			"pattern", match.Pattern, "request_id", reqID)
 		fail(http.StatusForbidden, ErrCodeForbidden, fmt.Errorf("blocked by safety policy: %s", match.Reason))
 		return
@@ -1251,7 +1250,7 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("pane input sent via API",
-		"session", sessionID, "pane", paneIdx,
+		"session", sessionID, "pane", paneSelector.Raw,
 		"text_len", len(req.Text), "request_id", reqID)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
@@ -1270,12 +1269,12 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
-	pane, ok := s.resolvePaneForRequest(w, r, sessionID, paneIdx, reqID)
+	pane, ok := s.resolvePaneForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -1305,25 +1304,27 @@ func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
 	// Parse lines parameter (default 100)
 	lines := 100
 	if l := r.URL.Query().Get("lines"); l != "" {
-		if _, err := fmt.Sscanf(l, "%d", &lines); err != nil {
+		parsedLines, err := strconv.Atoi(l)
+		if err != nil {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid lines parameter", nil, reqID)
 			return
 		}
+		lines = parsedLines
 		if lines < 1 || lines > 10000 {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lines must be 1-10000", nil, reqID)
 			return
 		}
 	}
 
-	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -1360,12 +1361,12 @@ func (s *Server) handleGetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
-	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -1397,8 +1398,8 @@ func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
-	if paneIdx < 0 {
+	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	if !ok {
 		return
 	}
 
@@ -1408,7 +1409,7 @@ func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
@@ -1424,18 +1425,30 @@ func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 	}, reqID)
 }
 
-// resolvePaneByIndex returns the complete pane snapshot so callers can run
-// agent-specific admission before using its base-index-independent tmux ID.
-// The context is honored so the HTTP layer can cancel a slow ListPanes call.
-func resolvePaneByIndex(ctx context.Context, session string, paneIdx int) (tmux.Pane, error) {
+// resolvePaneBySelector returns the complete pane snapshot addressed by N, W.P,
+// or %N so callers can run agent-specific admission before using its
+// base-index-independent tmux ID. Bare N matches by pane index and returns
+// PaneSelectorAmbiguous if repeated across multiple windows.
+func resolvePaneBySelector(ctx context.Context, session string, selector tmux.PaneSelector) (tmux.Pane, error) {
 	panes, err := tmux.GetPanesContext(ctx, session)
 	if err != nil {
 		return tmux.Pane{}, fmt.Errorf("list panes: %w", err)
 	}
 	var matches []tmux.Pane
 	for _, p := range panes {
-		if p.Index == paneIdx {
-			matches = append(matches, p)
+		switch selector.Kind {
+		case tmux.PaneSelectorID:
+			if p.ID == selector.PaneID {
+				matches = append(matches, p)
+			}
+		case tmux.PaneSelectorWindowPane:
+			if p.WindowIndex == selector.WindowIndex && p.Index == selector.PaneIndex {
+				matches = append(matches, p)
+			}
+		case tmux.PaneSelectorPaneIndex:
+			if p.Index == selector.Index {
+				matches = append(matches, p)
+			}
 		}
 	}
 	if len(matches) == 1 {
@@ -1447,19 +1460,24 @@ func resolvePaneByIndex(ctx context.Context, session string, paneIdx int) (tmux.
 			ids[i] = pane.ID
 		}
 		return tmux.Pane{}, &tmux.PaneSelectorError{
-			Kind: tmux.PaneSelectorAmbiguous, Selector: strconv.Itoa(paneIdx), Matches: len(matches), Available: ids,
+			Kind: tmux.PaneSelectorAmbiguous, Selector: selector.Raw, Matches: len(matches), Available: ids,
 		}
 	}
-	return tmux.Pane{}, fmt.Errorf("no pane with index %d in session %q", paneIdx, session)
+	return tmux.Pane{}, fmt.Errorf("no pane matching %q in session %q", selector.Raw, session)
 }
 
-func (s *Server) resolvePaneForRequest(w http.ResponseWriter, r *http.Request, session string, paneIdx int, reqID string) (tmux.Pane, bool) {
-	resolvePane := resolvePaneByIndex
+func (s *Server) resolvePaneForRequest(w http.ResponseWriter, r *http.Request, session string, selector tmux.PaneSelector, reqID string) (tmux.Pane, bool) {
+	resolvePane := resolvePaneBySelector
 	if s.resolvePane != nil {
 		resolvePane = s.resolvePane
 	}
-	pane, err := resolvePane(r.Context(), session, paneIdx)
+	pane, err := resolvePane(r.Context(), session, selector)
 	if err != nil {
+		var selectorErr *tmux.PaneSelectorError
+		if errors.As(err, &selectorErr) && selectorErr.Kind == tmux.PaneSelectorAmbiguous {
+			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+			return tmux.Pane{}, false
+		}
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
 			fmt.Sprintf("pane not found: %v", err), nil, reqID)
 		return tmux.Pane{}, false
@@ -1467,8 +1485,8 @@ func (s *Server) resolvePaneForRequest(w http.ResponseWriter, r *http.Request, s
 	return pane, true
 }
 
-func (s *Server) resolvePaneTargetForRequest(w http.ResponseWriter, r *http.Request, session string, paneIdx int, reqID string) (string, bool) {
-	pane, ok := s.resolvePaneForRequest(w, r, session, paneIdx, reqID)
+func (s *Server) resolvePaneTargetForRequest(w http.ResponseWriter, r *http.Request, session string, selector tmux.PaneSelector, reqID string) (string, bool) {
+	pane, ok := s.resolvePaneForRequest(w, r, session, selector, reqID)
 	if !ok {
 		return "", false
 	}

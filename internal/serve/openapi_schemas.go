@@ -739,16 +739,17 @@ type SessionEventsEnvelopeResponse struct {
 }
 
 type PaneSummaryRecord struct {
-	Index   int      `json:"index"`
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Type    string   `json:"type"`
-	Variant string   `json:"variant,omitempty"`
-	Active  bool     `json:"active"`
-	Width   int      `json:"width"`
-	Height  int      `json:"height"`
-	Command string   `json:"command,omitempty"`
-	Tags    []string `json:"tags,omitempty"`
+	Index       int      `json:"index"`
+	WindowIndex int      `json:"window_index"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Type        string   `json:"type"`
+	Variant     string   `json:"variant,omitempty"`
+	Active      bool     `json:"active"`
+	Width       int      `json:"width"`
+	Height      int      `json:"height"`
+	Command     string   `json:"command,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 type PanesListEnvelopeResponse struct {
@@ -1130,7 +1131,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleAgentInterruptV1":   {Request: AgentInterruptRequest{}},
 	"handleAgentWaitV1":        {Request: AgentWaitRequest{}},
 	"handleGetRequestStatusV1": {QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. Required when an ID exists in multiple sessions; ambiguous unscoped IDs return AMBIGUOUS_REQUEST."}}},
-	"handleCancelRequestV1":    {QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. An ambiguous ID is refused before cancellation; an unknown explicit session never falls back."}}},
+	"handleCancelRequestV1":    {Request: cancelRequestBodyV1{}, QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. An ambiguous ID is refused before cancellation; an unknown explicit session never falls back."}}},
 	"handleWaitRequestV1":      {Request: waitRequestBodyV1{}, QueryParams: []routeQueryParam{{Name: "session", Type: "string", Description: "Original session. Once resolved, the wait remains bound to that session and request kind."}, {Name: "timeout", Type: "string", Description: "Maximum wait duration (e.g. 30s)."}, {Name: "poll", Type: "string", Description: "Polling interval duration (e.g. 100ms)."}}},
 
 	// Ensemble REST API

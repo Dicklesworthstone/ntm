@@ -798,11 +798,18 @@ func (s *Server) handleKernelCommands(w http.ResponseWriter, r *http.Request) {
 	}, reqID)
 }
 
+const maxRequestLifecycleBodyBytes = 64 << 10
+
 type waitRequestBodyV1 struct {
+	Session   string `json:"session,omitempty"`
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
 	PollMs    int    `json:"poll_ms,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
 	Poll      string `json:"poll,omitempty"`
+}
+
+type cancelRequestBodyV1 struct {
+	Session string `json:"session,omitempty"`
 }
 
 func (s *Server) writeRobotRequestLifecycleOutput(w http.ResponseWriter, reqID string, resp robot.RobotResponse, output interface{}) {
@@ -850,9 +857,18 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 	httpReqID := requestIDFromContext(r.Context())
 	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestLifecycleBodyBytes)
 	var body waitRequestBodyV1
 	if err := decodeOptionalJSONBody(r, &body); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, httpReqID)
+		return
+	}
+	if body.TimeoutMs < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid timeout_ms", nil, httpReqID)
+		return
+	}
+	if body.PollMs < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid poll_ms", nil, httpReqID)
 		return
 	}
 
@@ -874,8 +890,11 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 	} else if body.TimeoutMs > 0 {
 		timeout = time.Duration(body.TimeoutMs) * time.Millisecond
 	}
+	if timeout > maxAgentWaitTimeout {
+		timeout = maxAgentWaitTimeout
+	}
 
-	poll := 100 * time.Millisecond
+	poll := minAgentWaitPollInterval
 	if q := strings.TrimSpace(r.URL.Query().Get("poll")); q != "" {
 		d, err := time.ParseDuration(q)
 		if err != nil || d <= 0 {
@@ -893,11 +912,22 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 	} else if body.PollMs > 0 {
 		poll = time.Duration(body.PollMs) * time.Millisecond
 	}
+	if poll < minAgentWaitPollInterval {
+		poll = minAgentWaitPollInterval
+	}
+	if poll > timeout {
+		poll = timeout
+	}
 
-	slog.Info("request lifecycle wait", "http_request_id", httpReqID, "target_request_id", targetID, "timeout", timeout, "poll", poll)
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if session == "" {
+		session = strings.TrimSpace(body.Session)
+	}
+
+	slog.Info("request lifecycle wait", "http_request_id", httpReqID, "target_request_id", targetID, "session", session, "timeout", timeout, "poll", poll)
 	out, err := robot.GetWaitRequest(r.Context(), robot.WaitRequestOptions{
 		RequestID:     targetID,
-		Session:       r.URL.Query().Get("session"),
+		Session:       session,
 		Timeout:       timeout,
 		PollInterval:  poll,
 		Store:         s.stateStore,
@@ -914,9 +944,20 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelRequestV1(w http.ResponseWriter, r *http.Request) {
 	httpReqID := requestIDFromContext(r.Context())
 	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
-	slog.Info("request lifecycle cancel", "http_request_id", httpReqID, "target_request_id", targetID)
 
-	out, err := robot.GetCancelRequestWithStore(targetID, s.stateStore, true, r.URL.Query().Get("session"))
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestLifecycleBodyBytes)
+	var body cancelRequestBodyV1
+	if err := decodeOptionalJSONBody(r, &body); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, httpReqID)
+		return
+	}
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if session == "" {
+		session = strings.TrimSpace(body.Session)
+	}
+	slog.Info("request lifecycle cancel", "http_request_id", httpReqID, "target_request_id", targetID, "session", session)
+
+	out, err := robot.GetCancelRequestWithStore(targetID, s.stateStore, true, session)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
 		return
