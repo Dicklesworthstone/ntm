@@ -867,6 +867,22 @@ func OpencodeStatusBarUsage(captured string, fallbackWindow int, capturedAt time
 	}, true
 }
 
+// PiStatusBarUsage converts the context gauge pi renders in its footer stats
+// row (e.g. "12.5%/200k") into a usage reading. Like OmpStatusBarUsage, this
+// is attributed to the captured pane directly and stays unambiguous when
+// multiple pi panes share a working directory.
+func PiStatusBarUsage(captured string, capturedAt time.Time) (*TranscriptUsage, bool) {
+	usedPct, window, ok := agent.PiContextUsage(captured)
+	if !ok || window <= 0 {
+		return nil, false
+	}
+	return &TranscriptUsage{
+		Tokens:        int(float64(window)*usedPct/100 + 0.5),
+		ContextWindow: int(window),
+		UpdatedAt:     capturedAt,
+	}, true
+}
+
 // LatestAgentTranscriptUsage finds the transcript for an agent pane by agent
 // type and working directory and returns its last usage record. agentType is
 // NTM's normalized agent type string ("claude", "codex", ...). newerThan

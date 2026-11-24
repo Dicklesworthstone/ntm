@@ -335,6 +335,43 @@ func TestRotationGaugeDoesNotMakeSiblingWorkspaceUnique(t *testing.T) {
 	}
 }
 
+func TestRotationPiGaugeAndServerScopedTranscript(t *testing.T) {
+	original := tmux.DefaultClient.Remote
+	t.Cleanup(func() { tmux.DefaultClient.Remote = original })
+	tmux.DefaultClient.Remote = ""
+
+	piCapture := "────────────────────────────────────────\n\n────────────────────────────────────────\n" +
+		"~/repo (main)\n↑4.0k ↓1.0k 82.0%/200k (auto)  (anthropic) claude-sonnet-4 • high\n"
+	now := time.Now()
+	if usage, ok := ntmctx.PiStatusBarUsage(piCapture, now); !ok || usage.Tokens != 164000 || usage.ContextWindow != 200000 {
+		t.Fatalf("invalid pi gauge fixture: %+v, %v", usage, ok)
+	}
+
+	cwd := t.TempDir()
+	transcriptCalls := 0
+	rc := &rotationChecker{
+		paneCwd: func(string) (string, bool) { return cwd, true },
+		capturePane: func(id string, _ int) (string, error) {
+			if id == "%1" {
+				return piCapture, nil
+			}
+			return "no pi footer visible", nil
+		},
+		transcriptUsage: func(string, string) (*ntmctx.TranscriptUsage, bool) {
+			transcriptCalls++
+			return &ntmctx.TranscriptUsage{Tokens: 99999, ContextWindow: 200000}, true
+		},
+		now: func() time.Time { return now },
+	}
+	got := rc.resolvePaneTranscriptsContext(context.Background(), []tmux.Pane{
+		{ID: "%1", Type: agent.AgentTypePi},
+		{ID: "%2", Type: agent.AgentTypePi},
+	})
+	if transcriptCalls != 0 || len(got) != 1 || got["%1"] == nil || got["%1"].Tokens != 164000 || got["%2"] != nil {
+		t.Fatalf("pi gauge/ambiguity handling = calls=%d readings=%+v, want only %%1=164000", transcriptCalls, got)
+	}
+}
+
 func TestRotationScopeRejectsCollidingClaudeStoreNames(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)

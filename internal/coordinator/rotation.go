@@ -648,6 +648,19 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 				}
 			}
 			agentType = "omp"
+		case agent.AgentTypePi:
+			// pi renders its own context accounting in the footer stats row
+			// ("12.5%/200k") and also writes session transcripts under ~/.pi.
+			// Prefer the pane-local gauge (surviving shared-directory swarms),
+			// and fall back to server-scoped transcript correlation otherwise.
+			if rc.capturePane != nil {
+				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
+					if usage, ok := ntmctx.PiStatusBarUsage(captured, rc.now()); ok {
+						gauges[pane.ID] = usage
+					}
+				}
+			}
+			agentType = "pi"
 		case agent.AgentTypeOpencode:
 			if rc.capturePane != nil {
 				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil &&
@@ -760,6 +773,8 @@ func (rc *rotationChecker) resolveServerScopedTranscripts(targets []ntmctx.PaneT
 			provider = "gemini"
 		case agent.AgentTypeOmp:
 			provider = "omp"
+		case agent.AgentTypePi:
+			provider = "pi"
 		}
 		if !needed[provider] {
 			continue

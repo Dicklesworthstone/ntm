@@ -681,6 +681,25 @@ func TestOmpStatusBarUsage(t *testing.T) {
 	}
 }
 
+func TestPiStatusBarUsage(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 9, 17, 5, 10, 0, 0, time.UTC)
+	capture := "────────────────────────────────────────\n\n────────────────────────────────────────\n" +
+		"~/repo (main)\n↑1.2k ↓500 12.5%/200k (auto)  (anthropic) claude-sonnet-4 • high\n"
+	u, ok := PiStatusBarUsage(capture, at)
+	if !ok || u.Tokens != 25000 || u.ContextWindow != 200000 || !u.UpdatedAt.Equal(at) || u.Path != "" {
+		t.Fatalf("PiStatusBarUsage = (%+v, %v), want tokens=25000 window=200000", u, ok)
+	}
+	unknown := "────────────────────────────────────────\n\n────────────────────────────────────────\n" +
+		"~/repo (main)\n↑0 ↓0 ?/200k (auto)  (anthropic) claude-sonnet-4 • high\n"
+	if _, ok := PiStatusBarUsage(unknown, at); ok {
+		t.Error("unknown ?/200k pi gauge must not produce a reading")
+	}
+	if _, ok := PiStatusBarUsage("● Done.\n\n❯ \n", at); ok {
+		t.Error("a non-pi capture must not produce a gauge reading")
+	}
+}
+
 func TestAttributePaneTranscripts(t *testing.T) {
 	reading := func(path string) *TranscriptUsage { return &TranscriptUsage{Path: path, Tokens: 1} }
 	gauge := reading("gauge:%9")
