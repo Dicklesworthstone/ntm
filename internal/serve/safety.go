@@ -77,10 +77,23 @@ type SafetyStatusResponse struct {
 var errSafetyFileExists = errors.New("safety file already exists")
 
 func (s *Server) resolvePolicyPath() (string, bool, error) {
+	if s.policyPath != "" {
+		if _, err := os.Stat(s.policyPath); err == nil {
+			return s.policyPath, true, nil
+		} else if errors.Is(err, os.ErrNotExist) {
+			return s.policyPath, false, nil
+		} else {
+			return "", false, fmt.Errorf("inspect policy path: %w", err)
+		}
+	}
 	return policy.ResolveEffectivePathForProject(s.projectDirSnapshot())
 }
 
 func (s *Server) loadPolicy() (*policy.Policy, error) {
+	if s.policyPath != "" {
+		p, _, _, err := s.loadResolvedPolicy()
+		return p, err
+	}
 	if projectDir := s.projectDirSnapshot(); projectDir != "" {
 		return policy.LoadForProject(projectDir)
 	}

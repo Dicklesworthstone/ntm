@@ -20,6 +20,7 @@ import (
 
 // TestAccountsEndpointsRegistered verifies that all account endpoints are registered.
 func TestAccountsEndpointsRegistered(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal}, // Local mode grants admin
 	}
@@ -64,6 +65,7 @@ func TestAccountsEndpointsRegistered(t *testing.T) {
 
 // TestAutoRotateConfigGet tests getting auto-rotate configuration.
 func TestAutoRotateConfigGet(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -109,6 +111,7 @@ func TestAutoRotateConfigGet(t *testing.T) {
 
 // TestAutoRotateConfigPatch tests updating auto-rotate configuration.
 func TestAutoRotateConfigPatch(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -158,6 +161,7 @@ func TestAutoRotateConfigPatch(t *testing.T) {
 
 // TestAutoRotateConfigPatchValidation tests validation of auto-rotate config.
 func TestAutoRotateConfigPatchValidation(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -192,6 +196,7 @@ func TestAutoRotateConfigPatchValidation(t *testing.T) {
 
 // TestAccountsHistoryEmpty tests empty history response.
 func TestAccountsHistoryEmpty(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -233,6 +238,7 @@ func TestAccountsHistoryEmpty(t *testing.T) {
 
 // TestRotateAccountMissingProvider tests validation for rotate endpoint.
 func TestRotateAccountMissingProvider(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -259,6 +265,7 @@ func TestRotateAccountMissingProvider(t *testing.T) {
 
 // TestAccountsResponseEnvelope tests that responses follow the API envelope format.
 func TestAccountsResponseEnvelope(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -539,6 +546,7 @@ exit 2
 }
 
 func TestAccountsInvalidFlagReturns400AndCAAMConfigSeeding(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		auth:       AuthConfig{Mode: AuthModeLocal},
 		wsHub:      NewWSHub(),

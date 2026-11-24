@@ -1471,7 +1471,9 @@ func TestHandlePolicyUpdateV1_UnknownField(t *testing.T) {
 }
 
 func TestHandlePolicyResetV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/reset", nil)
 	rec := httptest.NewRecorder()
 	srv.handlePolicyResetV1(rec, req)
@@ -2801,6 +2803,61 @@ func TestRequestWaitAndCancelBodySessionAndBounds(t *testing.T) {
 		elapsed := time.Since(start)
 		if elapsed < 40*time.Millisecond {
 			t.Fatalf("wait(overflow timeout_ms) returned in %v (<40ms) — int64 duration wrapped instead of clamping (status=%d body=%s)", elapsed, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestHandleSessionZoomV1EmptyBodyAndAgentWaitBounds(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	// 1. POST /api/v1/sessions/{id}/zoom with {} must return 400 (never silently zoom pane 0).
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/proj/zoom", strings.NewReader(`{}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "proj")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleSessionZoomV1(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("zoom({}) status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. handleAgentWaitV1 must reject negative timeout_ms/poll_ms with 400 and
+	// clamp int64-overflow timeout_ms/poll_ms cleanly BEFORE multiplying by 1ms.
+	var capturedOpts robot.WaitOptions
+	srv.waitAgents = func(_ context.Context, opts robot.WaitOptions) (*robot.WaitResponse, int) {
+		capturedOpts = opts
+		return &robot.WaitResponse{RobotResponse: robot.NewRobotResponse(true)}, 0
+	}
+	waitReq := func(body string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/proj/agents/wait", strings.NewReader(body))
+		rc := chi.NewRouteContext()
+		rc.URLParams.Add("sessionId", "proj")
+		return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rc))
+	}
+	for _, bad := range []string{`{"condition":"idle","timeout_ms":-1}`, `{"condition":"idle","poll_ms":-10}`} {
+		rec = httptest.NewRecorder()
+		srv.handleAgentWaitV1(rec, waitReq(bad))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("agentWait(%s) status = %d, want 400: %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+	if strconv.IntSize >= 64 {
+		for _, huge := range []string{
+			`{"condition":"idle","timeout_ms":18446744073710,"poll_ms":18446744073710}`,
+			`{"condition":"idle","timeout_ms":9223372036855,"poll_ms":9223372036855}`,
+		} {
+			rec = httptest.NewRecorder()
+			srv.handleAgentWaitV1(rec, waitReq(huge))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("agentWait(%s) status = %d, want 200: %s", huge, rec.Code, rec.Body.String())
+			}
+			if capturedOpts.Timeout != maxAgentWaitTimeout {
+				t.Fatalf("agentWait(%s) Timeout = %v, want %v", huge, capturedOpts.Timeout, maxAgentWaitTimeout)
+			}
+			if capturedOpts.PollInterval != maxAgentWaitTimeout {
+				t.Fatalf("agentWait(%s) PollInterval = %v, want %v", huge, capturedOpts.PollInterval, maxAgentWaitTimeout)
+			}
 		}
 	}
 }

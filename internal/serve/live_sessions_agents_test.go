@@ -453,7 +453,7 @@ func TestSessionAgentsEndpoints_ReportLiveAgentsWithProjectedState(t *testing.T)
 func TestSessionAgentsEndpoints_FallBackToProjectionWhenTmuxHangs(t *testing.T) {
 	srv, store := setupTestServer(t)
 	isolateAgentRegistry(t, srv)
-	srv.liveSessionsTimeout = 200 * time.Millisecond
+	srv.liveSessionsTimeout = 35 * time.Millisecond
 	installFakeListPanesTmux(t, fakeTmuxHung)
 
 	const session = "wedged"

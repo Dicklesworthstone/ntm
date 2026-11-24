@@ -961,7 +961,7 @@ func (s *Server) handleSessionAttachV1(w http.ResponseWriter, r *http.Request) {
 
 // SessionZoomRequest is the request body for POST /sessions/{id}/zoom.
 type SessionZoomRequest struct {
-	Pane   int    `json:"pane,omitempty"`
+	Pane   *int   `json:"pane,omitempty"`
 	Target string `json:"target,omitempty"`
 }
 
@@ -983,10 +983,13 @@ func (s *Server) handleSessionZoomV1(w http.ResponseWriter, r *http.Request) {
 	input := map[string]interface{}{
 		"session": sessionID,
 	}
-	if strings.TrimSpace(req.Target) != "" {
-		input["target"] = strings.TrimSpace(req.Target)
+	if target := strings.TrimSpace(req.Target); target != "" {
+		input["target"] = target
+	} else if req.Pane != nil {
+		input["pane"] = *req.Pane
 	} else {
-		input["pane"] = req.Pane
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pane or target is required", nil, reqID)
+		return
 	}
 	result, err := kernel.Run(r.Context(), "sessions.zoom", input)
 	if err != nil {

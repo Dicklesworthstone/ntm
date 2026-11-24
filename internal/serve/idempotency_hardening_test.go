@@ -470,6 +470,7 @@ func TestIdempotencyBodyMismatchRejected(t *testing.T) {
 // with the same long prefix must not share a successful replay when their
 // policy content differs after the former 8 MiB fingerprint boundary.
 func TestIdempotencyPolicyUpdateComparesCompleteAcceptedBody(t *testing.T) {
+	t.Parallel()
 	padding := strings.Repeat(" ", 8<<20)
 	firstPolicy := "version: 1\nblocked:\n  - pattern: original-danger\n    reason: original reason\n"
 	secondPolicy := "version: 1\nblocked:\n  - pattern: revised-danger\n    reason: revised reason\n"
@@ -483,13 +484,13 @@ func TestIdempotencyPolicyUpdateComparesCompleteAcceptedBody(t *testing.T) {
 	firstBody, secondBody := encode(firstPolicy), encode(secondPolicy)
 
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		mode := mode
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-			t.Chdir(home)
 			policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			s.policyPath = policyPath
 			writes := 0
 			s.policyWriteFile = func(path string, content []byte, permissions os.FileMode) error {
 				writes++

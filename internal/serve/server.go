@@ -115,6 +115,10 @@ type Server struct {
 	// by the sessions and agents endpoints; zero means
 	// defaultLiveSessionsTimeout. Tests shorten it.
 	liveSessionsTimeout time.Duration
+	// policyPath optionally pins the target policy file in tests so policy
+	// update/reset handlers never mutate the host ~/.ntm/policy.yaml.
+	// Production servers leave it empty and resolve via projectDir/HOME.
+	policyPath string
 	// policyWriteFile is optional test-only fault injection for policy updates.
 	// Production servers leave it nil and use os.WriteFile directly.
 	policyWriteFile func(string, []byte, os.FileMode) error

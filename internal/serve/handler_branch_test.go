@@ -1853,7 +1853,9 @@ func TestHandlePolicyUpdateV1_InvalidPolicy(t *testing.T) {
 }
 
 func TestHandlePolicyUpdateV1_ValidPolicy(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	// Valid YAML with valid policy
 	rec := httptest.NewRecorder()
@@ -1862,7 +1864,6 @@ func TestHandlePolicyUpdateV1_ValidPolicy(t *testing.T) {
 
 	srv.handlePolicyUpdateV1(rec, req)
 
-	// Should succeed (writes to ~/.ntm/policy.yaml)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
@@ -1873,7 +1874,9 @@ func TestHandlePolicyUpdateV1_ValidPolicy(t *testing.T) {
 // =============================================================================
 
 func TestHandlePolicyAutomationUpdateV1_ValidUpdate(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	rec := httptest.NewRecorder()
 	autoCommit := true
@@ -1883,14 +1886,15 @@ func TestHandlePolicyAutomationUpdateV1_ValidUpdate(t *testing.T) {
 
 	srv.handlePolicyAutomationUpdateV1(rec, req)
 
-	// Should succeed or error depending on policy file state
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandlePolicyAutomationUpdateV1_ForceReleaseApproval(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	rec := httptest.NewRecorder()
 	body := `{"force_release":"approval"}`
@@ -1898,8 +1902,8 @@ func TestHandlePolicyAutomationUpdateV1_ForceReleaseApproval(t *testing.T) {
 
 	srv.handlePolicyAutomationUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1950,7 +1954,9 @@ func TestHandlePolicyValidateV1_BadJSON(t *testing.T) {
 // =============================================================================
 
 func TestHandlePolicyResetV1_Success(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/reset", nil)
@@ -6776,7 +6782,9 @@ func TestHandleSafetyCheckV1_BlockedCommand(t *testing.T) {
 // --- handlePolicyAutomationUpdateV1: force_release branches ---
 
 func TestHandlePolicyAutomationUpdateV1_ForceReleaseNever(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
+	s.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	rec := httptest.NewRecorder()
 	body := `{"force_release":"never"}`
@@ -6784,14 +6792,15 @@ func TestHandlePolicyAutomationUpdateV1_ForceReleaseNever(t *testing.T) {
 
 	s.handlePolicyAutomationUpdateV1(rec, req)
 
-	// Should succeed (200) or 500 if policy write fails
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandlePolicyAutomationUpdateV1_ForceReleaseAuto(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
+	s.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	rec := httptest.NewRecorder()
 	body := `{"force_release":"auto"}`
@@ -6799,13 +6808,15 @@ func TestHandlePolicyAutomationUpdateV1_ForceReleaseAuto(t *testing.T) {
 
 	s.handlePolicyAutomationUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandlePolicyAutomationUpdateV1_NoChanges(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
+	s.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	// Empty update — nothing changed → modified=false
 	rec := httptest.NewRecorder()
@@ -6814,8 +6825,8 @@ func TestHandlePolicyAutomationUpdateV1_NoChanges(t *testing.T) {
 
 	s.handlePolicyAutomationUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 
 	if rec.Code == http.StatusOK {
@@ -8069,15 +8080,16 @@ func TestHandleCASSTimeline_WithProjectDir(t *testing.T) {
 // --- Policy handler deeper branches ---
 
 func TestHandlePolicyResetV1_SuccessPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/reset", nil)
 	rec := httptest.NewRecorder()
 	srv.handlePolicyResetV1(rec, req)
 
-	// Should succeed: creates ~/.ntm dir, writes default policy
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 	if rec.Code == http.StatusOK {
 		var resp map[string]interface{}
@@ -8223,7 +8235,9 @@ func TestHandleSessionZoomV1_ValidBody_Branch(t *testing.T) {
 // --- Policy automation update with auto_commit/auto_push branches ---
 
 func TestHandlePolicyAutomationUpdateV1_AutoCommitToggle(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	trueVal := true
 	body := fmt.Sprintf(`{"auto_commit":%v}`, trueVal)
@@ -8231,8 +8245,8 @@ func TestHandlePolicyAutomationUpdateV1_AutoCommitToggle(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handlePolicyAutomationUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 	if rec.Code == http.StatusOK {
 		var resp map[string]interface{}
@@ -8244,15 +8258,17 @@ func TestHandlePolicyAutomationUpdateV1_AutoCommitToggle(t *testing.T) {
 }
 
 func TestHandlePolicyAutomationUpdateV1_AutoPushToggle(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	body := `{"auto_push":true}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/automation", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.handlePolicyAutomationUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -8417,7 +8433,9 @@ func TestHandlePolicyGetV1_WithRulesTrue(t *testing.T) {
 // --- Policy UPDATE with valid YAML content ---
 
 func TestHandlePolicyUpdateV1_ValidContent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
+	srv.policyPath = filepath.Join(t.TempDir(), ".ntm", "policy.yaml")
 
 	yamlContent := "version: 1\nblocked:\n  - pattern: \"rm -rf /\"\n    reason: dangerous\n"
 	body := fmt.Sprintf(`{"content":%q}`, yamlContent)
@@ -8425,8 +8443,8 @@ func TestHandlePolicyUpdateV1_ValidContent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handlePolicyUpdateV1(rec, req)
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

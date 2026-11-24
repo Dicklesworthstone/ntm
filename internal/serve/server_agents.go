@@ -761,20 +761,36 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bound the client-supplied wait so an unbounded timeout_ms cannot pin
-	// one server-side goroutine (and its tmux polling) indefinitely. Every
-	// other client-supplied bound in this package is clamped; these two were
-	// oversights.
+	if req.TimeoutMs < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "timeout_ms must be non-negative", nil, reqID)
+		return
+	}
+	if req.PollMs < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "poll_ms must be non-negative", nil, reqID)
+		return
+	}
+
+	// Bound the client-supplied wait BEFORE multiplying by time.Millisecond so
+	// huge timeout_ms/poll_ms values cannot wrap signed int64 duration arithmetic.
+	const maxWaitMs = int(maxAgentWaitTimeout / time.Millisecond)
 	timeout := 30 * time.Second
 	if req.TimeoutMs > 0 {
-		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		if req.TimeoutMs >= maxWaitMs {
+			timeout = maxAgentWaitTimeout
+		} else {
+			timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		}
 	}
 	if timeout > maxAgentWaitTimeout {
 		timeout = maxAgentWaitTimeout
 	}
 	pollInterval := 500 * time.Millisecond
 	if req.PollMs > 0 {
-		pollInterval = time.Duration(req.PollMs) * time.Millisecond
+		if req.PollMs >= maxWaitMs {
+			pollInterval = maxAgentWaitTimeout
+		} else {
+			pollInterval = time.Duration(req.PollMs) * time.Millisecond
+		}
 	}
 	if pollInterval < minAgentWaitPollInterval {
 		pollInterval = minAgentWaitPollInterval

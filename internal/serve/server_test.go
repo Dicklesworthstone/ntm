@@ -46,6 +46,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 var (
@@ -62,6 +63,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
+	agentmail.ApplyRetryPolicy(3, 5)
+	tmux.PaneProcessStartPoll = 5 * time.Millisecond
 	if os.Getenv("NTM_SERVE_TEST_ISOLATED") == "1" {
 		os.Exit(m.Run())
 	}

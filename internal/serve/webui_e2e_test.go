@@ -340,7 +340,7 @@ func waitForDOMCondition(ctx context.Context, desc, expr string) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timed out waiting for %s (last err: %v)", desc, err)
 		}
-		time.Sleep(40 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 	}
 }
 
@@ -364,14 +364,7 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 
 	projectDir := t.TempDir()
 	dbPath := filepath.Join(t.TempDir(), "webui-browser-qual.db")
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		_ = store.Close()
-		t.Fatalf("store.Migrate: %v", err)
-	}
+	store := openFastServeStateStore(t, dbPath)
 	t.Cleanup(func() { _ = store.Close() })
 
 	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{

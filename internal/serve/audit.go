@@ -1027,7 +1027,11 @@ func enrichAuditFromRoute(ac *AuditContext, r *http.Request) {
 		ac.SessionID = param("sessionName", "sessionId")
 	}
 	if ac.PaneID == "" {
-		ac.PaneID = param("paneIdx")
+		if decoded, err := paneSelectorURLParam(r); err == nil && strings.TrimSpace(decoded) != "" {
+			ac.PaneID = strings.TrimSpace(decoded)
+		} else {
+			ac.PaneID = param("paneIdx")
+		}
 	}
 	if ac.ResourceID == "" {
 		// The subject of the request. Prefer the most specific id the route
