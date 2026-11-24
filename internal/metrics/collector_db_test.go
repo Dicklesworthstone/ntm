@@ -131,7 +131,7 @@ func TestCollectorWithStore_SaveAndLoadSnapshot(t *testing.T) {
 	recordAPICallForTest(c, "bv", "triage")
 	recordLatencyForTest(c, "cm_query", 50*time.Millisecond)
 	c.RecordBlockedCommand("agent-1", "rm", "policy")
-	stubFileConflicts(t, 1)
+	stubFileConflictsForSession(t, "db-snapshot-test", 1)
 
 	// Save snapshot — exercises insertSnapshot
 	err := c.SaveSnapshot("baseline")
@@ -279,7 +279,7 @@ func TestCollectorWithStore_FullCycle(t *testing.T) {
 	recordLatencyForTest(c, "api_call", 100*time.Millisecond)
 	c.RecordBlockedCommand("agent-1", "rm -rf /", "destructive")
 	c.RecordBlockedCommand("agent-1", "git reset --hard", "safety")
-	stubFileConflicts(t, 1)
+	stubFileConflictsForSession(t, "full-cycle-test", 1)
 
 	// Generate report
 	report, err := c.GenerateReport()

@@ -2,7 +2,13 @@ package metrics
 
 import (
 	"os"
+	"sync"
 	"testing"
+)
+
+var (
+	sessionFileConflictsMu sync.RWMutex
+	sessionFileConflicts   = map[string]int64{}
 )
 
 // TestMain stubs the conflict source for the whole package.
@@ -13,12 +19,17 @@ import (
 // otherwise pass or fail depending on what their agents happened to be doing.
 func TestMain(m *testing.M) {
 	fileConflictsMu.Lock()
-	countFileConflicts = func(string) int64 { return 0 }
+	countFileConflicts = func(session string) int64 {
+		sessionFileConflictsMu.RLock()
+		n := sessionFileConflicts[session]
+		sessionFileConflictsMu.RUnlock()
+		return n
+	}
 	fileConflictsMu.Unlock()
 	os.Exit(m.Run())
 }
 
-// stubFileConflicts makes the conflict source return n for one test.
+// stubFileConflicts makes the conflict source return n for one non-parallel test.
 func stubFileConflicts(t *testing.T, n int64) {
 	t.Helper()
 	fileConflictsMu.Lock()
@@ -29,6 +40,25 @@ func stubFileConflicts(t *testing.T, n int64) {
 		fileConflictsMu.Lock()
 		countFileConflicts = previous
 		fileConflictsMu.Unlock()
+	})
+}
+
+// stubFileConflictsForSession scopes a conflict stub to one session so parallel
+// tests never clobber each other's global countFileConflicts handler.
+func stubFileConflictsForSession(t *testing.T, session string, n int64) {
+	t.Helper()
+	sessionFileConflictsMu.Lock()
+	prev, hadPrev := sessionFileConflicts[session]
+	sessionFileConflicts[session] = n
+	sessionFileConflictsMu.Unlock()
+	t.Cleanup(func() {
+		sessionFileConflictsMu.Lock()
+		if hadPrev {
+			sessionFileConflicts[session] = prev
+		} else {
+			delete(sessionFileConflicts, session)
+		}
+		sessionFileConflictsMu.Unlock()
 	})
 }
 
