@@ -1638,3 +1638,74 @@ func TestForeachAggregateOutputVarKeepsDeclaredShape(t *testing.T) {
 		t.Fatalf("steps.%s.output = %v, want the summary line", parent.ID, state.Variables["steps."+parent.ID+".output"])
 	}
 }
+
+func TestForeachPaneKeepsPhysicalTargetUntilDispatch(t *testing.T) {
+	t.Parallel()
+
+	workflow := &Workflow{Name: "fanout", Settings: DefaultWorkflowSettings()}
+	e := createForeachTestExecutor(t, workflow)
+	first := tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30", Type: tmux.AgentClaude}
+	second := tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41", Type: tmux.AgentCodex}
+	e.SetTmuxClient(NewMockTmuxClient(first, second))
+	parent := &Step{ID: "fanout", ForeachPane: &ForeachConfig{}}
+	body := []Step{{ID: "inspect", Prompt: "inspect this pane"}, {ID: "report", Prompt: "report", Pane: PaneSpec{Expr: "%30"}}}
+	ctx := context.Background()
+	items, err := e.resolveForeachItems(ctx, parent.ForeachPane, "foreach_pane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := e.prepareForeachIterations(ctx, parent, parent.ForeachPane, "foreach_pane", body, items)
+	if err != nil || len(plans) != 2 {
+		t.Fatalf("prepareForeachIterations returned %d plans, err=%v", len(plans), err)
+	}
+	for _, plan := range plans {
+		id, _, err := e.selectPane(ctx, &plan.Steps[0])
+		if err != nil || id != plan.PaneID {
+			t.Fatalf("iteration for %s selected %q: %v", plan.PaneID, id, err)
+		}
+		id, _, err = e.selectPane(ctx, &plan.Steps[1])
+		if err != nil || id != "%30" {
+			t.Fatalf("explicit body pane selected %q: %v", id, err)
+		}
+	}
+
+	// Reuse the same window and index for a new pane after planning.
+	second.ID = "%90"
+	e.SetTmuxClient(NewMockTmuxClient(first, second))
+	for _, plan := range plans {
+		if plan.PaneID == "%41" {
+			if id, _, err := e.selectPane(ctx, &plan.Steps[0]); err == nil || id != "" {
+				t.Fatalf("departed pane redirected to %q: %v", id, err)
+			}
+		}
+	}
+}
+
+func TestForeachPaneRequiresUnambiguousLiveItem(t *testing.T) {
+	t.Parallel()
+
+	workflow := &Workflow{Name: "fanout", Settings: DefaultWorkflowSettings()}
+	e := createForeachTestExecutor(t, workflow)
+	e.SetTmuxClient(NewMockTmuxClient(
+		tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30"},
+		tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41"},
+	))
+	config := &ForeachConfig{PaneStrategy: "round_robin"}
+	parent := &Step{ID: "fanout", ForeachPane: config}
+	for _, item := range []interface{}{
+		map[string]interface{}{"index": 1},
+		map[string]interface{}{"index": 0},
+		map[string]interface{}{"id": "%90", "index": 1},
+		map[string]interface{}{},
+	} {
+		plans, err := e.prepareForeachIterations(context.Background(), parent, config, "foreach_pane", nil, []interface{}{item})
+		if err == nil || len(plans) != 0 {
+			t.Fatalf("item %v unexpectedly planned: %+v, %v", item, plans, err)
+		}
+	}
+	cache := newPaneMetadataCache(paneMetadataEntries([]tmux.Pane{{Index: 0, ID: "%8"}}))
+	id, _, _ := paneAssignmentFromItem(map[string]interface{}{"index": 0}, cache)
+	if id != "%8" {
+		t.Fatalf("unique physical index zero resolved to %q", id)
+	}
+}

@@ -1,12 +1,14 @@
 package agentmail
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -845,6 +848,9 @@ const mcpSessionHeader = "Mcp-Session-Id"
 // back in an error message.
 const maxErrorDetailLen = 200
 
+// Bound the complete wire response, including SSE notifications and framing.
+const maxMCPResponseBytes = 10 << 20
+
 // postJSONRPC sends one JSON-RPC request to the MCP endpoint and returns the
 // decoded response, mapping transport, HTTP, and JSON-RPC failures to
 // APIErrors labeled with operation.
@@ -895,6 +901,7 @@ func (c *Client) postMCP(ctx context.Context, operation string, body []byte, ses
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
@@ -911,12 +918,154 @@ func (c *Client) postMCP(ctx context.Context, operation string, body []byte, ses
 	}
 	defer resp.Body.Close()
 
-	// Read response body (limit to 10MB to prevent DoS/OOM)
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	var respBody []byte
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if resp.StatusCode == http.StatusOK && strings.EqualFold(mediaType, "text/event-stream") {
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil || len(request.ID) == 0 {
+			return nil, nil, NewAPIError(operation, 0, errors.New("MCP stream has no originating request ID"))
+		}
+		respBody, err = readMCPEventStream(ctx, resp.Body, request.ID)
+	} else {
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseBytes+1))
+		if err == nil && len(respBody) > maxMCPResponseBytes {
+			err = errors.New("MCP response exceeds size limit")
+		}
+	}
 	if err != nil {
 		return nil, nil, responseBodyReadError(ctx, operation, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, responseBodyReadError(ctx, operation, err)
+	}
 	return resp, respBody, nil
+}
+
+// readMCPEventStream waits for the response to this POST, allowing progress
+// notifications and JSON-RPC batches before it. It returns at a complete SSE
+// event boundary instead of waiting for the server to close a long-lived
+// stream. A disconnect never replays the originating operation: a reservation
+// or message may already have been applied even when its reply was lost.
+func readMCPEventStream(ctx context.Context, body io.Reader, requestID json.RawMessage) ([]byte, error) {
+	bounded := &io.LimitedReader{R: body, N: maxMCPResponseBytes + 1}
+	scanner := bufio.NewScanner(bounded)
+	scanner.Buffer(make([]byte, 4096), maxMCPResponseBytes+1)
+	scanner.Split(splitMCPEventLines())
+	var data []byte
+	firstLine := true
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if bounded.N == 0 {
+			return nil, errors.New("MCP event stream exceeds size limit")
+		}
+		line := scanner.Bytes()
+		if firstLine {
+			line = bytes.TrimPrefix(line, []byte{0xef, 0xbb, 0xbf})
+			firstLine = false
+		}
+		if len(line) == 0 {
+			if len(data) == 0 {
+				continue
+			}
+			response, err := mcpEventResponse(data, requestID)
+			if err != nil || response != nil {
+				return response, err
+			}
+			data = data[:0]
+			continue
+		}
+		field, value, _ := bytes.Cut(line, []byte(":"))
+		if !bytes.Equal(field, []byte("data")) {
+			continue // Comments, event names, retry hints and transport cursors.
+		}
+		value = bytes.TrimPrefix(value, []byte(" "))
+		data = append(data, value...)
+		data = append(data, '\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if bounded.N == 0 {
+		return nil, errors.New("MCP event stream exceeds size limit")
+	}
+	// SSE requires a blank line to dispatch the event. An unterminated JSON
+	// payload at EOF cannot prove that the server completed its response.
+	return nil, errors.New("MCP event stream ended before a complete matching response")
+}
+
+// SSE permits LF, CRLF, and bare CR delimiters, including across reads. Emit
+// CR immediately: the last blank line need not be followed by another byte.
+// A following LF belongs to that delimiter and must not dispatch an extra event.
+func splitMCPEventLines() bufio.SplitFunc {
+	afterCR := false
+	return func(data []byte, atEOF bool) (int, []byte, error) {
+		prefix := 0
+		if afterCR && len(data) > 0 {
+			afterCR = false
+			if data[0] == '\n' {
+				prefix = 1
+				data = data[1:]
+			}
+		}
+		for i, b := range data {
+			if b == '\r' || b == '\n' {
+				afterCR = b == '\r'
+				return prefix + i + 1, data[:i], nil
+			}
+		}
+		if atEOF && len(data) != 0 {
+			return prefix + len(data), data, nil
+		}
+		return prefix, nil, nil
+	}
+}
+
+func mcpEventResponse(data []byte, requestID json.RawMessage) ([]byte, error) {
+	if !utf8.Valid(data) || !json.Valid(data) {
+		return nil, errors.New("MCP event contains invalid JSON-RPC data")
+	}
+	data = bytes.TrimSpace(data)
+	messages := []json.RawMessage{data}
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &messages); err != nil || len(messages) == 0 {
+			return nil, errors.New("MCP event contains an invalid JSON-RPC batch")
+		}
+	}
+	var response []byte
+	for _, message := range messages {
+		var envelope struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  string          `json:"method"`
+			Result  json.RawMessage `json:"result"`
+			Error   json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(message, &envelope); err != nil || envelope.JSONRPC != "2.0" {
+			return nil, errors.New("MCP event contains an invalid JSON-RPC envelope")
+		}
+		if envelope.Method != "" {
+			if len(envelope.ID) != 0 || len(envelope.Result) != 0 || len(envelope.Error) != 0 {
+				return nil, errors.New("MCP server requests are not supported during Agent Mail calls")
+			}
+			continue // Progress and logging notifications are not acknowledgments.
+		}
+		if !bytes.Equal(bytes.TrimSpace(envelope.ID), bytes.TrimSpace(requestID)) {
+			continue
+		}
+		if (len(envelope.Result) == 0) == (len(envelope.Error) == 0) ||
+			bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
+			return nil, errors.New("MCP response must contain exactly one result or error")
+		}
+		if response != nil {
+			return nil, errors.New("MCP event repeats the response to one request")
+		}
+		response = append([]byte(nil), message...)
+	}
+	return response, nil
 }
 
 // decodeJSONRPCResponse maps an MCP endpoint response to its JSON-RPC

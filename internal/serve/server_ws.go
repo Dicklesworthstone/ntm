@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ============================================================================
@@ -143,15 +145,18 @@ type WSClient struct {
 	conn       *websocket.Conn
 	hub        *WSHub
 	send       chan []byte
+	sendMu     sync.Mutex
+	sendClosed bool
 	topics     map[string]struct{}
 	topicsMu   sync.RWMutex
 	authClaims map[string]interface{}
 	closeOnce  sync.Once
 
 	// Attention subscription state for durable attention semantics.
-	attentionFeed  attentionStreamFeed
-	attentionSub   *WSAttentionSub
-	attentionSubMu sync.Mutex
+	attentionFeed     attentionStreamFeed
+	attentionSub      *WSAttentionSub
+	attentionSubMu    sync.Mutex
+	attentionOverflow chan struct{} // Wake the writer even when the data queue is full.
 }
 
 // WSHub manages WebSocket connections and topic routing.
@@ -228,7 +233,7 @@ func (h *WSHub) Run() {
 			h.clientsMu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				client.closeSend()
 			}
 			total := len(h.clients)
 			h.clientsMu.Unlock()
@@ -253,7 +258,7 @@ func (h *WSHub) Stop() {
 		defer h.clientsMu.Unlock()
 		for client := range h.clients {
 			delete(h.clients, client)
-			close(client.send)
+			client.closeSend()
 		}
 	})
 }
@@ -333,12 +338,11 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 			continue
 		}
 		if client.isSubscribed(event.Topic) {
-			select {
-			case client.send <- data:
+			if sent, closed := client.trySendStatus(data); sent {
 				// Delivery succeeded again: report and persist any gap this
 				// client accumulated while it was slow.
 				h.flushClientDrops(client, true)
-			default:
+			} else if !closed {
 				dropped := h.dropped.Add(1)
 				h.noteClientDrop(client, event.Topic, event.Seq)
 				log.Printf("ws client buffer full id=%s surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", client.id, len(client.send), dropped)
@@ -564,6 +568,29 @@ const (
 // Streaming API Handlers
 // =============================================================================
 
+const paneStreamLeaseDuration = 2 * time.Minute
+
+// Missing lease preserves the original shared start/stop contract. Reject
+// malformed lease parameters so they cannot accidentally release that claim.
+func paneStreamLeaseFromRequest(w http.ResponseWriter, r *http.Request, reqID string) (string, bool) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane stream query", nil, reqID)
+		return "", false
+	}
+	values, present := query["lease"]
+	if !present {
+		return "", true
+	}
+	if len(values) == 1 && len(values[0]) == 32 {
+		if _, err := hex.DecodeString(values[0]); err == nil {
+			return strings.ToLower(values[0]), true
+		}
+	}
+	writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lease must be a 32-digit hexadecimal viewer ID", nil, reqID)
+	return "", false
+}
+
 // handleStartPaneStreamV1 handles POST /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
 func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -578,22 +605,40 @@ func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	lease, ok := paneStreamLeaseFromRequest(w, r, reqID)
+	if !ok {
+		return
+	}
 	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
 	topic := streamTopicForTarget(target)
 
-	if err := s.streamManager.StartStream(target); err != nil {
+	var err error
+	if lease == "" {
+		err = s.streamManager.StartStream(target)
+	} else {
+		err = s.streamManager.AcquireStreamLease(target, lease, paneStreamLeaseDuration)
+	}
+	if errors.Is(err, tmux.ErrStreamViewerLimit) {
+		writeErrorResponse(w, http.StatusTooManyRequests, ErrCodeRateLimited, err.Error(), nil, reqID)
+		return
+	}
+	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"target":  target,
 		"topic":   topic,
 		"message": "streaming started",
-	}, reqID)
+	}
+	if lease != "" {
+		response["lease_ttl_seconds"] = int(paneStreamLeaseDuration.Seconds())
+	}
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleStopPaneStreamV1 handles DELETE /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
@@ -610,15 +655,25 @@ func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	lease, ok := paneStreamLeaseFromRequest(w, r, reqID)
+	if !ok {
+		return
+	}
 	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
-	s.streamManager.StopStream(target)
+	message := "streaming stopped"
+	if lease == "" {
+		s.streamManager.StopStream(target)
+	} else {
+		s.streamManager.ReleaseStreamLease(target, lease)
+		message = "stream lease released"
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"target":  target,
-		"message": "streaming stopped",
+		"message": message,
 	}, reqID)
 }
 
@@ -720,13 +775,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Create client
 	client := &WSClient{
-		id:            clientID,
-		conn:          conn,
-		hub:           s.wsHub,
-		send:          make(chan []byte, 256),
-		topics:        make(map[string]struct{}),
-		authClaims:    extractAuthClaims(r),
-		attentionFeed: s.getAttentionFeed(),
+		id:                clientID,
+		conn:              conn,
+		hub:               s.wsHub,
+		send:              make(chan []byte, 256),
+		topics:            make(map[string]struct{}),
+		authClaims:        extractAuthClaims(r),
+		attentionFeed:     s.getAttentionFeed(),
+		attentionOverflow: make(chan struct{}, 1),
 	}
 
 	// Wire persistence before the hub loop starts so seq assignment is
@@ -810,26 +866,7 @@ func (c *WSClient) writePump() {
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			if _, err := w.Write(message); err != nil {
-				return
-			}
-
-			// Drain queued messages
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				if _, err := w.Write([]byte{'\n'}); err != nil {
-					return
-				}
-				if _, err := w.Write(<-c.send); err != nil {
-					return
-				}
-			}
-
-			if err := w.Close(); err != nil {
+			if err := c.writeBatch(message); err != nil {
 				return
 			}
 			// Draining the send queue may make a withheld reset deliverable,
@@ -840,6 +877,20 @@ func (c *WSClient) writePump() {
 				default:
 				}
 			}
+		case <-c.attentionOverflow:
+			// Commit the accepted prefix to the wire before asking the peer to
+			// resume. Even a replay larger than the queue can make progress.
+			if len(c.send) > 0 {
+				if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+					return
+				}
+				if err := c.writeBatch(<-c.send); err != nil {
+					return
+				}
+			}
+			payload := websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "attention overflow: resume from last received cursor")
+			_ = c.conn.WriteControl(websocket.CloseMessage, payload, time.Now().Add(wsWriteWait))
+			return
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
 				log.Printf("ws ping deadline error id=%s: %v", c.id, err)
@@ -850,6 +901,27 @@ func (c *WSClient) writePump() {
 			}
 		}
 	}
+}
+
+// writeBatch preserves queue order and bounds the batch to the frames already
+// queued. Only writePump consumes c.send.
+func (c *WSClient) writeBatch(message []byte) error {
+	w, err := c.conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(message); err != nil {
+		return err
+	}
+	for n := len(c.send); n > 0; n-- {
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		if _, err := w.Write(<-c.send); err != nil {
+			return err
+		}
+	}
+	return w.Close()
 }
 
 // handleMessage processes an incoming WebSocket message.
@@ -963,10 +1035,17 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 		// same lock as delivery so no failed subscription is acknowledged.
 		c.attentionSubMu.Lock()
 		defer c.attentionSubMu.Unlock()
+		if attentionSub != nil && c.attentionSub == attentionSub && attentionSub.DroppedCount > 0 {
+			return false // Writer will request reconnect after flushing the prefix.
+		}
 		if attentionSub == nil || c.attentionSub != attentionSub || !attentionSub.Active {
 			return c.sendError(msg.RequestID, "REDACTION_FAILED", "attention subscription is no longer active; resynchronize the subscription")
 		}
-		return c.sendAck(msg.RequestID, response)
+		if !c.sendAck(msg.RequestID, response) {
+			c.stopAttentionOnOverflow(attentionSub)
+			return false
+		}
+		return true
 	}
 
 	// Regular topics are only committed after any durable attention request has
@@ -1275,6 +1354,9 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		replayCount, replayErr = c.deliverAttentionReplay(events, topics, sub)
 		if replayErr != nil {
 			c.cancelAttentionSubscriptionIfCurrent(sub)
+			if errors.Is(replayErr, errAttentionOverflow) {
+				return map[string]interface{}{"error": replayErr.Error(), "error_code": "ATTENTION_BACKPRESSURE"}
+			}
 			if errors.Is(replayErr, errAttentionSubChanged) {
 				return map[string]interface{}{
 					"error":      "attention subscription was replaced during replay; retry subscription",
@@ -1298,8 +1380,8 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 					sub.Cursor = frame.cursor
 					sub.EventCount++
 				} else {
-					sub.DroppedCount++
-					log.Printf("ws attention: dropped buffered event cursor=%d client=%s", frame.cursor, c.id)
+					c.stopAttentionOnOverflow(sub)
+					break
 				}
 			}
 		}
@@ -1313,9 +1395,13 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 	c.attentionSubMu.Lock()
 	replaced := c.attentionSub != sub
 	active := !replaced && sub.Active
+	overflow := sub.DroppedCount > 0
 	c.attentionSubMu.Unlock()
 	if !active {
 		c.cancelAttentionSubscriptionIfCurrent(sub)
+		if overflow && !replaced {
+			return map[string]interface{}{"error": errAttentionOverflow.Error(), "error_code": "ATTENTION_BACKPRESSURE"}
+		}
 		if replaced {
 			return map[string]interface{}{
 				"error":      "attention subscription was replaced during subscribe; retry subscription",
@@ -1347,6 +1433,18 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 }
 
 var errAttentionSubChanged = errors.New("attention subscription changed during replay")
+var errAttentionOverflow = errors.New("attention queue filled; reconnect from the last received cursor")
+
+// stopAttentionOnOverflow runs under attentionSubMu. Closing the connection
+// via the writer makes loss visible even to an idle client with a full queue.
+func (c *WSClient) stopAttentionOnOverflow(sub *WSAttentionSub) {
+	sub.Active = false
+	sub.DroppedCount++
+	select {
+	case c.attentionOverflow <- struct{}{}:
+	default:
+	}
+}
 
 // cancelAttentionSubscription stops any existing attention subscription.
 func (c *WSClient) cancelAttentionSubscription() {
@@ -1635,7 +1733,7 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 				data:   data,
 			})
 		} else {
-			expected.DroppedCount++
+			c.stopAttentionOnOverflow(expected)
 		}
 		c.attentionSubMu.Unlock()
 		return
@@ -1645,12 +1743,9 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 		expected.Cursor = event.Cursor
 		expected.EventCount++
 	} else {
-		expected.DroppedCount++
+		c.stopAttentionOnOverflow(expected)
 	}
 	c.attentionSubMu.Unlock()
-	if !sent {
-		log.Printf("ws attention: dropped event cursor=%d client=%s", event.Cursor, c.id)
-	}
 }
 
 // deliverAttentionReplay delivers replayed attention events to the client.
@@ -1738,14 +1833,21 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 			return delivered, errAttentionSubChanged
 		}
 		if !sub.Active {
+			overflow := sub.DroppedCount > 0
 			c.attentionSubMu.Unlock()
+			if overflow {
+				return delivered, errAttentionOverflow
+			}
 			return delivered, errors.New("attention subscription became inactive during replay")
 		}
-		if c.trySend(data, nil) {
-			delivered++
-			if event.Cursor > sub.Cursor {
-				sub.Cursor = event.Cursor
-			}
+		if !c.trySend(data, nil) {
+			c.stopAttentionOnOverflow(sub)
+			c.attentionSubMu.Unlock()
+			return delivered, errAttentionOverflow
+		}
+		delivered++
+		if event.Cursor > sub.Cursor {
+			sub.Cursor = event.Cursor
 		}
 		c.attentionSubMu.Unlock()
 	}
@@ -1773,21 +1875,49 @@ func extractStringSlice(v interface{}) []string {
 	return nil
 }
 
-func (c *WSClient) trySend(data []byte, onDrop func()) (ok bool) {
+func (c *WSClient) closeSend() {
+	if c == nil || c.send == nil {
+		return
+	}
+	c.sendMu.Lock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
+	}
+	c.sendMu.Unlock()
+}
+
+func (c *WSClient) trySendStatus(data []byte) (sent, closed bool) {
+	if c == nil || c.send == nil {
+		return false, true
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return false, true
+	}
+	// Guard against callers that close c.send directly without closeSend().
 	defer func() {
 		if recover() != nil {
-			ok = false
+			c.sendClosed = true
+			sent = false
+			closed = true
 		}
 	}()
 	select {
 	case c.send <- data:
-		return true
+		return true, false
 	default:
-		if onDrop != nil {
-			onDrop()
-		}
-		return false
+		return false, false
 	}
+}
+
+func (c *WSClient) trySend(data []byte, onDrop func()) bool {
+	sent, closed := c.trySendStatus(data)
+	if !sent && !closed && onDrop != nil {
+		onDrop()
+	}
+	return sent
 }
 
 // sendError sends a WebSocket error frame.

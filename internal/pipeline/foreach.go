@@ -372,6 +372,7 @@ func (e *Executor) resolveForeachItems(ctx context.Context, config *ForeachConfi
 func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, config *ForeachConfig, kind string, body []Step, items []interface{}) ([]foreachIterationPlan, error) {
 	var panes []tmux.Pane
 	var strategyPanes []paneStrategyPane
+	var itemPanes *PaneMetadataCache
 	var err error
 	needsPaneAssignment := kind == "foreach_pane" || config.PaneStrategy != ""
 	if needsPaneAssignment {
@@ -379,8 +380,12 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 		if err != nil && !e.config.DryRun {
 			return nil, fmt.Errorf("load panes for foreach assignment: %w", err)
 		}
-		strategyPanes = foreachStrategyPanes(panes)
-		strategyPanes = e.enrichStrategyPanesFromRoster(strategyPanes)
+		if kind == "foreach_pane" {
+			itemPanes = newPaneMetadataCache(paneMetadataEntries(panes))
+		} else {
+			strategyPanes = foreachStrategyPanes(panes)
+			strategyPanes = e.enrichStrategyPanesFromRoster(strategyPanes, panes)
+		}
 	}
 
 	plans := make([]foreachIterationPlan, 0, len(items))
@@ -394,9 +399,11 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 		plan := foreachIterationPlan{Index: i, Item: item}
 		if needsPaneAssignment {
 			if kind == "foreach_pane" {
-				plan.PaneID, plan.PaneIndex, plan.PaneVars = paneAssignmentFromItem(item, panes)
-			}
-			if plan.PaneID == "" && config.PaneStrategy != "" {
+				plan.PaneID, plan.PaneIndex, plan.PaneVars = paneAssignmentFromItem(item, itemPanes)
+				if plan.PaneID == "" {
+					return nil, fmt.Errorf("iteration %d pane is missing or ambiguous in session %q", i, e.config.Session)
+				}
+			} else if config.PaneStrategy != "" {
 				paneID, paneIndex, paneVars, err := e.selectForeachPaneWithState(config.PaneStrategy, strategyPanes, panes, item, i)
 				if err != nil {
 					return nil, fmt.Errorf("iteration %d pane assignment: %w", i, err)
@@ -460,8 +467,12 @@ func (e *Executor) materializeForeachSteps(ctx context.Context, parent *Step, co
 			materialized.ID = fmt.Sprintf("step%d", bodyIndex)
 		}
 		materialized.ID = fmt.Sprintf("%s_iter%d_%s", parent.ID, plan.Index, materialized.ID)
-		if plan.PaneIndex > 0 && materialized.Pane.Index == 0 && materialized.Pane.Expr == "" {
-			materialized.Pane.Index = plan.PaneIndex
+		if materialized.Pane.IsZero() {
+			if plan.PaneID != "" {
+				materialized.Pane.Expr = plan.PaneID
+			} else if plan.PaneIndex > 0 {
+				materialized.Pane.Index = plan.PaneIndex
+			}
 		}
 		e.substituteForeachStepFieldsProtected(iterCtx, &materialized, protected)
 		steps = append(steps, materialized)
@@ -1472,7 +1483,7 @@ func (e *Executor) substituteForeachStepFieldsProtected(ctx context.Context, ste
 	}
 	if step.Pane.Expr != "" {
 		resolved := strings.TrimSpace(e.substituteForeachString(ctx, step.Pane.Expr, protected))
-		if idx, err := strconv.Atoi(resolved); err == nil {
+		if idx, err := strconv.Atoi(resolved); err == nil && idx > 0 {
 			step.Pane.Index = idx
 			step.Pane.Expr = ""
 		} else {
@@ -2358,27 +2369,26 @@ func foreachPaneIDs(panes []paneStrategyPane) []string {
 	return ids
 }
 
-func paneAssignmentFromItem(item interface{}, panes []tmux.Pane) (string, int, map[string]interface{}) {
-	paneID := foreachItemString(item, "id", "pane_id")
-	if paneID == "" {
-		index := foreachItemInt(item, "index", "pane", "ntm_index")
-		if index > 0 {
-			for _, pane := range panes {
-				if pane.Index == index || pane.NTMIndex == index {
-					return pane.ID, pane.Index, paneMetadataFromTmuxPane(pane).variableMap()
-				}
-			}
-			return fmt.Sprintf("%%%d", index), index, map[string]interface{}{"id": fmt.Sprintf("%%%d", index), "index": index}
+// paneAssignmentFromItem accepts physical IDs and legacy index-only items.
+// Prefer a physical index to an NTM alias and require one match in the
+// requested namespace. Never construct a physical ID from a numeric index.
+func paneAssignmentFromItem(item interface{}, panes *PaneMetadataCache) (string, int, map[string]interface{}) {
+	var meta *PaneMetadata
+	if id := foreachItemString(item, "id", "pane_id"); id != "" {
+		meta = panes.byID[id]
+	} else if index := foreachItemInt(item, "index", "pane"); index >= 0 {
+		var found bool
+		meta, found = panes.byIndex[index]
+		if !found {
+			meta = panes.byNTMIndex[index]
 		}
+	} else if index := foreachItemInt(item, "ntm_index"); index > 0 {
+		meta = panes.byNTMIndex[index]
 	}
-	if paneID != "" {
-		index, vars := paneVarsForID(panes, paneID)
-		if vars == nil {
-			vars = map[string]interface{}{"id": paneID, "pane_id": paneID}
-		}
-		return paneID, index, vars
+	if meta == nil || meta.PaneID == "" {
+		return "", 0, nil
 	}
-	return "", 0, nil
+	return meta.PaneID, meta.Index, meta.variableMap()
 }
 
 func paneVarsForID(panes []tmux.Pane, paneID string) (int, map[string]interface{}) {
@@ -2472,5 +2482,5 @@ func foreachItemInt(item interface{}, keys ...string) int {
 			return n
 		}
 	}
-	return 0
+	return -1
 }

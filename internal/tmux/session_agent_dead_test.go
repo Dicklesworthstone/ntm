@@ -80,3 +80,49 @@ func TestPaneProcessStartedCommandOnlySemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestPaneProcessStartedRecognizesNonInteractiveShellAndRejectsIdleShell(t *testing.T) {
+	// Positive: non-interactive `sh -c` running a child (such as dash under
+	// `tmux respawn-pane`) keeps tpgid == pgrp, so paneProcessStarted must
+	// still recognize the live non-interactive shell root as started.
+	wrapper := exec.Command("sh", "-c", "sleep 30; :")
+	process.DetachControllingTerminal(wrapper)
+	if err := wrapper.Start(); err != nil {
+		t.Fatalf("start wrapper: %v", err)
+	}
+	t.Cleanup(func() { _ = wrapper.Process.Kill(); _, _ = wrapper.Process.Wait() })
+	deadline := time.Now().Add(5 * time.Second)
+	for !shellHasLiveDescendant(wrapper.Process.Pid, 4) {
+		if time.Now().After(deadline) {
+			t.Fatalf("wrapper child never started for pid %d", wrapper.Process.Pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	live := Pane{ID: "%10", Command: "sh", PID: wrapper.Process.Pid}
+	if !paneProcessStarted(live) {
+		t.Fatalf("paneProcessStarted(%+v) = false, want true for live non-interactive sh -c", live)
+	}
+
+	// Planted negative 1: dead non-interactive shell must not be treated as started.
+	dead := Pane{ID: "%11", Command: "sh", PID: wrapper.Process.Pid, Dead: true}
+	if paneProcessStarted(dead) {
+		t.Fatalf("paneProcessStarted(%+v) = true, want false for dead shell", dead)
+	}
+
+	// Planted negative 2: bare interactive shell with no foreground job must stay false.
+	bare := exec.Command("sh", "-i")
+	process.DetachControllingTerminal(bare)
+	stdin, err := bare.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	if err := bare.Start(); err != nil {
+		t.Fatalf("start bare shell: %v", err)
+	}
+	t.Cleanup(func() { _ = stdin.Close(); _ = bare.Process.Kill(); _, _ = bare.Process.Wait() })
+	time.Sleep(50 * time.Millisecond)
+	idle := Pane{ID: "%12", Command: "sh", PID: bare.Process.Pid}
+	if paneProcessStarted(idle) {
+		t.Fatalf("paneProcessStarted(%+v) = true, want false for idle interactive shell", idle)
+	}
+}

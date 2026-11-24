@@ -60,6 +60,10 @@ export interface SubscribeOptions {
   mode?: "lines" | "raw";
 }
 
+function isAttentionTopic(topic: string): boolean {
+  return topic === "attention" || topic.startsWith("attention:");
+}
+
 // Connection state
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
 
@@ -163,6 +167,7 @@ export class NtmWebSocket {
   private pendingAcks = new Map<
     string,
     {
+      ref: string;
       resolve: () => void;
       reject: (err: Error) => void;
       timer: ReturnType<typeof setTimeout>;
@@ -170,6 +175,10 @@ export class NtmWebSocket {
   >();
   private lastSeq: number | null = null;
   private lastAttentionCursor: number | null = null;
+  private attentionRequestId: string | null = null;
+  // Persist across a disconnect until the replacement live subscription is
+  // acknowledged and snapshot consumers can safely refresh.
+  private attentionNeedsSnapshot = false;
   private refCounter = 0;
   private connectGeneration = 0;
   private ticketAbortController: AbortController | null = null;
@@ -326,6 +335,8 @@ export class NtmWebSocket {
     this.subscriptions.clear();
     this.lastSeq = null;
     this.lastAttentionCursor = null;
+    this.attentionRequestId = null;
+    this.attentionNeedsSnapshot = false;
   }
 
   /**
@@ -340,18 +351,13 @@ export class NtmWebSocket {
     }
 
     const ref = this.nextRef();
-    const payload: Record<string, unknown> = { topics: [topic], ...options };
-
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pendingAcks.has(ref)) {
-          this.pendingAcks.delete(ref);
-          reject(new Error(`Subscribe timeout for topic: ${topic}`));
-        }
-      }, 10000);
-      this.pendingAcks.set(ref, { resolve, reject, timer });
-      this.sendMessage("subscribe", ref, payload);
-    });
+    const ack = this.waitForAck(ref, `Subscribe timeout for topic: ${topic}`);
+    if (isAttentionTopic(topic)) {
+      this.sendAttentionSubscription(ref, options);
+    } else {
+      this.sendMessage("subscribe", ref, { topics: [topic], ...options });
+    }
+    return ack;
   }
 
   /**
@@ -359,21 +365,31 @@ export class NtmWebSocket {
    */
   async unsubscribe(topic: string): Promise<void> {
     this.subscriptions.delete(topic);
+    if (isAttentionTopic(topic) && !Array.from(this.subscriptions.keys()).some(isAttentionTopic)) {
+      this.lastAttentionCursor = null;
+      this.attentionRequestId = null;
+      this.attentionNeedsSnapshot = false;
+    }
 
     if (this.state !== "connected" || !this.ws) {
       return;
     }
 
     const ref = this.nextRef();
+    const ack = this.waitForAck(ref, `Unsubscribe timeout for topic: ${topic}`);
+    this.sendMessage("unsubscribe", ref, { topics: [topic] });
+    return ack;
+  }
+
+  private waitForAck(ref: string, timeoutMessage: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pendingAcks.has(ref)) {
-          this.pendingAcks.delete(ref);
-          reject(new Error(`Unsubscribe timeout for topic: ${topic}`));
-        }
-      }, 10000);
-      this.pendingAcks.set(ref, { resolve, reject, timer });
-      this.sendMessage("unsubscribe", ref, { topics: [topic] });
+      const entry = {
+        ref, resolve, reject,
+        timer: setTimeout(() => {
+          if (this.pendingAcks.delete(entry.ref)) reject(new Error(timeoutMessage));
+        }, 10000),
+      };
+      this.pendingAcks.set(ref, entry);
     });
   }
 
@@ -438,6 +454,7 @@ export class NtmWebSocket {
       }
       this.clearTimers();
       this.ws = null;
+      this.attentionRequestId = null;
       this.rejectPendingAcks("WebSocket disconnected");
 
       if (event.code !== 1000) {
@@ -473,17 +490,17 @@ export class NtmWebSocket {
         // Attention frames carry the AttentionFeed cursor in `seq`, which is
         // tracked separately in `lastAttentionCursor` so it never corrupts
         // the hub's event-sequence cursor.
-        const isAttentionTopic =
-          message.topic === "attention" ||
-          (typeof message.topic === "string" &&
-            message.topic.startsWith("attention:"));
-        if (message.seq !== undefined && !isAttentionTopic) {
+        if (message.seq !== undefined && !isAttentionTopic(message.topic || "")) {
           this.lastSeq = message.seq;
         }
 
         switch (message.type) {
           case "ack": {
             const ref = message.request_id;
+            if (ref && ref === this.attentionRequestId) {
+              this.attentionRequestId = null;
+              if (this.attentionNeedsSnapshot) this.finishAttentionResync(message);
+            }
             if (ref && this.pendingAcks.has(ref)) {
               const entry = this.pendingAcks.get(ref)!;
               clearTimeout(entry.timer);
@@ -496,6 +513,28 @@ export class NtmWebSocket {
           case "error": {
             const error = message as WSError;
             const ref = error.request_id;
+            if (error.code === "CURSOR_EXPIRED" && ref &&
+                ref !== this.attentionRequestId && !this.pendingAcks.has(ref)) {
+              break; // A superseded request cannot reset the active membership.
+            }
+            if (ref && ref === this.attentionRequestId) {
+              this.attentionRequestId = null;
+              if (error.code === "CURSOR_EXPIRED" && !this.attentionNeedsSnapshot) {
+                this.attentionNeedsSnapshot = true;
+                this.lastAttentionCursor = null;
+                const retry = this.nextRef();
+                // Keep any explicit subscribe promise (and its deadline) tied
+                // to the new request. Automatic reconnects have no promise.
+                const pending = this.pendingAcks.get(ref);
+                if (pending) {
+                  this.pendingAcks.delete(ref);
+                  pending.ref = retry;
+                  this.pendingAcks.set(retry, pending);
+                }
+                this.sendAttentionSubscription(retry);
+                break;
+              }
+            }
             if (ref && this.pendingAcks.has(ref)) {
               const entry = this.pendingAcks.get(ref)!;
               clearTimeout(entry.timer);
@@ -515,20 +554,13 @@ export class NtmWebSocket {
                 (message as Partial<WSEvent>).event_type || message.type,
               topic: message.topic || "",
             };
-            if (
-              event.topic === "attention" ||
-              event.topic.startsWith("attention:")
-            ) {
-              const cursor =
-                event.data &&
-                typeof event.data === "object" &&
-                typeof (event.data as { cursor?: unknown }).cursor === "number"
-                  ? (event.data as { cursor: number }).cursor
-                  : null;
+            if (isAttentionTopic(event.topic)) {
+              // The envelope carries the durable cursor even if redaction
+              // transforms the payload. Older servers may only set data.cursor.
+              const cursor = event.seq ?? (event.data as { cursor?: unknown } | null)?.cursor;
               if (
-                cursor !== null &&
-                (this.lastAttentionCursor === null ||
-                  cursor > this.lastAttentionCursor)
+                typeof cursor === "number" && Number.isSafeInteger(cursor) && cursor >= 0 &&
+                (this.lastAttentionCursor === null || cursor > this.lastAttentionCursor)
               ) {
                 this.lastAttentionCursor = cursor;
               }
@@ -538,14 +570,12 @@ export class NtmWebSocket {
           }
 
           case "stream.reset": {
-            // Replay cannot reconstruct current state. Notify consumers to
-            // refresh snapshots before resubscribing; clearing the cursor
-            // alone would leave their old state authoritative.
-            if (process.env.NODE_ENV === "development") {
-              console.log("[WS] Stream reset, resubscribing");
-            }
-            this.lastSeq = null;
-            this.lastAttentionCursor = null;
+            // Hub resets leave memberships active. Refresh the snapshots and
+            // resume future hub replay at the reset boundary. Attention uses a
+            // separate journal and its cursor remains valid.
+            const boundary = (message as WSMessage & { current_seq?: number }).current_seq;
+            this.lastSeq = typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary >= 0
+              ? boundary : null;
             this.eventHandlers.forEach((h) => h({
               ...message,
               type: "event",
@@ -553,7 +583,6 @@ export class NtmWebSocket {
               event_type: "stream.reset",
               data: message.data ?? message,
             }));
-            this.resubscribeAll();
             break;
           }
 
@@ -637,25 +666,79 @@ export class NtmWebSocket {
     }, delay);
   }
 
-  private resubscribeAll(): void {
-    // Resubscribe to all topics with the appropriate cursor domain for replay:
-    // attention topics use attention cursor (since_cursor), while other topics
-    // use the hub's WS frame sequence (since).
-    for (const [topic, options] of this.subscriptions) {
-      const subscribeOptions: Record<string, unknown> = { ...options };
-      if (topic === "attention" || topic.startsWith("attention:")) {
-        if (this.lastAttentionCursor !== null) {
-          subscribeOptions.since_cursor = this.lastAttentionCursor;
-        }
-      } else if (this.lastSeq !== null) {
-        subscribeOptions.since = this.lastSeq;
-      }
+  private finishAttentionResync(ack: WSMessage): void {
+    const attention = (ack.data as { attention?: { newest_cursor?: unknown } } | null)?.attention;
+    const boundary = attention?.newest_cursor;
+    // Also remember the subscription boundary on quiet feeds. Events can
+    // arrive before the ACK, in which case their newer cursor wins.
+    if (typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary >= 0) {
+      this.lastAttentionCursor = Math.max(this.lastAttentionCursor ?? 0, boundary);
+    }
+    this.attentionNeedsSnapshot = false;
+    const reset: WSEvent = {
+      type: "event", event_type: "stream.reset", topic: "attention", ts: ack.ts,
+      data: { reason: "cursor_expired" },
+    };
+    this.eventHandlers.forEach((handler) => handler(reset));
+  }
 
-      const ref = this.nextRef();
-      this.sendMessage("subscribe", ref, {
-        topics: [topic],
-        ...subscribeOptions,
-      });
+  private sendAttentionSubscription(ref: string, options?: SubscribeOptions): void {
+    const topics = Array.from(this.subscriptions.keys()).filter(isAttentionTopic);
+    const request: Record<string, unknown> = {
+      topics,
+      ...(options ?? this.subscriptions.get(topics[topics.length - 1])),
+    };
+    if (this.attentionNeedsSnapshot) {
+      request.since_cursor = -1;
+    } else if (this.lastAttentionCursor !== null) {
+      request.since_cursor = this.lastAttentionCursor;
+    }
+    this.attentionRequestId = ref;
+    this.sendMessage("subscribe", ref, request);
+  }
+
+  private resubscribeAll(): void {
+    const regularGroups = new Map<string, { topics: string[]; options: SubscribeOptions }>();
+    let hasAttention = false;
+    for (const [topic, options] of this.subscriptions) {
+      if (isAttentionTopic(topic)) {
+        hasAttention = true;
+        continue;
+      }
+      // Replay matching hub topics together so a busy topic cannot advance
+      // the shared seq past another topic's undelivered history on reconnect.
+      const resume = { ...options };
+      if (this.lastSeq !== null) resume.since = this.lastSeq;
+      const key = JSON.stringify([resume.since, resume.throttle_ms, resume.max_lines_per_msg, resume.mode]);
+      const group = regularGroups.get(key);
+      if (group) {
+        group.topics.push(topic);
+      } else {
+        regularGroups.set(key, { topics: [topic], options: resume });
+      }
+    }
+    if (this.lastSeq !== null && regularGroups.size > 1) {
+      // A hub sequence belongs to the connection. Replay its entire topic
+      // union once so overlapping wildcards cannot duplicate frames, and
+      // disjoint option groups cannot reorder a partially received prefix.
+      const topics = Array.from(regularGroups.values()).flatMap((group) => group.topics);
+      this.sendMessage("subscribe", this.nextRef(), { topics, since: this.lastSeq });
+      for (const group of regularGroups.values()) {
+        const liveOptions = { ...group.options };
+        delete liveOptions.since;
+        if (Object.keys(liveOptions).length > 0) {
+          this.sendMessage("subscribe", this.nextRef(), { topics: group.topics, ...liveOptions });
+        }
+      }
+    } else {
+      // A first connection can request different starting positions per
+      // topic. A single option group can also carry its settings with replay.
+      for (const { topics, options } of regularGroups.values()) {
+        this.sendMessage("subscribe", this.nextRef(), { topics, ...options });
+      }
+    }
+    if (hasAttention) {
+      this.sendAttentionSubscription(this.nextRef());
     }
   }
 

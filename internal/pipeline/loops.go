@@ -49,6 +49,10 @@ func (le *LoopExecutor) ExecuteLoop(ctx context.Context, step *Step, workflow *W
 		}
 	}
 
+	if restored, ok := le.restoreLoopBreak(step); ok {
+		return restored
+	}
+
 	// Determine loop type and execute
 	// Priority: items > while > until > times (times: 0 is valid for immediate completion)
 	switch {
@@ -62,6 +66,95 @@ func (le *LoopExecutor) ExecuteLoop(ctx context.Context, step *Step, workflow *W
 		// Default to times loop (Times: 0 means zero iterations = immediate completion)
 		return le.executeTimes(ctx, step, loop, workflow)
 	}
+}
+
+func loopCollectedValue(loop *LoopConfig, results []StepResult) interface{} {
+	if loop.Collect == "" || len(results) == 0 {
+		return nil
+	}
+	last := results[len(results)-1]
+	if last.Status == StatusFailed || last.Status == StatusCancelled {
+		return nil
+	}
+	if last.ParsedData != nil {
+		return last.ParsedData
+	}
+	if last.Output != "" {
+		return last.Output
+	}
+	return nil
+}
+
+// Publish the terminal control decision and its collected value in one state
+// transition. The outer scheduler may not yet have checkpointed its result.
+func (le *LoopExecutor) finishLoopBreak(step *Step, result LoopResult, iteration int, children []StepResult) LoopResult {
+	e := le.executor
+	e.stateMu.Lock()
+	progress := e.state.ForeachState[step.ID]
+	digest, err := loopFailureParentHash(nil, e.state, step)
+	if err != nil {
+		e.stateMu.Unlock()
+		return loopBreakError(step, err)
+	}
+	progress.Break = &LoopBreakCheckpoint{Iteration: iteration, DefinitionHash: digest, PriorOutputs: len(progress.CollectedOutputs)}
+	if value := loopCollectedValue(step.Loop, children); value != nil {
+		progress.CollectedOutputs = append(progress.CollectedOutputs, value)
+		result.Collected = append(result.Collected, value)
+	}
+	progress.UpdatedAt = time.Now()
+	e.state.ForeachState[step.ID] = progress
+	delete(e.state.InFlightSteps, loopIterationID(step.ID, iteration))
+	e.stateMu.Unlock()
+	if err := e.persistState(); err != nil {
+		return loopBreakError(step, err)
+	}
+	result.Iterations = iteration + 1
+	return le.completedLoopBreak(step, result)
+}
+
+func (le *LoopExecutor) restoreLoopBreak(step *Step) (LoopResult, bool) {
+	e := le.executor
+	e.stateMu.RLock()
+	if e.state == nil {
+		e.stateMu.RUnlock()
+		return LoopResult{}, false
+	}
+	progress := e.state.ForeachState[step.ID]
+	marker := progress.Break
+	if marker == nil {
+		e.stateMu.RUnlock()
+		return LoopResult{}, false
+	}
+	digest, err := loopFailureParentHash(nil, e.state, step)
+	if err == nil && (digest != marker.DefinitionHash || progress.StepID != step.ID ||
+		marker.Iteration < 0 || marker.Iteration >= progress.Total || marker.Iteration != progress.CurrentIteration ||
+		firstIncompleteIteration(progress.CompletedIterationIDs, step.ID, progress.Total) != marker.Iteration ||
+		marker.PriorOutputs < 0 || marker.PriorOutputs > len(progress.CollectedOutputs) || len(progress.CollectedOutputs)-marker.PriorOutputs > 1) {
+		err = fmt.Errorf("saved loop break differs from its definition or iteration checkpoint")
+	}
+	result := LoopResult{Iterations: marker.Iteration + 1, Collected: append([]interface{}{}, progress.CollectedOutputs...)}
+	e.stateMu.RUnlock()
+	if cpErr := e.checkpointFailure(); cpErr != nil {
+		return loopBreakError(step, cpErr), true
+	}
+	if err != nil {
+		return loopBreakError(step, err), true
+	}
+	return le.completedLoopBreak(step, result), true
+}
+
+func loopBreakError(step *Step, err error) LoopResult {
+	return LoopResult{Status: StatusFailed, FinishedAt: time.Now(), Error: stepRuntimeError(step,
+		StepKindLoop, "recovery", err.Error(), "inspect the terminal loop checkpoint before resetting", "")}
+}
+
+func (le *LoopExecutor) completedLoopBreak(step *Step, result LoopResult) LoopResult {
+	if step.Loop.Collect != "" {
+		le.storeCollected(step.Loop.Collect, result.Collected)
+	}
+	result.Status, result.BreakReason, result.FinishedAt = StatusCompleted, "break statement", time.Now()
+	le.executor.emitProgress("loop_complete", step.ID, fmt.Sprintf("Loop completed: %d iterations (break)", result.Iterations), le.executor.calculateProgress())
+	return result
 }
 
 // executeForEach implements for-each loop iteration over an array.
@@ -168,7 +261,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		default:
 		}
 
-		le.executor.markForeachIterationStarted(step.ID, i, total)
+		le.executor.markForeachIterationStarted(step.ID, i, total, loop.Collect != "")
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
@@ -188,21 +281,15 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			return result
 		}
 
+		if shouldBreak && (len(iterResult) == 0 || iterResult[len(iterResult)-1].Status != StatusFailed) {
+			return le.finishLoopBreak(step, result, i, iterResult)
+		}
+
 		// Commit the collected entry with completion so every concurrent
 		// checkpoint can reconstruct the output of iterations safe to skip.
-		var collectedValue interface{}
-		if loop.Collect != "" && len(iterResult) > 0 &&
-			iterResult[len(iterResult)-1].Status != StatusCancelled &&
-			iterResult[len(iterResult)-1].Status != StatusFailed {
-			lastResult := iterResult[len(iterResult)-1]
-			if lastResult.ParsedData != nil {
-				collectedValue = lastResult.ParsedData
-			} else if lastResult.Output != "" {
-				collectedValue = lastResult.Output
-			}
-			if collectedValue != nil {
-				result.Collected = append(result.Collected, collectedValue)
-			}
+		collectedValue := loopCollectedValue(loop, iterResult)
+		if collectedValue != nil {
+			result.Collected = append(result.Collected, collectedValue)
 		}
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			if collectedValue != nil {
@@ -216,11 +303,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		le.executor.persistState()
 
 		if shouldBreak {
-			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
-				result.Error = iterResult[len(iterResult)-1].Error
-			} else {
-				result.BreakReason = "break statement"
-			}
+			result.Error = iterResult[len(iterResult)-1].Error
 			break
 		}
 
@@ -356,20 +439,14 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
+		if shouldBreak && (len(iterResult) == 0 || iterResult[len(iterResult)-1].Status != StatusFailed) {
+			return le.finishLoopBreak(step, result, i, iterResult)
+		}
+
 		// Collect output before publishing the iteration checkpoint.
-		var collectedValue interface{}
-		if loop.Collect != "" && len(iterResult) > 0 &&
-			iterResult[len(iterResult)-1].Status != StatusCancelled &&
-			iterResult[len(iterResult)-1].Status != StatusFailed {
-			lastResult := iterResult[len(iterResult)-1]
-			if lastResult.ParsedData != nil {
-				collectedValue = lastResult.ParsedData
-			} else if lastResult.Output != "" {
-				collectedValue = lastResult.Output
-			}
-			if collectedValue != nil {
-				result.Collected = append(result.Collected, collectedValue)
-			}
+		collectedValue := loopCollectedValue(loop, iterResult)
+		if collectedValue != nil {
+			result.Collected = append(result.Collected, collectedValue)
 		}
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			if collectedValue != nil {
@@ -384,11 +461,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 
 		if shouldBreak {
 			brokeEarly = true
-			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
-				result.Error = iterResult[len(iterResult)-1].Error
-			} else {
-				result.BreakReason = "break statement"
-			}
+			result.Error = iterResult[len(iterResult)-1].Error
 			break
 		}
 
@@ -558,26 +631,13 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
+		if shouldBreak && (len(iterResult) == 0 || iterResult[len(iterResult)-1].Status != StatusFailed) {
+			return le.finishLoopBreak(step, result, i, iterResult)
+		}
+
 		if shouldBreak {
 			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
-			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
-				result.Error = iterResult[len(iterResult)-1].Error
-			} else {
-				result.BreakReason = "break statement"
-				if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
-					lastResult := iterResult[len(iterResult)-1]
-					var collectedValue interface{}
-					if lastResult.ParsedData != nil {
-						collectedValue = lastResult.ParsedData
-					} else if lastResult.Output != "" {
-						collectedValue = lastResult.Output
-					}
-					if collectedValue != nil {
-						result.Collected = append(result.Collected, collectedValue)
-						le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
-					}
-				}
-			}
+			result.Error = iterResult[len(iterResult)-1].Error
 			le.executor.persistState()
 			break
 		}
@@ -605,19 +665,9 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 			break
 		}
 
-		var collectedValue interface{}
-		if loop.Collect != "" && len(iterResult) > 0 &&
-			iterResult[len(iterResult)-1].Status != StatusCancelled &&
-			iterResult[len(iterResult)-1].Status != StatusFailed {
-			lastResult := iterResult[len(iterResult)-1]
-			if lastResult.ParsedData != nil {
-				collectedValue = lastResult.ParsedData
-			} else if lastResult.Output != "" {
-				collectedValue = lastResult.Output
-			}
-			if collectedValue != nil {
-				result.Collected = append(result.Collected, collectedValue)
-			}
+		collectedValue := loopCollectedValue(loop, iterResult)
+		if collectedValue != nil {
+			result.Collected = append(result.Collected, collectedValue)
 		}
 		// Reaching a verified predicate means the body was consumed, including
 		// failures explicitly allowed by on_error=continue. Publish completion
@@ -893,20 +943,14 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			return result
 		}
 
+		if shouldBreak && (len(iterResult) == 0 || iterResult[len(iterResult)-1].Status != StatusFailed) {
+			return le.finishLoopBreak(step, result, i, iterResult)
+		}
+
 		// Collect output before publishing the iteration checkpoint.
-		var collectedValue interface{}
-		if loop.Collect != "" && len(iterResult) > 0 &&
-			iterResult[len(iterResult)-1].Status != StatusCancelled &&
-			iterResult[len(iterResult)-1].Status != StatusFailed {
-			lastResult := iterResult[len(iterResult)-1]
-			if lastResult.ParsedData != nil {
-				collectedValue = lastResult.ParsedData
-			} else if lastResult.Output != "" {
-				collectedValue = lastResult.Output
-			}
-			if collectedValue != nil {
-				result.Collected = append(result.Collected, collectedValue)
-			}
+		collectedValue := loopCollectedValue(loop, iterResult)
+		if collectedValue != nil {
+			result.Collected = append(result.Collected, collectedValue)
 		}
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			if collectedValue != nil {
@@ -920,11 +964,7 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		le.executor.persistState()
 
 		if shouldBreak {
-			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
-				result.Error = iterResult[len(iterResult)-1].Error
-			} else {
-				result.BreakReason = "break statement"
-			}
+			result.Error = iterResult[len(iterResult)-1].Error
 			break
 		}
 

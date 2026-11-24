@@ -225,19 +225,20 @@ func TestCoverageForeachPaneAssignmentAdditionalBranches(t *testing.T) {
 		t.Fatalf("by_model_family_difference assignment = %q, want %%2", paneID)
 	}
 
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"pane_id": "%1"}, panes)
+	itemPanes := newPaneMetadataCache(paneMetadataEntries(panes))
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"pane_id": "%1"}, itemPanes)
 	if paneID != "%1" || paneIndex != 1 || paneVars["pane_id"] != "%1" {
 		t.Fatalf("pane_id assignment = %q/%d/%#v, want known pane %%1", paneID, paneIndex, paneVars)
 	}
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"index": 12}, panes)
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"index": 12}, itemPanes)
 	if paneID != "%2" || paneIndex != 2 || paneVars["ntm_index"] != 12 {
 		t.Fatalf("ntm index assignment = %q/%d/%#v, want pane %%2", paneID, paneIndex, paneVars)
 	}
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "9"}, panes)
-	if paneID != "%9" || paneIndex != 9 || paneVars["index"] != 9 {
-		t.Fatalf("fallback pane assignment = %q/%d/%#v, want synthetic %%9", paneID, paneIndex, paneVars)
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "9"}, itemPanes)
+	if paneID != "" || paneIndex != 0 || paneVars != nil {
+		t.Fatalf("fallback pane assignment = %q/%d/%#v, want no assignment without a live pane", paneID, paneIndex, paneVars)
 	}
-	if paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"other": "x"}, panes); paneID != "" || paneIndex != 0 || paneVars != nil {
+	if paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"other": "x"}, itemPanes); paneID != "" || paneIndex != 0 || paneVars != nil {
 		t.Fatalf("empty pane assignment = %q/%d/%#v, want zero values", paneID, paneIndex, paneVars)
 	}
 
@@ -281,8 +282,8 @@ func TestCoverageForeachItemExtractionHelpers(t *testing.T) {
 	if got := foreachItemInt(map[string]string{"pane": "3"}, "pane"); got != 3 {
 		t.Fatalf("foreachItemInt(map string) = %d, want 3", got)
 	}
-	if got := foreachItemInt(map[string]interface{}{"index": "NaN", "pane": ""}, "index", "pane"); got != 0 {
-		t.Fatalf("foreachItemInt(invalid) = %d, want 0", got)
+	if got := foreachItemInt(map[string]interface{}{"index": "NaN", "pane": ""}, "index", "pane"); got != -1 {
+		t.Fatalf("foreachItemInt(invalid) = %d, want -1", got)
 	}
 }
 

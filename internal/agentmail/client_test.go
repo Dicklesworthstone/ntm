@@ -1803,3 +1803,205 @@ func TestCallToolPersistentSessionRejectionDoesNotLoop(t *testing.T) {
 		t.Fatalf("requests = %d, want 4", got)
 	}
 }
+
+
+// Exercise the public bootstrap/resource paths against a stateful server that
+// requires the standard Accept header and keeps its SSE responses open. Every
+// reply must be correlated independently of progress events and transport IDs.
+func TestAgentMailStreamableHTTPBootstrapAndResources(t *testing.T) {
+	for _, delimiter := range []string{"\n", "\r\n", "\r"} {
+		t.Run(fmt.Sprintf("%q", delimiter), func(t *testing.T) {
+			t.Parallel()
+			var initialized, notifications, projects, resources atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Accept") != "application/json, text/event-stream" {
+					http.Error(w, "both MCP content types required", http.StatusNotAcceptable)
+					return
+				}
+				var req JSONRPCRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					http.Error(w, "invalid request", http.StatusBadRequest)
+					return
+				}
+				_, _ = io.Copy(io.Discard, r.Body)
+				var result json.RawMessage
+				switch {
+				case req.Method == "initialize":
+					initialized.Add(1)
+					w.Header().Set(mcpSessionHeader, "stream-session")
+					result = json.RawMessage("{\"protocolVersion\":\"2025-03-26\"}")
+				case r.Header.Get(mcpSessionHeader) != "stream-session":
+					http.Error(w, "Missing session ID", http.StatusBadRequest)
+					return
+				case req.Method == "notifications/initialized":
+					notifications.Add(1)
+					w.WriteHeader(http.StatusAccepted)
+					return
+				case req.Method == "tools/call":
+					projects.Add(1)
+					result = json.RawMessage("{\"structuredContent\":{\"id\":7,\"slug\":\"proj\",\"human_key\":\"/project\"}}")
+				case req.Method == "resources/read":
+					resources.Add(1)
+					result = json.RawMessage("{\"contents\":[{\"uri\":\"resource://projects\",\"text\":\"persisted project\"}]}")
+				default:
+					http.Error(w, "unexpected method", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+				// BOM, comments, multiline data, progress, and an unrelated
+				// JSON-RPC response are all legal before the matching reply.
+				_, _ = io.WriteString(w, "\xef\xbb\xbf: connected"+delimiter+delimiter)
+				_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\","+delimiter+"data: \"method\":\"notifications/progress\",\"params\":{}}"+delimiter+delimiter)
+				_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":\"unrelated\",\"result\":{}}"+delimiter+delimiter)
+				reply, _ := json.Marshal(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: result})
+				_, _ = io.WriteString(w, "id: transport-cursor"+delimiter+"event: message"+delimiter+"data: ["+string(reply)+"]"+delimiter+delimiter)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done() // A complete response must not wait for EOF.
+			}))
+			defer server.Close()
+			client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			project, err := client.EnsureProject(ctx, "/project")
+			if err != nil || project == nil || project.ID != 7 || project.Slug != "proj" {
+				t.Fatalf("streamed bootstrap = %+v, %v", project, err)
+			}
+			value, err := client.ReadResource(ctx, "resource://projects")
+			if err != nil || !strings.Contains(string(value), "persisted project") {
+				t.Fatalf("streamed resource = %s, %v", value, err)
+			}
+			if initialized.Load() != 1 || notifications.Load() != 1 || projects.Load() != 1 || resources.Load() != 1 {
+				t.Fatalf("unexpected calls: initialize=%d notify=%d project=%d resource=%d",
+					initialized.Load(), notifications.Load(), projects.Load(), resources.Load())
+			}
+		})
+	}
+}
+
+func TestAgentMailStreamableHTTPRejectsUncertainRepliesWithoutReplay(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"notification only", "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n"},
+		{"unterminated frame", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"id\":7}}\n"},
+		{"incomplete JSON", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\n\n"},
+		{"wrong response ID", "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"id\":7}}\n\n"},
+		{"duplicate replies", "data: [{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}},{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}]\n\n"},
+		{"result and error", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{\"code\":-32603,\"message\":\"failed\"}}\n\n"},
+		{"null error", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":null}\n\n"},
+		{"missing outcome", "data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"},
+		{"wrong protocol", "data: {\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}\n\n"},
+		{"empty batch", "data: []\n\n"},
+		{"server request", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sampling/createMessage\"}\n\n"},
+		{"invalid UTF-8", "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"slug\":\"\xff\"}}\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			project, err := client.EnsureProject(t.Context(), "/project")
+			if err == nil || project != nil || IsToolRejection(err) {
+				t.Fatalf("uncertain response acknowledged as settled: %+v, %v", project, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("uncertain mutation replayed %d times", calls.Load())
+			}
+		})
+	}
+}
+
+func TestAgentMailStreamableHTTPCancellationAndToolRejection(t *testing.T) {
+	t.Run("cancel pending stream", func(t *testing.T) {
+		t.Parallel()
+		ready := make(chan struct{})
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, ": awaiting response\n\n")
+			w.(http.Flusher).Flush()
+			close(ready)
+			<-r.Context().Done()
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+		done := make(chan error, 1)
+		go func() {
+			_, err := client.EnsureProject(ctx, "/project")
+			done <- err
+		}()
+		select {
+		case <-ready:
+		case <-time.After(2 * time.Second):
+			t.Fatal("stream never started")
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if !IsTimeout(err) || IsToolRejection(err) {
+				t.Fatalf("cancellation lost uncertain outcome: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("cancellation did not interrupt the SSE read")
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("cancelled call replayed %d times", calls.Load())
+		}
+	})
+	t.Run("completed tool rejection", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"reservation denied\"}]}}\n\n")
+		}))
+		defer server.Close()
+		client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+		_, err := client.EnsureProject(t.Context(), "/project")
+		if !IsToolRejection(err) || !strings.Contains(err.Error(), "reservation denied") {
+			t.Fatalf("complete SSE tool rejection lost classification: %v", err)
+		}
+	})
+}
+
+func TestAgentMailMCPResponseBudgetIncludesFramingAndTrailingBytes(t *testing.T) {
+	for _, kind := range []string{"JSON trailing bytes", "SSE oversized event", "SSE heartbeat flood"} {
+		t.Run(kind, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				switch kind {
+				case "JSON trailing bytes":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"id\":7}}"+strings.Repeat(" ", maxMCPResponseBytes))
+				case "SSE oversized event":
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"slug\":\""+strings.Repeat("x", maxMCPResponseBytes)+"\"}}\n\n")
+				case "SSE heartbeat flood":
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, strings.Repeat(": heartbeat\n\n", maxMCPResponseBytes/13+1)+"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"id\":7}}\n\n")
+				}
+			}))
+			defer server.Close()
+			client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			project, err := client.EnsureProject(t.Context(), "/project")
+			if err == nil || project != nil || calls.Load() != 1 {
+				t.Fatalf("oversized response accepted or replayed: %+v, %v, calls=%d", project, err, calls.Load())
+			}
+		})
+	}
+}

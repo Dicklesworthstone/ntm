@@ -953,9 +953,14 @@ func (r *Restorer) restoreActivePane(cp *Checkpoint) error {
 	}
 	targetPane, ok := r.restoredPaneForCheckpointIndex(cp, panes, cp.Session.ActivePaneIndex)
 	if !ok {
-		return nil
+		return fmt.Errorf("saved active pane has no live restored target")
 	}
-	return tmux.DefaultClient.RunSilentContext(ctx, "select-pane", "-t", tmux.ExactTarget(targetPane.ID))
+	// select-pane only changes focus inside its window. new-window can leave
+	// the session viewing an entirely different window. Resolve both commands
+	// by the same physical pane in this session, even if windows are renumbered.
+	target := tmux.ExactTarget(cp.SessionName + ":." + targetPane.ID)
+	return tmux.DefaultClient.RunSilentContext(ctx,
+		"select-pane", "-t", target, ";", "select-window", "-t", target)
 }
 
 // applyLayout applies a tmux layout string to a session.
@@ -1248,9 +1253,9 @@ func checkpointPaneDirectory(saved, original, target string, relocate, remote bo
 	if saved == "" {
 		return target, nil
 	}
-	const placeholder = "${WORKING_DIR}"
-	if saved == placeholder || strings.HasPrefix(saved, placeholder+"/") {
-		rel := strings.TrimPrefix(strings.TrimPrefix(saved, placeholder), "/")
+	const workingDirToken = "${WORKING_DIR}"
+	if saved == workingDirToken || strings.HasPrefix(saved, workingDirToken+"/") {
+		rel := strings.TrimPrefix(strings.TrimPrefix(saved, workingDirToken), "/")
 		if rel == "" {
 			return target, nil
 		}

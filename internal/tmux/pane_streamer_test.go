@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -671,6 +672,61 @@ func TestPaneStreamer_SecondStreamerDoesNotClaimExistingPipePane(t *testing.T) {
 	}
 }
 
+func TestPaneStreamerRemotePollsWithoutOpeningAPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SSH fixture uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	ssh := filepath.Join(dir, "ssh")
+	// The stub accepts only a capture through the requested host. Record
+	// every invocation so a remote pipe-pane attempt cannot pass by falling
+	// back to polling after the command fails.
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_TEST_SSH_CALLS"
+case "$*" in
+  *stream-host*capture-pane*%37*) printf 'remote prompt>\n' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "ssh-calls")
+	t.Setenv("NTM_TEST_SSH_CALLS", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FIFODir = filepath.Join(dir, "unused-streams")
+	cfg.FallbackPollInterval = 10 * time.Millisecond
+	events := make(chan StreamEvent, 1)
+	ps := NewPaneStreamer(NewClient("stream-host"), "%37", func(event StreamEvent) {
+		events <- event
+	}, cfg)
+	if err := ps.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ps.Stop)
+	select {
+	case event := <-events:
+		if !ps.UsingFallback() || !event.IsFull || event.Target != "%37" || strings.Join(event.Lines, "\n") != "remote prompt>" {
+			t.Fatalf("remote stream produced an unexpected snapshot: %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for a remote pane snapshot")
+	}
+	ps.Stop()
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "pipe-pane") {
+		t.Fatalf("remote stream modified a pipe: %s", calls)
+	}
+	if _, err := os.Stat(cfg.FIFODir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remote stream touched the local FIFO directory: %v", err)
+	}
+}
+
 func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
 	tmp := t.TempDir()
 	fifoDirAsFile := filepath.Join(tmp, "not-a-dir")
@@ -1068,5 +1124,77 @@ func TestPaneStreamer_FIFOPathGeneration(t *testing.T) {
 		if ps.fifoPath != "" {
 			t.Logf("FIFO path generated: %s", ps.fifoPath)
 		}
+	}
+}
+
+func TestStreamManagerIndependentViewerLeases(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	const target = "%42"
+	acquire := func(owner string) {
+		t.Helper()
+		if err := sm.AcquireStreamLease(target, owner, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acquire("first")
+	worker := sm.streamers[target]
+	stale := sm.claims[target]["first"]
+	acquire("first")
+	acquire("second")
+	if err := sm.StartStream(target); err != nil {
+		t.Fatal(err)
+	}
+	sm.StopStream(target)
+	sm.releaseStream(target, "first", stale)
+	sm.ReleaseStreamLease(target, "second")
+	sm.ReleaseStreamLease(target, "second")
+	if sm.streamers[target] != worker || len(sm.claims[target]) != 1 {
+		t.Fatal("a stale expiry, duplicate release, or legacy stop interrupted the first viewer")
+	}
+	sm.ReleaseStreamLease(target, "first")
+	if got := sm.ListActive(); len(got) != 0 {
+		t.Fatalf("worker retained after last release: %v", got)
+	}
+}
+
+func TestStreamManagerExpiresAbandonedLease(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	if err := sm.AcquireStreamLease("%42", "abandoned", 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(sm.ListActive()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("abandoned viewer kept capture worker alive")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestStreamManagerCapsNewLeasesAndAllowsRenewal(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	for i := 0; i < maxViewerLeasesPerPane; i++ {
+		if err := sm.AcquireStreamLease("%42", fmt.Sprint(i), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sm.AcquireStreamLease("%42", "extra", time.Hour); !errors.Is(err, ErrStreamViewerLimit) {
+		t.Fatalf("excess viewer error = %v", err)
+	}
+	if err := sm.AcquireStreamLease("%42", "0", time.Hour); err != nil {
+		t.Fatalf("existing viewer could not renew at capacity: %v", err)
+	}
+	sm.ReleaseStreamLease("%42", "0")
+	if err := sm.AcquireStreamLease("%42", "extra", time.Hour); err != nil {
+		t.Fatalf("released slot stayed unavailable: %v", err)
 	}
 }

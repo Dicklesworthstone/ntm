@@ -73,19 +73,20 @@ func TestCoverageHelpersForeachPaneAssignmentHelpers(t *testing.T) {
 		t.Fatal("unknown strategy error = nil")
 	}
 
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"ntm_index": "12"}, panes)
+	itemPanes := newPaneMetadataCache(paneMetadataEntries(panes))
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"ntm_index": "12"}, itemPanes)
 	if paneID != "%2" || paneIndex != 2 || paneVars["ntm_index"] != 12 {
 		t.Fatalf("ntm-index assignment = (%q,%d,%v), want %%2/2/ntm_index=12", paneID, paneIndex, paneVars)
 	}
 
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "44"}, nil)
-	if paneID != "%44" || paneIndex != 44 || paneVars["index"] != 44 {
-		t.Fatalf("fallback pane assignment = (%q,%d,%v), want %%44/44", paneID, paneIndex, paneVars)
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]string{"pane": "44"}, newPaneMetadataCache(nil))
+	if paneID != "" || paneIndex != 0 || paneVars != nil {
+		t.Fatalf("fallback pane assignment = (%q,%d,%v), want no assignment without a live pane", paneID, paneIndex, paneVars)
 	}
 
-	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"pane_id": "%missing"}, panes)
-	if paneID != "%missing" || paneIndex != 0 || paneVars["pane_id"] != "%missing" {
-		t.Fatalf("missing pane assignment = (%q,%d,%v), want fallback vars", paneID, paneIndex, paneVars)
+	paneID, paneIndex, paneVars = paneAssignmentFromItem(map[string]interface{}{"pane_id": "%missing"}, itemPanes)
+	if paneID != "" || paneIndex != 0 || paneVars != nil {
+		t.Fatalf("missing pane assignment = (%q,%d,%v), want no assignment", paneID, paneIndex, paneVars)
 	}
 }
 
@@ -120,8 +121,8 @@ func TestCoverageHelpersForeachItemHelpers(t *testing.T) {
 	if got := foreachItemInt(map[string]string{"pane": "9"}, "pane"); got != 9 {
 		t.Fatalf("string map item int = %d, want 9", got)
 	}
-	if got := foreachItemInt(map[string]string{"pane": "nope"}, "pane"); got != 0 {
-		t.Fatalf("invalid item int = %d, want 0", got)
+	if got := foreachItemInt(map[string]string{"pane": "nope"}, "pane"); got != -1 {
+		t.Fatalf("invalid item int = %d, want -1", got)
 	}
 }
 

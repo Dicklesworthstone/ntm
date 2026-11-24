@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -196,5 +197,74 @@ func TestSelectPane_ResolvesPaneExprBeforeLookup(t *testing.T) {
 	// Resolution mutated the step; subsequent calls see Index, not Expr.
 	if step.Pane.Index != 2 || step.Pane.Expr != "" {
 		t.Fatalf("step.Pane after selectPane = %+v, want {Index:2, Expr:\"\"}", step.Pane)
+	}
+}
+
+func TestWorkflowExplicitPaneAcrossWindows(t *testing.T) {
+	t.Parallel()
+
+	e := NewExecutor(DefaultExecutorConfig("workflow"))
+	e.SetTmuxClient(NewMockTmuxClient(
+		tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30", Type: tmux.AgentClaude},
+		tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41", Type: tmux.AgentCodex},
+		tmux.Pane{WindowIndex: 1, Index: 3, ID: "%55", Type: tmux.AgentGemini},
+	))
+	e.state = &ExecutionState{WorkflowID: "workflow"}
+	e.defaults = map[string]interface{}{"target": "%41"}
+
+	for _, parallel := range []bool{false, true} {
+		for _, tc := range []struct {
+			spec PaneSpec
+			want string
+		}{
+			{PaneSpec{Index: 1}, ""},
+			{PaneSpec{Index: 3}, "%55"},
+			{PaneSpec{Expr: "%41"}, "%41"},
+			{PaneSpec{Expr: "${defaults.target}"}, "%41"},
+			{PaneSpec{Expr: "%1"}, ""},
+		} {
+			step := &Step{ID: "dispatch", Pane: tc.spec}
+			used := map[string]bool{}
+			var id string
+			var err error
+			if parallel {
+				id, _, err = e.selectAndMarkPane(context.Background(), step, used, &sync.Mutex{})
+			} else {
+				id, _, err = e.selectPane(context.Background(), step)
+			}
+			if id != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("parallel=%v pane=%+v: got %q, %v; want %q", parallel, tc.spec, id, err, tc.want)
+			}
+			if parallel && ((tc.want == "" && len(used) != 0) || (tc.want != "" && !used[tc.want])) {
+				t.Fatalf("pane=%+v: unexpected used panes %v", tc.spec, used)
+			}
+		}
+	}
+}
+
+func TestWorkflowYAMLPhysicalPaneDispatch(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseString(`schema_version: "2.0"
+name: physical-pane
+steps:
+  - id: dispatch
+    pane: "%41"
+    prompt: "inspect"
+`, "yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := Validate(workflow); !result.Valid {
+		t.Fatalf("invalid workflow: %+v", result.Errors)
+	}
+	e := createForeachTestExecutor(t, workflow)
+	e.SetTmuxClient(NewMockTmuxClient(
+		tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30"},
+		tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41"},
+	))
+	id, _, err := e.selectPane(context.Background(), &workflow.Steps[0])
+	if err != nil || id != "%41" {
+		t.Fatalf("parsed workflow selected %q: %v", id, err)
 	}
 }

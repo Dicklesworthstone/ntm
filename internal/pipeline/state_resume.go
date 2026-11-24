@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,11 +106,24 @@ type ForeachIterationState struct {
 	ItemsFingerprint      string         `json:"items_fingerprint,omitempty"`
 	CollectedOutputs      []interface{}  `json:"collected_outputs,omitempty"`
 	CompletedRounds       map[string]int `json:"completed_rounds,omitempty"`
+
+	// For loop.items, the output length before each collecting iteration starts.
+	CollectOffsets map[int]int          `json:"collect_offsets,omitempty"`
+	Break          *LoopBreakCheckpoint `json:"break,omitempty"`
 	// Accepted failures are checkpointed before the next body step, so an
 	// interruption inside an iteration cannot turn them into retries.
 	ConsumedFailures map[string]LoopFailureCheckpoint `json:"consumed_failures,omitempty"`
 	StartedAt        time.Time                        `json:"started_at,omitempty"`
 	UpdatedAt        time.Time                        `json:"updated_at,omitempty"`
+}
+
+// LoopBreakCheckpoint records an explicit successful break before the enclosing
+// scheduler commits its result. PriorOutputs identifies the terminal iteration's
+// contribution when an operator explicitly rewinds to this iteration.
+type LoopBreakCheckpoint struct {
+	Iteration      int    `json:"iteration"`
+	DefinitionHash string `json:"definition_hash"`
+	PriorOutputs   int    `json:"prior_outputs"`
 }
 
 // LoopFailureCheckpoint binds an accepted failure to its authored and
@@ -2620,7 +2634,9 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	}
 
 	if opts.Mode == ResumeModeForceIter {
-		e.forceResumeIteration(opts.StepID, opts.Iteration)
+		if err := e.forceResumeIteration(opts.StepID, opts.Iteration, graph); err != nil {
+			return err
+		}
 	} else if opts.Mode == ResumeModeRestartFailed {
 		e.stateMu.Lock()
 		for stepID := range e.state.CommandEvaluations {
@@ -2908,6 +2924,13 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 		return fmt.Errorf("force-iter step %q must use foreach, foreach_pane, or loop.items; while/times loops have no durable iteration cursor", opts.StepID)
 	}
 	if prior, ok := state.ForeachState[opts.StepID]; ok {
+		if _, err := loopCollectionPrefix(state, target, opts.StepID, opts.Iteration); err != nil {
+			return err
+		}
+		if marker := prior.Break; marker != nil && (opts.Iteration > marker.Iteration ||
+			marker.PriorOutputs < 0 || marker.PriorOutputs > len(prior.CollectedOutputs)) {
+			return fmt.Errorf("force-iter cannot rewind %q beyond its terminal break or with inconsistent collected output", opts.StepID)
+		}
 		if prior.StepID != "" && prior.StepID != opts.StepID {
 			return fmt.Errorf("force-iter checkpoint for %q names a different step %q", opts.StepID, prior.StepID)
 		}
@@ -3444,21 +3467,114 @@ func clearWorkflowStepVariables(vars map[string]interface{}, workflow *Workflow)
 	walk(workflow.PostPipelineSteps)
 }
 
-func (e *Executor) forceResumeIteration(stepID string, iteration int) {
+// loopCollectionPrefix returns the exact number of values produced before a
+// rewind. Empty and failed final children contribute no value, so their
+// iteration positions cannot be used as output array indexes.
+func loopCollectionPrefix(state *ExecutionState, parent *Step, stepID string, iteration int) (int, error) {
+	progress := state.ForeachState[stepID]
+	outputs := progress.CollectedOutputs
+	if iteration == 0 || len(outputs) == 0 {
+		return 0, nil
+	}
+	if offset, ok := progress.CollectOffsets[iteration]; ok {
+		if offset < 0 || offset > len(outputs) || offset > iteration {
+			return 0, fmt.Errorf("invalid collected output boundary for %s iteration %d", stepID, iteration)
+		}
+		return offset, nil
+	}
+	if marker := progress.Break; marker != nil && marker.Iteration == iteration &&
+		marker.PriorOutputs >= 0 && marker.PriorOutputs <= len(outputs) {
+		return marker.PriorOutputs, nil
+	}
+	if len(outputs) == progress.Total && progress.CurrentIteration == progress.Total &&
+		firstIncompleteIteration(progress.CompletedIterationIDs, stepID, progress.Total) == progress.Total {
+		return min(iteration, len(outputs)), nil
+	}
+	if parent != nil && parent.Loop != nil {
+		// Legacy snapshots did not save offsets. Rebuild the last executed
+		// authored child of each iteration, ignoring its nested descendants.
+		order := make(map[string]int, len(parent.Loop.Steps))
+		for i, child := range parent.Loop.Steps {
+			order[child.ID] = i + 1
+		}
+		last := make(map[int]StepResult)
+		lastOrder := make(map[int]int)
+		var indices []int
+		for id, child := range state.Steps {
+			i := iterationIndexFromID(id, stepID+"_iter")
+			if i < 0 {
+				continue
+			}
+			prefix := loopIterationID(stepID, i) + "_"
+			ordinal := order[strings.TrimPrefix(id, prefix)]
+			if ordinal == 0 || ordinal <= lastOrder[i] {
+				continue
+			}
+			if lastOrder[i] == 0 {
+				indices = append(indices, i)
+			}
+			lastOrder[i], last[i] = ordinal, child
+		}
+		sort.Ints(indices)
+		count, keep := 0, 0
+		consistent := true
+		for _, i := range indices {
+			value := loopCollectedValue(parent.Loop, []StepResult{last[i]})
+			if value == nil {
+				continue
+			}
+			if count == len(outputs) && !stringSliceContains(progress.CompletedIterationIDs, loopIterationID(stepID, i)) {
+				// A body result can reach disk before its iteration publishes
+				// the collected value. It contributes nothing to this snapshot.
+				continue
+			}
+			if count >= len(outputs) || !reflect.DeepEqual(value, outputs[count]) {
+				consistent = false
+				break
+			}
+			count++
+			if i < iteration {
+				keep++
+			}
+		}
+		if consistent && count == len(outputs) {
+			return keep, nil
+		}
+	}
+	return 0, fmt.Errorf("cannot determine the collected output boundary for %s iteration %d from the saved results; iteration 0 can rewind the full collection", stepID, iteration)
+}
+
+func (e *Executor) forceResumeIteration(stepID string, iteration int, graphs ...*DependencyGraph) error {
 	if strings.TrimSpace(stepID) == "" || iteration < 0 {
-		return
+		return nil
 	}
 	var prunedStepIDs []string
 	e.stateMu.Lock()
 	if e.state == nil {
 		e.stateMu.Unlock()
-		return
+		return nil
+	}
+	graph := e.graph
+	if len(graphs) > 0 {
+		graph = graphs[0]
+	}
+	var parent *Step
+	if graph != nil {
+		parent, _ = graph.GetStep(stepID)
+	}
+	keep, err := loopCollectionPrefix(e.state, parent, stepID, iteration)
+	if err != nil {
+		e.stateMu.Unlock()
+		return err
 	}
 	if e.state.ForeachState == nil {
 		e.state.ForeachState = make(map[string]ForeachIterationState)
 	}
 	state := e.state.ForeachState[stepID]
 	state.StepID = stepID
+	if marker := state.Break; marker != nil && iteration <= marker.Iteration {
+		state.Break = nil
+	}
 	state.CurrentIteration = iteration
 	state.CompletedIterationIDs = filterCompletedIterationsBefore(state.CompletedIterationIDs, stepID, iteration)
 	prefix := fmt.Sprintf("%s_iter", stepID)
@@ -3466,13 +3582,11 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	// can skip every round even after its StepResults have been removed.
 	removeIterationEntries(state.CompletedRounds, prefix, iteration)
 	removeIterationEntries(state.ConsumedFailures, prefix, iteration)
-	// bd-t3q8a: sequential foreach (loops.go) appends collected outputs in
-	// iteration order, so truncating to length=iteration drops the entries
-	// for the iterations that are about to rerun. Without this, the
-	// rerun would observe duplicated entries (prior + reran) in the final
-	// loop.Collect store.
-	if iteration >= 0 && iteration < len(state.CollectedOutputs) {
-		state.CollectedOutputs = append([]interface{}(nil), state.CollectedOutputs[:iteration]...)
+	state.CollectedOutputs = append([]interface{}(nil), state.CollectedOutputs[:keep]...)
+	for index := range state.CollectOffsets {
+		if index >= iteration {
+			delete(state.CollectOffsets, index)
+		}
 	}
 	state.UpdatedAt = time.Now()
 	e.state.ForeachState[stepID] = state
@@ -3554,6 +3668,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 		}
 	}
 	e.varMu.Unlock()
+	return nil
 }
 
 func filterCompletedIterationsBefore(ids []string, stepID string, iteration int) []string {
@@ -3832,7 +3947,7 @@ func firstIncompleteIteration(completed []string, stepID string, total int) int 
 	return total
 }
 
-func (e *Executor) markForeachIterationStarted(stepID string, iteration, total int) {
+func (e *Executor) markForeachIterationStarted(stepID string, iteration, total int, collecting ...bool) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	if e.state == nil || stepID == "" {
@@ -3845,6 +3960,14 @@ func (e *Executor) markForeachIterationStarted(stepID string, iteration, total i
 	if state.StepID == "" {
 		state.StepID = stepID
 		state.StartedAt = time.Now()
+	}
+	if len(collecting) > 0 && collecting[0] {
+		if state.CollectOffsets == nil {
+			state.CollectOffsets = make(map[int]int)
+		}
+		if _, recorded := state.CollectOffsets[iteration]; !recorded {
+			state.CollectOffsets[iteration] = len(state.CollectedOutputs)
+		}
 	}
 	state.CurrentIteration = iteration
 	state.Total = total

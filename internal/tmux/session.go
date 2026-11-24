@@ -891,7 +891,14 @@ func paneProcessStarted(pane Pane) bool {
 	if !PaneCommandIsShell(command) {
 		return true
 	}
-	return pane.ForegroundJobRunning()
+	if pane.ForegroundJobRunning() {
+		return true
+	}
+	// Non-interactive shell roots (e.g. `tmux respawn-pane` under /bin/sh dash -c)
+	// do not enable job control, so the child shares the shell's process group
+	// (tpgid == pgrp). Recognize a live non-interactive shell while continuing
+	// to reject bare interactive shells.
+	return !pane.Dead && pane.PID > 0 && process.IsAlive(pane.PID) && !shellArgvLooksInteractive(process.GetCmdline(pane.PID))
 }
 
 // PaneAgentAlive reports whether the agent in a pane is still running, given

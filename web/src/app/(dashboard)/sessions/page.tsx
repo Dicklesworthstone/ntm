@@ -55,6 +55,7 @@ interface SessionResponse extends ApiEnvelope {
 interface Pane {
   index: number;
   id?: string;
+  window_index?: number;
   title?: string;
   type?: string;
   variant?: string;
@@ -62,6 +63,14 @@ interface Pane {
   width?: number;
   height?: number;
   command?: string;
+}
+
+// A tmux pane index is local to its window. Prefer the physical pane ID so
+// selecting a different window or reordering panes cannot redirect an action.
+function selectorForPane(pane: Pane): string | number {
+  return pane.id || (pane.window_index !== undefined
+    ? `${pane.window_index}.${pane.index}`
+    : pane.index);
 }
 
 interface PaneListResponse extends ApiEnvelope {
@@ -235,7 +244,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     Math.max(DEFAULT_OUTPUT_LINES, MAX_STREAM_BUFFER_LINES)
   );
 
-  const [selectedPane, setSelectedPane] = useState<number | null>(null);
+  const [selectedPane, setSelectedPane] = useState<string | number | null>(null);
   const [outputLines, setOutputLines] = useState(DEFAULT_OUTPUT_LINES);
   const [autoScroll, setAutoScroll] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -291,19 +300,20 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     refetchInterval: isConnected ? false : 5000,
   });
 
-  const paneIndex = selectedPane ?? panesQuery.data?.panes?.[0]?.index ?? null;
+  const firstPane = panesQuery.data?.panes?.[0];
+  const paneSelector = selectedPane ?? (firstPane ? selectorForPane(firstPane) : null);
   const activePaneKey =
-    paneIndex !== null ? `${sessionId}:${paneIndex}` : null;
+    paneSelector !== null ? `${sessionId}:${paneSelector}` : null;
 
   const outputQuery = useQuery({
-    queryKey: ["pane-output-backfill", sessionId, paneIndex, outputLines],
+    queryKey: ["pane-output-backfill", sessionId, paneSelector, outputLines],
     queryFn: () => {
-      const encodedPaneIndex = encodeURIComponent(String(paneIndex));
+      const encodedPaneSelector = encodeURIComponent(String(paneSelector));
       return apiFetch<PaneOutputResponse>(
-        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/output?lines=${outputLines}`
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneSelector}/output?lines=${outputLines}`
       );
     },
-    enabled: paneIndex !== null,
+    enabled: paneSelector !== null,
     refetchInterval: isConnected && streamActive ? false : 2500,
     refetchOnWindowFocus: !(isConnected && streamActive),
   });
@@ -376,18 +386,32 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
   // topic when WS is connected; fall back seamlessly to 2.5s REST polling
   // whenever WS is disconnected or starting the stream fails.
   useEffect(() => {
-    if (paneIndex === null || !activePaneKey) {
+    if (paneSelector === null || !activePaneKey) {
       setStreamActive(false);
       return;
     }
 
     const ws = getWsClient();
-    const fallbackTopic = `panes:${sessionId}:${paneIndex}`;
+    const fallbackTopic = String(paneSelector).startsWith("%")
+      ? `panes:${paneSelector}`
+      : `panes:${sessionId}:${paneSelector}`;
     const subscribedTopics = new Set<string>([fallbackTopic]);
-    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
-    const streamPath = `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/stream`;
+    const encodedPaneSelector = encodeURIComponent(String(paneSelector));
+    // Each mounted viewer owns its claim independently, including during
+    // React effect cleanup and reconnects to the same physical pane.
+    const lease = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+    const streamPath = (selector: string) =>
+      `/api/v1/sessions/${encodedSessionId}/panes/${selector}/stream?lease=${lease}`;
+    let leasePath = streamPath(encodedPaneSelector);
     let cancelled = false;
     let startedOnServer = false;
+    let renewalTimer: ReturnType<typeof setTimeout> | undefined;
+    let leaseDeadline = 0;
+    const release = () => {
+      void apiFetch(leasePath, { method: "DELETE" }).catch(() => {});
+    };
     wsFullSnapshotKeyRef.current = null;
     setStreamActive(false);
 
@@ -422,20 +446,47 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
     });
 
-    void ws.subscribe(fallbackTopic, { mode: "lines" }).catch((err) => {
-      if (process.env.NODE_ENV === "development") {
-        console.error("[Sessions] WS pane subscribe error", fallbackTopic, err);
+    type PaneStreamResponse = { target?: string; topic?: string; lease_ttl_seconds?: number };
+    const scheduleRenewal = (ttlSeconds?: number) => {
+      if (!ttlSeconds || ttlSeconds <= 0 || cancelled) return;
+      leaseDeadline = Date.now() + ttlSeconds * 1000;
+      renewalTimer = setTimeout(() => void renew(), (ttlSeconds * 1000) / 3);
+    };
+    const renew = async () => {
+      if (cancelled) return;
+      try {
+        const res = await apiFetch<PaneStreamResponse>(leasePath, { method: "POST" });
+        if (cancelled) {
+          release();
+          return;
+        }
+        // A suspended browser tab may have slept past the server's expiry.
+        if (Date.now() >= leaseDeadline) {
+          wsFullSnapshotKeyRef.current = null;
+          void refetchOutputBackfill();
+        }
+        setStreamActive(true);
+        scheduleRenewal(res?.lease_ttl_seconds);
+      } catch {
+        if (!cancelled) {
+          setStreamActive(false);
+          leaseDeadline = 0;
+          renewalTimer = setTimeout(() => void renew(), 5000);
+        }
       }
-    });
+    };
 
     if (isConnected) {
       void (async () => {
         try {
-          const res = await apiFetch<{ topic?: string }>(streamPath, {
-            method: "POST",
-          });
+          await ws.subscribe(fallbackTopic, { mode: "lines" });
+          if (cancelled) return;
+          const res = await apiFetch<PaneStreamResponse>(leasePath, { method: "POST" });
+          if (res?.target?.startsWith("%")) {
+            leasePath = streamPath(encodeURIComponent(res.target));
+          }
           if (cancelled) {
-            void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+            release();
             return;
           }
           startedOnServer = true;
@@ -453,10 +504,15 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           }
           if (!cancelled) {
             setStreamActive(true);
+            scheduleRenewal(res?.lease_ttl_seconds);
           }
         } catch (err) {
           if (!cancelled) {
             setStreamActive(false);
+            if (startedOnServer) {
+              release();
+              startedOnServer = false;
+            }
           }
           if (process.env.NODE_ENV === "development") {
             console.error("[Sessions] Start pane stream failed, falling back to polling", err);
@@ -467,16 +523,17 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
     return () => {
       cancelled = true;
+      clearTimeout(renewalTimer);
       setStreamActive(false);
       unsubEvent();
       for (const topic of subscribedTopics) {
         void ws.unsubscribe(topic).catch(() => {});
       }
       if (startedOnServer) {
-        void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+        release();
       }
     };
-  }, [activePaneKey, encodedSessionId, isConnected, paneIndex, refetchOutputBackfill, sessionId]);
+  }, [activePaneKey, encodedSessionId, isConnected, paneSelector, refetchOutputBackfill, sessionId]);
 
   useEffect(() => {
     const panes = panesQuery.data?.panes ?? [];
@@ -488,11 +545,11 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     }
 
     const hasSelectedPane = selectedPane !== null
-      ? panes.some((pane) => pane.index === selectedPane)
+      ? panes.some((pane) => selectorForPane(pane) === selectedPane)
       : false;
 
     if (!hasSelectedPane) {
-      setSelectedPane(panes[0].index);
+      setSelectedPane(selectorForPane(panes[0]));
     }
   }, [panesQuery.data, selectedPane]);
 
@@ -530,15 +587,15 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
   const sendPrompt = useCallback(async () => {
     if (!prompt.trim()) return;
-    if (paneIndex === null) {
+    if (paneSelector === null) {
       setStatusNotice({ type: "error", message: "Select a pane first." });
       return;
     }
 
-    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
+    const encodedPaneSelector = encodeURIComponent(String(paneSelector));
     try {
       await apiFetch<PaneInputResponse>(
-        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/input`,
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneSelector}/input`,
         {
           method: "POST",
           body: JSON.stringify({ text: prompt.trim(), enter: true }),
@@ -548,7 +605,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       if (process.env.NODE_ENV === "development") {
         console.log("[Sessions] send prompt", {
           sessionId,
-          paneIndex,
+          paneSelector,
           length: prompt.length,
         });
       }
@@ -556,7 +613,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       setPrompt("");
       if (!isConnected || !streamActive) {
         void queryClient.invalidateQueries({
-          queryKey: ["pane-output-backfill", sessionId, paneIndex],
+          queryKey: ["pane-output-backfill", sessionId, paneSelector],
         });
       }
     } catch (error) {
@@ -565,21 +622,21 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     }
-  }, [encodedSessionId, isConnected, prompt, paneIndex, queryClient, sessionId, setStatusNotice, streamActive]);
+  }, [encodedSessionId, isConnected, prompt, paneSelector, queryClient, sessionId, setStatusNotice, streamActive]);
 
   const interruptPane = useCallback(async () => {
-    if (paneIndex === null) return;
-    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
+    if (paneSelector === null) return;
+    const encodedPaneSelector = encodeURIComponent(String(paneSelector));
     try {
       await apiFetch(
-        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/interrupt`,
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneSelector}/interrupt`,
         { method: "POST" }
       );
       setStatusNotice({ type: "success", message: "Interrupt sent." });
     } catch (error) {
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     }
-  }, [encodedSessionId, paneIndex, setStatusNotice]);
+  }, [encodedSessionId, paneSelector, setStatusNotice]);
 
   return (
     <div className="space-y-6">
@@ -683,12 +740,14 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
             <div className="mt-4 space-y-2">
               {(panesQuery.data?.panes || []).map((pane) => {
-                const isSelected = pane.index === paneIndex;
+                const selector = selectorForPane(pane);
+                const isSelected = selector === paneSelector;
                 return (
                   <button
-                    key={pane.index}
+                    key={selector}
                     type="button"
-                    onClick={() => setSelectedPane(pane.index)}
+                    aria-pressed={isSelected}
+                    onClick={() => setSelectedPane(selector)}
                     className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
                       isSelected
                         ? "border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-500 dark:bg-blue-900/20 dark:text-blue-200"
@@ -697,7 +756,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-medium">
-                        Pane {pane.index}
+                        Pane {pane.window_index !== undefined ? `${pane.window_index}.${pane.index}` : pane.index}
                       </span>
                       {pane.active && (
                         <span className="text-xs text-green-600 dark:text-green-400">

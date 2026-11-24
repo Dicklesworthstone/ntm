@@ -28,6 +28,7 @@ const paneVariableKey = "pane"
 type PaneMetadata struct {
 	PaneID                string
 	Index                 int
+	indexSet              bool // Distinguishes a roster index of zero from an omitted index.
 	NTMIndex              int
 	Title                 string
 	Type                  string
@@ -99,24 +100,38 @@ func (l *PaneMetadataLoader) Cache() (*PaneMetadataCache, error) {
 }
 
 type PaneMetadataCache struct {
-	byID    map[string]PaneMetadata
-	byIndex map[int]PaneMetadata
+	byID       map[string]*PaneMetadata
+	byIndex    map[int]*PaneMetadata
+	byNTMIndex map[int]*PaneMetadata
 }
 
 func newPaneMetadataCache(entries []PaneMetadata) *PaneMetadataCache {
 	cache := &PaneMetadataCache{
-		byID:    make(map[string]PaneMetadata, len(entries)),
-		byIndex: make(map[int]PaneMetadata, len(entries)),
+		byID:       make(map[string]*PaneMetadata, len(entries)),
+		byIndex:    make(map[int]*PaneMetadata, len(entries)),
+		byNTMIndex: make(map[int]*PaneMetadata, len(entries)),
 	}
-	for _, entry := range entries {
-		if entry.PaneID != "" {
-			cache.byID[entry.PaneID] = entry
+	// A present key with a nil value records a collision.
+	indexEntry := func(index map[int]*PaneMetadata, key int, entry *PaneMetadata) {
+		if _, exists := index[key]; exists {
+			entry = nil
 		}
-		if entry.Index != 0 {
-			cache.byIndex[entry.Index] = entry
+		index[key] = entry
+	}
+	for i := range entries {
+		entry := &entries[i]
+		if entry.PaneID != "" {
+			if _, exists := cache.byID[entry.PaneID]; exists {
+				cache.byID[entry.PaneID] = nil
+			} else {
+				cache.byID[entry.PaneID] = entry
+			}
+		}
+		if entry.Index != 0 || entry.indexSet || entry.Source == "ntm_session" {
+			indexEntry(cache.byIndex, entry.Index, entry)
 		}
 		if entry.NTMIndex != 0 {
-			cache.byIndex[entry.NTMIndex] = entry
+			indexEntry(cache.byNTMIndex, entry.NTMIndex, entry)
 		}
 	}
 	return cache
@@ -131,11 +146,23 @@ func (c *PaneMetadataCache) Lookup(paneRef string) (PaneMetadata, error) {
 		return PaneMetadata{}, fmt.Errorf("pane reference is empty")
 	}
 	if meta, ok := c.byID[paneRef]; ok {
-		return meta, nil
+		if meta == nil {
+			return PaneMetadata{}, fmt.Errorf("pane metadata ID %q is ambiguous", paneRef)
+		}
+		return *meta, nil
 	}
 	if idx, err := strconv.Atoi(strings.TrimPrefix(paneRef, "pane ")); err == nil {
-		if meta, ok := c.byIndex[idx]; ok {
-			return meta, nil
+		// Workflow dispatch interprets numbers as tmux pane indexes.
+		// Keep the roster's NTM index as a fallback for metadata-only lookups.
+		meta, found := c.byIndex[idx]
+		if !found {
+			meta, found = c.byNTMIndex[idx]
+		}
+		if found {
+			if meta == nil {
+				return PaneMetadata{}, fmt.Errorf("pane metadata index %d is ambiguous; specify a physical pane ID", idx)
+			}
+			return *meta, nil
 		}
 	}
 	return PaneMetadata{}, fmt.Errorf("pane metadata not found for %q", paneRef)
@@ -209,6 +236,44 @@ func loadRosterFallbackEntries(projectDir string) ([]PaneMetadata, string, error
 	return nil, "", nil
 }
 
+// matchRosterToLivePanes binds each row to one live identity. Explicit pane
+// IDs take precedence over legacy numeric rows. Conflicting rows at the same
+// precedence leave that pane unmatched, independently of roster order.
+func matchRosterToLivePanes(live *PaneMetadataCache, roster []PaneMetadata) map[string]*PaneMetadata {
+	explicit := make(map[string]*PaneMetadata)
+	legacy := make(map[string]*PaneMetadata)
+	for i := range roster {
+		row := &roster[i]
+		matches := explicit
+		var pane *PaneMetadata
+		if row.PaneID != "" {
+			pane = live.byID[row.PaneID]
+		} else {
+			if row.Index == 0 && !row.indexSet {
+				continue
+			}
+			matches = legacy
+			var found bool
+			pane, found = live.byIndex[row.Index]
+			if !found {
+				pane = live.byNTMIndex[row.Index]
+			}
+		}
+		if pane == nil || live.byID[pane.PaneID] != pane {
+			continue
+		}
+		if _, exists := matches[pane.PaneID]; exists {
+			matches[pane.PaneID] = nil
+		} else {
+			matches[pane.PaneID] = row
+		}
+	}
+	for id, row := range explicit {
+		legacy[id] = row
+	}
+	return legacy
+}
+
 // mergeSessionWithRoster overlays roster pane metadata onto the live session
 // metadata so each session pane keeps its tag-derived values but tag-missing
 // fields are filled in from the structured roster source. Implements the
@@ -218,27 +283,10 @@ func mergeSessionWithRoster(session, roster []PaneMetadata) []PaneMetadata {
 	if len(roster) == 0 {
 		return session
 	}
-	rosterByID := make(map[string]PaneMetadata, len(roster))
-	rosterByIndex := make(map[int]PaneMetadata, len(roster))
-	for _, r := range roster {
-		if r.PaneID != "" {
-			rosterByID[r.PaneID] = r
-		}
-		if r.Index != 0 {
-			rosterByIndex[r.Index] = r
-		}
-	}
-
+	matches := matchRosterToLivePanes(newPaneMetadataCache(session), roster)
 	merged := make([]PaneMetadata, 0, len(session))
 	for _, s := range session {
-		r, ok := rosterByID[s.PaneID]
-		if !ok && s.Index != 0 {
-			r, ok = rosterByIndex[s.Index]
-		}
-		if !ok && s.NTMIndex != 0 {
-			r, ok = rosterByIndex[s.NTMIndex]
-		}
-		if ok {
+		if r := matches[s.PaneID]; r != nil {
 			if !s.RoleFromTag && r.Role != "" {
 				s.Role = r.Role
 			}
@@ -263,11 +311,15 @@ func paneMetadataFromSession(client TmuxClient, session string) ([]PaneMetadata,
 	if err != nil {
 		return nil, fmt.Errorf("load pane metadata from ntm session: %w", err)
 	}
+	return paneMetadataEntries(panes), nil
+}
+
+func paneMetadataEntries(panes []tmux.Pane) []PaneMetadata {
 	entries := make([]PaneMetadata, 0, len(panes))
 	for _, pane := range panes {
 		entries = append(entries, paneMetadataFromTmuxPane(pane))
 	}
-	return entries, nil
+	return entries
 }
 
 func paneMetadataFromTmuxPane(pane tmux.Pane) PaneMetadata {
@@ -361,9 +413,9 @@ type paneRosterFile struct {
 }
 
 type paneRosterEntry struct {
-	Pane                  int        `yaml:"pane"`
+	Pane                  *int       `yaml:"pane"`
 	PaneID                string     `yaml:"pane_id"`
-	Index                 int        `yaml:"index"`
+	Index                 *int       `yaml:"index"`
 	Role                  string     `yaml:"role"`
 	Model                 string     `yaml:"model"`
 	Domain                domainList `yaml:"domain"`
@@ -431,17 +483,18 @@ func parsePaneRosterYAML(data []byte, source string) ([]PaneMetadata, error) {
 
 	metadata := make([]PaneMetadata, 0, len(entries))
 	for _, entry := range entries {
-		index := entry.Index
-		if index == 0 {
-			index = entry.Pane
+		coordinate := entry.Index
+		if coordinate == nil {
+			coordinate = entry.Pane
 		}
-		paneID := entry.PaneID
-		if paneID == "" && index != 0 {
-			paneID = fmt.Sprintf("%%%d", index)
+		var index int
+		if coordinate != nil {
+			index = *coordinate
 		}
 		metadata = append(metadata, PaneMetadata{
-			PaneID:                paneID,
+			PaneID:                entry.PaneID,
 			Index:                 index,
+			indexSet:              coordinate != nil,
 			NTMIndex:              index,
 			Role:                  entry.Role,
 			Model:                 entry.Model,
@@ -511,72 +564,29 @@ func (e *Executor) lookupPaneMetadata(paneRef string) (PaneMetadata, error) {
 	return e.paneMetadataLoader().Lookup(paneRef)
 }
 
-// rosterDomainsByPaneRef loads pane domain ownership from the documented
-// structured roster sources (RESUME.md, .brenner_workspace/roster.yaml,
-// phase0_scope_decision.md) without going through the LoadPaneMetadataCache
-// short-circuit that prefers session metadata. Used to enrich foreach
-// strategy panes when the live tmux pane tags do not carry domain
-// information — typically the case for resumed or brennerbot-style
-// sessions whose authoritative domain mapping lives in roster files
-// rather than tmux tags.
-//
-// Returns a map keyed by both pane ID (e.g. "%2") and "%<index>" form so
-// callers can match against either reference. Session metadata always
-// wins: this loader is only consulted to fill empty Domains lists.
-func (e *Executor) rosterDomainsByPaneRef() map[string][]string {
-	if e == nil || e.config.ProjectDir == "" {
-		return nil
+// enrichStrategyPanesFromRoster fills missing live domains in documented
+// source order. Use the same physical-ID and unique-index binding as pane
+// variables, retaining the live pane snapshot used to build the iteration.
+func (e *Executor) enrichStrategyPanesFromRoster(strategyPanes []paneStrategyPane, panes []tmux.Pane) []paneStrategyPane {
+	if e == nil || e.config.ProjectDir == "" || len(strategyPanes) == 0 {
+		return strategyPanes
 	}
-	loaders := []func(string) ([]PaneMetadata, error){
+	live := newPaneMetadataCache(paneMetadataEntries(panes))
+	for _, load := range []func(string) ([]PaneMetadata, error){
 		paneMetadataFromResume,
 		paneMetadataFromRosterYAML,
 		paneMetadataFromPhase0Roster,
-	}
-	out := make(map[string][]string)
-	for _, loader := range loaders {
-		entries, err := loader(e.config.ProjectDir)
+	} {
+		entries, err := load(e.config.ProjectDir)
 		if err != nil || len(entries) == 0 {
 			continue
 		}
-		for _, meta := range entries {
-			if len(meta.Domains) == 0 {
-				continue
+		matches := matchRosterToLivePanes(live, entries)
+		for i := range strategyPanes {
+			pane := &strategyPanes[i]
+			if row := matches[pane.ID]; len(pane.Domains) == 0 && row != nil {
+				pane.Domains = append([]string(nil), row.Domains...)
 			}
-			domainsCopy := append([]string(nil), meta.Domains...)
-			if meta.PaneID != "" {
-				if _, exists := out[meta.PaneID]; !exists {
-					out[meta.PaneID] = domainsCopy
-				}
-			}
-			if meta.Index != 0 {
-				key := fmt.Sprintf("%%%d", meta.Index)
-				if _, exists := out[key]; !exists {
-					out[key] = domainsCopy
-				}
-			}
-		}
-	}
-	return out
-}
-
-// enrichStrategyPanesFromRoster fills empty Domains lists on strategyPanes
-// using the structured roster sources. Panes that already carry domain
-// information from tmux tags are left unchanged so live session metadata
-// continues to win, per the source-priority contract from bd-6lkqr.1.
-func (e *Executor) enrichStrategyPanesFromRoster(strategyPanes []paneStrategyPane) []paneStrategyPane {
-	if e == nil || len(strategyPanes) == 0 {
-		return strategyPanes
-	}
-	rosterDomains := e.rosterDomainsByPaneRef()
-	if len(rosterDomains) == 0 {
-		return strategyPanes
-	}
-	for i, sp := range strategyPanes {
-		if len(sp.Domains) > 0 {
-			continue
-		}
-		if domains, ok := rosterDomains[sp.ID]; ok {
-			strategyPanes[i].Domains = append([]string(nil), domains...)
 		}
 	}
 	return strategyPanes

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1241,5 +1242,73 @@ func TestWSHub_QuietIngressResetFlushesWhenTransportDrains(t *testing.T) {
 	case <-writerDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("writer did not stop")
+	}
+}
+
+func TestWSHub_IngressOverflowStopAndReplayRaceFree(t *testing.T) {
+	t.Parallel()
+	stateStore := newMigratedStateStore(t)
+	store := NewWSEventStore(stateStore.DB(), DefaultWSEventStoreConfig())
+	defer store.Stop()
+
+	for round := 0; round < 4; round++ {
+		hub := NewWSHub()
+		hub.broadcast = make(chan *WSEvent, 2)
+		hub.SetEventStore(store)
+		runDone := make(chan struct{})
+		go func() {
+			hub.Run()
+			close(runDone)
+		}()
+
+		const topic = "panes:race-stop:0"
+		client := &WSClient{
+			id:     "race-stop",
+			hub:    hub,
+			send:   make(chan []byte, 4),
+			topics: map[string]struct{}{topic: {}},
+		}
+		if !hub.RegisterClient(client) {
+			t.Fatal("RegisterClient failed")
+		}
+
+		// Force ingress overflow, then race hub.Stop() directly against
+		// handleReplay completing its subscribe ack (sendAck -> trySend).
+		inComplete := make(chan struct{})
+		stopDone := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 8; i++ {
+				hub.Publish(topic, "pane.output", i)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			hub.SubscribeWithReplay(client, []string{topic}, 0, func(res wsReplayResult) bool {
+				close(inComplete)
+				// Concurrently send while hub.Stop() is closing client.send.
+				ok := client.sendAck("req-race", map[string]interface{}{"reset": res.reset})
+				<-stopDone
+				return ok
+			})
+		}()
+
+		<-inComplete
+		hub.Stop()
+		close(stopDone)
+		wg.Wait()
+		<-runDone
+
+		// Planted negative: after hub.Stop closes client.send, trySend must
+		// report false without panicking or misreporting a full buffer.
+		dropped := false
+		if client.trySend([]byte(`{"type":"pong"}`), func() { dropped = true }) {
+			t.Fatal("trySend succeeded on closed client channel")
+		}
+		if dropped {
+			t.Fatal("trySend invoked slow-client drop callback on closed client")
+		}
 	}
 }

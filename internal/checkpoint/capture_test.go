@@ -1022,3 +1022,76 @@ func TestCapturer_CaptureGitState_PatchWriteFailureIsReported(t *testing.T) {
 		t.Errorf("PatchFile = %q, want empty when the write failed", state.PatchFile)
 	}
 }
+
+func TestCapturePublicationHidesUnsealedArtifacts(t *testing.T) {
+	t.Parallel()
+	storage := NewStorageWithDir(t.TempDir())
+	previous := &Checkpoint{ID: "previous", SessionName: "work", CreatedAt: time.Unix(1, 0)}
+	if err := storage.Save(previous); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := &Checkpoint{
+		ID: "next", SessionName: previous.SessionName, CreatedAt: time.Unix(2, 0),
+		Session: SessionState{Panes: []PaneState{{ID: "%42"}}},
+	}
+	const transcript = "unpublished until sealed"
+	err := storage.publishCapture(cp, func(staged *Capturer) {
+		path, err := staged.storage.SaveScrollback(cp.SessionName, cp.ID, "%42", transcript)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cp.Session.Panes[0].ScrollbackFile = path
+		if _, err := os.Lstat(storage.CheckpointDir(cp.SessionName, cp.ID)); !os.IsNotExist(err) {
+			t.Fatalf("public checkpoint path during capture: %v", err)
+		}
+		latest, err := storage.GetLatest(cp.SessionName)
+		if err != nil || latest.ID != previous.ID {
+			t.Fatalf("latest during capture = %+v, error = %v", latest, err)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := storage.GetLatest(cp.SessionName)
+	if err != nil || latest.ID != cp.ID || latest.ArtifactIntegrity == nil || len(latest.ArtifactIntegrity.Files) != 1 {
+		t.Fatalf("latest after publication = %+v, error = %v", latest, err)
+	}
+	got, err := storage.LoadPaneScrollback(latest.SessionName, latest.ID, latest.Session.Panes[0])
+	if err != nil || got != transcript {
+		t.Fatalf("published transcript = %q, error = %v", got, err)
+	}
+}
+
+func TestCapturePublicationSealingFailureLeavesNoCandidate(t *testing.T) {
+	t.Parallel()
+	storage := NewStorageWithDir(t.TempDir())
+	cp := &Checkpoint{
+		ID: "incomplete", SessionName: "work",
+		Session: SessionState{Panes: []PaneState{{ID: "%42", ScrollbackFile: "panes/missing.txt"}}},
+	}
+	if err := storage.publishCapture(cp, func(*Capturer) {}); err == nil {
+		t.Fatal("published checkpoint with missing scrollback")
+	}
+	entries, err := os.ReadDir(filepath.Join(storage.BaseDir, cp.SessionName))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("session directory after failed capture = %v, error = %v", entries, err)
+	}
+}
+
+func TestCapturePublicationKeepsExistingCheckpoint(t *testing.T) {
+	t.Parallel()
+	storage := NewStorageWithDir(t.TempDir())
+	cp := &Checkpoint{ID: "existing", Name: "original", SessionName: "work"}
+	if err := storage.Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Name = "replacement"
+	if err := storage.publishCapture(cp, func(*Capturer) {}); err == nil {
+		t.Fatal("overwrote an existing checkpoint")
+	}
+	loaded, err := storage.Load(cp.SessionName, cp.ID)
+	if err != nil || loaded.Name != "original" {
+		t.Fatalf("existing checkpoint after collision = %+v, error = %v", loaded, err)
+	}
+}
