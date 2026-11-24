@@ -1640,13 +1640,14 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		}
 	}
 
-	// Substitution and validation can fail before a launch intent exists. If
-	// this live failure can dispatch a fallback, retain exact proof that this
-	// attempt started no process before recovery crosses its delivery boundary.
+	// Substitution and validation can fail before a launch intent exists.
+	// A fallback or on_error=continue can consume this failure. Retain exact
+	// live proof that this attempt started no process before either boundary.
 	// Never infer that proof later from an unbound scheduler result.
 	prelaunch := true
 	defer func() {
-		if !prelaunch || e.config.DryRun || len(step.OnFailure.Fallback) == 0 || result.Status != StatusFailed || result.Error == nil {
+		if !prelaunch || e.config.DryRun || result.Status != StatusFailed || result.Error == nil ||
+			(len(step.OnFailure.Fallback) == 0 && resolveErrorAction(step.OnError, workflow.Settings.OnError) != ErrorActionContinue) {
 			return
 		}
 		switch result.Error.Type {
@@ -4187,6 +4188,11 @@ func (e *Executor) applyResumeState() error {
 		e.stateMu.Unlock()
 		return err
 	}
+	consumedLoopFailures, err := prepareConsumedLoopFailures(e.graph, e.state, nil)
+	if err != nil {
+		e.stateMu.Unlock()
+		return err
+	}
 	merges, settledChildren, err := prepareCompletedParallelOutputs(e.graph, e.state)
 	if err != nil {
 		e.stateMu.Unlock()
@@ -4206,9 +4212,12 @@ func (e *Executor) applyResumeState() error {
 		// Advisory failures already consumed by a success tail remain part
 		// of its evidence. They are not independent retry work or successful
 		// graph nodes; the hook journal restores any completed output bindings.
-		if consumedHooks[stepID] {
+		if consumedHooks[stepID] || (consumedLoopFailures[stepID] && shouldRerunStep(result)) {
 			continue
 		}
+		// Completed descendants of an accepted failed container still
+		// contribute their output events below. Omitting them lets an older
+		// producer overwrite their aliases when resume rebuilds variables.
 		// In-flight evidence must win before graph completion and output
 		// retention. Clearing the marker afterward is too late: it leaves
 		// a completed graph node and resurrects an untrusted output alias.
@@ -4376,6 +4385,7 @@ func (e *Executor) snapshotState() *ExecutionState {
 			value.CompletedIterationIDs = append([]string(nil), value.CompletedIterationIDs...)
 			value.CollectedOutputs = append([]interface{}(nil), value.CollectedOutputs...)
 			value.CompletedRounds = maps.Clone(value.CompletedRounds)
+			value.ConsumedFailures = maps.Clone(value.ConsumedFailures)
 			snapshot.ForeachState[key] = value
 		}
 	}

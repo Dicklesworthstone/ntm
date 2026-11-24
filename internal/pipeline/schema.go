@@ -1370,6 +1370,10 @@ type StepResult struct {
 	// SuccessHookParent binds a consumed advisory outcome to the journal that
 	// owns it. Losing that journal cannot turn a failed hook into fresh work.
 	SuccessHookParent string `json:"success_hook_parent,omitempty"`
+	// ConsumedByLoop binds a failed child accepted by on_error=continue to
+	// its loop's durable consumption checkpoint. The outcome remains failed
+	// for inspection, but continuing the loop must not repeat its effects.
+	ConsumedByLoop string `json:"consumed_by_loop,omitempty"`
 }
 
 // StepError contains detailed error information for a failed step

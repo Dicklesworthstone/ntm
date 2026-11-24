@@ -308,26 +308,33 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		default:
 		}
 
-		// Evaluate while condition. bd-ypo73: ctx-aware so a `loop.while`
-		// expression nested inside a foreach max_rounds body sees the
-		// round overlay from withRoundOverrides.
-		shouldSkip, err := le.executor.evaluateConditionCtx(ctx, loop.While)
+		// A validated consumed failure proves this incomplete iteration
+		// already passed its entry condition. Finish its remaining body
+		// before evaluating variables that earlier children may have changed.
+		resumeBody, err := le.executor.resumeConsumedLoopIteration(step, workflow, i)
 		if err != nil {
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:      "loop",
-				Message:   fmt.Sprintf("failed to evaluate while condition: %v", err),
-				Timestamp: time.Now(),
-			}
-			result.FinishedAt = time.Now()
+			result.Status, result.FinishedAt = StatusFailed, time.Now()
+			result.Error = stepRuntimeError(step, StepKindLoop, "recovery", err.Error(),
+				"restore the consumed iteration's definition before resuming", "")
 			return result
 		}
-
-		// EvaluateCondition returns true if step should be SKIPPED (condition is false)
-		if shouldSkip {
-			// Condition is false, exit loop
-			brokeEarly = true
-			break
+		if !resumeBody {
+			// Preserve the round overlay for loops nested in max_rounds.
+			shouldSkip, err := le.executor.evaluateConditionCtx(ctx, loop.While)
+			if err != nil {
+				result.Status = StatusFailed
+				result.Error = &StepError{
+					Type:      "loop",
+					Message:   fmt.Sprintf("failed to evaluate while condition: %v", err),
+					Timestamp: time.Now(),
+				}
+				result.FinishedAt = time.Now()
+				return result
+			}
+			if shouldSkip {
+				brokeEarly = true
+				break
+			}
 		}
 
 		le.executor.markForeachIterationStarted(step.ID, i, maxIterations)
@@ -960,7 +967,22 @@ func (le *LoopExecutor) resolveMaxIterations(ctx context.Context, step *Step, lo
 	if loop == nil {
 		return DefaultMaxIterations, nil
 	}
-	return le.resolveIntOrExpr(ctx, step, "loop.max_iterations", &loop.MaxIterations, DefaultMaxIterations)
+	maximum, err := le.resolveIntOrExpr(ctx, step, "loop.max_iterations", &loop.MaxIterations, DefaultMaxIterations)
+	if err != nil {
+		return 0, err
+	}
+	le.executor.stateMu.RLock()
+	defer le.executor.stateMu.RUnlock()
+	if le.executor.state != nil {
+		progress := le.executor.state.ForeachState[step.ID]
+		for id := range progress.ConsumedFailures {
+			iteration := iterationIndexFromID(id, step.ID+"_iter")
+			if iteration >= maximum && !stringSliceContains(progress.CompletedIterationIDs, loopIterationID(step.ID, iteration)) {
+				return 0, loopFailureRecoveryError("loop %q has unfinished consumed iteration %d outside resolved max_iterations %d; restore the prior bound or explicitly reset its iteration", step.ID, iteration, maximum)
+			}
+		}
+	}
+	return maximum, nil
 }
 
 // resolveIntOrExpr resolves an IntOrExpr field. The fallback is only used when
@@ -1135,12 +1157,25 @@ func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *
 			continue
 		}
 
-		// Execute the nested step
-		// Create a unique step ID for this iteration to avoid conflicts
-		iteratedStep := nestedStep
+		// Keep the definition used for recovery immutable: nested containers
+		// can materialize their own loop bounds while executing.
+		iteratedStep := cloneStep(nestedStep)
 		iteratedStep.ID = fmt.Sprintf("%s_iter%d_%s", step.ID, iterIndex, nestedStep.ID)
 
-		result := le.executor.executeStep(ctx, &iteratedStep, workflow)
+		result, consumed, err := le.executor.loadConsumedLoopFailure(step, &iteratedStep, workflow)
+		if err != nil {
+			now := time.Now()
+			results = append(results, StepResult{
+				StepID: step.ID, Status: StatusFailed, StartedAt: now, FinishedAt: now,
+				Error: stepRuntimeError(step, StepKindLoop, "recovery", err.Error(),
+					"restore the consumed failure checkpoint or explicitly reset its iteration", ""),
+			})
+			return results, true, false, false
+		}
+		if !consumed {
+			executionStep := cloneStep(iteratedStep)
+			result = le.executor.executeStep(ctx, &executionStep, workflow)
+		}
 		results = append(results, result)
 
 		// Store result in state
@@ -1166,8 +1201,31 @@ func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *
 				// when onError is ErrorActionRetry).
 				return results, true, false, false
 			case ErrorActionContinue:
-				// Continue with next step in iteration
+				if !consumed {
+					result, err = le.executor.checkpointConsumedLoopFailure(ctx, step, &iteratedStep, result)
+					results[len(results)-1] = result
+					if err != nil {
+						// Do not overwrite a durably bound child on checkpoint
+						// failure; propagate a separate container failure.
+						now := time.Now()
+						results = append(results, StepResult{
+							StepID: step.ID, Status: StatusFailed, StartedAt: now, FinishedAt: now,
+							Error: stepRuntimeError(step, StepKindLoop, "recovery", err.Error(),
+								"settle the child's effects and restore durable storage before resuming", ""),
+						})
+						return results, true, false, false
+					}
+				}
 			}
+		}
+
+		// Like the main scheduler, the loop publishes successful named
+		// outputs before the next child or predicate can read them. Foreach
+		// children already published their aggregate shape; preserve it.
+		if result.Status == StatusCompleted && iteratedStep.OutputVar != "" && !stepOwnsForeachOutputVar(&iteratedStep) {
+			le.executor.varMu.Lock()
+			storeOutputVar(le.executor.state, iteratedStep.OutputVar, result.Output, result.ParsedData)
+			le.executor.varMu.Unlock()
 		}
 
 		// Apply the loop_control directive after the body has executed

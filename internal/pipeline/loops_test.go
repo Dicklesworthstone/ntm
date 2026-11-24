@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -31,6 +32,83 @@ func TestLoopResultStruct(t *testing.T) {
 	}
 	if len(result.Collected) != 3 {
 		t.Errorf("expected 3 collected, got %d", len(result.Collected))
+	}
+}
+
+func TestLoopResumeDoesNotRepeatConsumedFailures(t *testing.T) {
+	for _, kind := range []string{"items", "while", "times"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultExecutorConfig("loop-consumed-failure")
+			cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-consumed-failure"
+			cfg.GlobalTimeout, cfg.DefaultTimeout = 20*time.Second, 10*time.Second
+			loop := &LoopConfig{
+				Collect: "outputs", MaxIterations: IntOrExpr{Value: 3},
+				Steps: []Step{
+					{ID: "barrier", Command: `if [ '${loop.index}' = 1 ] && [ ! -f resume ]; then printf reached > blocked; sleep 30; fi`},
+					{ID: "advisory", Command: `printf '%s\n' '${loop.index}' >> effects; exit 7`, OnError: ErrorActionContinue},
+					{ID: "output", Command: `printf '%s' '${loop.index}'`, OutputVar: "cursor"},
+				},
+			}
+			switch kind {
+			case "items":
+				loop.Items = `["a","b","c"]`
+			case "while":
+				loop.While = `${vars.cursor} != "2"`
+			case "times":
+				loop.Times = 3
+			}
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: "loop-consumed-failure", Settings: DefaultWorkflowSettings(),
+				Steps: []Step{{ID: "repeat", Loop: loop}},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewExecutor(cfg).Run(ctx, workflow, map[string]interface{}{"cursor": "initial"}, nil)
+				done <- err
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "blocked")); err == nil {
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("loop stopped before its second iteration: %v", err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("loop did not reach the second iteration")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+			if err := <-done; err == nil {
+				t.Fatal("interrupted loop unexpectedly succeeded")
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil || prior.Status != StatusCancelled {
+				t.Fatalf("load interrupted loop: %+v %v", prior, err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "resume"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			final, err := NewExecutor(cfg).ResumeWithOptions(context.Background(), workflow, prior, ResumeOptions{Mode: ResumeModeContinue}, nil)
+			if err != nil || final.Status != StatusCompleted {
+				t.Fatalf("resume loop: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(data) != "0\n1\n2\n" {
+				t.Errorf("resume repeated a consumed advisory command: %q %v", data, err)
+			}
+			if got := final.Variables["outputs"]; !reflect.DeepEqual(got, []interface{}{"0", "1", "2"}) {
+				t.Errorf("collected outputs = %#v, want each iteration exactly once", got)
+			}
+			if got := final.Steps["repeat_iter0_advisory"].Status; got != StatusFailed {
+				t.Errorf("consumed failure lost its diagnostic outcome: %q", got)
+			}
+		})
 	}
 }
 
