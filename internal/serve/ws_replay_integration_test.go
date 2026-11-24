@@ -10,6 +10,7 @@ package serve
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -991,5 +992,261 @@ func TestWSEventStore_RetentionPruning(t *testing.T) {
 	}
 	for _, ev := range events {
 		t.Logf("WS_RETAINED seq=%d topic=%s created_at=%s", ev.Seq, ev.Topic, ev.CreatedAt.Format(time.RFC3339))
+	}
+}
+
+// TestWSHub_IngressOverflowPersistsGlobalReplayBarrier exercises queue loss,
+// a publisher racing the drain, and reconnect through the real WebSocket API.
+func TestWSHub_IngressOverflowPersistsGlobalReplayBarrier(t *testing.T) {
+	t.Parallel()
+	stateStore := newMigratedStateStore(t)
+	store := NewWSEventStore(stateStore.DB(), DefaultWSEventStoreConfig())
+	defer store.Stop()
+	hub := NewWSHub()
+	hub.broadcast = make(chan *WSEvent, 2)
+	hub.SetEventStore(store)
+	defer hub.Stop()
+
+	const topic = "panes:ingress:0"
+	client := &WSClient{
+		id: "ingress", hub: hub, send: make(chan []byte, 8),
+		topics: map[string]struct{}{topic: {}},
+	}
+	hub.clients[client] = struct{}{}
+	hub.Publish(topic, "pane.output", "before-1")
+	hub.Publish(topic, "pane.output", "before-2")
+	hub.Publish("unvalidated-private-topic", "unvalidated-private-type", "private-payload")
+
+	// Free a queue slot without handling the loss wakeup yet. Admission must
+	// remain closed so a fresh event cannot sneak across the unrecorded gap.
+	hub.broadcastEvent(<-hub.broadcast)
+	hub.Publish(topic, "pane.output", "must-not-enter-after-loss")
+	if hub.dropped.Load() != 2 || len(hub.broadcast) != 1 {
+		t.Fatalf("admission crossed loss barrier: drops=%d queued=%d", hub.dropped.Load(), len(hub.broadcast))
+	}
+	if !hub.flushIngressGap() {
+		t.Fatal("persist ingress gap")
+	}
+	for _, want := range []string{"before-1", "before-2"} {
+		frame := queuedWSReplayFrame(t, client)
+		if frame["type"] != "event" || frame["data"] != want {
+			t.Fatalf("accepted prefix reordered: got %v want %s", frame, want)
+		}
+	}
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != wsIngressOverflowReason || reset["topic"] != nil {
+		t.Fatalf("missing content-free global reset: %v", reset)
+	}
+	cursor := int64(reset["current_seq"].(float64))
+	if cursor != 3 {
+		t.Fatalf("loss did not receive a durable cursor: %v", reset)
+	}
+	var markerTopic, markerType, markerData string
+	if err := stateStore.DB().QueryRow(
+		"SELECT topic, event_type, data FROM ws_events WHERE seq = ?", cursor,
+	).Scan(&markerTopic, &markerType, &markerData); err != nil {
+		t.Fatal(err)
+	}
+	if markerTopic != wsStreamGapTopic || markerType != wsStreamGapEventType ||
+		strings.Contains(markerData, "private") || strings.Contains(markerData, "unvalidated") {
+		t.Fatalf("unsafe or missing durable loss marker: %q %q %q", markerTopic, markerType, markerData)
+	}
+
+	hub.Publish(topic, "pane.output", "after-gap")
+	hub.broadcastEvent(<-hub.broadcast)
+	live := queuedWSReplayFrame(t, client)
+	if live["type"] != "event" || live["data"] != "after-gap" || frameSeq(t, live) != cursor+1 {
+		t.Fatalf("live continuation after reset: %v", live)
+	}
+	hub.Stop()
+	store.Stop()
+
+	// A new server/store must find the loss in SQLite even though the
+	// subscription's topic filter does not match the internal gap marker.
+	srv := New(Config{StateStore: stateStore})
+	defer srv.Stop()
+	httpSrv := httptest.NewServer(srv.Router())
+	defer httpSrv.Close()
+	conn := dialWS(t, httpSrv)
+	defer conn.Close()
+	reader := newWSFrameReader(t, conn, "ingress-reconnect")
+	subscribeWS(t, conn, []string{topic, "sessions:unrelated"}, 1)
+	frame := reader.next(2 * time.Second)
+	if frame["type"] != "stream.reset" {
+		t.Fatalf("restart hid incomplete history: %v", frame)
+	}
+	ack := reader.next(2 * time.Second)
+	if ack["type"] != "ack" {
+		t.Fatalf("expected reset acknowledgment, got %v", ack)
+	}
+	replay := ack["data"].(map[string]interface{})["replay"].(map[string]interface{})
+	if replay["reset"] != true || replay["replayed"] != float64(0) {
+		t.Fatalf("incomplete replay reported as successful: %v", replay)
+	}
+
+	// Once a consumer has resynchronized at the barrier, later persisted
+	// events remain replayable without getting stuck in a permanent reset.
+	conn2 := dialWS(t, httpSrv)
+	defer conn2.Close()
+	reader2 := newWSFrameReader(t, conn2, "ingress-after-resync")
+	subscribeWS(t, conn2, []string{topic}, cursor)
+	frame = reader2.next(2 * time.Second)
+	if frame["type"] != "event" || frame["data"] != "after-gap" || frame["replay"] != true {
+		t.Fatalf("history after loss barrier could not resume: %v", frame)
+	}
+}
+
+func TestWSHub_IngressOverflowWakesQuietStream(t *testing.T) {
+	t.Parallel()
+	hub := NewWSHub()
+	hub.broadcast = make(chan *WSEvent, 1)
+	client := &WSClient{
+		id: "quiet-ingress", hub: hub, send: make(chan []byte, 4),
+		topics: map[string]struct{}{"panes:quiet:0": {}},
+	}
+	hub.clients[client] = struct{}{}
+	hub.Publish("panes:quiet:0", "pane.output", "accepted")
+	hub.Publish("panes:quiet:0", "pane.output", "lost")
+	done := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(done)
+	}()
+	defer func() {
+		hub.Stop()
+		<-done
+	}()
+
+	// No later publisher is needed to make the final loss visible.
+	for _, want := range []string{"event", "stream.reset"} {
+		select {
+		case raw := <-client.send:
+			var frame map[string]interface{}
+			if err := json.Unmarshal(raw, &frame); err != nil {
+				t.Fatal(err)
+			}
+			if frame["type"] != want {
+				t.Fatalf("quiet-stream ordering: got %v want %s", frame, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("quiet overflow never delivered %s", want)
+		}
+	}
+}
+
+func TestWSHub_IngressOverflowKeepsAdmissionClosedOnPersistenceFailure(t *testing.T) {
+	t.Parallel()
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer store.Stop()
+	hub := NewWSHub()
+	hub.broadcast = make(chan *WSEvent, 1)
+	hub.SetEventStore(store)
+	defer hub.Stop()
+	const topic = "panes:ingress-failure:0"
+	client := &WSClient{
+		id: "ingress-failure", hub: hub, send: make(chan []byte, 1),
+		topics: map[string]struct{}{topic: {}},
+	}
+	hub.clients[client] = struct{}{}
+	client.send <- []byte("{\"type\":\"ack\"}")
+	if _, err := db.Exec("CREATE TRIGGER reject_ws_gap BEFORE INSERT ON ws_events " +
+		"WHEN NEW.event_type = 'ntm.stream.gap' BEGIN SELECT RAISE(FAIL, 'disk unavailable'); END"); err != nil {
+		t.Fatal(err)
+	}
+	hub.Publish(topic, "pane.output", "prefix")
+	hub.Publish(topic, "pane.output", "lost")
+	if hub.flushIngressGap() || !hub.ingressGapPending() {
+		t.Fatal("failed persistence reopened publication")
+	}
+	if len(hub.pendingResets) != 1 {
+		t.Fatal("backpressure discarded the required reset")
+	}
+	queuedWSReplayFrame(t, client) // Drain the deliberately full transport.
+	req := &wsReplayRequest{client: client, topics: []string{topic}, since: 1, resp: make(chan wsReplayResult, 1)}
+	hub.handleReplay(req)
+	if res := <-req.resp; !res.reset || res.replayed != 0 {
+		t.Fatalf("pending ingress loss allowed replay: %+v", res)
+	}
+	if reset := queuedWSReplayFrame(t, client); reset["type"] != "stream.reset" {
+		t.Fatalf("replay bypassed pending loss: %v", reset)
+	}
+
+	if _, err := db.Exec("DROP TRIGGER reject_ws_gap"); err != nil {
+		t.Fatal(err)
+	}
+	hub.Publish(topic, "pane.output", "still-not-admitted")
+	if len(hub.broadcast) != 0 {
+		t.Fatal("publisher bypassed unpersisted gap")
+	}
+	if !hub.flushIngressGap() || hub.ingressGapPending() {
+		t.Fatal("gap persistence did not recover")
+	}
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != wsIngressOverflowReason {
+		t.Fatalf("recovered stream lost reset: %v", reset)
+	}
+	hub.Publish(topic, "pane.output", "recovered")
+	hub.broadcastEvent(<-hub.broadcast)
+	if event := queuedWSReplayFrame(t, client); event["type"] != "event" || event["data"] != "recovered" {
+		t.Fatalf("recovered admission: %v", event)
+	}
+}
+
+func TestWSHub_QuietIngressResetFlushesWhenTransportDrains(t *testing.T) {
+	t.Parallel()
+	hub := NewWSHub()
+	hub.broadcast = make(chan *WSEvent, 1)
+	client := &WSClient{
+		id: "quiet-slow-ingress", hub: hub, send: make(chan []byte, 1),
+		topics: map[string]struct{}{"panes:quiet-slow:0": {}},
+	}
+	hub.clients[client] = struct{}{}
+	hub.Publish("panes:quiet-slow:0", "pane.output", "accepted")
+	hub.Publish("panes:quiet-slow:0", "pane.output", "lost")
+	if !hub.flushIngressGap() || len(hub.pendingResets) != 1 {
+		t.Fatal("expected a reset blocked behind the accepted prefix")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(done)
+	}()
+	defer func() {
+		hub.Stop()
+		<-done
+	}()
+	writerDone := make(chan struct{})
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			close(writerDone)
+			return
+		}
+		client.conn = conn
+		go func() {
+			defer close(writerDone)
+			client.writePump()
+		}()
+	}))
+	defer httpSrv.Close()
+	conn := dialWS(t, httpSrv)
+	defer conn.Close()
+	reader := newWSFrameReader(t, conn, "quiet-slow-ingress")
+	if frame := reader.next(2 * time.Second); frame["type"] != "event" || frame["data"] != "accepted" {
+		t.Fatalf("missing accepted prefix: %v", frame)
+	}
+	if frame := reader.next(2 * time.Second); frame["type"] != "stream.reset" || frame["reason"] != wsIngressOverflowReason {
+		t.Fatalf("transport drain did not flush quiet reset: %v", frame)
+	}
+	hub.Stop()
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not stop")
 	}
 }

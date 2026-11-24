@@ -241,6 +241,8 @@ func (s *WSEventStore) Store(topic, eventType string, data interface{}) (*WSStor
 // The database is authoritative when configured: a ring can outlive retention
 // or miss events written by another store sharing the same runtime database.
 // Returns events and a boolean indicating if a cursor reset is needed.
+// Retained global gap markers invalidate replay across lost ingress events,
+// including for subscriptions whose topic filter would hide the marker.
 func (s *WSEventStore) GetSince(since int64, topic string, limit int) ([]WSStoredEvent, bool, error) {
 	var topics []string
 	if topic != "" {
@@ -302,9 +304,20 @@ func (s *WSEventStore) getFromBuffer(since int64, topics []string, limit int) ([
 		return nil, false
 	}
 
+	// A loss affects every subscription: its original metadata was never
+	// inspected, so it cannot safely be used to narrow the reset's scope.
+	curr := s.buffer
+	for i := 0; i < ringSize; i++ {
+		if ev, ok := curr.Value.(*WSStoredEvent); ok && ev != nil &&
+			ev.Seq > since && ev.Topic == wsStreamGapTopic && ev.EventType == wsStreamGapEventType {
+			return nil, false
+		}
+		curr = curr.Next()
+	}
+
 	// Collect matching events
 	var events []WSStoredEvent
-	curr := s.buffer
+	curr = s.buffer
 	for i := 0; i < ringSize; i++ {
 		if ev, ok := curr.Value.(*WSStoredEvent); ok && ev != nil {
 			if ev.Seq > since && (len(topics) == 0 || matchAnyTopic(topics, ev.Topic)) {
@@ -344,6 +357,19 @@ func (s *WSEventStore) getFromDB(since int64, topics []string, limit int) ([]WSS
 	}
 	s.seqMu.Unlock()
 	if since > 0 && (since > highWater || (minSeq.Valid && since < minSeq.Int64-1) || (!minSeq.Valid && since < highWater)) {
+		return nil, true, nil
+	}
+
+	// Check the global loss barrier on the same snapshot as retention and
+	// replay selection. Topic filtering must never hide incomplete history.
+	var hasGap bool
+	if err := tx.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM ws_events WHERE seq > ? AND topic = ? AND event_type = ?)",
+		since, wsStreamGapTopic, wsStreamGapEventType,
+	).Scan(&hasGap); err != nil {
+		return nil, false, fmt.Errorf("query replay gaps: %w", err)
+	}
+	if hasGap {
 		return nil, true, nil
 	}
 
@@ -487,6 +513,10 @@ func (s *WSEventStore) BufferStats() (size int, used int, oldestSeq int64, newes
 //     client drains and delivery succeeds again, it receives a
 //     `pane.output.dropped` frame describing the missed range so it can
 //     re-request it via `since`.
+//   - Global broadcast-queue overflow pauses admission, drains the accepted
+//     prefix, and records a content-free global gap marker before admitting
+//     more events. Live clients receive stream.reset; replay crossing the
+//     marker resets even across a server restart or a narrow topic filter.
 //   - Attention topics ("attention", "attention:*") keep their own durable
 //     cursor protocol (`since_cursor`) and are not part of this contract.
 //
@@ -496,7 +526,12 @@ func (s *WSEventStore) BufferStats() (size int, used int, oldestSeq int64, newes
 
 // wsReplayLimit bounds how many persisted events a single subscribe-with-since
 // request will replay. Matches the GetSince default page size.
-const wsReplayLimit = 1000
+const (
+	wsReplayLimit           = 1000
+	wsStreamGapTopic        = ""
+	wsStreamGapEventType    = "ntm.stream.gap"
+	wsIngressOverflowReason = "broadcast_overflow"
+)
 
 // wsReplayRequest asks the hub loop to commit a subscription and replay
 // persisted events past a cursor before live delivery begins.
@@ -532,6 +567,63 @@ func (h *WSHub) SetEventStore(store *WSEventStore) {
 // wired (degraded mode: live streaming only).
 func (h *WSHub) eventStore() *WSEventStore {
 	return h.store.Load()
+}
+
+// ingressGapPending reports whether publication is paused for lost history.
+func (h *WSHub) ingressGapPending() bool {
+	h.ingressMu.Lock()
+	defer h.ingressMu.Unlock()
+	return h.ingressGap
+}
+
+// flushIngressGap runs only on the hub goroutine. Admission remains closed
+// throughout the drain and durable append, so the bounded accepted prefix is
+// followed by exactly one loss barrier before any new event can be accepted.
+func (h *WSHub) flushIngressGap() bool {
+	if !h.ingressGapPending() {
+		return true
+	}
+
+	for {
+		select {
+		case event := <-h.broadcast:
+			h.broadcastEvent(event)
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	var cursor int64
+	if store := h.eventStore(); store != nil {
+		marker, err := store.Store(wsStreamGapTopic, wsStreamGapEventType,
+			map[string]string{"reason": wsIngressOverflowReason})
+		if err != nil {
+			// Keep admission closed. A later publication retries the wake,
+			// and replay refuses to claim completeness while this is pending.
+			log.Printf("ws_events: cannot persist ingress gap; publication remains paused: %v", err)
+			h.clientsMu.RLock()
+			for client := range h.clients {
+				h.trySendReset(client, "", "persistence_failed", store.CurrentSeq(), 0)
+			}
+			h.clientsMu.RUnlock()
+			return false
+		}
+		cursor = marker.Seq
+	} else {
+		cursor = h.nextSeq()
+	}
+
+	h.ingressMu.Lock()
+	h.ingressGap = false
+	h.ingressMu.Unlock()
+
+	h.clientsMu.RLock()
+	for client := range h.clients {
+		h.trySendReset(client, "", wsIngressOverflowReason, cursor, 0)
+	}
+	h.clientsMu.RUnlock()
+	return true
 }
 
 // currentSeq returns the hub's ephemeral sequence counter (store-less mode).
@@ -589,6 +681,15 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 		req.resp <- res
 	}()
 	store := h.eventStore()
+	if h.ingressGapPending() {
+		res.reset = true
+		res.cursor = h.currentSeq()
+		if store != nil {
+			res.cursor = store.CurrentSeq()
+		}
+		h.trySendReset(req.client, "", wsIngressOverflowReason, res.cursor, 0)
+		return
+	}
 	if store == nil {
 		// No persistence wired: replay is unavailable. Tell the client to
 		// treat its state as fresh.
@@ -710,6 +811,16 @@ func (h *WSHub) trySendReset(client *WSClient, topic, reason string, currentSeq,
 			h.pendingResets = make(map[*WSClient][]byte)
 		}
 		h.pendingResets[client] = data
+	}
+}
+
+// flushPendingResets retries after transport progress without polling or
+// requiring fresh application events. Only Run owns the pending-reset map.
+func (h *WSHub) flushPendingResets() {
+	h.clientsMu.RLock()
+	defer h.clientsMu.RUnlock()
+	for client := range h.pendingResets {
+		h.flushClientReset(client)
 	}
 }
 
