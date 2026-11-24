@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -174,6 +175,7 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("NTM_CLI_TEST_ISOLATED", "1")
 	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
 	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
 	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
 		return []string{"-test.run=^TestPipelineBackgroundResumeWorker$", "--"}, nil
 	}

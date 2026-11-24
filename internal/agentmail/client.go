@@ -43,13 +43,18 @@ const (
 	// stall CLI startup when the service is unavailable.
 	defaultAvailabilityProbeBudget = 1250 * time.Millisecond
 	availabilityProbeAttempts      = 3
-	availabilityProbeBackoff       = 150 * time.Millisecond
 
 	// ProbeBudgetEnv overrides the availability probe budget (a Go duration,
 	// e.g. "5s"). Operators whose server has no cheap liveness endpoint and a
 	// large mailbox need more than the default (issue #295).
 	ProbeBudgetEnv = "NTM_AGENT_MAIL_PROBE_BUDGET"
 )
+
+// AvailabilityProbeBackoff is the delay between retryable availability probe
+// attempts. Exported so tests exercising unreachable Agent Mail stubs can
+// shorten inter-attempt sleeps without changing production defaults or attempt
+// counts.
+var AvailabilityProbeBackoff = 150 * time.Millisecond
 
 // errLivenessUnsupported marks a liveness probe that the server answered but
 // that cannot decide availability (no such endpoint, or it is auth-walled).
@@ -442,7 +447,7 @@ probeLoop:
 			break
 		}
 
-		timer := time.NewTimer(availabilityProbeBackoff)
+		timer := time.NewTimer(AvailabilityProbeBackoff)
 		if !waitForAvailabilityRetry(ctx, probeCtx, timer) {
 			if ctx.Err() != nil {
 				return false

@@ -1181,6 +1181,7 @@ func TestMailMacroFailuresPreservePartialOutcomeAndNeverRetry(t *testing.T) {
 }
 
 func TestMailMarkRequiresSelector(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
 	defer stub.Close()
@@ -1202,6 +1203,7 @@ func TestMailMarkRequiresAgentOrEnv(t *testing.T) {
 	// test would write/read session registries in the real user home and
 	// leak state into / out of other tests in the same package.
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
@@ -1221,6 +1223,7 @@ func TestMailAckUsesSavedSessionAgentWhenEnvMissing(t *testing.T) {
 	// this the registry was leaking to ~/Library/Application Support and
 	// poisoning every later TestRunMail* test in the same package.
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
@@ -1288,6 +1291,7 @@ func TestResolveMailAgentIdentityUsesCurrentPaneRegistryIdentity(t *testing.T) {
 
 func TestMailAckUsesEnvAgent(t *testing.T) {
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
@@ -1309,6 +1313,7 @@ func TestMailAckUsesEnvAgent(t *testing.T) {
 }
 
 func TestMailMarkReportsErrorsInJSON(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
 	stub.failIDs[99] = "already acknowledged"
@@ -1357,6 +1362,7 @@ func TestMailSendOverseerCurrentAndLegacyInboxReadback(t *testing.T) {
 			},
 		} {
 			t.Run(serverName+"/"+tc.name, func(t *testing.T) {
+				isolateOverseerSessionProbe(t)
 				isolateSessionAgentStorage(t)
 				stub := newMailStub(t, nil)
 				defer stub.Close()
@@ -1442,6 +1448,7 @@ func TestMailSendOverseerCurrentAndLegacyInboxReadback(t *testing.T) {
 }
 
 func TestMailSendOverseerAllExcludesReservedIdentityOnRepeat(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1467,6 +1474,7 @@ func TestMailSendOverseerAllExcludesReservedIdentityOnRepeat(t *testing.T) {
 }
 
 func TestMailSendOverseerRejectsInvalidInputs(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	for _, tc := range []struct {
 		name  string
 		flags []string
@@ -1507,6 +1515,7 @@ func TestMailSendOverseerRejectsInvalidInputs(t *testing.T) {
 }
 
 func TestMailSendOverseerRequiresServerProjectSlug(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	for _, tc := range []struct {
 		name string
 		slug string
@@ -1532,6 +1541,7 @@ func TestMailSendOverseerRequiresServerProjectSlug(t *testing.T) {
 }
 
 func TestMailSendOverseerAllRequiresRegisteredAgents(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	for _, agents := range [][]agentmail.Agent{nil, {{Name: "HumanOverseer"}}} {
 		isolateSessionAgentStorage(t)
 		stub := newMailStub(t, nil)
@@ -1549,6 +1559,7 @@ func TestMailSendOverseerAllRequiresRegisteredAgents(t *testing.T) {
 }
 
 func TestMailSendOverseerUnknownRecipientDoesNotDeliver(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1563,6 +1574,7 @@ func TestMailSendOverseerUnknownRecipientDoesNotDeliver(t *testing.T) {
 }
 
 func TestMailSendOverseerLegacyPartialDeliveryIsReportedWithoutRetry(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1586,6 +1598,7 @@ func TestMailSendOverseerLegacyPartialDeliveryIsReportedWithoutRetry(t *testing.
 }
 
 func TestMailSendOverseerPreservesActionableServerErrors(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	for _, tc := range []struct {
 		name   string
 		legacy bool
@@ -1615,6 +1628,7 @@ func TestMailSendOverseerPreservesActionableServerErrors(t *testing.T) {
 }
 
 func TestMailSendOverseerAuthenticationFailures(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	for _, token := range []string{"", "wrong-overseer-token"} {
 		name := "missing_token"
 		if token != "" {
@@ -1639,6 +1653,7 @@ func TestMailSendOverseerAuthenticationFailures(t *testing.T) {
 }
 
 func TestMailSendOverseerReasonBoundaryAndReset(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1656,6 +1671,7 @@ func TestMailSendOverseerReasonBoundaryAndReset(t *testing.T) {
 }
 
 func TestMailSendOverseerDerivesValidUnicodeSubject(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1705,6 +1721,7 @@ func TestMailSendOverseerInvalidFlagsPreservePreparedBody(t *testing.T) {
 }
 
 func TestMailSendOverseerSubjectLengthAfterRedaction(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -1958,6 +1975,7 @@ func TestMailSend_PreparedRedactionRequiresExplicitSubject(t *testing.T) {
 }
 
 func TestMailSend_LocalFlagsDoNotLeakBetweenExecutions(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -1984,6 +2002,7 @@ func TestMailSend_LocalFlagsDoNotLeakBetweenExecutions(t *testing.T) {
 }
 
 func TestMailSendOverseer_BlockModeRefusesBeforeSend(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -2000,6 +2019,7 @@ func TestMailSendOverseer_BlockModeRefusesBeforeSend(t *testing.T) {
 }
 
 func TestMailSendOverseer_BlockModeRefusesSecretsInAuditReason(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	isolateSessionAgentStorage(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -2011,6 +2031,7 @@ func TestMailSendOverseer_BlockModeRefusesSecretsInAuditReason(t *testing.T) {
 }
 
 func TestMailSendOverseer_WarnModeSendsUnmodifiedButWarns(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -2034,6 +2055,7 @@ func TestMailSendOverseer_WarnModeSendsUnmodifiedButWarns(t *testing.T) {
 }
 
 func TestMailMarkJSONPartialSuccess(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
 	stub.failIDs[7] = "already read"
@@ -2062,6 +2084,7 @@ func TestMailMarkJSONPartialSuccess(t *testing.T) {
 }
 
 func TestMailReadWithFilters(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	inbox := []agentmail.InboxMessage{
 		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 		{ID: 2, From: "LilacDog", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
@@ -2088,6 +2111,7 @@ func TestMailReadWithFilters(t *testing.T) {
 }
 
 func TestMailReadWithAllSkipsAlreadyReadMessages(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 	inbox := []agentmail.InboxMessage{
 		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}, ReadAt: readAt},
@@ -2113,6 +2137,7 @@ func TestMailReadWithAllSkipsAlreadyReadMessages(t *testing.T) {
 }
 
 func TestMailAckWithAllSkipsMessagesWithoutAckRequirement(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	inbox := []agentmail.InboxMessage{
 		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 		{ID: 2, From: "BlueBear", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: time.Now()}, AckRequired: true},
@@ -2137,6 +2162,7 @@ func TestMailAckWithAllSkipsMessagesWithoutAckRequirement(t *testing.T) {
 }
 
 func TestRunMailMarkStopsImmediatelyWhenContextCancelsBetweenMessages(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
@@ -2164,6 +2190,7 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 	// HOME isolation is required on macOS so the saved session registry
 	// does not leak into other tests that look up "unlock-zero".
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectKey := GetProjectRoot()
 	session := "unlock-zero"
@@ -2194,6 +2221,7 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 func TestRunRenewLocksUsesProjectRootFromSubdir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectKey := GetProjectRoot()
 	session := "renew-root"
@@ -2221,6 +2249,7 @@ func TestRunRenewLocksUsesProjectRootFromSubdir(t *testing.T) {
 func TestRunRenewLocksErrorsOnZeroRenewed(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectKey := GetProjectRoot()
 	session := "renew-zero"
@@ -2244,6 +2273,7 @@ func TestRunRenewLocksErrorsOnZeroRenewed(t *testing.T) {
 
 func TestMailInboxUsesProjectRootFromSubdir(t *testing.T) {
 	resetFlags()
+	isolateOverseerSessionProbe(t)
 	t.Setenv("AGENT_MAIL_URL", "")
 	stub := newMailStub(t, []agentmail.InboxMessage{
 		{ID: 7, Subject: "Inbox subject", From: "BlueLake", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
@@ -2267,6 +2297,7 @@ func TestMailInboxUsesProjectRootFromSubdir(t *testing.T) {
 
 func TestMailReadUsesProjectRootFromSubdir(t *testing.T) {
 	resetFlags()
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, []agentmail.InboxMessage{
 		{ID: 9, Subject: "Read me", From: "BlueLake", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 	})
@@ -2295,6 +2326,7 @@ func TestRunMailInboxUsesSessionProjectDir(t *testing.T) {
 	// tests under HOME (or macOS Application Support) cannot leak in and
 	// flip projectKey to a high-scoring git repo like /Users/runner/work.
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, []agentmail.InboxMessage{
 		{ID: 11, Subject: "Scoped inbox", From: "BlueLake", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 	})
@@ -2331,6 +2363,7 @@ func TestRunMailInboxUsesSessionProjectDir(t *testing.T) {
 }
 
 func TestRunMailInboxSanitizesDisplayFields(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, []agentmail.InboxMessage{
 		{
 			ID:         12,
@@ -2377,6 +2410,7 @@ func TestRunMailInboxSanitizesDisplayFields(t *testing.T) {
 
 func TestRunMailMarkUsesSessionProjectDir(t *testing.T) {
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -2409,6 +2443,7 @@ func TestRunMailMarkUsesSessionProjectDir(t *testing.T) {
 
 func TestRunMailSendOverseerUsesSessionProjectDir(t *testing.T) {
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -2529,6 +2564,7 @@ func TestResolveAgentMailScopesPreservePreCanceledContext(t *testing.T) {
 }
 
 func TestUpdateSessionActivityUsesSavedSessionAgentProjectKey(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -2581,6 +2617,7 @@ func TestUpdateSessionActivityUsesSavedSessionAgentProjectKey(t *testing.T) {
 }
 
 func TestUpdateSessionActivityIgnoresCWDMatchedWrongProject(t *testing.T) {
+	isolateOverseerSessionProbe(t)
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -2812,6 +2849,7 @@ func TestRefineAgentMailProjectKeyIgnoresUnusableSavedProject(t *testing.T) {
 func TestRunLockUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -2847,6 +2885,7 @@ func TestRunLockUsesSessionProjectDir(t *testing.T) {
 func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -2882,6 +2921,7 @@ func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 func TestRunLocksRequiresSessionAgentUnlessAllAgents(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -2914,6 +2954,7 @@ func TestRunLocksRequiresSessionAgentUnlessAllAgents(t *testing.T) {
 func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -2949,6 +2990,7 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 func TestRunUnlockUsesSavedSessionAgentIdentityAndProjectKey(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	configuredProject := filepath.Join(projectsBase, "mysession")
@@ -2987,6 +3029,7 @@ func TestRunUnlockUsesSavedSessionAgentIdentityAndProjectKey(t *testing.T) {
 func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -3036,6 +3079,7 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 func TestRunRenewLocksUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "mysession")
@@ -3107,6 +3151,7 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	resetFlags()
 	t.Cleanup(func() { resetFlags(); startup.ResetConfig() })
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 
 	projectsBase := canonicalTempDir(t)
 	projDir := filepath.Join(projectsBase, "mysession")
