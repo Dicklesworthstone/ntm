@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -342,6 +343,7 @@ func TestAssignOutputEnhancedJSONCarriesPanePlaceability(t *testing.T) {
 
 func TestApplyAssignRelaxationAndAllocation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 2})
 	projectDir := t.TempDir()
 	now := time.Now().UTC()
 

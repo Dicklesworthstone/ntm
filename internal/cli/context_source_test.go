@@ -27,6 +27,7 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("TMUX", "")
 	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	seedCLIStateDB(t, "")
 	oldJSON, oldCfg := jsonOutput, cfg
 	jsonOutput, cfg = true, nil
 	t.Cleanup(func() { jsonOutput, cfg = oldJSON, oldCfg })

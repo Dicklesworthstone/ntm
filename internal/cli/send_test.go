@@ -3448,6 +3448,7 @@ func installFakeDCG(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("NTM_CONFIG", filepath.Join(root, "ntm", "config.toml"))
+	seedCLIStateDB(t, filepath.Join(root, "ntm", "state.db"))
 
 	binDir := t.TempDir()
 	script := `#!/bin/sh

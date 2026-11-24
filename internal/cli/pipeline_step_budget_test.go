@@ -138,7 +138,7 @@ func TestPipelineResumeStepBudgetsPreserveCompletedEffects(t *testing.T) {
 				}
 				awaitState := func(want pipeline.ExecutionStatus) *pipeline.ExecutionState {
 					t.Helper()
-					deadline := time.Now().Add(10 * time.Second)
+					deadline := time.Now().Add(25 * time.Second)
 					var latest *pipeline.ExecutionState
 					var latestErr error
 					for time.Now().Before(deadline) {

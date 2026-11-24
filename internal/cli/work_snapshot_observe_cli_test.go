@@ -32,6 +32,7 @@ func workObservationCommandFixture(t *testing.T) (project, source, log string, i
 		t.Setenv(name, home)
 	}
 	t.Setenv("NTM_CONFIG", filepath.Join(home, "config.toml"))
+	seedCLIStateDB(t, filepath.Join(home, "state.db"))
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

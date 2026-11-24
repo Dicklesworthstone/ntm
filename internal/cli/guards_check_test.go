@@ -147,7 +147,9 @@ func isolateGuardState(t *testing.T) string {
 	t.Setenv("AGENT_MAIL_TOKEN", "")
 	t.Setenv(guardStrictEnv, "")
 	t.Setenv(guardSelfAgentEnv, "")
-	return filepath.Join(xdg, "ntm", "state.db")
+	dbPath := filepath.Join(xdg, "ntm", "state.db")
+	seedCLIStateDB(t, dbPath)
+	return dbPath
 }
 
 // startFakeAgentMail serves the minimal MCP surface the guard check uses:

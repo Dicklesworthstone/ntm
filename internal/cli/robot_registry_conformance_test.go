@@ -13,6 +13,7 @@ import (
 )
 
 func TestRobotProcessExitContractReservesUnavailableForNotImplemented(t *testing.T) {
+	t.Parallel()
 	dependency := robot.NewErrorResponse(errors.New("missing dependency"), robot.ErrCodeDependencyMissing, "install it")
 	dependency.Meta = robot.NewResponseMeta("robot-test").WithExitCode(2)
 	if got := ExitCode(robot.ExitResultForResponse(dependency, errors.New("missing dependency"), true)); got != 1 {
@@ -31,6 +32,7 @@ func TestRobotProcessExitContractReservesUnavailableForNotImplemented(t *testing
 }
 
 func TestRobotRegistryMatchesLiveCobraAndSchemaContracts(t *testing.T) {
+	t.Parallel()
 	registry := robot.GetRobotRegistry()
 	for _, surface := range registry.Surfaces {
 		t.Run(surface.Name, func(t *testing.T) {
@@ -69,6 +71,7 @@ func TestRobotRegistryMatchesLiveCobraAndSchemaContracts(t *testing.T) {
 }
 
 func TestRobotExternalSchemaBindingsUseEmittedTypes(t *testing.T) {
+	t.Parallel()
 	registry := robot.GetRobotRegistry()
 	want := map[string]interface{}{
 		"context_inject":   ContextInjectResult{},

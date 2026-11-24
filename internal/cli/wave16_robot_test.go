@@ -77,6 +77,7 @@ func TestWave16AgentFilterFull11HarnessParityAcrossCLICommands(t *testing.T) {
 }
 
 func TestWave16RobotSubprocessContractsAndLiveTmuxGrepExtract(t *testing.T) {
+	t.Parallel()
 	homeDir := t.TempDir()
 	configHome := filepath.Join(homeDir, ".config")
 	dataHome := filepath.Join(homeDir, ".local", "share")

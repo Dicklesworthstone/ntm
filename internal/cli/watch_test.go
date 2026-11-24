@@ -375,7 +375,8 @@ func (f watchAssignmentMaintainerFunc) MaintainAssignments(ctx context.Context) 
 }
 
 func TestWatchLoopAssignmentMaintenanceSkipsDryRunAndUnreservedWatches(t *testing.T) {
-	for _, tc := range []struct {
+	isolateSessionAgentStorage(t)
+	for i, tc := range []struct {
 		name    string
 		reserve bool
 		dryRun  bool
@@ -383,9 +384,10 @@ func TestWatchLoopAssignmentMaintenanceSkipsDryRunAndUnreservedWatches(t *testin
 		{name: "dry run", reserve: true, dryRun: true},
 		{name: "without reservations"},
 	} {
+		i, tc := i, tc
 		t.Run(tc.name, func(t *testing.T) {
-			isolateSessionAgentStorage(t)
-			const session = "watch-no-reservation-maintenance"
+			t.Parallel()
+			session := fmt.Sprintf("watch-no-reservation-maintenance-%d", i)
 			loop := NewWatchLoop(session, assignment.NewStore(session), &AutoReassignOptions{
 				Session: session, Quiet: true, ReserveFiles: tc.reserve, DryRun: tc.dryRun,
 			})
@@ -530,7 +532,8 @@ func TestWatchLoopAssignmentMaintenanceContinuesDuringBlockedScanAndCompletion(t
 }
 
 func TestWatchLoopAssignmentMaintenanceRetriesAndReportsDegradedProtection(t *testing.T) {
-	for _, tc := range []struct {
+	isolateSessionAgentStorage(t)
+	for i, tc := range []struct {
 		name     string
 		timeout  bool
 		wantText string
@@ -538,9 +541,10 @@ func TestWatchLoopAssignmentMaintenanceRetriesAndReportsDegradedProtection(t *te
 		{name: "unavailable mail", wantText: "agent mail unavailable"},
 		{name: "bounded pass", timeout: true, wantText: "context deadline exceeded"},
 	} {
+		i, tc := i, tc
 		t.Run(tc.name, func(t *testing.T) {
-			isolateSessionAgentStorage(t)
-			const session = "watch-maintenance-retry"
+			t.Parallel()
+			session := fmt.Sprintf("watch-maintenance-retry-%d", i)
 			loop := NewWatchLoop(session, assignment.NewStore(session), &AutoReassignOptions{
 				Session: session, Quiet: true, ReserveFiles: true,
 			})
@@ -635,7 +639,11 @@ func TestWatchLoopAssignmentMaintenanceRetriesAndReportsDegradedProtection(t *te
 }
 
 func TestWatchLoopMaintainsExactDurableLeasesWithoutReadyWork(t *testing.T) {
-	for _, tc := range []struct {
+	batch := newCoordinatorMaintenanceBatch(t, "[coordinator]\nauto_assign=true\nconflict_notify=false\n")
+	previousInterval := assignWatchInterval
+	assignWatchInterval = time.Hour
+	t.Cleanup(func() { assignWatchInterval = previousInterval })
+	for idx, tc := range []struct {
 		name   string
 		change func(*testing.T, *coordinatorMaintenanceCLIFixture)
 	}{
@@ -666,14 +674,20 @@ func TestWatchLoopMaintainsExactDurableLeasesWithoutReadyWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			registry.AddAgent(f.session+"__cc_1", "%94", "RedLake")
+			registry.AddAgent(f.session+"__cc_1", f.activePaneID, "RedLake")
 			if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
 				t.Fatal(err)
 			}
 		}},
 	} {
+		idx, tc := idx, tc
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCoordinatorMaintenanceCLIFixture(t, false)
+			t.Parallel()
+			session := fmt.Sprintf("watch-maint-%d", idx)
+			activePane := fmt.Sprintf("%%%d", 104+idx*10)
+			unobsPane := fmt.Sprintf("%%%d", 105+idx*10)
+			finishedPane := fmt.Sprintf("%%%d", 106+idx*10)
+			f := batch.addCase(t, session, activePane, unobsPane, finishedPane, false)
 			if tc.change != nil {
 				func() {
 					f.mu.Lock()
@@ -681,9 +695,6 @@ func TestWatchLoopMaintainsExactDurableLeasesWithoutReadyWork(t *testing.T) {
 					tc.change(t, f)
 				}()
 			}
-			previousInterval := assignWatchInterval
-			assignWatchInterval = time.Hour
-			t.Cleanup(func() { assignWatchInterval = previousInterval })
 			before := f.store.Get("ntm-maintenance")
 			loop := NewWatchLoop(f.session, f.store, &AutoReassignOptions{
 				Session: f.session, ProjectDir: f.project, Quiet: true, ReserveFiles: true,
@@ -702,13 +713,13 @@ func TestWatchLoopMaintainsExactDurableLeasesWithoutReadyWork(t *testing.T) {
 				if !joined {
 					select {
 					case <-runResult:
-					case <-time.After(2 * time.Second):
+					case <-time.After(5 * time.Second):
 						t.Error("watch did not join during cleanup")
 					}
 				}
 			})
 			var current *assignment.Assignment
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(15 * time.Second)
 			for time.Now().Before(deadline) {
 				latest, err := assignment.LoadStoreStrictReadOnly(f.session)
 				if err == nil {

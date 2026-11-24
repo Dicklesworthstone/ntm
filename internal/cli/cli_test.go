@@ -143,6 +143,7 @@ func TestExecuteRootWithSignalsSecondSignalUsesDefault(t *testing.T) {
 }
 
 func TestClassifyRobotExecuteErrorMapsCancellationToTimeout(t *testing.T) {
+	t.Parallel()
 	for _, err := range []error{
 		context.Canceled,
 		context.DeadlineExceeded,
@@ -156,6 +157,7 @@ func TestClassifyRobotExecuteErrorMapsCancellationToTimeout(t *testing.T) {
 }
 
 func TestClassifyRobotExecuteErrorMapsMarkedInputToInvalidFlag(t *testing.T) {
+	t.Parallel()
 	err := markCLIInvalidInput(errors.New("invalid selected configuration"))
 	code, hint := classifyRobotExecuteError(fmt.Errorf("coordinator validation: %w", err))
 	if code != robot.ErrCodeInvalidFlag {
@@ -191,6 +193,7 @@ func TestRobotInvocationFromArgsPrefersOperationOverGlobalModifiers(t *testing.T
 }
 
 func TestJSONInvocationFromArgsHonorsExplicitBooleanAndTerminator(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -814,6 +817,10 @@ func isolateSessionAgentStorage(t *testing.T) {
 	// non-writable path that an outer CI/agent shell may have exported
 	// (e.g. /nonexistent/config.toml).
 	t.Setenv("NTM_CONFIG", "")
+	// Pre-seed the migrated empty state.db snapshot so isolated tests that
+	// open state.Open("") (e.g. ensemble offline state) do not pay a cold
+	// full-schema migration on every fresh temp home.
+	seedCLIStateDB(t, filepath.Join(home, ".config", "ntm", "state.db"))
 }
 
 // canonicalTempDir wraps t.TempDir with EvalSymlinks so the returned
@@ -3767,6 +3774,7 @@ func TestSanitizeDependencyVersion(t *testing.T) {
 }
 
 func TestGrokDependencyChecksAreOptionalAndSanitized(t *testing.T) {
+	t.Parallel()
 	var found bool
 	for _, dep := range defaultDepChecks() {
 		if dep.Command != "grok" {
@@ -8068,6 +8076,7 @@ func TestOpenAPIGenerateStdoutEmitsSingleOpenAPIDocument(t *testing.T) {
 }
 
 func TestOpenAPIGenerateRejectsPositionalArgumentBeforeWritingOutput(t *testing.T) {
+	t.Parallel()
 	output := filepath.Join(t.TempDir(), "openapi.json")
 	cmd := newOpenAPIGenerateCmd()
 	cmd.SetArgs([]string{"unexpected", "--output", output})
@@ -8104,6 +8113,7 @@ func TestClassifyRobotExecuteErrorSuggestsNearestFlag(t *testing.T) {
 }
 
 func TestClassifyRobotExecuteErrorExplainsRobotStatusValueMisuse(t *testing.T) {
+	t.Parallel()
 	err := errors.New(`invalid argument "project" for "--robot-status" flag: strconv.ParseBool: parsing "project": invalid syntax`)
 	code, hint := classifyRobotExecuteError(err)
 	if code != robot.ErrCodeInvalidFlag {
@@ -8117,6 +8127,7 @@ func TestClassifyRobotExecuteErrorExplainsRobotStatusValueMisuse(t *testing.T) {
 }
 
 func TestClassifyRobotExecuteErrorUnknownCommandIsInvalidFlag(t *testing.T) {
+	t.Parallel()
 	code, hint := classifyRobotExecuteError(errors.New(`unknown command "myproject" for "ntm"`))
 	if code != robot.ErrCodeInvalidFlag {
 		t.Fatalf("code = %q, want INVALID_FLAG (deterministic usage error, not internal)", code)

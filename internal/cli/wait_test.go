@@ -59,7 +59,7 @@ case "$1" in
     printf '%s\n' "$pane" >> "$NTM_CLI_WAIT_TEST_ROOT/captured"
     if [ -f "$NTM_CLI_WAIT_TEST_ROOT/hold-$pane" ]; then
       printf '%s\n' "$1" > "$NTM_CLI_WAIT_TEST_ROOT/blocked-stage"
-      while [ ! -f "$NTM_CLI_WAIT_TEST_ROOT/release" ]; do :; done
+      while [ ! -f "$NTM_CLI_WAIT_TEST_ROOT/release" ]; do sleep 0.01; done
     fi
     if [ -f "$NTM_CLI_WAIT_TEST_ROOT/unreadable-$pane" ]; then
       printf "can't find pane: %s\n" "$pane" >&2

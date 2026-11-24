@@ -26,6 +26,7 @@ func TestWorkSnapshotCommandReopensAndRequiresExplicitRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("NTM_CONFIG", filepath.Join(configDir, "config.toml"))
+	seedCLIStateDB(t, filepath.Join(configDir, "state.db"))
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
