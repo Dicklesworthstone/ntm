@@ -520,7 +520,7 @@ func TestSelectedPaneIndex_NilSession(t *testing.T) {
 	t.Parallel()
 
 	mv := NewModeVisualization()
-	_, ok := mv.selectedPaneIndex()
+	_, _, ok := mv.selectedPaneTarget()
 	if ok {
 		t.Error("expected ok=false for nil session")
 	}
@@ -538,7 +538,7 @@ func TestSelectedPaneIndex_EmptyPaneName(t *testing.T) {
 	mv := NewModeVisualization()
 	mv.SetData("test", sess, nil, nil, nil)
 
-	_, ok := mv.selectedPaneIndex()
+	_, _, ok := mv.selectedPaneTarget()
 	if ok {
 		t.Error("expected ok=false for empty pane name")
 	}
@@ -557,7 +557,7 @@ func TestSelectedPaneIndex_CursorOutOfRange(t *testing.T) {
 	mv.SetData("test", sess, nil, nil, nil)
 	mv.cursor = -1
 
-	_, ok := mv.selectedPaneIndex()
+	_, _, ok := mv.selectedPaneTarget()
 	if ok {
 		t.Error("expected ok=false for negative cursor")
 	}

@@ -22,9 +22,10 @@ type CloseMsg struct{}
 // RefreshMsg requests reloading ensemble mode data.
 type RefreshMsg struct{}
 
-// ZoomMsg requests zooming to a tmux pane index.
+// ZoomMsg requests zooming to a tmux pane (preferring physical PaneID when set).
 type ZoomMsg struct {
 	PaneIndex int
+	PaneID    string
 }
 
 type KeyMap struct {
@@ -54,7 +55,8 @@ type ModeVisualization struct {
 	cursor    int
 	session   *ensemble.EnsembleSession
 	catalog   *ensemble.ModeCatalog
-	paneIndex map[string]int // assignment.PaneName -> tmux pane index
+	paneIndex map[string]int    // assignment.PaneName -> tmux pane index
+	paneID    map[string]string // assignment.PaneName -> physical tmux pane ID (%N)
 	err       error
 }
 
@@ -78,11 +80,15 @@ func (m *ModeVisualization) SetData(sessionName string, sess *ensemble.EnsembleS
 	m.err = err
 
 	m.paneIndex = make(map[string]int, len(panes))
+	m.paneID = make(map[string]string, len(panes))
 	for _, p := range panes {
 		if strings.TrimSpace(p.Title) == "" {
 			continue
 		}
 		m.paneIndex[p.Title] = p.Index
+		if p.ID != "" {
+			m.paneID[p.Title] = p.ID
+		}
 	}
 
 	if sess != nil {
@@ -120,8 +126,8 @@ func (m ModeVisualization) Update(msg tea.Msg) (ModeVisualization, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, m.Keys.Zoom):
-			if idx, ok := m.selectedPaneIndex(); ok {
-				return m, func() tea.Msg { return ZoomMsg{PaneIndex: idx} }
+			if idx, id, ok := m.selectedPaneTarget(); ok {
+				return m, func() tea.Msg { return ZoomMsg{PaneIndex: idx, PaneID: id} }
 			}
 			return m, nil
 		}
@@ -317,16 +323,16 @@ func modeAssignmentAgentColor(agentType string, t theme.Theme) lipgloss.Color {
 	return t.Semantic().AgentColor(agentType)
 }
 
-func (m ModeVisualization) selectedPaneIndex() (int, bool) {
+func (m ModeVisualization) selectedPaneTarget() (int, string, bool) {
 	if m.session == nil || m.cursor < 0 || m.cursor >= len(m.session.Assignments) {
-		return 0, false
+		return 0, "", false
 	}
 	name := strings.TrimSpace(m.session.Assignments[m.cursor].PaneName)
 	if name == "" {
-		return 0, false
+		return 0, "", false
 	}
 	idx, ok := m.paneIndex[name]
-	return idx, ok
+	return idx, m.paneID[name], ok
 }
 
 func summarizeCompletion(assignments []ensemble.ModeAssignment) (done, total int) {
