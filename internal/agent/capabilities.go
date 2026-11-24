@@ -10,6 +10,7 @@ const (
 	GracefulExitDoubleInterrupt GracefulExitStrategy = "double_interrupt"
 	GracefulExitSlashExit       GracefulExitStrategy = "slash_exit"
 	GracefulExitEscapeInterrupt GracefulExitStrategy = "escape_interrupt"
+	GracefulExitEscapeClearEOF  GracefulExitStrategy = "escape_clear_eof"
 	GracefulExitSingleInterrupt GracefulExitStrategy = "single_interrupt"
 )
 
@@ -156,7 +157,7 @@ var canonicalHarnesses = []HarnessCapability{
 		Provider:                  "omp",
 		CAAMTool:                  "",
 		NeedsDoubleEnter:          false,
-		GracefulExit:              GracefulExitDoubleInterrupt,
+		GracefulExit:              GracefulExitEscapeClearEOF,
 		SupportsBuiltinCompact:    true,
 		BuiltinCompactCommand:     "/compact",
 		SupportsHistoryClear:      true,

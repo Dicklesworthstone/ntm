@@ -24,6 +24,7 @@ func TestHarnessCapabilityConformanceMatrix12x15(t *testing.T) {
 		GracefulExitDoubleInterrupt: true,
 		GracefulExitSlashExit:       true,
 		GracefulExitEscapeInterrupt: true,
+		GracefulExitEscapeClearEOF:  true,
 		GracefulExitSingleInterrupt: true,
 	}
 

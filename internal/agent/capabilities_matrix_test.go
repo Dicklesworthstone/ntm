@@ -106,6 +106,7 @@ func TestHarnessConformanceMatrix12x15CrossSubsystem(t *testing.T) {
 		agent.GracefulExitDoubleInterrupt: true,
 		agent.GracefulExitSlashExit:       true,
 		agent.GracefulExitEscapeInterrupt: true,
+		agent.GracefulExitEscapeClearEOF:  true,
 		agent.GracefulExitSingleInterrupt: true,
 	}
 
