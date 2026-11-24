@@ -734,6 +734,43 @@ func TestRestartAutoRestartStuckPanes_WindowPerAgentTargetsDistinctPanes(t *test
 	}
 }
 
+func TestClassifyAndRestartStuckMultiWindowDoesNotKillHealthyPane(t *testing.T) {
+	// Window 0 pane 0 (%0) is healthy and active; Window 1 pane 0 (%1) is stuck.
+	// Using stuckRecords directly must restart ONLY %1 and never touch healthy %0.
+	agents := []SessionAgentHealth{
+		{Pane: 0, PaneTarget: "%0", AgentType: "cc", Health: "healthy", IdleSinceSeconds: 10},
+		{Pane: 0, PaneTarget: "%1", AgentType: "cod", Health: "unhealthy", IdleSinceSeconds: 600},
+	}
+
+	stuckRecords, skipped := classifyStuckAgentRecords(agents, 5*time.Minute)
+	if len(skipped) != 0 {
+		t.Fatalf("unexpected skipped: %+v", skipped)
+	}
+	if len(stuckRecords) != 1 || stuckRecords[0].PaneTarget != "%1" {
+		t.Fatalf("stuckRecords = %+v, want only %%1", stuckRecords)
+	}
+	stuckPanes := []int{stuckRecords[0].Pane}
+
+	var restartedTargets []string
+	restart := func(_ context.Context, opts RestartPaneOptions) (*RestartPaneOutput, error) {
+		restartedTargets = append(restartedTargets, strings.Join(opts.Panes, ","))
+		return &RestartPaneOutput{RobotResponse: NewRobotResponse(true)}, nil
+	}
+	restarted, failed, err := restartAutoRestartStuckPanes(
+		context.Background(),
+		AutoRestartStuckOptions{Session: "proj"},
+		stuckRecords,
+		stuckPanes,
+		restart,
+	)
+	if err != nil || len(failed) != 0 || len(restarted) != 1 {
+		t.Fatalf("restartAutoRestartStuckPanes = (%v, %v, %v), want 1 restarted", restarted, failed, err)
+	}
+	if len(restartedTargets) != 1 || restartedTargets[0] != "%1" {
+		t.Fatalf("restarted targets = %v, want [%%1] (must not kill healthy %%0)", restartedTargets)
+	}
+}
+
 // bd-qz5wk: threshold-exceeding panes whose health forbids a restart become
 // typed skips — a restart cannot answer a gate screen or lift a rate limit.
 func TestClassifyStuckPanesSkipsBlockedAndRateLimited(t *testing.T) {

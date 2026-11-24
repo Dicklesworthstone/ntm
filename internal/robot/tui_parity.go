@@ -660,43 +660,106 @@ func GetInspectPane(opts InspectPaneOptions) (*InspectPaneOutput, error) {
 		}, nil
 	}
 
-	// Find the target pane
-	var targetPane *tmux.Pane
-	for i := range panes {
-		if opts.PaneID != "" && panes[i].ID == opts.PaneID {
-			targetPane = &panes[i]
-			break
-		} else if panes[i].Index == opts.PaneIndex {
-			targetPane = &panes[i]
-			break
+	// Find the target pane. When PaneID is explicitly specified, match strictly
+	// by PaneID (or selector like W.P / %N) and never fall through to PaneIndex 0.
+	// Reject ambiguous bare pane indices across multi-window sessions instead of
+	// silently inspecting the first window's pane.
+	var matches []tmux.Pane
+	paneID := strings.TrimSpace(opts.PaneID)
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	if paneID != "" {
+		if sel, selErr := tmux.ParsePaneSelector(paneID); selErr == nil {
+			for i := range panes {
+				switch sel.Kind {
+				case tmux.PaneSelectorID:
+					if panes[i].ID == sel.PaneID {
+						matches = append(matches, panes[i])
+					}
+				case tmux.PaneSelectorWindowPane:
+					if panes[i].WindowIndex == sel.WindowIndex && panes[i].Index == sel.PaneIndex {
+						matches = append(matches, panes[i])
+					}
+				case tmux.PaneSelectorPaneIndex:
+					if panes[i].Index == sel.Index {
+						matches = append(matches, panes[i])
+					}
+				}
+			}
+		} else {
+			for i := range panes {
+				if panes[i].ID == paneID {
+					matches = append(matches, panes[i])
+				}
+			}
+		}
+	} else {
+		for i := range panes {
+			if panes[i].Index == opts.PaneIndex {
+				matches = append(matches, panes[i])
+			}
+		}
+		// If pane index 0 was requested but not found, and there are panes,
+		// the user likely wants the first pane but tmux has pane-base-index > 0.
+		// Fall back to the first pane in the list.
+		if len(matches) == 0 && opts.PaneIndex == 0 && len(panes) > 0 {
+			matches = append(matches, panes[0])
 		}
 	}
 
-	// If pane index 0 was requested but not found, and there are panes,
-	// the user likely wants the first pane but tmux has pane-base-index > 0.
-	// Fall back to the first pane in the list.
-	if targetPane == nil && opts.PaneIndex == 0 && len(panes) > 0 {
-		targetPane = &panes[0]
+	formatPaneHints := func(candidates []tmux.Pane) string {
+		if len(candidates) == 0 {
+			return "No panes found"
+		}
+		validTargets := make([]string, 0, len(candidates))
+		for _, p := range candidates {
+			key := tmux.PaneTargetKey(p, multiWindow)
+			if p.ID != "" && p.ID != key {
+				validTargets = append(validTargets, fmt.Sprintf("%s (%s)", key, p.ID))
+			} else if key != "" {
+				validTargets = append(validTargets, key)
+			} else {
+				validTargets = append(validTargets, fmt.Sprintf("%d", p.Index))
+			}
+		}
+		return fmt.Sprintf("Valid pane targets: %s", strings.Join(validTargets, ", "))
 	}
 
-	if targetPane == nil {
-		// Build list of actual valid pane indices for a helpful hint
-		var validIndices []string
-		for _, p := range panes {
-			validIndices = append(validIndices, fmt.Sprintf("%d", p.Index))
-		}
-		hint := "No panes found"
-		if len(validIndices) > 0 {
-			hint = fmt.Sprintf("Valid pane indices: %s", strings.Join(validIndices, ", "))
+	if len(matches) > 1 {
+		selectorDesc := fmt.Sprintf("%d", opts.PaneIndex)
+		if paneID != "" {
+			selectorDesc = paneID
 		}
 		return &InspectPaneOutput{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("pane %d not found in session '%s'", opts.PaneIndex, opts.Session),
-				ErrCodePaneNotFound,
-				hint,
+				fmt.Errorf("pane selector %q is ambiguous across %d windows in session '%s'; use W.P or %%id", selectorDesc, len(matches), opts.Session),
+				ErrCodeInvalidFlag,
+				formatPaneHints(matches),
 			),
 			Session:   opts.Session,
 			PaneIndex: opts.PaneIndex,
+			PaneID:    paneID,
+		}, nil
+	}
+
+	var targetPane *tmux.Pane
+	if len(matches) == 1 {
+		targetPane = &matches[0]
+	}
+
+	if targetPane == nil {
+		notFoundErr := fmt.Errorf("pane %d not found in session '%s'", opts.PaneIndex, opts.Session)
+		if paneID != "" {
+			notFoundErr = fmt.Errorf("pane %q not found in session '%s'", paneID, opts.Session)
+		}
+		return &InspectPaneOutput{
+			RobotResponse: NewErrorResponse(
+				notFoundErr,
+				ErrCodePaneNotFound,
+				formatPaneHints(panes),
+			),
+			Session:   opts.Session,
+			PaneIndex: opts.PaneIndex,
+			PaneID:    paneID,
 		}, nil
 	}
 

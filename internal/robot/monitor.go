@@ -31,7 +31,7 @@ import (
 // Monitor runs continuous monitoring for a session.
 type Monitor struct {
 	config     MonitorConfig
-	trends     *TrendTracker
+	paneTrends map[string]*TrendTracker
 	cautClient *caut.CachedClient
 	output     io.Writer
 	outputFile *os.File // If writing to file, we need to close it
@@ -61,7 +61,7 @@ func NewMonitor(config MonitorConfig) (*Monitor, error) {
 
 	m := &Monitor{
 		config:     config,
-		trends:     NewTrendTracker(10), // Keep 10 samples per pane
+		paneTrends: make(map[string]*TrendTracker),
 		output:     output,
 		outputFile: outputFile,
 		parser:     agent.NewParser(),
@@ -173,56 +173,79 @@ func (m *Monitor) getAgentPanes() ([]tmux.Pane, error) {
 	}
 
 	var agentPanes []tmux.Pane
-	controlPane, ok := controlPaneIndex(allPanes)
+	controlWin, controlPane, ok := controlPaneWindowAndIndex(allPanes)
 	if !ok {
 		return agentPanes, nil
 	}
 	for _, p := range allPanes {
-		// Skip the control pane (first pane) unless it is a known agent pane.
-		if p.Index != controlPane || !paneIsDefaultControlPane(p) {
+		// Skip only the first window's control pane unless it is a known agent pane;
+		// never drop window-local pane 0 in window 1+ on multi-window sessions.
+		if p.WindowIndex != controlWin || p.Index != controlPane || !paneIsDefaultControlPane(p) {
 			agentPanes = append(agentPanes, p)
 		}
 	}
 	return agentPanes, nil
 }
 
-func controlPaneIndex(panes []tmux.Pane) (int, bool) {
-	minIdx := -1
-	for _, p := range panes {
-		if minIdx == -1 || p.Index < minIdx {
+func controlPaneWindowAndIndex(panes []tmux.Pane) (int, int, bool) {
+	if len(panes) == 0 {
+		return 0, 0, false
+	}
+	minWin := panes[0].WindowIndex
+	minIdx := panes[0].Index
+	for _, p := range panes[1:] {
+		if p.WindowIndex < minWin || (p.WindowIndex == minWin && p.Index < minIdx) {
+			minWin = p.WindowIndex
 			minIdx = p.Index
 		}
 	}
-	if minIdx == -1 {
-		return 0, false
-	}
-	return minIdx, true
+	return minWin, minIdx, true
 }
 
 func defaultMonitorPaneIndices(panes []tmux.Pane) []int {
-	controlPane, ok := controlPaneIndex(panes)
+	controlWin, controlPane, ok := controlPaneWindowAndIndex(panes)
 	if !ok {
 		return nil
 	}
 
 	indices := make([]int, 0, len(panes))
 	for _, p := range panes {
-		if p.Index != controlPane || !paneIsDefaultControlPane(p) {
+		if p.WindowIndex != controlWin || p.Index != controlPane || !paneIsDefaultControlPane(p) {
 			indices = append(indices, p.Index)
 		}
 	}
 	return indices
 }
 
+func (m *Monitor) trendTrackerForPane(pane tmux.Pane) *TrendTracker {
+	key := pane.ID
+	if key == "" {
+		key = fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+	}
+	if m.paneTrends == nil {
+		m.paneTrends = make(map[string]*TrendTracker)
+	}
+	tr, ok := m.paneTrends[key]
+	if !ok {
+		tr = NewTrendTracker(10)
+		m.paneTrends[key] = tr
+	}
+	return tr
+}
+
 func (m *Monitor) checkPane(ctx context.Context, pane tmux.Pane) error {
 	// Build target
 	target := pane.ID
 	if target == "" {
-		firstWin, err := tmux.GetFirstWindow(m.config.Session)
-		if err != nil {
-			return err
+		win := pane.WindowIndex
+		if win == 0 {
+			firstWin, err := tmux.GetFirstWindow(m.config.Session)
+			if err != nil {
+				return err
+			}
+			win = firstWin
 		}
-		target = fmt.Sprintf("%s:%d.%d", m.config.Session, firstWin, pane.Index)
+		target = fmt.Sprintf("%s:%d.%d", m.config.Session, win, pane.Index)
 	}
 
 	// Capture output
@@ -237,14 +260,16 @@ func (m *Monitor) checkPane(ctx context.Context, pane tmux.Pane) error {
 		return err
 	}
 
-	// Record trend sample
-	m.trends.AddSample(pane.Index, TrendSample{
+	// Record trend sample per physical pane identity so multi-window panes
+	// sharing the same pane.Index never mix context readings.
+	tracker := m.trendTrackerForPane(pane)
+	tracker.AddSample(pane.Index, TrendSample{
 		Timestamp:        time.Now(),
 		ContextRemaining: state.ContextRemaining,
 	})
 
 	// Get trend
-	trend, samples := m.trends.GetTrend(pane.Index)
+	trend, samples := tracker.GetTrend(pane.Index)
 
 	// Generate warnings based on context thresholds
 	if state.ContextRemaining != nil {

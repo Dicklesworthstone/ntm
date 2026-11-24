@@ -1539,6 +1539,66 @@ func TestInspectPaneOutputStructure(t *testing.T) {
 	}
 }
 
+func TestGetInspectPaneExplicitPaneIDDoesNotFallbackToPaneZero(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fake tmux requires POSIX sh")
+	}
+	root := t.TempDir()
+	fakeTmux := filepath.Join(root, "tmux")
+	script := `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  list-panes)
+    echo '%0_NTM_SEP_0_NTM_SEP_proj__user_0_NTM_SEP_bash_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_100_NTM_SEP_0_NTM_SEP__NTM_SEP__NTM_SEP__NTM_SEP_0'
+    echo '%1_NTM_SEP_1_NTM_SEP_proj__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_101_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    echo '%5_NTM_SEP_1_NTM_SEP_proj__cod_1_NTM_SEP_codex_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_105_NTM_SEP_1_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    printf 'captured from %s\n' "$*"
+    ;;
+esac
+`
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", fakeTmux)
+
+	gotID, err := GetInspectPane(InspectPaneOptions{Session: "proj", PaneID: "%5", PaneIndex: 0, Lines: 10})
+	if err != nil {
+		t.Fatalf("GetInspectPane(%%5): %v", err)
+	}
+	if !gotID.Success || gotID.PaneID != "%5" || gotID.PaneIndex != 1 {
+		t.Fatalf("GetInspectPane(%%5) = success:%v id:%q idx:%d, want %%5 idx 1", gotID.Success, gotID.PaneID, gotID.PaneIndex)
+	}
+
+	gotWP, err := GetInspectPane(InspectPaneOptions{Session: "proj", PaneID: "1.1", PaneIndex: 0, Lines: 10})
+	if err != nil {
+		t.Fatalf("GetInspectPane(1.1): %v", err)
+	}
+	if !gotWP.Success || gotWP.PaneID != "%5" {
+		t.Fatalf("GetInspectPane(1.1) = success:%v id:%q, want %%5", gotWP.Success, gotWP.PaneID)
+	}
+
+	gotMissing, err := GetInspectPane(InspectPaneOptions{Session: "proj", PaneID: "%999", PaneIndex: 0, Lines: 10})
+	if err != nil {
+		t.Fatalf("GetInspectPane(%%999): %v", err)
+	}
+	if gotMissing.Success || gotMissing.ErrorCode != ErrCodePaneNotFound {
+		t.Fatalf("GetInspectPane(%%999) = success:%v code:%q id:%q, want PANE_NOT_FOUND", gotMissing.Success, gotMissing.ErrorCode, gotMissing.PaneID)
+	}
+	if !strings.Contains(gotMissing.Hint, "1.1 (%5)") {
+		t.Fatalf("expected topology-aware pane target hint, got %q", gotMissing.Hint)
+	}
+
+	gotAmbig, err := GetInspectPane(InspectPaneOptions{Session: "proj", PaneIndex: 1, Lines: 10})
+	if err != nil {
+		t.Fatalf("GetInspectPane(ambiguous 1): %v", err)
+	}
+	if gotAmbig.Success || gotAmbig.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("GetInspectPane(ambiguous 1) = success:%v code:%q, want INVALID_FLAG", gotAmbig.Success, gotAmbig.ErrorCode)
+	}
+}
+
 func TestInspectSessionOutputStructure(t *testing.T) {
 	t.Parallel()
 	output := InspectSessionOutput{

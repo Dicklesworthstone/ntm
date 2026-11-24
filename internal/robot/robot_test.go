@@ -35,6 +35,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -261,18 +262,13 @@ func stubRobotWork(t *testing.T, collect func(ctx context.Context, store *state.
 	t.Cleanup(func() { collectRobotWork = previous })
 }
 
-// developerDataHome is XDG_DATA_HOME as the test binary inherited it, before
-// TestMain isolates it; read-only tests of installed tools that keep their
-// data there (cass) restore it.
-var developerDataHome string
-
 var (
-	robotSchemaSnapshotOnce   sync.Once
-	robotSchemaSnapshotData   []byte
-	robotSchemaSnapshotErr    error
-	robotMemorySchemaOnce     sync.Once
-	robotMemorySchemaBytes    []byte
-	robotMemorySchemaErr      error
+	robotSchemaSnapshotOnce sync.Once
+	robotSchemaSnapshotData []byte
+	robotSchemaSnapshotErr  error
+	robotMemorySchemaOnce   sync.Once
+	robotMemorySchemaBytes  []byte
+	robotMemorySchemaErr    error
 )
 
 type robotSQLiteSerializer interface {
@@ -420,6 +416,11 @@ func openFastRobotStateStore(t testing.TB, dbPath string) *state.Store {
 }
 
 func TestMain(m *testing.M) {
+	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
+	tmux.PaneProcessStartPoll = 5 * time.Millisecond
+	collectSnapshotToolsSummary = func(context.Context, map[tools.ToolName]bool) []ToolInfoOutput {
+		return nil
+	}
 	collectRobotWork = func(context.Context, *state.Store, adapters.WorkCoordinationAdapterConfig, bool) (*adapters.WorkSection, error) {
 		return nil, errNoTestWorkSource
 	}
@@ -445,7 +446,6 @@ func TestMain(m *testing.M) {
 		// Re-execed helper process spawned by a parent robot.test that already
 		// isolated TMUX_TMPDIR, XDG_DATA_HOME, and AGENT_MAIL_URL (and may
 		// have supplied per-test overrides in cmd.Env).
-		developerDataHome = os.Getenv("XDG_DATA_HOME")
 		os.Exit(m.Run())
 	}
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
@@ -456,7 +456,6 @@ func TestMain(m *testing.M) {
 	// Robot sends record prompt history (and spawns write manifests) under
 	// XDG_DATA_HOME; never let the package's real-tmux sends append to the
 	// developer's own history. Tests that inspect it set their own.
-	developerDataHome = os.Getenv("XDG_DATA_HOME")
 	dataHome, err := os.MkdirTemp("", "ntm-robot-test-data-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create robot test data home: %v\n", err)
@@ -464,6 +463,15 @@ func TestMain(m *testing.M) {
 	}
 	if err := os.Setenv("XDG_DATA_HOME", dataHome); err != nil {
 		fmt.Fprintf(os.Stderr, "isolate robot test data home: %v\n", err)
+		os.Exit(1)
+	}
+	configHome := filepath.Join(dataHome, "config")
+	if err := os.MkdirAll(configHome, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "create robot test config home: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", configHome); err != nil {
+		fmt.Fprintf(os.Stderr, "isolate robot test config home: %v\n", err)
 		os.Exit(1)
 	}
 	// Robot spawn provisions Agent Mail identities under the default config
@@ -957,17 +965,39 @@ func TestRobotMSSearchAndShowReadInstalledMS(t *testing.T) {
 		}
 	}
 
-	search, err := GetMSSearch("commit")
-	if err != nil {
-		t.Fatalf("GetMSSearch returned error: %v", err)
+	var (
+		search    *MSSearchOutput
+		searchErr error
+		show      *MSShowOutput
+		showErr   error
+		missing   *MSShowOutput
+		missErr   error
+		wg        sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		search, searchErr = GetMSSearch("commit")
+	}()
+	go func() {
+		defer wg.Done()
+		show, showErr = GetMSShow("commit-workflow")
+	}()
+	go func() {
+		defer wg.Done()
+		missing, missErr = GetMSShow("no-such-skill")
+	}()
+	wg.Wait()
+
+	if searchErr != nil {
+		t.Fatalf("GetMSSearch returned error: %v", searchErr)
 	}
 	if !search.Success || search.Count != 1 || len(search.Skills) != 1 || search.Skills[0].ID != "commit-workflow" {
 		t.Fatalf("GetMSSearch = success:%t count:%d skills:%+v err:%q", search.Success, search.Count, search.Skills, search.Error)
 	}
 
-	show, err := GetMSShow("commit-workflow")
-	if err != nil {
-		t.Fatalf("GetMSShow returned error: %v", err)
+	if showErr != nil {
+		t.Fatalf("GetMSShow returned error: %v", showErr)
 	}
 	var shown struct {
 		ID     string `json:"id"`
@@ -977,9 +1007,8 @@ func TestRobotMSSearchAndShowReadInstalledMS(t *testing.T) {
 		t.Fatalf("GetMSShow = success:%t skill:%s err:%q, want the bare skill object", show.Success, show.Skill, show.Error)
 	}
 
-	missing, err := GetMSShow("no-such-skill")
-	if err != nil {
-		t.Fatalf("GetMSShow returned error: %v", err)
+	if missErr != nil {
+		t.Fatalf("GetMSShow returned error: %v", missErr)
 	}
 	if missing.Success || missing.ErrorCode != "NOT_FOUND" {
 		t.Fatalf("GetMSShow(missing) = success:%t code:%q err:%q, want NOT_FOUND", missing.Success, missing.ErrorCode, missing.Error)
@@ -987,106 +1016,65 @@ func TestRobotMSSearchAndShowReadInstalledMS(t *testing.T) {
 }
 
 // TestRobotCASSInsightsMatchesInstalledCass compares --robot-cass-insights with
-// the installed cass's own aggregation over the same window.
+// the installed cass's own aggregation over the same window using a small
+// hermetic index built by the real cass binary.
 func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 	if _, err := exec.LookPath("cass"); err != nil {
 		t.Skip("cass not installed")
 	}
-	// Both runs read the developer's real index, not TestMain's empty data home.
-	t.Setenv("XDG_DATA_HOME", developerDataHome)
 
-	readDirectBuckets := func() ([]cass.AggregationBucket, error) {
-		raw, err := exec.Command("cass", "search", "*", "--json", "--limit", "0", "--since", "30d", "--aggregate", "agent,workspace").Output()
-		if err != nil {
-			return nil, err
+	home := t.TempDir()
+	dataHome := filepath.Join(home, "data")
+	configHome := filepath.Join(home, "config")
+	sessionDir := filepath.Join(home, ".claude", "projects", "-tmp-ntm-cass-insights")
+	for _, dir := range []string{dataHome, configHome, sessionDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
 		}
-		var direct struct {
-			Aggregations struct {
-				Agent struct {
-					Buckets []cass.AggregationBucket `json:"buckets"`
-				} `json:"agent"`
-			} `json:"aggregations"`
-		}
-		if err := json.Unmarshal(raw, &direct); err != nil {
-			return nil, err
-		}
-		return direct.Aggregations.Agent.Buckets, nil
 	}
-
-	bucketsEqual := func(a, b []cass.AggregationBucket) bool {
-		if len(a) != len(b) {
-			return false
-		}
-		for i := range a {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
-	}
-
-	// Bracket GetCASSInsights with before/after cass reads so a live agent turn
-	// indexed mid-test triggers a bounded retry rather than a non-hermetic flake.
-	var (
-		expected []cass.AggregationBucket
-		out      *CASSInsightsOutput
-		settled  bool
+	now := time.Now().UTC().Format(time.RFC3339)
+	transcript := fmt.Sprintf(
+		"{\"type\":\"user\",\"timestamp\":%q,\"sessionId\":\"hermetic-s1\",\"cwd\":\"/tmp/ntm-cass-insights\",\"message\":{\"role\":\"user\",\"content\":\"check cass insights\"}}\n"+
+			"{\"type\":\"assistant\",\"timestamp\":%q,\"sessionId\":\"hermetic-s1\",\"cwd\":\"/tmp/ntm-cass-insights\",\"message\":{\"role\":\"assistant\",\"content\":\"insights verified\"}}\n",
+		now, now,
 	)
-	for attempt := 0; attempt < 5; attempt++ {
-		var (
-			before    []cass.AggregationBucket
-			beforeErr error
-			err       error
-		)
-		if attempt == 0 {
-			// Fast path: when the live cass index is idle, overlap the direct
-			// read and GetCASSInsights, and accept ONLY an exact match here.
-			// On any mismatch, fall back to strictly sequential bracketing
-			// (before -> out -> after) so t(before) < t(out) < t(after) holds.
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go func() {
-				defer wg.Done()
-				before, beforeErr = readDirectBuckets()
-			}()
-			go func() {
-				defer wg.Done()
-				out, err = GetCASSInsights("30d")
-			}()
-			wg.Wait()
-			if beforeErr != nil {
-				t.Fatalf("cass search --aggregate (before): %v", beforeErr)
-			}
-			if err != nil || !out.Success || out.Period != "30d" {
-				t.Fatalf("GetCASSInsights = %+v, %v", out, err)
-			}
-			if bucketsEqual(before, out.Agents) {
-				expected = before
-				settled = true
-				break
-			}
-			continue
-		}
-		before, beforeErr = readDirectBuckets()
-		if beforeErr != nil {
-			t.Fatalf("cass search --aggregate (before): %v", beforeErr)
-		}
-		out, err = GetCASSInsights("30d")
-		if err != nil || !out.Success || out.Period != "30d" {
-			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
-		}
-		after, afterErr := readDirectBuckets()
-		if afterErr != nil {
-			t.Fatalf("cass search --aggregate (after): %v", afterErr)
-		}
-		if bucketsEqual(before, after) {
-			expected = before
-			settled = true
-			break
-		}
+	if err := os.WriteFile(filepath.Join(sessionDir, "hermetic-s1.jsonl"), []byte(transcript), 0o600); err != nil {
+		t.Fatalf("write fixture session: %v", err)
 	}
-	if !settled {
-		t.Skip("live cass index mutated continuously across 4 sequential snapshots")
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	if out, err := exec.Command("cass", "index", "--full", "--json").CombinedOutput(); err != nil {
+		t.Fatalf("cass index --full: %v\n%s", err, out)
+	}
+
+	raw, err := exec.Command("cass", "search", "*", "--json", "--limit", "0", "--since", "30d", "--aggregate", "agent,workspace").Output()
+	if err != nil {
+		t.Fatalf("cass search --aggregate: %v", err)
+	}
+	var direct struct {
+		Aggregations struct {
+			Agent struct {
+				Buckets []cass.AggregationBucket `json:"buckets"`
+			} `json:"agent"`
+			Workspace struct {
+				Buckets []cass.AggregationBucket `json:"buckets"`
+			} `json:"workspace"`
+		} `json:"aggregations"`
+	}
+	if err := json.Unmarshal(raw, &direct); err != nil {
+		t.Fatalf("decode direct cass search: %v", err)
+	}
+	expected := direct.Aggregations.Agent.Buckets
+	if len(expected) == 0 {
+		t.Fatalf("expected non-empty direct cass agent buckets; raw=%s", raw)
+	}
+
+	out, err := GetCASSInsights("30d")
+	if err != nil || !out.Success || out.Period != "30d" {
+		t.Fatalf("GetCASSInsights = %+v, %v", out, err)
 	}
 	if len(out.Agents) != len(expected) {
 		t.Fatalf("agents = %+v, cass says %+v", out.Agents, expected)
@@ -1095,6 +1083,9 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		if out.Agents[i] != b {
 			t.Fatalf("agents[%d] = %+v, cass says %+v", i, out.Agents[i], b)
 		}
+	}
+	if len(out.Workspaces) != len(direct.Aggregations.Workspace.Buckets) {
+		t.Fatalf("workspaces = %+v, cass says %+v", out.Workspaces, direct.Aggregations.Workspace.Buckets)
 	}
 }
 
@@ -3696,13 +3687,7 @@ func TestBuildProjectionBackedSnapshotSessionsLargeSwarmPerfArtifact(t *testing.
 		t.Skip("set NTM_RUN_LARGE_SWARM_PERF=1 to write the 2k-pane load-lab artifact")
 	}
 
-	store, err := state.Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotMemoryStore(t)
 	t.Cleanup(func() {
 		_ = store.Close()
 	})

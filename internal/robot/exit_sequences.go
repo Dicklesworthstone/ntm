@@ -6,6 +6,7 @@ import (
 	"context"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/process"
@@ -129,9 +130,24 @@ func sendEscape(ctx context.Context, session string, win, pane int) error {
 	return runTmuxCommand(ctx, "send-keys", "-t", formatTargetWin(session, win, pane), "Escape")
 }
 
-// sendKeys sends literal keys to a tmux pane.
+// sendKeys sends literal keys to a tmux pane. When keys ends with a trailing
+// newline, the text body is sent literally (`-l --`) followed by an explicit
+// tmux `Enter` keystroke so TUIs (Codex, Gemini) and shells reliably submit it.
 func sendKeys(ctx context.Context, session string, win, pane int, keys string) error {
-	return runTmuxCommand(ctx, "send-keys", "-t", formatTargetWin(session, win, pane), "-l", keys)
+	target := formatTargetWin(session, win, pane)
+	if strings.HasSuffix(keys, "\n") {
+		body := strings.TrimSuffix(keys, "\n")
+		if body != "" {
+			if err := runTmuxCommand(ctx, "send-keys", "-t", target, "-l", "--", body); err != nil {
+				return err
+			}
+			if err := waitForExitSequenceDelay(ctx, 50*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		return runTmuxCommand(ctx, "send-keys", "-t", target, "Enter")
+	}
+	return runTmuxCommand(ctx, "send-keys", "-t", target, "-l", "--", keys)
 }
 
 // formatTargetWin creates a tmux target string for an explicit session,

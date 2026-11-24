@@ -948,6 +948,16 @@ func robotPreparedDispatchRequest(allPanes, targetPanes []tmux.Pane, opts SendOp
 			planningPanes[i].Type = tmux.AgentOpencode
 		case "antigravity":
 			planningPanes[i].Type = tmux.AgentAntigravity
+		case "pi":
+			planningPanes[i].Type = tmux.AgentPi
+		case "cursor":
+			planningPanes[i].Type = tmux.AgentCursor
+		case "windsurf":
+			planningPanes[i].Type = tmux.AgentWindsurf
+		case "aider":
+			planningPanes[i].Type = tmux.AgentAider
+		case "ollama":
+			planningPanes[i].Type = tmux.AgentOllama
 		}
 	}
 	selectors := make([]string, 0, len(targetPanes))

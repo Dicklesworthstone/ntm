@@ -218,19 +218,65 @@ func PrintReviewQueue(ctx context.Context, opts ReviewQueueOptions) error {
 	return encodeTerminalRobotOutput(out, out.RobotResponse, "robot review-queue failed")
 }
 
+func normalizeReviewIdentityCandidate(raw string) string {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return ""
+	}
+	if colon := strings.LastIndex(candidate, ":"); colon >= 0 {
+		candidate = strings.TrimSpace(candidate[colon+1:])
+	}
+	candidate = strings.TrimPrefix(candidate, "=")
+	sel, err := tmux.ParsePaneSelector(candidate)
+	if err != nil {
+		return ""
+	}
+	switch sel.Kind {
+	case tmux.PaneSelectorID:
+		return sel.PaneID
+	case tmux.PaneSelectorWindowPane:
+		return fmt.Sprintf("%d.%d", sel.WindowIndex, sel.PaneIndex)
+	default:
+		// Bare pane indices (e.g. "1") fall back to busyByBareIndex[a.Pane].
+		return ""
+	}
+}
+
+func assignmentReviewIdentityKey(a assignment.Assignment) string {
+	if key := normalizeReviewIdentityCandidate(a.OccupancyKey); key != "" {
+		return key
+	}
+	return normalizeReviewIdentityCandidate(a.DispatchTarget)
+}
+
 // DetectIdleAgents finds agent panes with no active assignments meeting idleThreshold.
 func DetectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filter string, idleThreshold time.Duration) []IdleAgent {
-	busyPanes := make(map[int]bool)
+	busyByKey := make(map[string]bool)
+	busyByBareIndex := make(map[int]bool)
 	var allAssignments []assignment.Assignment
 	if store != nil {
 		for _, a := range store.ListActive() {
-			busyPanes[a.Pane] = true
+			if a == nil {
+				continue
+			}
+			if key := assignmentReviewIdentityKey(*a); key != "" {
+				busyByKey[key] = true
+			} else {
+				busyByBareIndex[a.Pane] = true
+			}
 		}
 		allAssignments = store.GetAll()
 	}
 
-	lastTaskByPane := make(map[int]string)
-	lastTimeByPane := make(map[int]time.Time)
+	paneIndexCounts := make(map[int]int, len(panes))
+	for _, p := range panes {
+		paneIndexCounts[p.Index]++
+	}
+
+	lastTaskByKey := make(map[string]string)
+	lastTimeByKey := make(map[string]time.Time)
+	lastTaskByBareIndex := make(map[int]string)
+	lastTimeByBareIndex := make(map[int]time.Time)
 	for _, a := range allAssignments {
 		if a.Status != assignment.StatusCompleted && a.Status != assignment.StatusFailed {
 			continue
@@ -241,15 +287,25 @@ func DetectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filt
 		} else if a.FailedAt != nil {
 			ts = *a.FailedAt
 		}
-		if ts.After(lastTimeByPane[a.Pane]) {
-			lastTimeByPane[a.Pane] = ts
-			lastTaskByPane[a.Pane] = a.BeadTitle
+		if key := assignmentReviewIdentityKey(a); key != "" {
+			if ts.After(lastTimeByKey[key]) {
+				lastTimeByKey[key] = ts
+				lastTaskByKey[key] = a.BeadTitle
+			}
+		} else if ts.After(lastTimeByBareIndex[a.Pane]) {
+			lastTimeByBareIndex[a.Pane] = ts
+			lastTaskByBareIndex[a.Pane] = a.BeadTitle
 		}
 	}
 
 	var idle []IdleAgent
 	for _, pane := range panes {
-		if busyPanes[pane.Index] {
+		winPaneKey := fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+		isBusy := (pane.ID != "" && busyByKey[pane.ID]) || busyByKey[winPaneKey]
+		if !isBusy && paneIndexCounts[pane.Index] == 1 {
+			isBusy = busyByBareIndex[pane.Index]
+		}
+		if isBusy {
 			continue
 		}
 
@@ -265,8 +321,27 @@ func DetectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filt
 			continue
 		}
 
+		var (
+			lastTime    time.Time
+			hasLastTime bool
+			lastTask    string
+		)
+		if pane.ID != "" {
+			if ts, ok := lastTimeByKey[pane.ID]; ok {
+				lastTime, hasLastTime, lastTask = ts, true, lastTaskByKey[pane.ID]
+			}
+		}
+		if ts, ok := lastTimeByKey[winPaneKey]; ok && (!hasLastTime || ts.After(lastTime)) {
+			lastTime, hasLastTime, lastTask = ts, true, lastTaskByKey[winPaneKey]
+		}
+		if paneIndexCounts[pane.Index] == 1 {
+			if ts, ok := lastTimeByBareIndex[pane.Index]; ok && (!hasLastTime || ts.After(lastTime)) {
+				lastTime, hasLastTime, lastTask = ts, true, lastTaskByBareIndex[pane.Index]
+			}
+		}
+
 		idleDuration := ""
-		if lastTime, ok := lastTimeByPane[pane.Index]; ok {
+		if hasLastTime {
 			dur := time.Since(lastTime)
 			if dur < idleThreshold {
 				continue
@@ -279,12 +354,15 @@ func DetectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filt
 			PaneID:       pane.ID,
 			AgentType:    agentType,
 			IdleDuration: idleDuration,
-			LastTask:     lastTaskByPane[pane.Index],
+			LastTask:     lastTask,
 		})
 	}
 
 	sort.Slice(idle, func(i, j int) bool {
-		return idle[i].Pane < idle[j].Pane
+		if idle[i].Pane != idle[j].Pane {
+			return idle[i].Pane < idle[j].Pane
+		}
+		return idle[i].PaneID < idle[j].PaneID
 	})
 
 	return idle

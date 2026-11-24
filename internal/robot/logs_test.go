@@ -2,6 +2,8 @@ package robot
 
 import (
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestLogsOptionsDefaults(t *testing.T) {
@@ -64,5 +66,19 @@ func TestLogsStreamer_InvalidFilter(t *testing.T) {
 	_, err := NewLogsStreamer(opts)
 	if err == nil {
 		t.Error("expected error for invalid regex")
+	}
+}
+
+func TestLogsStreamer_MultiWindowPaneKeyDistinct(t *testing.T) {
+	t.Parallel()
+	w0p1 := tmux.Pane{ID: "%1", WindowIndex: 0, Index: 1}
+	w1p1 := tmux.Pane{ID: "%9", WindowIndex: 1, Index: 1}
+	if logsPaneKey(w0p1) == logsPaneKey(w1p1) {
+		t.Fatalf("distinct multi-window panes collided on logsPaneKey: %q", logsPaneKey(w0p1))
+	}
+	w0NoID := tmux.Pane{WindowIndex: 0, Index: 1}
+	w1NoID := tmux.Pane{WindowIndex: 1, Index: 1}
+	if logsPaneKey(w0NoID) == logsPaneKey(w1NoID) {
+		t.Fatalf("distinct multi-window panes without IDs collided on logsPaneKey: %q", logsPaneKey(w0NoID))
 	}
 }

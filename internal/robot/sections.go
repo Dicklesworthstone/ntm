@@ -419,6 +419,28 @@ type DashboardAttentionData struct {
 // and top 3 items), this returns full events for interactive scrolling.
 //
 // For alerts, use ProjectSections with the snapshot's AlertsDetailed field.
+func attentionEventMatchesSession(ev AttentionEvent, session string) bool {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return true
+	}
+	if evSession := strings.TrimSpace(ev.Session); evSession != "" {
+		return evSession == session
+	}
+	if ev.Details != nil {
+		if rawRef, ok := ev.Details["pane_ref"].(string); ok {
+			ref := strings.TrimSpace(rawRef)
+			if colon := strings.LastIndex(ref, ":"); colon >= 0 {
+				prefix := strings.TrimPrefix(strings.TrimSpace(ref[:colon]), "=")
+				if prefix != "" && prefix != session {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 func GetDashboardAttentionSection(limits SectionLimits, session string) ProjectedSection {
 	hints := DefaultSectionFormatHints(SectionAttention)
 
@@ -431,39 +453,36 @@ func GetDashboardAttentionSection(limits SectionLimits, session string) Projecte
 	}
 
 	// Get events from feed
-	stats := feed.Stats()
 	maxEvents := limits.AttentionAction + limits.AttentionInteresting + limits.AttentionBackground
 	if maxEvents <= 0 {
 		maxEvents = 60 // Default for dashboard
 	}
 	session = strings.TrimSpace(session)
 
-	// Replay the retained journal window before filtering by actionability and
+	// Replay the retained journal window from cursor 0 (paging forward if new
+	// events arrived concurrently) before filtering by actionability and
 	// session so heavy background or foreign-session traffic cannot crowd out
-	// this session's action_required / interesting items before truncation.
-	// Use cursor 0 ("all currently retained events") rather than OldestCursor-1
-	// so concurrent ring-buffer eviction or retention GC between Stats() and
-	// Replay() cannot trigger a spurious CursorExpiredError.
-	var events []AttentionEvent
-	if stats.Count > 0 {
-		var err error
-		events, _, err = feed.Replay(0, stats.Count)
-		if err != nil {
-			section := NewProjectedSection(SectionAttention, DashboardAttentionData{
-				FeedAvailable: true,
-			}).WithFormatHints(hints)
-			return section.WithOmission("error", "failed to replay attention events")
-		}
+	// this session's action_required / interesting items before truncation, and
+	// concurrent ring eviction / retention GC cannot trip CursorExpiredError.
+	events, oldestCursor, newestCursor, err := replayAllRetainedAttentionEvents(feed)
+	if err != nil {
+		section := NewProjectedSection(SectionAttention, DashboardAttentionData{
+			FeedAvailable: true,
+		}).WithFormatHints(hints)
+		return section.WithOmission("error", "failed to replay attention events")
 	}
 
-	// Filter to action_required and interesting (exclude background for dashboard)
-	// and to the target session (retaining global session-less events).
+	// Scope all events to the target session (retaining global session-less
+	// events) so both Data.Events and Data.Summary stay strictly aligned with
+	// zero foreign-session leakage and no second replay pass.
+	scopedEvents := make([]AttentionEvent, 0, len(events))
 	var actionEvents []AttentionEvent
 	var interestingEvents []AttentionEvent
 	for _, ev := range events {
-		if session != "" && ev.Session != "" && ev.Session != session {
+		if !attentionEventMatchesSession(ev, session) {
 			continue
 		}
+		scopedEvents = append(scopedEvents, ev)
 		switch ev.Actionability {
 		case ActionabilityActionRequired:
 			actionEvents = append(actionEvents, ev)
@@ -496,8 +515,14 @@ func GetDashboardAttentionSection(limits SectionLimits, session string) Projecte
 	filtered = append(filtered, actionEvents[i:]...)
 	filtered = append(filtered, interestingEvents[j:]...)
 
-	// Build summary from feed
-	summary := buildSnapshotAttentionSummary(feed)
+	// Build session-aligned summary directly from the same replay snapshot.
+	scopedOldest := oldestCursor
+	scopedNewest := newestCursor
+	if len(scopedEvents) > 0 {
+		scopedOldest = scopedEvents[0].Cursor
+		scopedNewest = scopedEvents[len(scopedEvents)-1].Cursor
+	}
+	summary := buildSnapshotAttentionSummaryFromEvents(scopedEvents, scopedOldest, scopedNewest)
 
 	data := DashboardAttentionData{
 		Events:        filtered,

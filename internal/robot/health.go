@@ -1358,7 +1358,19 @@ type AutoRestartSkip struct {
 // whose health state forbids restarting (blocked: a restart cannot answer a
 // gate screen; rate_limited: restarting will not lift the limit).
 func ClassifyStuckPanes(agents []SessionAgentHealth, threshold time.Duration) ([]int, []AutoRestartSkip) {
-	var stuck []int
+	records, skipped := classifyStuckAgentRecords(agents, threshold)
+	if len(records) == 0 {
+		return nil, skipped
+	}
+	stuck := make([]int, len(records))
+	for i, agent := range records {
+		stuck[i] = agent.Pane
+	}
+	return stuck, skipped
+}
+
+func classifyStuckAgentRecords(agents []SessionAgentHealth, threshold time.Duration) ([]SessionAgentHealth, []AutoRestartSkip) {
+	var stuck []SessionAgentHealth
 	var skipped []AutoRestartSkip
 	thresholdSec := int(threshold.Seconds())
 	for _, agent := range agents {
@@ -1385,7 +1397,7 @@ func ClassifyStuckPanes(agents []SessionAgentHealth, threshold time.Duration) ([
 				Reason:     reason,
 			})
 		default:
-			stuck = append(stuck, agent.Pane)
+			stuck = append(stuck, agent)
 		}
 	}
 	return stuck, skipped
@@ -1463,7 +1475,10 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 
 	// Classify stuck panes; blocked/rate-limited panes past the threshold
 	// become typed skips instead of restart candidates (bd-qz5wk).
-	stuckPanes, skipped := ClassifyStuckPanes(healthOutput.Agents, opts.Threshold)
+	// Retain the stuck SessionAgentHealth records directly so multi-window
+	// bare pane index collisions never resolve onto a healthy agent in another window.
+	stuckRecords, skipped := classifyStuckAgentRecords(healthOutput.Agents, opts.Threshold)
+	stuckPanes, _ := ClassifyStuckPanes(stuckRecords, opts.Threshold)
 	// Preview is observational: report every candidate even when its lifecycle
 	// protocol is intentionally unavailable. Capability validation belongs at
 	// the actuation boundary below.
@@ -1472,15 +1487,15 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 		output.Skipped = skipped
 		return output, nil
 	}
-	if err := validateAutoRestartStuckAgents(healthOutput.Agents, stuckPanes); err != nil {
+	if err := validateAutoRestartStuckAgents(stuckRecords, stuckPanes); err != nil {
 		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, nil, nil, opts.Threshold, opts.DryRun)
 		output.Skipped = skipped
 		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPhaseOneCapabilityHint)
 		return output, nil
 	}
 
-	// Restart stuck panes
-	restarted, failed, restartErr := restartAutoRestartStuckPanes(ctx, opts, healthOutput.Agents, stuckPanes, GetRestartPaneContext)
+	// Restart stuck panes using only the stuck records (never healthy siblings).
+	restarted, failed, restartErr := restartAutoRestartStuckPanes(ctx, opts, stuckRecords, stuckPanes, GetRestartPaneContext)
 	if restartErr != nil {
 		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false)
 		output.Skipped = skipped

@@ -42,6 +42,7 @@ func newSnapshotOutput(cfg *config.Config) *SnapshotOutput {
 }
 
 var collectSnapshotResourcePressure = collectLiveSnapshotResourcePressure
+var collectSnapshotToolsSummary = GetToolsSummary
 
 func attachSnapshotResourcePressure(output *SnapshotOutput) {
 	if output == nil {
@@ -591,7 +592,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	// Include tool inventory and health status
 	toolCtx, toolCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer toolCancel()
-	output.Tools = GetToolsSummary(toolCtx, DisabledTools(cfg))
+	output.Tools = collectSnapshotToolsSummary(toolCtx, DisabledTools(cfg))
 
 	// Generate and add detailed alerts using the alerts package
 	alertCfg := AlertConfigForProject(cfg, projectKey)
@@ -719,7 +720,7 @@ func buildProjectionBackedSnapshot(
 
 	toolCtx, toolCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer toolCancel()
-	output.Tools = GetToolsSummary(toolCtx, DisabledTools(cfg))
+	output.Tools = collectSnapshotToolsSummary(toolCtx, DisabledTools(cfg))
 
 	alertCfg := AlertConfigForProject(cfg, projectKey)
 	activeAlerts := alerts.GetActiveAlerts(alertCfg)
@@ -1292,18 +1293,89 @@ func snapshotAgentFromRuntime(sessionName string, row state.RuntimeAgent, paneLa
 // buildSnapshotAttentionSummary creates a compact attention orientation from
 // the current feed state. This helps operators choose the next command without
 // reading the full snapshot. Uses the same signal taxonomy as digest/events.
+func replayAllRetainedAttentionEvents(feed *AttentionFeed) ([]AttentionEvent, int64, int64, error) {
+	if feed == nil {
+		return nil, 0, 0, nil
+	}
+	stats := feed.Stats()
+	if stats.Count == 0 {
+		return nil, stats.OldestCursor, stats.NewestCursor, nil
+	}
+	pageLimit := stats.Count
+	if stats.Size > pageLimit {
+		pageLimit = stats.Size
+	}
+	if pageLimit < 64 {
+		pageLimit = 64
+	}
+	events, newestCursor, err := feed.Replay(0, pageLimit)
+	if err != nil {
+		return nil, stats.OldestCursor, stats.NewestCursor, err
+	}
+	// If events were appended concurrently (or a durable store holds more than
+	// pageLimit entries), page forward to cover the newest tail without looping
+	// unboundedly.
+	const maxExtraPages = 16
+	for page := 0; page < maxExtraPages && len(events) > 0 && events[len(events)-1].Cursor < newestCursor; page++ {
+		lastCursor := events[len(events)-1].Cursor
+		more, nextNewest, pageErr := feed.Replay(lastCursor, pageLimit)
+		if pageErr != nil || len(more) == 0 {
+			break
+		}
+		if nextNewest > newestCursor {
+			newestCursor = nextNewest
+		}
+		events = append(events, more...)
+		if len(more) < pageLimit {
+			break
+		}
+	}
+	oldestCursor := stats.OldestCursor
+	if len(events) > 0 {
+		oldestCursor = events[0].Cursor
+		if last := events[len(events)-1].Cursor; last > newestCursor {
+			newestCursor = last
+		}
+	}
+	return events, oldestCursor, newestCursor, nil
+}
+
 func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummary {
 	if feed == nil {
 		return nil
 	}
 
-	stats := feed.Stats()
+	events, oldestCursor, newestCursor, err := replayAllRetainedAttentionEvents(feed)
+	if err != nil {
+		unsupported := make([]string, 0, len(UnsupportedConditions()))
+		for _, uc := range UnsupportedConditions() {
+			unsupported = append(unsupported, uc.Name)
+		}
+		return &SnapshotAttentionSummary{
+			TotalEvents:        feed.Stats().Count,
+			ByCategoryCount:    map[string]int{},
+			TopItems:           []SnapshotAttentionItem{},
+			UnsupportedSignals: unsupported,
+			NextSteps: []NextAction{
+				{
+					Action: "robot-snapshot",
+					Args:   "--robot-snapshot",
+					Reason: "Replay metadata changed while building the snapshot; fetch a fresh snapshot before following cursors",
+				},
+			},
+		}
+	}
+
+	return buildSnapshotAttentionSummaryFromEvents(events, oldestCursor, newestCursor)
+}
+
+func buildSnapshotAttentionSummaryFromEvents(events []AttentionEvent, oldestCursor, newestCursor int64) *SnapshotAttentionSummary {
 	unsupported := make([]string, 0, len(UnsupportedConditions()))
 	for _, uc := range UnsupportedConditions() {
 		unsupported = append(unsupported, uc.Name)
 	}
 
-	if stats.Count == 0 {
+	if len(events) == 0 {
 		return &SnapshotAttentionSummary{
 			TotalEvents:        0,
 			ByCategoryCount:    map[string]int{},
@@ -1315,26 +1387,17 @@ func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummar
 		}
 	}
 
-	replaySince := stats.OldestCursor - 1
+	replaySince := oldestCursor - 1
 	if replaySince < 0 {
 		replaySince = 0
 	}
-	events, _, err := feed.Replay(replaySince, stats.Count)
 
 	summary := &SnapshotAttentionSummary{
-		TotalEvents:        stats.Count,
+		TotalEvents:        len(events),
 		ByCategoryCount:    map[string]int{},
 		TopItems:           []SnapshotAttentionItem{},
 		UnsupportedSignals: unsupported,
 		NextSteps:          []NextAction{},
-	}
-	if err != nil {
-		summary.NextSteps = append(summary.NextSteps, NextAction{
-			Action: "robot-snapshot",
-			Args:   "--robot-snapshot",
-			Reason: "Replay metadata changed while building the snapshot; fetch a fresh snapshot before following cursors",
-		})
-		return summary
 	}
 
 	topItems := make([]SnapshotAttentionItem, 0, 3)
@@ -1403,10 +1466,10 @@ func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummar
 			Reason: fmt.Sprintf("%d interesting event(s) are present; use the digest for the steady-state delta summary", summary.InterestingCount),
 		})
 	}
-	if len(summary.NextSteps) < 3 && stats.NewestCursor > 0 {
+	if len(summary.NextSteps) < 3 && newestCursor > 0 {
 		summary.NextSteps = append(summary.NextSteps, NextAction{
 			Action: "robot-events",
-			Args:   fmt.Sprintf("--robot-events --since-cursor=%d --events-limit=20", stats.NewestCursor),
+			Args:   fmt.Sprintf("--robot-events --since-cursor=%d --events-limit=20", newestCursor),
 			Reason: "Continue following new attention events from the snapshot cursor",
 		})
 	}

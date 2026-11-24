@@ -168,6 +168,15 @@ func TestGetDashboardAttentionSection_SessionScopedPreTruncation(t *testing.T) {
 	if data.Events[0].Session != "projA" || data.Events[1].Session != "" {
 		t.Fatalf("unexpected event sessions: %+v", data.Events)
 	}
+	if data.Summary == nil {
+		t.Fatal("expected non-nil session-scoped Summary")
+	}
+	if data.Summary.TotalEvents != 2 || data.Summary.ActionRequiredCount != 1 || data.Summary.InterestingCount != 1 {
+		t.Fatalf("projA summary leaked foreign events: %+v, want total=2 action=1 interesting=1", data.Summary)
+	}
+	if len(data.Summary.TopItems) != 1 || data.Summary.TopItems[0].Summary != "projA needs approval" {
+		t.Fatalf("projA summary TopItems leaked foreign items: %+v", data.Summary.TopItems)
+	}
 
 	// Verify projB (75 matching events > limit 60) IS truncated accurately.
 	sectionB := GetDashboardAttentionSection(DashboardSectionLimits(), "projB")
@@ -210,6 +219,50 @@ func TestGetDashboardAttentionSection_SessionScopedPreTruncation(t *testing.T) {
 	wrappedData, ok := wrappedSection.Data.(DashboardAttentionData)
 	if !ok || len(wrappedData.Events) != 16 {
 		t.Fatalf("wrapped journal events = (%T, %d), want 16 events", wrappedSection.Data, len(wrappedData.Events))
+	}
+}
+
+func TestGetDashboardAttentionSectionFiltersForeignPaneRefFromSummary(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       32,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	defer feed.Stop()
+	prev := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(prev) })
+
+	feed.Append(AttentionEvent{
+		Session:       "projA",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityError,
+		Summary:       "projA error",
+	})
+	// Session-less event whose pane_ref targets foreign session projB must not
+	// leak into projA's events or summary counts.
+	feed.Append(AttentionEvent{
+		Session:       "",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityError,
+		Summary:       "foreign projB pane_ref error",
+		Details:       map[string]any{"pane_ref": "=projB:1.0"},
+	})
+
+	section := GetDashboardAttentionSection(DashboardSectionLimits(), "projA")
+	data, ok := section.Data.(DashboardAttentionData)
+	if !ok {
+		t.Fatalf("unexpected section data type %T", section.Data)
+	}
+	if len(data.Events) != 1 || data.Events[0].Summary != "projA error" {
+		t.Fatalf("expected only projA event, got %+v", data.Events)
+	}
+	if data.Summary == nil || data.Summary.TotalEvents != 1 || data.Summary.ActionRequiredCount != 1 {
+		t.Fatalf("expected Summary counts=1 (no foreign pane_ref leak), got %+v", data.Summary)
 	}
 }
 

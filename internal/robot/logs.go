@@ -295,7 +295,7 @@ type LogsStreamEntry struct {
 // LogsStreamer provides streaming log updates.
 type LogsStreamer struct {
 	opts        StreamLogsOptions
-	lastCapture map[int]int // pane index -> last line count
+	lastCapture map[string]int // stable pane key (physical pane ID or W.P) -> last line count
 	filterRe    *regexp.Regexp
 }
 
@@ -303,7 +303,7 @@ type LogsStreamer struct {
 func NewLogsStreamer(opts StreamLogsOptions) (*LogsStreamer, error) {
 	ls := &LogsStreamer{
 		opts:        opts,
-		lastCapture: make(map[int]int),
+		lastCapture: make(map[string]int),
 	}
 
 	if opts.Filter != "" {
@@ -369,8 +369,12 @@ func (ls *LogsStreamer) Poll(ctx context.Context) ([]LogsStreamEntry, error) {
 			lines = lines[:len(lines)-1]
 		}
 
+		// Key capture history by stable pane identity so multi-window panes
+		// sharing the same window-local pane index never collide.
+		paneKey := logsPaneKey(pane)
+
 		// Get new lines since last capture
-		lastCount := ls.lastCapture[pane.Index]
+		lastCount := ls.lastCapture[paneKey]
 		if len(lines) > lastCount {
 			newLines := lines[lastCount:]
 			// Filter out empty lines
@@ -390,7 +394,7 @@ func (ls *LogsStreamer) Poll(ctx context.Context) ([]LogsStreamEntry, error) {
 			}
 		}
 
-		ls.lastCapture[pane.Index] = len(lines)
+		ls.lastCapture[paneKey] = len(lines)
 	}
 
 	// Sort by timestamp
@@ -399,4 +403,11 @@ func (ls *LogsStreamer) Poll(ctx context.Context) ([]LogsStreamEntry, error) {
 	})
 
 	return entries, nil
+}
+
+func logsPaneKey(pane tmux.Pane) string {
+	if pane.ID != "" {
+		return pane.ID
+	}
+	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
 }
