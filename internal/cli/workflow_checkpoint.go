@@ -29,6 +29,16 @@ func workflowJSONMode(ctx context.Context) bool {
 	return jsonOutput
 }
 
+func workflowCheckpointContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if _, hasDeadline := parent.Deadline(); hasDeadline {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, 2*time.Second)
+}
+
 // newWorkflowCheckpointCmd builds the read-only status and explicit recovery
 // surfaces over the same checkpoint used by workflow run. Neither sends keys
 // or needs a running tmux server; --project-root defaults to the current dir.
@@ -40,7 +50,7 @@ func newWorkflowCheckpointCmd(action string) *cobra.Command {
 		Short: "Inspect a saved workflow execution checkpoint",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			asJSON := workflowJSONMode(cmd.Context())
-			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
+			ctx, cancel := workflowCheckpointContext(cmd.Context())
 			defer cancel()
 			result, err := getWorkflowCheckpoint(ctx, projectRoot, session, pane, token, outcome, action == "recover")
 			if err != nil {
@@ -158,7 +168,7 @@ Example:
 			if err != nil {
 				return fail(err)
 			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
+			ctx, cancel := workflowCheckpointContext(cmd.Context())
 			defer cancel()
 			store := &workflow.StateStore{Dir: filepath.Join(root, ".ntm", "workflows", "state")}
 			decision, err := store.RequestManualTransition(ctx, session, token, transition, reason)
