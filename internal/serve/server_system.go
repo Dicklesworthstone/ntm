@@ -872,6 +872,8 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	const maxWaitMs = int(maxAgentWaitTimeout / time.Millisecond)
+
 	timeout := 30 * time.Second
 	if q := strings.TrimSpace(r.URL.Query().Get("timeout")); q != "" {
 		d, err := time.ParseDuration(q)
@@ -888,7 +890,11 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 		}
 		timeout = d
 	} else if body.TimeoutMs > 0 {
-		timeout = time.Duration(body.TimeoutMs) * time.Millisecond
+		if body.TimeoutMs >= maxWaitMs {
+			timeout = maxAgentWaitTimeout
+		} else {
+			timeout = time.Duration(body.TimeoutMs) * time.Millisecond
+		}
 	}
 	if timeout > maxAgentWaitTimeout {
 		timeout = maxAgentWaitTimeout
@@ -910,7 +916,11 @@ func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
 		}
 		poll = d
 	} else if body.PollMs > 0 {
-		poll = time.Duration(body.PollMs) * time.Millisecond
+		if body.PollMs >= maxWaitMs {
+			poll = maxAgentWaitTimeout
+		} else {
+			poll = time.Duration(body.PollMs) * time.Millisecond
+		}
 	}
 	if poll < minAgentWaitPollInterval {
 		poll = minAgentWaitPollInterval
