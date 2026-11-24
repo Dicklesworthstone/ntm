@@ -339,13 +339,20 @@ func TestRestoreRemotePaneDirectoriesAreValidatedOnOwningHost(t *testing.T) {
 			t.Setenv("NTM_REMOTE_PATH_UNAVAILABLE", fmt.Sprint(unavailable))
 			const sshScript = `#!/bin/sh
 if [ "$1" != -- ] || [ "$2" != operator@remote.example ]; then exit 2; fi
-printf 'remote-shell %s\n' "$3" >> "$NTM_TARGET_TEST_LOG"
-case "$3" in
+cmd="$3"
+case "$cmd" in
+  "/bin/sh -c "*)
+    eval "set -- $cmd"
+    cmd="$3"
+    ;;
+esac
+printf 'remote-shell %s\n' "$cmd" >> "$NTM_TARGET_TEST_LOG"
+case "$cmd" in
   test\ *)
-    case "$3" in *agent-worktree*) if [ "$NTM_REMOTE_PATH_UNAVAILABLE" = true ]; then exit 1; fi ;; esac
+    case "$cmd" in *agent-worktree*) if [ "$NTM_REMOTE_PATH_UNAVAILABLE" = true ]; then exit 1; fi ;; esac
     exit 0 ;;
 esac
-exec /bin/sh -c "$3"
+exec /bin/sh -c "$cmd"
 `
 			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(sshScript), 0700); err != nil {
 				t.Fatal(err)
