@@ -668,10 +668,12 @@ Examples:
 						"gemini":      effectiveCfg.Agents.Gemini,
 						"grok":        effectiveCfg.Agents.Grok,
 						"omp":         config.OmpCommandOrDefault(effectiveCfg.Agents.Omp),
+						"pi":          plugins.ShippedPiPlugin().Command,
 						"cursor":      effectiveCfg.Agents.Cursor,
 						"windsurf":    effectiveCfg.Agents.Windsurf,
 						"aider":       effectiveCfg.Agents.Aider,
 						"oc":          effectiveCfg.Agents.Opencode,
+						"ollama":      effectiveCfg.Agents.Ollama,
 					},
 					"tmux": map[string]interface{}{
 						"default_panes":      effectiveCfg.Tmux.DefaultPanes,

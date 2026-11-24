@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -178,6 +179,7 @@ func TestMain(m *testing.M) {
 	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
 	pipeline.StageIdlePollInterval = 15 * time.Millisecond
 	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
+	tmux.PaneProcessStartPoll = 5 * time.Millisecond
 	// Keep CLI assignment tests hermetic against live host CPU load; tests
 	// asserting pressure behavior override via withAssignAllocationPressure.
 	collectAssignAllocationPressure = func(context.Context) assign.AllocationPressure {
@@ -191,6 +193,9 @@ func TestMain(m *testing.M) {
 
 	if overseerSessionProbeDir != "" {
 		_ = os.RemoveAll(overseerSessionProbeDir)
+	}
+	if sharedHermeticBeadsDir != "" {
+		_ = os.RemoveAll(sharedHermeticBeadsDir)
 	}
 	_ = os.Unsetenv("NTM_CLI_TEST_ISOLATED")
 

@@ -387,7 +387,8 @@ func TestNoFalseSpawnAutoStartAdvice(t *testing.T) {
 			name := d.Name()
 			if d.IsDir() {
 				slashed := filepath.ToSlash(path)
-				if name == "node_modules" ||
+				if strings.HasPrefix(name, ".") ||
+					name == "node_modules" ||
 					slashed == filepath.ToSlash(filepath.Join(root, "docs", "planning")) ||
 					slashed == filepath.ToSlash(filepath.Join(root, "internal", "webui", "dist")) {
 					return filepath.SkipDir

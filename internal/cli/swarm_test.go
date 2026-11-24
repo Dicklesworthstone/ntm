@@ -198,7 +198,7 @@ func TestSwarmCommandWaitsOutProjectCodexCooldown(t *testing.T) {
 	if err := json.Unmarshal(rawLimits, &persistedLimits); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(200 * time.Millisecond)
+	deadline := time.Now().Add(80 * time.Millisecond)
 	persistedLimits["state"].(map[string]any)["openai"].(map[string]any)["cooldown_until"] = deadline.Format(time.RFC3339Nano)
 	updatedLimits, err := json.MarshalIndent(persistedLimits, "", "  ")
 	if err != nil {

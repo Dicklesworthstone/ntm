@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -366,11 +365,26 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 	var targetPanes []tmux.Pane
 	if opts.PaneSpec != "" {
 		// Direct pane targeting overrides agent filters
+		var matches []tmux.Pane
 		for _, p := range panes {
 			if paneMatchesSelector(p, opts.PaneSpec) {
-				targetPanes = []tmux.Pane{p}
-				break
+				matches = append(matches, p)
 			}
+		}
+		if len(matches) > 1 {
+			ids := make([]string, len(matches))
+			for i, p := range matches {
+				ids[i] = p.ID
+			}
+			return &tmux.PaneSelectorError{
+				Kind:      tmux.PaneSelectorAmbiguous,
+				Selector:  opts.PaneSpec,
+				Matches:   len(matches),
+				Available: ids,
+			}
+		}
+		if len(matches) == 1 {
+			targetPanes = matches
 		}
 	} else if filter.IsEmpty() {
 		// No filter: copy from active pane or first pane
@@ -525,24 +539,26 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 	})
 }
 
-// paneMatchesSelector matches pane index or pane ID (with or without % prefix)
+// paneMatchesSelector matches pane index (N), window.pane (W.P), or physical pane ID (%N).
 func paneMatchesSelector(p tmux.Pane, selector string) bool {
+	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return false
 	}
-	// Match numeric pane index
-	if idx, err := strconv.Atoi(selector); err == nil {
-		return p.Index == idx
+	if sel, err := tmux.ParsePaneSelector(selector); err == nil {
+		switch sel.Kind {
+		case tmux.PaneSelectorID:
+			return p.ID == sel.PaneID
+		case tmux.PaneSelectorWindowPane:
+			if p.WindowIndex == sel.WindowIndex && p.Index == sel.PaneIndex {
+				return true
+			}
+			return p.ID == selector || strings.HasSuffix(p.ID, ":"+selector)
+		case tmux.PaneSelectorPaneIndex:
+			return p.Index == sel.Index
+		}
 	}
-	// Match pane id formats: %12 or 12
-	if selector == p.ID || selector == strings.TrimPrefix(p.ID, "%") {
-		return true
-	}
-	// Match tmux target suffix like "1.2" (window.pane) by suffix match
-	if strings.HasSuffix(p.ID, selector) {
-		return true
-	}
-	return false
+	return selector == p.ID || selector == strings.TrimPrefix(p.ID, "%")
 }
 
 // filterOutput applies optional code-block extraction then regex line filtering.

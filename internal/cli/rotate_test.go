@@ -873,11 +873,8 @@ func TestContextConfirmCommandUsesBoundTranscriptSummary(t *testing.T) {
 					ticker := time.NewTicker(10 * time.Millisecond)
 					defer ticker.Stop()
 					for {
-						if data, readErr := os.ReadFile(commandsPath); readErr == nil && strings.Contains(string(data), "TRANSCRIPT_SUMMARY_WRITTEN") {
-							select {
-							case <-stopCancelWatcher:
-								return
-							case <-time.After(150 * time.Millisecond):
+						if data, readErr := os.ReadFile(commandsPath); readErr == nil {
+							if _, after, ok := strings.Cut(string(data), "TRANSCRIPT_SUMMARY_WRITTEN"); ok && strings.Count(after, "capture-pane") >= 2 {
 								cancel()
 								return
 							}

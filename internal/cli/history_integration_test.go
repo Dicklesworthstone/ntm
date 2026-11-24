@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/history"
@@ -12,10 +11,9 @@ import (
 // Integration-lite test: exercising history list JSON output after a recorded send.
 // This avoids tmux by appending directly to history storage and invoking the list code path.
 func TestHistoryJSONIncludesDurationAndTargets(t *testing.T) {
-	// Isolate history storage to a temp dir
+	// Isolate history storage to a temp dir (t.Setenv restores TestMain's XDG_DATA_HOME).
 	dir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", dir)
-	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	t.Setenv("XDG_DATA_HOME", dir)
 
 	// Append a synthetic entry
 	entry := history.NewEntry("sess", []string{"1", "2"}, "hello world", history.SourceCLI)

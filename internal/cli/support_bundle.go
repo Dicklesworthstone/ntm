@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -813,13 +812,18 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 			data: snapshotData,
 		})
 
-		// Parse pane filter
-		var paneFilter map[int]bool
-		if opts.Panes != "" {
-			paneFilter = make(map[int]bool)
+		// Parse pane filter selectors (supports N, W.P, and %N).
+		var paneSelectors []tmux.PaneSelector
+		hasPaneFilter := false
+		if strings.TrimSpace(opts.Panes) != "" {
+			hasPaneFilter = true
 			for _, p := range strings.Split(opts.Panes, ",") {
-				if idx, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
-					paneFilter[idx] = true
+				token := strings.TrimSpace(p)
+				if token == "" {
+					continue
+				}
+				if sel, selErr := tmux.ParsePaneSelector(token); selErr == nil {
+					paneSelectors = append(paneSelectors, sel)
 				}
 			}
 		}
@@ -829,11 +833,28 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 		if err != nil {
 			continue
 		}
+		multiWindow := tmux.PanesSpanMultipleWindows(panes)
 
 		for _, pane := range panes {
-			// Filter by pane index if specified
-			if paneFilter != nil && !paneFilter[pane.Index] {
-				continue
+			// Filter by pane selector if specified
+			if hasPaneFilter {
+				matched := false
+				for _, sel := range paneSelectors {
+					switch sel.Kind {
+					case tmux.PaneSelectorID:
+						matched = pane.ID == sel.PaneID
+					case tmux.PaneSelectorWindowPane:
+						matched = pane.WindowIndex == sel.WindowIndex && pane.Index == sel.PaneIndex
+					case tmux.PaneSelectorPaneIndex:
+						matched = pane.Index == sel.Index
+					}
+					if matched {
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
 			}
 
 			// Capture output
@@ -848,7 +869,11 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 				output, _ = redaction.Redact(output, *redactCfg)
 			}
 
-			panePath, err := supportBundleSessionPath(sess.Name, "panes", fmt.Sprintf("pane_%d.txt", pane.Index))
+			paneFile := fmt.Sprintf("pane_%d.txt", pane.Index)
+			if multiWindow {
+				paneFile = fmt.Sprintf("pane_w%d_p%d.txt", pane.WindowIndex, pane.Index)
+			}
+			panePath, err := supportBundleSessionPath(sess.Name, "panes", paneFile)
 			if err != nil {
 				return nil, err
 			}

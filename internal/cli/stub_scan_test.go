@@ -211,8 +211,8 @@ func TestNoNewPlaceholders(t *testing.T) {
 
 		// Skip directories
 		if d.IsDir() {
-			// Skip third_party and built webui static assets (contain no .go sources)
-			if d.Name() == "third_party" || filepath.ToSlash(path) == webuiDist {
+			// Skip hidden runtime dirs (.ntm, etc.), third_party, and built webui static assets
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "third_party" || filepath.ToSlash(path) == webuiDist {
 				return filepath.SkipDir
 			}
 			return nil
@@ -280,18 +280,23 @@ func TestNoNewPlaceholders(t *testing.T) {
 	})
 }
 
+var placeholderPrefilter = regexp.MustCompile(`(?i)(?:not\s+yet\s+implemented|not\s+implemented\s+yet|\bplaceholder\b|TODO:\s*Update\s+patterns)`)
+
 // scanFileForPlaceholders scans a single file for placeholder patterns.
 func scanFileForPlaceholders(t *testing.T, absPath, relPath string) []placeholderHit {
 	t.Helper()
 
-	f, err := os.Open(absPath)
+	data, err := os.ReadFile(absPath)
 	if err != nil {
-		t.Fatalf("open %s: %v", relPath, err)
+		t.Fatalf("read %s: %v", relPath, err)
 	}
-	defer f.Close()
+	if !placeholderPrefilter.Match(data) {
+		return nil
+	}
 
 	var hits []placeholderHit
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++

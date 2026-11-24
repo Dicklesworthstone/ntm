@@ -24,13 +24,29 @@ func TestPaneMatchesSelector(t *testing.T) {
 		{"%12", true}, // full id
 		{"12", false}, // numeric selector hits index first, so no match on id
 		{"2", false},
-		{"1.2", false}, // suffix match not supported with mocked ID
+		{"1.2", false}, // different window/pane
 		{"garbage", false},
 	}
 
 	for _, tc := range cases {
 		if got := paneMatchesSelector(pane, tc.sel); got != tc.matches {
 			t.Fatalf("selector %q expected %v got %v", tc.sel, tc.matches, got)
+		}
+	}
+
+	multiWindowPane := tmux.Pane{ID: "%25", WindowIndex: 1, Index: 2}
+	for _, tc := range []struct {
+		sel     string
+		matches bool
+	}{
+		{"1.2", true},
+		{"0.2", false},
+		{"1.3", false},
+		{"%25", true},
+		{"2", true},
+	} {
+		if got := paneMatchesSelector(multiWindowPane, tc.sel); got != tc.matches {
+			t.Fatalf("multi-window selector %q expected %v got %v", tc.sel, tc.matches, got)
 		}
 	}
 }

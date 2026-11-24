@@ -235,8 +235,7 @@ func TestLevelEnvOverride(t *testing.T) {
 	}
 
 	// Set env override
-	os.Setenv("NTM_PROFICIENCY_TIER", "3")
-	defer os.Unsetenv("NTM_PROFICIENCY_TIER")
+	t.Setenv("NTM_PROFICIENCY_TIER", "3")
 
 	// Should now report Master
 	if cfg.GetTier() != tiers.TierMaster {
@@ -411,8 +410,7 @@ func TestLevelPromotionHistoryTracking(t *testing.T) {
 
 func TestLevelCorruptedConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Unsetenv("XDG_CONFIG_HOME")
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	// Create corrupted config file
 	path := filepath.Join(tmpDir, "ntm", "proficiency.json")

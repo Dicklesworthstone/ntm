@@ -1717,7 +1717,7 @@ func TestRunHandoffCreateAutoDegradesOnSlowCASS(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	oldCASSTimeout := handoff.DefaultCASSTimeout
-	handoff.DefaultCASSTimeout = 200 * time.Millisecond
+	handoff.DefaultCASSTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { handoff.DefaultCASSTimeout = oldCASSTimeout })
 
 	cmd := newHandoffCreateCmd()

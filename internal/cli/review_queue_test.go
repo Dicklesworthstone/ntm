@@ -66,6 +66,63 @@ func TestDetectIdleAgents_BusyAgentExcluded(t *testing.T) {
 	}
 }
 
+func TestDetectIdleAgents_MultiWindowOccupancyKeyDoesNotCollide(t *testing.T) {
+	store := newReviewQueueTestStore(t)
+	now := time.Now().UTC()
+	store.Assignments["bd-w0"] = &assignment.Assignment{
+		BeadID:         "bd-w0",
+		Pane:           1,
+		OccupancyKey:   "%1",
+		DispatchTarget: "%1",
+		AgentType:      "claude",
+		Status:         assignment.StatusWorking,
+		AssignedAt:     now,
+	}
+
+	panes := []tmux.Pane{
+		{ID: "%0", WindowIndex: 0, Index: 0, Title: "user", Type: tmux.AgentUser},
+		{ID: "%1", WindowIndex: 0, Index: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", WindowIndex: 1, Index: 1, Title: "proj__cod_1", Type: tmux.AgentCodex},
+	}
+
+	idle := detectIdleAgents(store, panes, "", 0)
+	if len(idle) != 1 || idle[0].PaneID != "%2" {
+		t.Fatalf("expected only window 1 pane %%2 idle, got %+v", idle)
+	}
+
+	// Session-prefixed W.P OccupancyKey ("proj:1.1") must mark %2 busy too.
+	store.Assignments["bd-w1"] = &assignment.Assignment{
+		BeadID:       "bd-w1",
+		Pane:         1,
+		OccupancyKey: "proj:1.1",
+		AgentType:    "codex",
+		Status:       assignment.StatusWorking,
+		AssignedAt:   now,
+	}
+	if idle := detectIdleAgents(store, panes, "", 0); len(idle) != 0 {
+		t.Fatalf("expected 0 idle panes when proj:1.1 is working, got %+v", idle)
+	}
+
+	// Legacy bare target ("proj:.2" / "2") on a unique pane index must fall back to bare index and mark it busy.
+	singleWindow := []tmux.Pane{
+		{ID: "%0", WindowIndex: 0, Index: 0, Title: "user", Type: tmux.AgentUser},
+		{ID: "%8", WindowIndex: 0, Index: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},
+	}
+	legacyStore := newReviewQueueTestStore(t)
+	legacyStore.Assignments["bd-legacy"] = &assignment.Assignment{
+		BeadID:         "bd-legacy",
+		Pane:           2,
+		OccupancyKey:   "2",
+		DispatchTarget: "proj:.2",
+		AgentType:      "claude",
+		Status:         assignment.StatusWorking,
+		AssignedAt:     now,
+	}
+	if idle := detectIdleAgents(legacyStore, singleWindow, "", 0); len(idle) != 0 {
+		t.Fatalf("expected legacy bare-index assignment to mark unique pane busy, got %+v", idle)
+	}
+}
+
 func TestDetectIdleAgents_FilterByType(t *testing.T) {
 
 	store := newReviewQueueTestStore(t)

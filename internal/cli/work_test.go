@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,28 +18,122 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// repoBeadsRoot is this repository's root when it carries a bead tracker.
-func repoBeadsRoot(t *testing.T) string {
+var (
+	sharedHermeticBeadsOnce sync.Once
+	sharedHermeticBeadsDir  string
+	sharedHermeticBeadsSkip string
+	sharedHermeticBeadsErr  error
+)
+
+// hermeticBeadsRepo builds one shared read-only 2-issue git+br repository once
+// per test binary so live installed bv tests (history, graph, burndown) run
+// deterministically without repeating git+br init/create/commit per test.
+func hermeticBeadsRepo(t *testing.T) string {
 	t.Helper()
-	if _, err := exec.LookPath("bv"); err != nil {
-		t.Skip("bv not installed")
+	sharedHermeticBeadsOnce.Do(func() {
+		for _, tool := range []string{"bv", "br", "git"} {
+			if _, err := exec.LookPath(tool); err != nil {
+				sharedHermeticBeadsSkip = fmt.Sprintf("%s not installed", tool)
+				return
+			}
+		}
+		dir, err := os.MkdirTemp("", "ntm-work-beads-*")
+		if err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		sharedHermeticBeadsDir = dir
+		run := func(name string, args ...string) ([]byte, error) {
+			cmd := exec.Command(name, args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return nil, fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out)
+			}
+			return out, nil
+		}
+		create := func(title string) (string, error) {
+			raw, err := run("br", "create", "--title", title, "--type", "task", "--json")
+			if err != nil {
+				return "", err
+			}
+			var created struct {
+				ID      string `json:"id"`
+				Created struct {
+					ID string `json:"id"`
+				} `json:"created"`
+			}
+			if err := json.Unmarshal(raw, &created); err != nil {
+				return "", fmt.Errorf("decode br create: %w", err)
+			}
+			if created.ID == "" {
+				created.ID = created.Created.ID
+			}
+			return created.ID, nil
+		}
+		if _, err := run("git", "init", "-q"); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("br", "init", "--prefix", "zz"); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		first, err := create("first task")
+		if err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		second, err := create("second task")
+		if err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("br", "dep", "add", second, first); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("br", "close", first, "--reason", "done"); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("br", "sync", "--flush-only"); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		sprint, _ := json.Marshal(map[string]any{
+			"id": "sprint-1", "name": "Sprint 1",
+			"start_date": time.Now().UTC().AddDate(0, 0, -3).Format("2006-01-02T00:00:00Z"),
+			"end_date":   time.Now().UTC().AddDate(0, 0, 4).Format("2006-01-02T00:00:00Z"),
+			"bead_ids":   []string{first, second},
+		})
+		if err := os.WriteFile(filepath.Join(dir, ".beads", "sprints.jsonl"), append(sprint, '\n'), 0o644); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("git", "add", "-A"); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+		if _, err := run("git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "complete "+first+" and track "+second); err != nil {
+			sharedHermeticBeadsErr = err
+			return
+		}
+	})
+	if sharedHermeticBeadsSkip != "" {
+		t.Skip(sharedHermeticBeadsSkip)
 	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
+	if sharedHermeticBeadsErr != nil {
+		t.Fatalf("build hermetic beads repo: %v", sharedHermeticBeadsErr)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".beads")); err != nil {
-		t.Skip("repository has no .beads tracker")
-	}
-	return root
+	return sharedHermeticBeadsDir
 }
 
-// TestWorkHistoryDecodesInstalledBV decodes this repository's bead history
-// from the installed bv: histories are keyed by bead ID and events carry
-// event_type.
+// TestWorkHistoryDecodesInstalledBV decodes bead history from the installed bv:
+// histories are keyed by bead ID and events carry event_type.
 func TestWorkHistoryDecodesInstalledBV(t *testing.T) {
 	t.Parallel()
-	root := repoBeadsRoot(t)
+	root := hermeticBeadsRepo(t)
 	out, err := tools.NewBVAdapter().GetHistory(context.Background(), root, "30d")
 	if err != nil {
 		t.Fatalf("GetHistory: %v", err)
@@ -65,7 +161,7 @@ func TestWorkHistoryDecodesInstalledBV(t *testing.T) {
 // envelope rather than printing the envelope.
 func TestWorkGraphTextFromInstalledBV(t *testing.T) {
 	t.Parallel()
-	root := repoBeadsRoot(t)
+	root := hermeticBeadsRepo(t)
 	for format, prefix := range map[string]string{"dot": "digraph", "mermaid": "graph"} {
 		out, err := tools.NewBVAdapter().GetGraph(context.Background(), root, tools.BVGraphOptions{Format: format})
 		if err != nil {
@@ -82,54 +178,7 @@ func TestWorkGraphTextFromInstalledBV(t *testing.T) {
 // installed br and git, and decodes bv's issue-based burndown for it.
 func TestWorkBurndownDecodesInstalledBV(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{"bv", "br", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not installed", tool)
-		}
-	}
-	dir := t.TempDir()
-	run := func(name string, args ...string) []byte {
-		t.Helper()
-		cmd := exec.Command(name, args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
-		}
-		return out
-	}
-	create := func(title string) string {
-		t.Helper()
-		var created struct {
-			ID      string `json:"id"`
-			Created struct {
-				ID string `json:"id"`
-			} `json:"created"`
-		}
-		if err := json.Unmarshal(run("br", "create", "--title", title, "--type", "task", "--json"), &created); err != nil {
-			t.Fatalf("decode br create: %v", err)
-		}
-		if created.ID == "" {
-			created.ID = created.Created.ID
-		}
-		return created.ID
-	}
-	run("git", "init", "-q")
-	run("br", "init", "--prefix", "zz")
-	first, second := create("first task"), create("second task")
-	run("br", "close", first, "--reason", "done")
-	run("br", "sync", "--flush-only")
-	sprint, _ := json.Marshal(map[string]any{
-		"id": "sprint-1", "name": "Sprint 1",
-		"start_date": time.Now().UTC().AddDate(0, 0, -3).Format("2006-01-02T00:00:00Z"),
-		"end_date":   time.Now().UTC().AddDate(0, 0, 4).Format("2006-01-02T00:00:00Z"),
-		"bead_ids":   []string{first, second},
-	})
-	if err := os.WriteFile(filepath.Join(dir, ".beads", "sprints.jsonl"), append(sprint, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run("git", "add", "-A")
-	run("git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init")
+	dir := hermeticBeadsRepo(t)
 
 	out, err := tools.NewBVAdapter().GetBurndown(context.Background(), dir, "sprint-1")
 	if err != nil {

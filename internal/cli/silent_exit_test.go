@@ -7,6 +7,7 @@ import (
 )
 
 func TestSilentExitErrorPreservesRawExitCodes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	if err := newSilentExitError(0); err != nil {
 		t.Fatalf("newSilentExitError(0) = %v, want nil", err)
 	}
