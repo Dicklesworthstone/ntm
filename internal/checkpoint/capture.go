@@ -98,11 +98,25 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 		cp.Git = GitState{SkipReason: GitSkipRemoteHost, SkipDetail: "run checkpoint save on the SSH host to capture its Git state"}
 	}
 
-	// Save checkpoint first so directory exists
-	if err := c.storage.Save(cp); err != nil {
-		return nil, fmt.Errorf("saving checkpoint: %w", err)
+	// Keep the entire capture private until the final metadata seals the Git
+	// and scrollback payloads. Concurrent latest/restore must see only a
+	// previously completed checkpoint or this completed one.
+	if err := c.storage.publishCapture(cp, func(staged *Capturer) {
+		staged.collectArtifacts(cp, options)
+	}); err != nil {
+		return nil, err
+	}
+	if options.captureUntracked && !cp.Git.Captured {
+		// Preserve the useful session checkpoint, but do not report success
+		// for an explicitly requested code snapshot that could not be made.
+		return cp, fmt.Errorf("checkpoint %s saved without requested git files: %s", cp.ID, DescribeGitUnavailable(cp))
 	}
 
+	return cp, nil
+}
+
+func (c *Capturer) collectArtifacts(cp *Checkpoint, options checkpointOptions) {
+	sessionName, checkpointID, workingDir := cp.SessionName, cp.ID, cp.WorkingDir
 	// Capture pane scrollback with compression support
 	scrollbackConfig := ScrollbackConfig{
 		Lines:     options.scrollbackLines,
@@ -146,18 +160,42 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 			cp.BVSummary = bvSnapshot
 		}
 	}
+}
 
-	// Save updated checkpoint with all state
-	if err := c.storage.Save(cp); err != nil {
-		return nil, fmt.Errorf("saving final checkpoint: %w", err)
+// publishCapture builds a private Storage on the destination filesystem so the
+// normal artifact writers, encryption, and checksum validation still apply.
+func (s *Storage) publishCapture(cp *Checkpoint, collect func(*Capturer)) error {
+	target, err := s.safeCheckpointDir(cp.SessionName, cp.ID)
+	if err != nil {
+		return err
 	}
-	if options.captureUntracked && !cp.Git.Captured {
-		// Preserve the useful session checkpoint, but do not report success
-		// for an explicitly requested code snapshot that could not be made.
-		return cp, fmt.Errorf("checkpoint %s saved without requested git files: %s", cp.ID, DescribeGitUnavailable(cp))
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return fmt.Errorf("creating checkpoint session directory: %w", err)
 	}
+	// Hidden names cannot be checkpoint IDs, even if capture is interrupted.
+	stage, err := os.MkdirTemp(parent, ".ntm-capture-*")
+	if err != nil {
+		return fmt.Errorf("creating private checkpoint directory: %w", err)
+	}
+	defer os.RemoveAll(stage)
 
-	return cp, nil
+	staged := &Storage{BaseDir: stage}
+	source, err := staged.safeCheckpointDir(cp.SessionName, cp.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(source, 0700); err != nil {
+		return fmt.Errorf("preparing checkpoint capture: %w", err)
+	}
+	collect(NewCapturerWithStorage(staged))
+	if err := staged.Save(cp); err != nil {
+		return fmt.Errorf("sealing checkpoint: %w", err)
+	}
+	if err := os.Rename(source, target); err != nil {
+		return fmt.Errorf("publishing checkpoint: %w", err)
+	}
+	return nil
 }
 
 // captureSessionState captures the current state of a tmux session.
