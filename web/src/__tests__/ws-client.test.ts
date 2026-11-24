@@ -326,6 +326,58 @@ describe("NtmWebSocket", () => {
       }
     });
 
+    it("replays overlapping and interleaved hub topics once across different live options", async () => {
+      vi.useFakeTimers();
+      try {
+        await ws.subscribe("sessions:*", { since: 2 });
+        await ws.subscribe("panes:*", { since: 4 });
+        await ws.subscribe("panes:%7", { mode: "lines", since: 8 });
+        await ws.subscribe("beads:*", { throttle_ms: 120 });
+        const seen: number[] = [];
+        ws.onEvent((event) => { if (event.seq !== undefined) seen.push(event.seq); });
+
+        ws.connect();
+        await vi.advanceTimersByTimeAsync(10);
+        const first = MockWebSocket.instances[0];
+        const requests = (socket: MockWebSocket) =>
+          socket.send.mock.calls.map((args) => JSON.parse(String(args[0])).data);
+        expect(requests(first)).toEqual([
+          { topics: ["sessions:*"], since: 2 },
+          { topics: ["panes:*"], since: 4 },
+          { topics: ["panes:%7"], mode: "lines", since: 8 },
+          { topics: ["beads:*"], throttle_ms: 120 },
+        ]);
+        const emit = (socket: MockWebSocket, topic: string, seq: number) => socket.onmessage?.({
+          data: JSON.stringify({ type: "event", topic, seq, event_type: "update", data: {} }),
+        });
+        emit(first, "sessions:one", 20);
+        first.close(1013, "retry");
+        await vi.advanceTimersByTimeAsync(1010);
+
+        const next = MockWebSocket.instances[1];
+        const resumed = requests(next);
+        expect(resumed).toEqual([
+          { topics: ["sessions:*", "panes:*", "panes:%7", "beads:*"], since: 20 },
+          { topics: ["panes:%7"], mode: "lines" },
+          { topics: ["beads:*"], throttle_ms: 120 },
+        ]);
+        // The hub replays matching events once per subscribe request in
+        // sequence order. Live-only option updates must not request history.
+        for (const request of resumed) {
+          if (request.since === undefined) continue;
+          for (const [seq, topic] of [[21, "panes:%7"], [22, "beads:one"], [23, "panes:%8"], [24, "sessions:one"]] as const) {
+            if (request.topics.some((filter: string) =>
+              filter === topic || (filter.endsWith("*") && topic.startsWith(filter.slice(0, -1)))
+            )) emit(next, topic, seq);
+          }
+        }
+        expect(seen).toEqual([20, 21, 22, 23, 24]);
+      } finally {
+        ws.disconnect();
+        vi.useRealTimers();
+      }
+    });
+
     it("parses newline-batched websocket frames", async () => {
       const events: unknown[] = [];
       ws.onEvent((event) => events.push(event));

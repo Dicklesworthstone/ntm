@@ -717,8 +717,25 @@ export class NtmWebSocket {
         regularGroups.set(key, { topics: [topic], options: resume });
       }
     }
-    for (const { topics, options } of regularGroups.values()) {
-      this.sendMessage("subscribe", this.nextRef(), { topics, ...options });
+    if (this.lastSeq !== null && regularGroups.size > 1) {
+      // A hub sequence belongs to the connection. Replay its entire topic
+      // union once so overlapping wildcards cannot duplicate frames, and
+      // disjoint option groups cannot reorder a partially received prefix.
+      const topics = Array.from(regularGroups.values()).flatMap((group) => group.topics);
+      this.sendMessage("subscribe", this.nextRef(), { topics, since: this.lastSeq });
+      for (const group of regularGroups.values()) {
+        const liveOptions = { ...group.options };
+        delete liveOptions.since;
+        if (Object.keys(liveOptions).length > 0) {
+          this.sendMessage("subscribe", this.nextRef(), { topics: group.topics, ...liveOptions });
+        }
+      }
+    } else {
+      // A first connection can request different starting positions per
+      // topic. A single option group can also carry its settings with replay.
+      for (const { topics, options } of regularGroups.values()) {
+        this.sendMessage("subscribe", this.nextRef(), { topics, ...options });
+      }
     }
     if (hasAttention) {
       this.sendAttentionSubscription(this.nextRef());
