@@ -357,12 +357,14 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 }
 
 func filterAlertsForSession(active []alerts.Alert, session string) []alerts.Alert {
+	session = strings.TrimSpace(session)
 	if session == "" || len(active) == 0 {
 		return active
 	}
 	filtered := make([]alerts.Alert, 0, len(active))
 	for _, a := range active {
-		if a.Session == "" || a.Session == session {
+		alertSession := strings.TrimSpace(a.Session)
+		if alertSession == "" || alertSession == session {
 			filtered = append(filtered, a)
 		}
 	}
@@ -370,7 +372,15 @@ func filterAlertsForSession(active []alerts.Alert, session string) []alerts.Aler
 }
 
 func attentionEventMatchesSession(ev robot.AttentionEvent, session string) bool {
-	return session == "" || ev.Session == "" || ev.Session == session
+	session = strings.TrimSpace(session)
+	evSession := strings.TrimSpace(ev.Session)
+	return session == "" || evSession == "" || evSession == session
+}
+
+func attentionItemMatchesSession(item panels.AttentionItem, session string) bool {
+	session = strings.TrimSpace(session)
+	itemSession := strings.TrimSpace(item.SourceSession)
+	return session == "" || itemSession == "" || itemSession == session
 }
 
 // fetchAttentionCmd reads attention events via the shared section model.
@@ -401,14 +411,19 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		// Convert events to panel items, filtering out foreign sessions so
+		// Convert events to panel items, filtering out foreign sessions (both
+		// explicit ev.Session and foreign session prefixes inside pane_ref) so
 		// unrelated session activity does not contaminate or mis-zoom panes.
 		items := make([]panels.AttentionItem, 0, len(data.Events)+1)
 		for _, ev := range data.Events {
 			if !attentionEventMatchesSession(ev, session) {
 				continue
 			}
-			items = append(items, attentionItemFromEvent(ev, panes))
+			item := attentionItemFromEvent(ev, panes)
+			if !attentionItemMatchesSession(item, session) {
+				continue
+			}
+			items = append(items, item)
 		}
 
 		// Handle requested cursor (for cursor navigation)
@@ -481,6 +496,10 @@ func includeAttentionEvent(ev robot.AttentionEvent) bool {
 		ev.Actionability == robot.ActionabilityInteresting
 }
 
+func eventHasImplicitPaneTarget(ev robot.AttentionEvent, sourceSession string) bool {
+	return ev.Pane > 0 || (ev.Pane == 0 && sourceSession != "" && (ev.Category == robot.EventCategoryPane || ev.Category == robot.EventCategoryAgent))
+}
+
 func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) panels.AttentionItem {
 	paneID := ""
 	paneRef := ""
@@ -493,24 +512,25 @@ func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) 
 		}
 	}
 
-	sourceSession := strings.TrimSpace(ev.Session)
+	trimmedEvSession := strings.TrimSpace(ev.Session)
+	sourceSession := trimmedEvSession
 	sourcePane := -1
 	if paneID != "" {
 		if idx, ok := panes.indexByID[paneID]; ok {
 			sourcePane = idx
-		} else if ev.Pane > 0 || (ev.Pane == 0 && sourceSession != "") {
+		} else if eventHasImplicitPaneTarget(ev, sourceSession) {
 			sourcePane = ev.Pane
 		}
 	} else if paneRef != "" {
 		candidate := paneRef
 		foreignPrefix := false
 		if colon := strings.LastIndex(candidate, ":"); colon >= 0 {
-			prefix := strings.TrimSpace(candidate[:colon])
+			prefix := strings.TrimPrefix(strings.TrimSpace(candidate[:colon]), "=")
 			if prefix != "" {
 				if sourceSession == "" {
 					sourceSession = prefix
 				}
-				if (panes.session != "" && prefix != panes.session) || (ev.Session != "" && prefix != strings.TrimSpace(ev.Session)) {
+				if (panes.session != "" && prefix != panes.session) || (trimmedEvSession != "" && prefix != trimmedEvSession) {
 					foreignPrefix = true
 				}
 			}
@@ -523,7 +543,7 @@ func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) 
 					paneID = sel.PaneID
 					if idx, ok := panes.indexByID[paneID]; ok {
 						sourcePane = idx
-					} else if ev.Pane > 0 {
+					} else if eventHasImplicitPaneTarget(ev, sourceSession) {
 						sourcePane = ev.Pane
 					}
 				case tmux.PaneSelectorWindowPane:
@@ -538,12 +558,12 @@ func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) 
 					paneID = panes.idByIndex[sel.Index]
 					sourcePane = sel.Index
 				}
-			} else if ev.Pane > 0 {
+			} else if eventHasImplicitPaneTarget(ev, sourceSession) {
 				sourcePane = ev.Pane
 				paneID = panes.idByIndex[ev.Pane]
 			}
 		}
-	} else if ev.Pane > 0 || (ev.Pane == 0 && sourceSession != "" && (ev.Category == robot.EventCategoryPane || ev.Category == robot.EventCategoryAgent)) {
+	} else if eventHasImplicitPaneTarget(ev, sourceSession) {
 		sourcePane = ev.Pane
 		paneID = panes.idByIndex[ev.Pane]
 	}
@@ -587,6 +607,9 @@ func requestedAttentionItem(feed *robot.AttentionFeed, session string, panes att
 		return nil
 	}
 	item := attentionItemFromEvent(events[0], panes)
+	if !attentionItemMatchesSession(item, session) {
+		return nil
+	}
 	return &item
 }
 

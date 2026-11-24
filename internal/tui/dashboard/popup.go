@@ -156,7 +156,9 @@ func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
 // Refuses cross-session items, prefers physical pane IDs for multi-window
 // precision, and displays a warning instead of zooming an ambiguous/missing pane.
 func (m *Model) handleAttentionZoom(item panels.AttentionItem) tea.Cmd {
-	if item.SourceSession != "" && m.session != "" && item.SourceSession != m.session {
+	itemSession := strings.TrimSpace(item.SourceSession)
+	activeSession := strings.TrimSpace(m.session)
+	if itemSession != "" && activeSession != "" && itemSession != activeSession {
 		m.healthMessage = "Attention item belongs to another session"
 		if m.toasts != nil {
 			m.toasts.Push(components.Toast{

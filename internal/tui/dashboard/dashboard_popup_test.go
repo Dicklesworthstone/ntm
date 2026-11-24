@@ -1203,6 +1203,15 @@ func TestDashboardMultiWindowZoomAndCrossSessionIsolation(t *testing.T) {
 		t.Fatalf("pane_ref projA:1.0 = %+v, want SourcePaneID=%%2 SourcePane=0", byWindowPaneRef)
 	}
 
+	// ExactTarget "=projA:1.0" prefix must also bind cleanly to projA's %2.
+	byExactPrefixRef := attentionItemFromEvent(robot.AttentionEvent{
+		Session: " projA ",
+		Details: map[string]any{"pane_ref": "=projA:1.0"},
+	}, lookup)
+	if byExactPrefixRef.SourcePaneID != "%2" || byExactPrefixRef.SourcePane != 0 || byExactPrefixRef.SourceSession != "projA" {
+		t.Fatalf("pane_ref =projA:1.0 = %+v, want SourceSession=projA SourcePaneID=%%2 SourcePane=0", byExactPrefixRef)
+	}
+
 	// Missing window 2 pane 1 must NOT fall back to unique window 0 pane 1 (%3).
 	missingWindowPane := attentionItemFromEvent(robot.AttentionEvent{
 		Session: "projA",
@@ -1281,11 +1290,23 @@ func TestDashboardMultiWindowZoomAndCrossSessionIsolation(t *testing.T) {
 			Summary:       "foreign event",
 		})
 	}
+	// Session-less event with foreign pane_ref prefix must ALSO be filtered out
+	// from fetchAttentionCmd and requestedAttentionItem.
+	foreignCursor := feed.Append(robot.AttentionEvent{
+		Session:       "",
+		Category:      robot.EventCategoryAgent,
+		Actionability: robot.ActionabilityActionRequired,
+		Summary:       "foreign prefixed webhook",
+		Details:       map[string]any{"pane_ref": "projB:1.0"},
+	}).Cursor
 	msg, ok := m.fetchAttentionCmd()().(AttentionUpdateMsg)
 	if !ok || !msg.FeedAvailable {
 		t.Fatalf("fetchAttentionCmd() = %#v, want available AttentionUpdateMsg", msg)
 	}
 	if len(msg.Items) != 1 || msg.Items[0].SourceSession != "projA" || msg.Items[0].SourcePaneID != "%2" {
 		t.Fatalf("fetchAttentionCmd items = %+v, want single projA item targeting %%2", msg.Items)
+	}
+	if reqItem := requestedAttentionItem(feed, "projA", lookup, foreignCursor); reqItem != nil {
+		t.Fatalf("requestedAttentionItem returned foreign-prefixed item: %+v", reqItem)
 	}
 }

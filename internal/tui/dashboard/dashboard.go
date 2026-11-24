@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2409,12 +2408,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case synthtui.ZoomMsg:
-		pane, ok, ambiguous := m.uniquePaneByIndex(msg.PaneIndex)
+		var (
+			pane      tmux.Pane
+			ok        bool
+			ambiguous bool
+		)
+		if msg.PaneID != "" {
+			pane, ok = m.paneByID(msg.PaneID)
+		} else {
+			pane, ok, ambiguous = m.uniquePaneByIndex(msg.PaneIndex)
+		}
 		if ambiguous {
 			m.healthMessage = "Source pane is ambiguous across windows"
 			return m, nil
 		}
 		if !ok {
+			if msg.PaneID != "" {
+				m.healthMessage = "Source pane no longer available"
+				return m, nil
+			}
 			pane = tmux.Pane{Index: msg.PaneIndex}
 		}
 		return m, m.handlePaneZoom(pane)
@@ -5762,12 +5774,6 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 		return
 	}
 
-	// Index panes by index for history targets.
-	paneByIndex := make(map[int]tmux.Pane, len(m.panes))
-	for _, p := range m.panes {
-		paneByIndex[p.Index] = p
-	}
-
 	lastTs := m.costLastPromptTimestamp
 	maxTs := lastTs
 
@@ -5805,12 +5811,12 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 				continue
 			}
 
-			idx, err := strconv.Atoi(target)
-			if err != nil {
+			resolved, resolveErr := tmux.ResolvePaneSelectors(m.panes, []string{target}, false)
+			if resolveErr != nil || len(resolved) != 1 {
 				continue
 			}
-			pane, ok := paneByIndex[idx]
-			if !ok || pane.Type.Canonical() == tmux.AgentUser {
+			pane := resolved[0]
+			if pane.Type.Canonical() == tmux.AgentUser {
 				continue
 			}
 			m.costInputTokens[pane.ID] += promptTokens
