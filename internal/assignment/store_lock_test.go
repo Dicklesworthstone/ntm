@@ -25,8 +25,8 @@ func atomicLockFiles(t *testing.T, storePath string) []string {
 // distinct bead ID, occupancy key, and cleanup identity used to leave its own
 // assignments.json.atomic-*.lock behind forever.
 func TestAtomicOperationLockFilesDoNotAccumulate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-lock-bounded")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-lock-bounded"))
 	storePath := store.path
 	ctx := context.Background()
 
@@ -63,8 +63,8 @@ func TestAtomicOperationLockFilesDoNotAccumulate(t *testing.T) {
 // transient policy: assignments.json.lock is a stable rendezvous point and must
 // keep existing after release.
 func TestStoreFileLockRemainsPersistent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	storePath := NewStore("atomic-lock-persistent").path
+	t.Parallel()
+	storePath := NewStore(testSessionName(t, "atomic-lock-persistent")).path
 
 	unlock, err := acquireStoreFileLock(storePath)
 	if err != nil {
@@ -80,6 +80,7 @@ func TestStoreFileLockRemainsPersistent(t *testing.T) {
 // if the held lock file vanished from its path and something else now lives
 // there, release must not remove the replacement.
 func TestTransientLockReleaseKeepsReplacementFile(t *testing.T) {
+	t.Parallel()
 	lockPath := filepath.Join(t.TempDir(), "assignments.json.atomic-bead-replaced.lock")
 
 	unlock, err := acquireTransientAssignmentFileLock(context.Background(), lockPath)
@@ -108,6 +109,7 @@ func TestTransientLockReleaseKeepsReplacementFile(t *testing.T) {
 // identity check exists for: a waiter polling on the holder's file must not
 // treat a flock granted on the unlinked inode as ownership of the path.
 func TestTransientLockWaiterAbandonsUnlinkedFile(t *testing.T) {
+	t.Parallel()
 	lockPath := filepath.Join(t.TempDir(), "assignments.json.atomic-bead-orphan.lock")
 	ctx := context.Background()
 
@@ -168,6 +170,7 @@ func TestTransientLockWaiterAbandonsUnlinkedFile(t *testing.T) {
 // file description and contends at the OS level exactly like a separate
 // process. Mutual exclusion must hold across releases that unlink the file.
 func TestTransientLockMutualExclusionAcrossIndependentHandles(t *testing.T) {
+	t.Parallel()
 	lockPath := filepath.Join(t.TempDir(), "assignments.json.atomic-bead-race.lock")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -216,6 +219,7 @@ func TestTransientLockMutualExclusionAcrossIndependentHandles(t *testing.T) {
 // TestTransientLockHonorsContextWhileContending keeps the cancellation
 // behavior of the transient path identical to the persistent one.
 func TestTransientLockHonorsContextWhileContending(t *testing.T) {
+	t.Parallel()
 	lockPath := filepath.Join(t.TempDir(), "assignments.json.atomic-bead-ctx.lock")
 	holder, err := acquireTransientAssignmentFileLock(context.Background(), lockPath)
 	if err != nil {

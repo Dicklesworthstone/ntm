@@ -8,7 +8,6 @@ import (
 
 func newStrandedSendingStore(t *testing.T, session string) (*AssignmentStore, AtomicRequest) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
 	request := AtomicRequest{
 		BeadID: "ntm-stranded", BeadTitle: "Stranded", Target: "%993", OccupancyKey: "%993", Pane: 6,
 		AgentType: "cod", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "durable prompt",
@@ -31,7 +30,8 @@ func newStrandedSendingStore(t *testing.T, session string) (*AssignmentStore, At
 }
 
 func TestResolveStrandedDispatchIfCurrentRequiresEvidence(t *testing.T) {
-	store, request := newStrandedSendingStore(t, "stranded-evidence")
+	t.Parallel()
+	store, request := newStrandedSendingStore(t, testSessionName(t, "stranded-evidence"))
 	observed := store.Get(request.BeadID)
 
 	if _, _, err := store.ResolveStrandedDispatchIfCurrent(t.Context(), observed, "   "); err == nil ||
@@ -47,7 +47,8 @@ func TestResolveStrandedDispatchIfCurrentRequiresEvidence(t *testing.T) {
 }
 
 func TestResolveStrandedDispatchIfCurrentIsExactGenerationAndIdempotent(t *testing.T) {
-	store, request := newStrandedSendingStore(t, "stranded-generation")
+	t.Parallel()
+	store, request := newStrandedSendingStore(t, testSessionName(t, "stranded-generation"))
 	observed := store.Get(request.BeadID)
 
 	stale := cloneAssignment(observed)
@@ -81,7 +82,9 @@ func TestResolveStrandedDispatchIfCurrentIsExactGenerationAndIdempotent(t *testi
 }
 
 func TestAdoptStrandedDispatchReceiptIfCurrentCompletesTheDeliveryForward(t *testing.T) {
-	store, request := newStrandedSendingStore(t, "stranded-adopt")
+	t.Parallel()
+	session := testSessionName(t, "stranded-adopt")
+	store, request := newStrandedSendingStore(t, session)
 	observed := store.Get(request.BeadID)
 
 	if _, _, err := store.AdoptStrandedDispatchReceiptIfCurrent(t.Context(), observed, DispatchReceipt{}, "reason"); err == nil {
@@ -106,7 +109,7 @@ func TestAdoptStrandedDispatchReceiptIfCurrentCompletesTheDeliveryForward(t *tes
 
 	// An adopted row is a normal delivered assignment: the ordinary replay path
 	// must report it as already sent rather than dispatch it again.
-	reloaded, err := LoadStoreStrict("stranded-adopt")
+	reloaded, err := LoadStoreStrict(session)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -117,7 +120,8 @@ func TestAdoptStrandedDispatchReceiptIfCurrentCompletesTheDeliveryForward(t *tes
 }
 
 func TestStrandedDispatchResolutionIgnoresRowsOffTheBarrier(t *testing.T) {
-	store, request := newStrandedSendingStore(t, "stranded-off-barrier")
+	t.Parallel()
+	store, request := newStrandedSendingStore(t, testSessionName(t, "stranded-off-barrier"))
 	observed := store.Get(request.BeadID)
 	if _, applied, err := store.ResolveStrandedDispatchIfCurrent(t.Context(), observed, "target gone"); err != nil || !applied {
 		t.Fatalf("first resolve applied=%v err=%v", applied, err)

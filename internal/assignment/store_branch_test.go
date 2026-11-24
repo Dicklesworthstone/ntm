@@ -7,10 +7,10 @@ import (
 )
 
 func TestSave_Explicit(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
+	session := testSessionName(t, "save-test")
 
-	store := NewStore("save-test")
+	store := NewStore(session)
 	store.Assign("bd-1", "Bead one", 1, "cc", "Agent1", "Do thing")
 
 	// Explicit Save call (separate from auto-save in Assign)
@@ -24,7 +24,7 @@ func TestSave_Explicit(t *testing.T) {
 	}
 
 	// Load and verify
-	store2, err := LoadStore("save-test")
+	store2, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
@@ -38,10 +38,9 @@ func TestSave_Explicit(t *testing.T) {
 }
 
 func TestGetAll(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
 
-	store := NewStore("getall-test")
+	store := NewStore(testSessionName(t, "getall-test"))
 	store.Assign("bd-a", "Alpha", 1, "cc", "Agent1", "Prompt1")
 	store.Assign("bd-b", "Bravo", 2, "cod", "Agent2", "Prompt2")
 	store.Assign("bd-c", "Charlie", 3, "gmi", "Agent3", "Prompt3")
@@ -64,10 +63,9 @@ func TestGetAll(t *testing.T) {
 }
 
 func TestGetAll_Empty(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
 
-	store := NewStore("empty-getall")
+	store := NewStore(testSessionName(t, "empty-getall"))
 	all := store.GetAll()
 	if len(all) != 0 {
 		t.Errorf("GetAll len = %d, want 0 for empty store", len(all))

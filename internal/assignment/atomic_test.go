@@ -147,8 +147,8 @@ func prepareAtomicWorkingReplacement(t *testing.T, store *AssignmentStore, coord
 }
 
 func TestAtomicWorkingReplacementPersistsNewGenerationAndReusesClaimActor(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-working-replacement")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-working-replacement"))
 	var claimMu sync.Mutex
 	var claimActors []string
 	var guardedClaims []bool
@@ -203,6 +203,7 @@ func TestAtomicWorkingReplacementPersistsNewGenerationAndReusesClaimActor(t *tes
 }
 
 func TestAtomicWorkingReplacementRejectsInvalidPriorState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		beadID     string
@@ -218,9 +219,10 @@ func TestAtomicWorkingReplacementRejectsInvalidPriorState(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("invalid-working-replacement-" + strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store := NewStore(testSessionName(t, "invalid-working-replacement-"+strings.ReplaceAll(test.name, " ", "-")))
 			if test.seed {
 				store.Assignments["ntm-atomic"] = &Assignment{
 					BeadID: "ntm-atomic", BeadTitle: "Original", Pane: 1, AgentType: "codex", AgentName: "OriginalAgent",
@@ -259,8 +261,8 @@ func TestAtomicWorkingReplacementRejectsInvalidPriorState(t *testing.T) {
 }
 
 func TestRecordAtomicIntentWorkingReplacementRejectsChangedClaimActor(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-working-replacement-actor-integrity")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-working-replacement-actor-integrity"))
 	store.Assignments["ntm-atomic"] = &Assignment{
 		BeadID: "ntm-atomic", BeadTitle: "Original", Pane: 1, AgentType: "codex", AgentName: "OriginalAgent",
 		Status: StatusWorking, AssignedAt: time.Now().UTC(), IdempotencyKey: "old-key", ClaimActor: "durable-old-actor",
@@ -283,8 +285,8 @@ func TestRecordAtomicIntentWorkingReplacementRejectsChangedClaimActor(t *testing
 }
 
 func TestAtomicWorkingReplacementRejectsAgentNameAsClaimActorFallback(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-working-replacement-missing-claim-actor")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-working-replacement-missing-claim-actor"))
 	prior := &Assignment{
 		BeadID: "ntm-atomic", BeadTitle: "Original", Pane: 1, AgentType: "codex", AgentName: "LegacyAgentName",
 		Status: StatusWorking, AssignedAt: time.Now().UTC(), IdempotencyKey: "old-key",
@@ -310,8 +312,8 @@ func TestAtomicWorkingReplacementRejectsAgentNameAsClaimActorFallback(t *testing
 }
 
 func TestAtomicWorkingReplacementRecoversReservationAndDispatchFailures(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-working-replacement-recovery")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-working-replacement-recovery"))
 	claimer := &atomicClaimLedger{}
 	var dispatchCalls atomic.Int32
 	dispatcher := DispatchFunc(func(_ context.Context, request DispatchRequest) (DispatchReceipt, error) {
@@ -431,8 +433,8 @@ func exactWorkingReleaseReceipt(current *Assignment) WorkingReplacementReleaseRe
 }
 
 func TestAtomicEligibilityAuthorizationPrecedesAllNewIntentMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-eligibility-new-intent")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-eligibility-new-intent"))
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
@@ -460,8 +462,8 @@ func TestAtomicEligibilityAuthorizationPrecedesAllNewIntentMutation(t *testing.T
 }
 
 func TestAtomicEligibilityAuthorizationRejectsSameKeyPendingRecoveryWithoutMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-eligibility-pending-recovery")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-eligibility-pending-recovery"))
 	request := atomicTestRequest("eligibility-pending-recovery", "%352")
 	request.IntentSHA256 = PromptSHA256(request.Prompt)
 	request.claimRequiresNonTerminal = true
@@ -494,8 +496,8 @@ func TestAtomicEligibilityAuthorizationRejectsSameKeyPendingRecoveryWithoutMutat
 }
 
 func TestAtomicEligibilityAuthorizationPrecedesWorkingReplacementRelease(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, claimer, _, working := seedWorkingAtomicReservation(t, "atomic-eligibility-replacement")
+	t.Parallel()
+	store, claimer, _, working := seedWorkingAtomicReservation(t, testSessionName(t, "atomic-eligibility-replacement"))
 	before := store.Get(working.BeadID)
 	claimCallsBefore := claimer.calls
 	reserver := &atomicReservationRecorder{}
@@ -533,8 +535,8 @@ func TestAtomicEligibilityAuthorizationPrecedesWorkingReplacementRelease(t *test
 }
 
 func TestAtomicSentReceiptReplayBypassesEligibilityAuthorization(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-eligibility-sent-replay")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-eligibility-sent-replay"))
 	request := atomicTestRequest("eligibility-sent-replay", "%354")
 	seedResult, err := NewAtomicCoordinator(store, &atomicClaimLedger{}, nil, &atomicDispatchRecorder{}).Execute(t.Context(), request)
 	if err != nil || !seedResult.Sent {
@@ -561,8 +563,8 @@ func TestAtomicSentReceiptReplayBypassesEligibilityAuthorization(t *testing.T) {
 }
 
 func TestAtomicWorkingReplacementReleasesExactPriorGenerationUnderLocks(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, claimer, oldRequest, working := seedWorkingAtomicReservation(t, "atomic-integrated-working-release")
+	t.Parallel()
+	store, claimer, oldRequest, working := seedWorkingAtomicReservation(t, testSessionName(t, "atomic-integrated-working-release"))
 	var sequence []string
 	var sequenceMu sync.Mutex
 	record := func(value string) {
@@ -619,6 +621,7 @@ func TestAtomicWorkingReplacementReleasesExactPriorGenerationUnderLocks(t *testi
 }
 
 func TestAtomicWorkingReplacementMalformedReleaseReceiptStaysRetryable(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		receipt WorkingReplacementReleaseReceipt
@@ -634,9 +637,10 @@ func TestAtomicWorkingReplacementMalformedReleaseReceiptStaysRetryable(t *testin
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store, claimer, _, working := seedWorkingAtomicReservation(t, "atomic-malformed-release-"+strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store, claimer, _, working := seedWorkingAtomicReservation(t, testSessionName(t, "atomic-malformed-release-"+strings.ReplaceAll(test.name, " ", "-")))
 			var releaseCalls atomic.Int32
 			releaser := WorkingReplacementReleaseFunc(func(context.Context, *Assignment) (WorkingReplacementReleaseReceipt, error) {
 				releaseCalls.Add(1)
@@ -668,6 +672,7 @@ func TestAtomicWorkingReplacementMalformedReleaseReceiptStaysRetryable(t *testin
 }
 
 func TestAtomicWorkingReplacementEmptyExpectedSurfaceRejectsUnexpectedReceipt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		receipt WorkingReplacementReleaseReceipt
@@ -675,9 +680,10 @@ func TestAtomicWorkingReplacementEmptyExpectedSurfaceRejectsUnexpectedReceipt(t 
 		{name: "unexpected path", receipt: WorkingReplacementReleaseReceipt{ReleasedPaths: []string{"internal/unexpected/**"}}},
 		{name: "unexpected id", receipt: WorkingReplacementReleaseReceipt{ReleasedReservationIDs: []int{999}}},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("atomic-empty-release-surface-" + strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store := NewStore(testSessionName(t, "atomic-empty-release-surface-"+strings.ReplaceAll(test.name, " ", "-")))
 			claimer := &atomicClaimLedger{}
 			seedRequest := atomicTestRequest("empty-release-old", "%324")
 			if result, err := NewAtomicCoordinator(store, claimer, nil, &atomicDispatchRecorder{}).Execute(t.Context(), seedRequest); err != nil || !result.Sent {
@@ -711,8 +717,8 @@ func TestAtomicWorkingReplacementEmptyExpectedSurfaceRejectsUnexpectedReceipt(t 
 }
 
 func TestAtomicWorkingReplacementReleaseFailureRetriesFromDurableBarrier(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, claimer, _, working := seedWorkingAtomicReservation(t, "atomic-working-release-retry")
+	t.Parallel()
+	store, claimer, _, working := seedWorkingAtomicReservation(t, testSessionName(t, "atomic-working-release-retry"))
 	var releaseCalls atomic.Int32
 	releaser := WorkingReplacementReleaseFunc(func(_ context.Context, current *Assignment) (WorkingReplacementReleaseReceipt, error) {
 		if releaseCalls.Add(1) == 1 {
@@ -746,6 +752,7 @@ func TestAtomicWorkingReplacementReleaseFailureRetriesFromDurableBarrier(t *test
 }
 
 func TestAtomicWorkingReplacementAuthorizationAndPreflightBlockBeforeActuation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		preflight     PromptPreflightPort
@@ -781,9 +788,10 @@ func TestAtomicWorkingReplacementAuthorizationAndPreflightBlockBeforeActuation(t
 			return WorkingReplacementAuthorization{Status: "in_progress", Assignee: actor}, nil
 		}},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store, claimer, _, working := seedWorkingAtomicReservation(t, "atomic-release-gate-"+strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store, claimer, _, working := seedWorkingAtomicReservation(t, testSessionName(t, "atomic-release-gate-"+strings.ReplaceAll(test.name, " ", "-")))
 			if test.clearActor {
 				current := store.Get(working.BeadID)
 				current.ClaimActor = ""
@@ -829,8 +837,8 @@ func TestAtomicWorkingReplacementAuthorizationAndPreflightBlockBeforeActuation(t
 }
 
 func TestAtomicWorkingReplacementCannotTakeOccupiedCanonicalTarget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-working-replacement-occupied")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-working-replacement-occupied"))
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	coordinator := NewAtomicCoordinator(store, claimer, nil, dispatcher)
@@ -863,8 +871,8 @@ func TestAtomicWorkingReplacementCannotTakeOccupiedCanonicalTarget(t *testing.T)
 }
 
 func TestAtomicWorkingReplacementConcurrentGenerationsHaveOneWinner(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "atomic-concurrent-working-replacement"
+	t.Parallel()
+	session := testSessionName(t, "atomic-concurrent-working-replacement")
 	store := NewStore(session)
 	claimer := &atomicClaimLedger{}
 	prepareAtomicWorkingReplacement(t, store, NewAtomicCoordinator(store, claimer, nil, &atomicDispatchRecorder{}), atomicTestRequest("concurrent-old", "%341"))
@@ -948,7 +956,7 @@ func TestNewAssignmentIdempotencyKeyIsUnique(t *testing.T) {
 }
 
 func TestAtomicAssignmentConcurrentContendersDispatchOnce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	start := make(chan struct{})
@@ -959,8 +967,8 @@ func TestAtomicAssignmentConcurrentContendersDispatchOnce(t *testing.T) {
 		key     string
 		target  string
 	}{
-		{session: "atomic-a", key: "attempt-a", target: "AgentA"},
-		{session: "atomic-b", key: "attempt-b", target: "AgentA"},
+		{session: testSessionName(t, "atomic-a"), key: "attempt-a", target: "AgentA"},
+		{session: testSessionName(t, "atomic-b"), key: "attempt-b", target: "AgentA"},
 	} {
 		attempt := attempt
 		go func() {
@@ -993,7 +1001,7 @@ func TestAtomicAssignmentConcurrentContendersDispatchOnce(t *testing.T) {
 }
 
 func TestAtomicAssignmentConcurrentSameKeyDispatchesOnce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -1006,7 +1014,7 @@ func TestAtomicAssignmentConcurrentSameKeyDispatchesOnce(t *testing.T) {
 		return DispatchReceipt{DeliveryID: "same-key-delivery"}, nil
 	})
 
-	const session = "atomic-concurrent-same-key"
+	session := testSessionName(t, "atomic-concurrent-same-key")
 	coordinators := []*AtomicCoordinator{
 		NewAtomicCoordinator(NewStore(session), claimer, nil, dispatcher),
 		NewAtomicCoordinator(NewStore(session), claimer, nil, dispatcher),
@@ -1057,7 +1065,7 @@ func TestAtomicAssignmentConcurrentSameKeyDispatchesOnce(t *testing.T) {
 }
 
 func TestAtomicAssignmentDifferentBeadsRemainConcurrent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	started := make(chan string, 2)
 	release := make(chan struct{})
@@ -1067,7 +1075,7 @@ func TestAtomicAssignmentDifferentBeadsRemainConcurrent(t *testing.T) {
 		return DispatchReceipt{DeliveryID: "delivery-" + request.BeadID}, nil
 	})
 
-	const session = "atomic-different-beads"
+	session := testSessionName(t, "atomic-different-beads")
 	results := make(chan error, 2)
 	for index, beadID := range []string{"ntm-a", "ntm-b"} {
 		request := atomicTestRequest("attempt-"+beadID, "Agent"+beadID)
@@ -1102,7 +1110,7 @@ func TestAtomicAssignmentDifferentBeadsRemainConcurrent(t *testing.T) {
 }
 
 func TestAtomicAssignmentDifferentBeadsCannotOccupySameTarget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -1115,7 +1123,7 @@ func TestAtomicAssignmentDifferentBeadsCannotOccupySameTarget(t *testing.T) {
 		return DispatchReceipt{DeliveryID: "delivery-" + request.BeadID}, nil
 	})
 
-	const session = "atomic-same-target"
+	session := testSessionName(t, "atomic-same-target")
 	results := make(chan error, 2)
 	start := make(chan struct{})
 	for _, beadID := range []string{"ntm-target-a", "ntm-target-b"} {
@@ -1161,9 +1169,9 @@ func TestAtomicAssignmentDifferentBeadsCannotOccupySameTarget(t *testing.T) {
 }
 
 func TestAtomicAssignmentWaitsForExternalCleanupLock(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const beadID = "ntm-external-cleanup-lock"
-	store := NewStore("atomic-external-cleanup-lock")
+	store := NewStore(testSessionName(t, "atomic-external-cleanup-lock"))
 	cleanupUnlock, err := store.AcquireExternalCleanupLock(t.Context(), beadID)
 	if err != nil {
 		t.Fatalf("acquire external cleanup lock: %v", err)
@@ -1189,10 +1197,10 @@ func TestAtomicAssignmentWaitsForExternalCleanupLock(t *testing.T) {
 }
 
 func TestAtomicAssignmentCanonicalOccupancyRejectsSelectorAliases(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	store := NewStore("atomic-alias-occupancy")
+	store := NewStore(testSessionName(t, "atomic-alias-occupancy"))
 	coordinator := NewAtomicCoordinator(store, claimer, nil, dispatcher)
 
 	first := atomicTestRequest("alias-first", "AgentA")
@@ -1219,8 +1227,8 @@ func TestAtomicAssignmentCanonicalOccupancyRejectsSelectorAliases(t *testing.T) 
 }
 
 func TestAtomicAssignmentDispatchOnlyCanonicalIdentityOccupiesTarget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-dispatch-only-occupancy")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-dispatch-only-occupancy"))
 	store.Assignments["ntm-dispatch-only"] = &Assignment{
 		BeadID: "ntm-dispatch-only", Pane: 1, Status: StatusWorking, AssignedAt: time.Now().UTC(),
 		DispatchTarget: "%42",
@@ -1243,6 +1251,7 @@ func TestAtomicAssignmentDispatchOnlyCanonicalIdentityOccupiesTarget(t *testing.
 }
 
 func TestAtomicAssignmentRejectsLegacyOccupancyWithoutMutation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		dispatchTarget string
@@ -1253,9 +1262,10 @@ func TestAtomicAssignmentRejectsLegacyOccupancyWithoutMutation(t *testing.T) {
 		{name: "window address without stable occupancy", dispatchTarget: "0.1"},
 		{name: "nonphysical occupancy", dispatchTarget: "0.1", occupancyKey: "0.1"},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("legacy-occupancy-" + strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store := NewStore(testSessionName(t, "legacy-occupancy-"+strings.ReplaceAll(test.name, " ", "-")))
 			store.Assignments["ntm-legacy"] = &Assignment{
 				BeadID: "ntm-legacy", Pane: 1, Status: StatusWorking, AssignedAt: time.Now().UTC(),
 				DispatchTarget: test.dispatchTarget, OccupancyKey: test.occupancyKey,
@@ -1289,6 +1299,7 @@ func TestAtomicAssignmentRejectsLegacyOccupancyWithoutMutation(t *testing.T) {
 }
 
 func TestCanonicalPaneIdentityRequiresPhysicalPaneID(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		assignment *Assignment
@@ -1306,7 +1317,9 @@ func TestCanonicalPaneIdentityRequiresPhysicalPaneID(t *testing.T) {
 		{name: "bare local index", assignment: &Assignment{DispatchTarget: "2"}, wantErr: true},
 		{name: "invalid occupancy blocks fallback", assignment: &Assignment{OccupancyKey: "1.2", DispatchTarget: "%44"}, wantErr: true},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := CanonicalPaneIdentity(test.assignment)
 			if test.wantErr {
 				var migrationErr *PaneIdentityMigrationError
@@ -1323,8 +1336,8 @@ func TestCanonicalPaneIdentityRequiresPhysicalPaneID(t *testing.T) {
 }
 
 func TestAtomicAssignmentRejectsNoncanonicalRequestBeforeMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("noncanonical-request")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "noncanonical-request"))
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	request := atomicTestRequest("noncanonical-request", "0.1")
@@ -1341,8 +1354,8 @@ func TestAtomicAssignmentRejectsNoncanonicalRequestBeforeMutation(t *testing.T) 
 }
 
 func TestAtomicAssignmentCanonicalPaneIDsAllowDuplicateLocalIndexes(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("canonical-duplicate-index")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "canonical-duplicate-index"))
 	store.Assignments["ntm-window-zero"] = &Assignment{
 		BeadID: "ntm-window-zero", Pane: 1, Status: StatusWorking, AssignedAt: time.Now().UTC(),
 		DispatchTarget: "%41", OccupancyKey: "%41",
@@ -1366,13 +1379,13 @@ func TestAtomicAssignmentCanonicalPaneIDsAllowDuplicateLocalIndexes(t *testing.T
 }
 
 func TestAtomicFreshAssignmentCarriesNonTerminalClaimGuard(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	var guarded atomic.Bool
 	claimer := ClaimFunc(func(ctx context.Context, beadID, actor string) (ClaimReceipt, error) {
 		guarded.Store(NonTerminalClaimGuardRequired(ctx))
 		return ClaimReceipt{BeadID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
 	})
-	store := NewStore("fresh-claim-guard")
+	store := NewStore(testSessionName(t, "fresh-claim-guard"))
 	request := atomicTestRequest("fresh-guard", "%43")
 	result, err := NewAtomicCoordinator(store, claimer, nil, &atomicDispatchRecorder{}).Execute(t.Context(), request)
 	if err != nil || !result.Sent || !guarded.Load() {
@@ -1385,8 +1398,8 @@ func TestAtomicFreshAssignmentCarriesNonTerminalClaimGuard(t *testing.T) {
 }
 
 func TestAtomicRecoveredLegacyIntentBackfillsNonTerminalClaimGuard(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("legacy-recovered-claim-guard")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "legacy-recovered-claim-guard"))
 	request := atomicTestRequest("legacy-guard", "%44")
 	actor := StableClaimActor(request.Actor, request.IdempotencyKey)
 	if recorded, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
@@ -1409,6 +1422,7 @@ func TestAtomicRecoveredLegacyIntentBackfillsNonTerminalClaimGuard(t *testing.T)
 }
 
 func TestAtomicAssignmentRejectsMismatchedClaimReceipts(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		alter func(*ClaimReceipt)
@@ -1420,10 +1434,11 @@ func TestAtomicAssignmentRejectsMismatchedClaimReceipts(t *testing.T) {
 		{name: "wrong status", alter: func(receipt *ClaimReceipt) { receipt.Status = "open" }},
 		{name: "missing timestamp", alter: func(receipt *ClaimReceipt) { receipt.ClaimedAt = time.Time{} }},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			dispatcher := &atomicDispatchRecorder{}
-			store := NewStore("atomic-invalid-claim-" + strings.ReplaceAll(test.name, " ", "-"))
+			store := NewStore(testSessionName(t, "atomic-invalid-claim-"+strings.ReplaceAll(test.name, " ", "-")))
 			claimer := ClaimFunc(func(_ context.Context, beadID, actor string) (ClaimReceipt, error) {
 				receipt := ClaimReceipt{BeadID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}
 				test.alter(&receipt)
@@ -1445,10 +1460,10 @@ func TestAtomicAssignmentRejectsMismatchedClaimReceipts(t *testing.T) {
 }
 
 func TestAtomicAssignmentRejectsMalformedReconciledClaimReceipt(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	request := atomicTestRequest("malformed-reconciled-claim", "%78")
 	actor := StableClaimActor(request.Actor, request.IdempotencyKey)
-	store := NewStore("atomic-malformed-reconciled-claim")
+	store := NewStore(testSessionName(t, "atomic-malformed-reconciled-claim"))
 	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
 		t.Fatalf("RecordAtomicIntent: %v", err)
 	}
@@ -1477,11 +1492,11 @@ func (m *malformedClaimReconciler) ReconcileClaim(context.Context, string, strin
 }
 
 func TestAtomicAssignmentSameIdempotencyReplaysWithoutSideEffects(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
-	coordinator := NewAtomicCoordinator(NewStore("atomic-replay"), claimer, reserver, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-replay")), claimer, reserver, dispatcher)
 	req := atomicTestRequest("same-key", "AgentA")
 
 	first, err := coordinator.Execute(t.Context(), req)
@@ -1506,8 +1521,8 @@ func TestAtomicAssignmentSameIdempotencyReplaysWithoutSideEffects(t *testing.T) 
 }
 
 func TestAtomicAssignmentTerminalGenerationRequiresNewKeyAndReusesClaimActor(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-terminal-generation")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-terminal-generation"))
 	claimer := &atomicClaimLedger{}
 	var dispatchCalls atomic.Int32
 	dispatcher := DispatchFunc(func(context.Context, DispatchRequest) (DispatchReceipt, error) {
@@ -1565,8 +1580,8 @@ func TestAtomicAssignmentTerminalGenerationRequiresNewKeyAndReusesClaimActor(t *
 }
 
 func TestAtomicReopenedGenerationWaitsForExactCompletionEventAcknowledgement(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-completion-event-reopen")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-completion-event-reopen"))
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	coordinator := withOpenWorkStatus(NewAtomicCoordinator(store, claimer, nil, dispatcher))
@@ -1625,6 +1640,7 @@ func TestAtomicReopenedGenerationWaitsForExactCompletionEventAcknowledgement(t *
 }
 
 func TestAtomicTerminalGenerationFailsClosedWithoutReopenProof(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		port WorkItemStatusPort
@@ -1639,9 +1655,10 @@ func TestAtomicTerminalGenerationFailsClosedWithoutReopenProof(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("terminal-proof-" + strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store := NewStore(testSessionName(t, "terminal-proof-"+strings.ReplaceAll(test.name, " ", "-")))
 			request := atomicTestRequest("new-generation", "%81")
 			store.Assignments[request.BeadID] = &Assignment{
 				BeadID: request.BeadID, BeadTitle: request.BeadTitle, Pane: request.Pane,
@@ -1677,8 +1694,8 @@ func TestAtomicTerminalGenerationFailsClosedWithoutReopenProof(t *testing.T) {
 }
 
 func TestAtomicTerminalGenerationCarriesNonTerminalClaimGuard(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("terminal-claim-guard")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "terminal-claim-guard"))
 	request := atomicTestRequest("guarded-generation", "%82")
 	store.Assignments[request.BeadID] = &Assignment{
 		BeadID: request.BeadID, BeadTitle: request.BeadTitle, Pane: request.Pane,
@@ -1710,6 +1727,7 @@ func TestAtomicTerminalGenerationCarriesNonTerminalClaimGuard(t *testing.T) {
 }
 
 func TestAtomicTerminalGenerationRefusesUnreleasedLeaseHandles(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		expiresAt time.Time
@@ -1717,9 +1735,10 @@ func TestAtomicTerminalGenerationRefusesUnreleasedLeaseHandles(t *testing.T) {
 		{name: "future expiry", expiresAt: time.Now().UTC().Add(time.Hour)},
 		{name: "stale expiry", expiresAt: time.Now().UTC().Add(-time.Hour)},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("terminal-live-lease-" + strings.ReplaceAll(test.name, " ", "-"))
+			t.Parallel()
+			store := NewStore(testSessionName(t, "terminal-live-lease-"+strings.ReplaceAll(test.name, " ", "-")))
 			request := atomicTestRequest("replacement-generation", "%83")
 			store.Assignments[request.BeadID] = &Assignment{
 				BeadID: request.BeadID, BeadTitle: request.BeadTitle, Pane: request.Pane,
@@ -1756,8 +1775,8 @@ func TestAtomicTerminalGenerationRefusesUnreleasedLeaseHandles(t *testing.T) {
 }
 
 func TestAtomicTerminalGenerationRefusesAmbiguousReservationWithoutHandles(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("terminal-ambiguous-reservation")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "terminal-ambiguous-reservation"))
 	request := atomicTestRequest("replacement-generation", "%84")
 	store.Assignments[request.BeadID] = &Assignment{
 		BeadID: request.BeadID, BeadTitle: request.BeadTitle, Pane: request.Pane,
@@ -1792,6 +1811,7 @@ func TestAtomicTerminalGenerationRefusesAmbiguousReservationWithoutHandles(t *te
 }
 
 func TestDispatchDeliveryIDIsStablePerGeneration(t *testing.T) {
+	t.Parallel()
 	first := DispatchDeliveryID("%7", "double_enter", "generation-one")
 	if first == "" || first != DispatchDeliveryID("%7", "double_enter", "generation-one") {
 		t.Fatalf("same generation receipt is not stable: %q", first)
@@ -1805,8 +1825,8 @@ func TestDispatchDeliveryIDIsStablePerGeneration(t *testing.T) {
 }
 
 func TestAtomicAssignmentCompletedReplayBypassesChangedPreflightPolicy(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-preflight-replay")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-preflight-replay"))
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	preflightCalls := 0
@@ -1840,7 +1860,7 @@ func TestAtomicAssignmentCompletedReplayBypassesChangedPreflightPolicy(t *testin
 }
 
 func TestAtomicAssignmentPreflightSanitizesLedgerBeforeClaim(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	var delivered string
 	var deliveredTitle string
@@ -1859,7 +1879,7 @@ func TestAtomicAssignmentPreflightSanitizesLedgerBeforeClaim(t *testing.T) {
 			DurableTitle:   "title [REDACTED]",
 		}, nil
 	})
-	store := NewStore("atomic-preflight-safe")
+	store := NewStore(testSessionName(t, "atomic-preflight-safe"))
 	coordinator := NewAtomicCoordinator(store, claimer, nil, dispatcher, preflight)
 	req := atomicTestRequest("safe-key", "%91")
 	req.Prompt = "deliver raw-secret"
@@ -1882,7 +1902,7 @@ func TestAtomicAssignmentPreflightSanitizesLedgerBeforeClaim(t *testing.T) {
 }
 
 func TestAtomicAssignmentReservationDiscoveryUsesSanitizedTitleAndPaths(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const rawSecret = "sk-proj-sensitive-token"
 	const durablePath = "internal/x/[REDACTED].txt"
 	var reservationTitle string
@@ -1905,7 +1925,7 @@ func TestAtomicAssignmentReservationDiscoveryUsesSanitizedTitleAndPaths(t *testi
 			DurableTitle:   "Work in " + durablePath,
 		}, nil
 	})
-	store := NewStore("atomic-sanitized-reservation-discovery")
+	store := NewStore(testSessionName(t, "atomic-sanitized-reservation-discovery"))
 	request := atomicTestRequest("sanitized-reservation-discovery", "%92")
 	request.BeadTitle = "Work in internal/x/" + rawSecret + ".txt"
 	request.RequireReservation = true
@@ -1925,7 +1945,7 @@ func TestAtomicAssignmentReservationDiscoveryUsesSanitizedTitleAndPaths(t *testi
 }
 
 func TestAtomicAssignmentPreflightCanBlockSensitiveExplicitReservationPaths(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const sensitivePath = "internal/x/sk-proj-sensitive-token.txt"
 	var preflightPaths []string
 	preflight := PromptPreflightFunc(func(_ context.Context, req DispatchRequest) (PromptPreflightResult, error) {
@@ -1938,7 +1958,7 @@ func TestAtomicAssignmentPreflightCanBlockSensitiveExplicitReservationPaths(t *t
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
-	store := NewStore("atomic-sensitive-explicit-reservation-path")
+	store := NewStore(testSessionName(t, "atomic-sensitive-explicit-reservation-path"))
 	request := atomicTestRequest("sensitive-explicit-reservation-path", "%94")
 	request.RequireReservation = true
 	request.RequestedPaths = []string{sensitivePath}
@@ -1956,14 +1976,14 @@ func TestAtomicAssignmentPreflightCanBlockSensitiveExplicitReservationPaths(t *t
 }
 
 func TestAtomicAssignmentBlockedPreflightHasNoExternalSideEffects(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
 	preflight := PromptPreflightFunc(func(context.Context, DispatchRequest) (PromptPreflightResult, error) {
 		return PromptPreflightResult{}, errors.New("sensitive prompt blocked")
 	})
-	store := NewStore("atomic-preflight-blocked")
+	store := NewStore(testSessionName(t, "atomic-preflight-blocked"))
 	coordinator := NewAtomicCoordinator(store, claimer, reserver, dispatcher, preflight)
 	req := atomicTestRequest("blocked-key", "%92")
 	req.RequestedPaths = []string{"internal/**"}
@@ -1982,7 +2002,7 @@ func TestAtomicAssignmentBlockedPreflightHasNoExternalSideEffects(t *testing.T) 
 }
 
 func TestAtomicAssignmentEligibilityRejectionStopsReservationAndDispatch(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	var claimCalls atomic.Int32
 	claimer := ClaimFunc(func(context.Context, string, string) (ClaimReceipt, error) {
 		claimCalls.Add(1)
@@ -1990,7 +2010,7 @@ func TestAtomicAssignmentEligibilityRejectionStopsReservationAndDispatch(t *test
 	})
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
-	store := NewStore("atomic-eligibility-rejected")
+	store := NewStore(testSessionName(t, "atomic-eligibility-rejected"))
 	coordinator := NewAtomicCoordinator(store, claimer, reserver, dispatcher)
 	req := atomicTestRequest("eligibility-rejected", "%95")
 	req.RequireReservation = true
@@ -2019,10 +2039,10 @@ func TestAtomicAssignmentEligibilityRejectionStopsReservationAndDispatch(t *test
 }
 
 func TestAtomicAssignmentRejectsSameKeyForDifferentIntent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	coordinator := NewAtomicCoordinator(NewStore("atomic-key-reuse"), claimer, nil, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-key-reuse")), claimer, nil, dispatcher)
 	req := atomicTestRequest("same-key", "AgentA")
 	if _, err := coordinator.Execute(t.Context(), req); err != nil {
 		t.Fatalf("first Execute: %v", err)
@@ -2037,10 +2057,10 @@ func TestAtomicAssignmentRejectsSameKeyForDifferentIntent(t *testing.T) {
 }
 
 func TestAtomicAssignmentRequiredReservationFailsBeforeClaimOrDispatch(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	coordinator := NewAtomicCoordinator(NewStore("atomic-required-reservation"), claimer, nil, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-required-reservation")), claimer, nil, dispatcher)
 	req := atomicTestRequest("required-key", "AgentA")
 	req.RequireReservation = true
 	req.RequestedPaths = []string{"internal/assignment/**"}
@@ -2055,10 +2075,10 @@ func TestAtomicAssignmentRequiredReservationFailsBeforeClaimOrDispatch(t *testin
 }
 
 func TestAtomicAssignmentRequestedPathsImplyRequiredReservation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	coordinator := NewAtomicCoordinator(NewStore("atomic-path-reservation"), claimer, nil, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-path-reservation")), claimer, nil, dispatcher)
 	req := atomicTestRequest("path-key", "AgentA")
 	req.RequestedPaths = []string{"internal/assignment/**"}
 
@@ -2071,10 +2091,10 @@ func TestAtomicAssignmentRequestedPathsImplyRequiredReservation(t *testing.T) {
 }
 
 func TestAtomicAssignmentRequiredReservationRejectsUndefinedScopeBeforeClaim(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	coordinator := NewAtomicCoordinator(NewStore("atomic-missing-scope"), claimer, &atomicReservationRecorder{}, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-missing-scope")), claimer, &atomicReservationRecorder{}, dispatcher)
 	req := atomicTestRequest("missing-scope-key", "AgentA")
 	req.RequireReservation = true
 
@@ -2087,13 +2107,13 @@ func TestAtomicAssignmentRequiredReservationRejectsUndefinedScopeBeforeClaim(t *
 }
 
 func TestAtomicAssignmentRequiredReservationRejectsPartialGrant(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	reserver := ReservationFunc(func(_ context.Context, req ReservationRequest) (LeaseReceipt, error) {
 		return LeaseReceipt{AgentName: req.AgentName, Target: req.Target, Requested: append([]string(nil), req.RequestedPaths...), Granted: []string{"internal/a/**"}}, nil
 	})
-	coordinator := NewAtomicCoordinator(NewStore("atomic-partial-grant"), claimer, reserver, dispatcher)
+	coordinator := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-partial-grant")), claimer, reserver, dispatcher)
 	req := atomicTestRequest("partial-key", "AgentA")
 	req.RequireReservation = true
 	req.RequestedPaths = []string{"internal/a/**", "internal/b/**"}
@@ -2114,8 +2134,8 @@ func TestAtomicAssignmentRequiredReservationRejectsPartialGrant(t *testing.T) {
 }
 
 func TestAtomicAssignmentKnownZeroGrantFailureIsRetryable(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-known-zero-grant")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-known-zero-grant"))
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
 	var reserveCalls atomic.Int32
@@ -2149,8 +2169,8 @@ func TestAtomicAssignmentKnownZeroGrantFailureIsRetryable(t *testing.T) {
 }
 
 func TestAtomicAssignmentPartialGrantErrorRequiresReleaseAndPreservesHandles(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-partial-grant-error")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-partial-grant-error"))
 	var reserveCalls atomic.Int32
 	reserver := ReservationFunc(func(_ context.Context, req ReservationRequest) (LeaseReceipt, error) {
 		reserveCalls.Add(1)
@@ -2179,6 +2199,7 @@ func TestAtomicAssignmentPartialGrantErrorRequiresReleaseAndPreservesHandles(t *
 }
 
 func TestAtomicAssignmentRejectsMismatchedReservationReceipts(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		alter func(*LeaseReceipt)
@@ -2186,8 +2207,9 @@ func TestAtomicAssignmentRejectsMismatchedReservationReceipts(t *testing.T) {
 		{name: "agent", alter: func(lease *LeaseReceipt) { lease.AgentName = "DifferentAgent" }},
 		{name: "target", alter: func(lease *LeaseReceipt) { lease.Target = "%999" }},
 	} {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			claimer := &atomicClaimLedger{}
 			dispatcher := &atomicDispatchRecorder{}
 			reserver := ReservationFunc(func(_ context.Context, req ReservationRequest) (LeaseReceipt, error) {
@@ -2200,7 +2222,7 @@ func TestAtomicAssignmentRejectsMismatchedReservationReceipts(t *testing.T) {
 				test.alter(&lease)
 				return lease, nil
 			})
-			store := NewStore("atomic-invalid-reservation-" + test.name)
+			store := NewStore(testSessionName(t, "atomic-invalid-reservation-"+test.name))
 			req := atomicTestRequest("invalid-reservation-"+test.name, "AgentA")
 			req.RequireReservation = true
 			req.RequestedPaths = []string{"internal/assignment/**"}
@@ -2219,6 +2241,7 @@ func TestAtomicAssignmentRejectsMismatchedReservationReceipts(t *testing.T) {
 }
 
 func TestAtomicAssignmentRejectsMalformedRequiredLeaseReceipts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		alter     func(*LeaseReceipt)
@@ -2236,8 +2259,9 @@ func TestAtomicAssignmentRejectsMalformedRequiredLeaseReceipts(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			dispatcher := &atomicDispatchRecorder{}
 			reserver := ReservationFunc(func(_ context.Context, req ReservationRequest) (LeaseReceipt, error) {
 				expiresAt := time.Now().UTC().Add(time.Hour)
@@ -2249,7 +2273,7 @@ func TestAtomicAssignmentRejectsMalformedRequiredLeaseReceipts(t *testing.T) {
 				test.alter(&lease)
 				return lease, nil
 			})
-			store := NewStore("atomic-malformed-required-lease-" + strings.ReplaceAll(test.name, " ", "-"))
+			store := NewStore(testSessionName(t, "atomic-malformed-required-lease-"+strings.ReplaceAll(test.name, " ", "-")))
 			request := atomicTestRequest("malformed-required-lease-"+test.name, "%89")
 			request.RequireReservation = true
 			request.RequestedPaths = []string{"internal/assignment/**"}
@@ -2266,7 +2290,7 @@ func TestAtomicAssignmentRejectsMalformedRequiredLeaseReceipts(t *testing.T) {
 }
 
 func TestAtomicAssignmentRequiredLeaseAllowsMultipleUniqueIDsForOnePath(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	expiresAt := time.Now().UTC().Add(time.Hour)
 	reserver := ReservationFunc(func(_ context.Context, req ReservationRequest) (LeaseReceipt, error) {
 		return LeaseReceipt{
@@ -2278,15 +2302,15 @@ func TestAtomicAssignmentRequiredLeaseAllowsMultipleUniqueIDsForOnePath(t *testi
 	request := atomicTestRequest("multiple-ids-one-path", "%90")
 	request.RequireReservation = true
 	request.RequestedPaths = []string{"internal/assignment/**"}
-	result, err := NewAtomicCoordinator(NewStore("atomic-multiple-ids-one-path"), &atomicClaimLedger{}, reserver, &atomicDispatchRecorder{}).Execute(t.Context(), request)
+	result, err := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-multiple-ids-one-path")), &atomicClaimLedger{}, reserver, &atomicDispatchRecorder{}).Execute(t.Context(), request)
 	if err != nil || !result.Sent || !reflect.DeepEqual(result.Lease.ReservationIDs, []int{91, 92}) {
 		t.Fatalf("multiple ID lease result=%+v error=%v", result, err)
 	}
 }
 
 func TestAtomicAssignmentRevalidatesPersistedRequiredLeaseBeforeDispatch(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-persisted-lease-validation")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-persisted-lease-validation"))
 	dispatcher := &atomicDispatchRecorder{}
 	dispatcher.failFirst.Store(true)
 	request := atomicTestRequest("persisted-required-lease", "%93")
@@ -2313,12 +2337,12 @@ func TestAtomicAssignmentRevalidatesPersistedRequiredLeaseBeforeDispatch(t *test
 }
 
 func TestAtomicAssignmentRecoveryCanReusePersistedRequiredLeaseWithoutPort(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
 	dispatcher.failFirst.Store(true)
-	store := NewStore("atomic-required-recovery")
+	store := NewStore(testSessionName(t, "atomic-required-recovery"))
 	req := atomicTestRequest("required-recovery-key", "AgentA")
 	req.RequireReservation = true
 	req.RequestedPaths = []string{"internal/assignment/**"}
@@ -2339,10 +2363,10 @@ func TestAtomicAssignmentRecoveryCanReusePersistedRequiredLeaseWithoutPort(t *te
 }
 
 func TestAtomicAssignmentLocalOwnershipConflictDoesNotClaimAgain(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	dispatcher := &atomicDispatchRecorder{}
-	store := NewStore("atomic-local-conflict")
+	store := NewStore(testSessionName(t, "atomic-local-conflict"))
 	coordinator := NewAtomicCoordinator(store, claimer, nil, dispatcher)
 	if _, err := coordinator.Execute(t.Context(), atomicTestRequest("first-key", "AgentA")); err != nil {
 		t.Fatalf("first Execute: %v", err)
@@ -2356,12 +2380,13 @@ func TestAtomicAssignmentLocalOwnershipConflictDoesNotClaimAgain(t *testing.T) {
 }
 
 func TestAtomicAssignmentClaimedButUnsentRecoversWithoutStealing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	reserver := &atomicReservationRecorder{}
 	dispatcher := &atomicDispatchRecorder{}
 	dispatcher.failFirst.Store(true)
-	store := NewStore("atomic-recover")
+	session := testSessionName(t, "atomic-recover")
+	store := NewStore(session)
 	coordinator := NewAtomicCoordinator(store, claimer, reserver, dispatcher)
 	owned := atomicTestRequest("recover-key", "AgentA")
 
@@ -2379,7 +2404,7 @@ func TestAtomicAssignmentClaimedButUnsentRecoversWithoutStealing(t *testing.T) {
 		t.Fatalf("pending dispatch intent missing: %+v", pending)
 	}
 
-	contender := NewAtomicCoordinator(NewStore("atomic-contender"), claimer, nil, dispatcher)
+	contender := NewAtomicCoordinator(NewStore(testSessionName(t, "atomic-contender")), claimer, nil, dispatcher)
 	if _, err := contender.Execute(t.Context(), atomicTestRequest("other-key", "AgentB")); !errors.Is(err, ErrClaimConflict) {
 		t.Fatalf("contender error=%v, want claim conflict", err)
 	}
@@ -2399,7 +2424,7 @@ func TestAtomicAssignmentClaimedButUnsentRecoversWithoutStealing(t *testing.T) {
 		t.Fatalf("dispatch calls=%d, want failed send plus recovery", dispatcher.calls.Load())
 	}
 
-	reloaded, err := LoadStore("atomic-recover")
+	reloaded, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("reload store: %v", err)
 	}
@@ -2413,9 +2438,9 @@ func TestAtomicAssignmentClaimedButUnsentRecoversWithoutStealing(t *testing.T) {
 }
 
 func TestAtomicAssignmentSendingStateRequiresReconciliation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
-	store := NewStore("atomic-unknown")
+	store := NewStore(testSessionName(t, "atomic-unknown"))
 	req := atomicTestRequest("unknown-key", "AgentA")
 	claim, err := claimer.Claim(t.Context(), req.BeadID, StableClaimActor(req.Actor, req.IdempotencyKey))
 	if err != nil {
@@ -2438,14 +2463,14 @@ func TestAtomicAssignmentSendingStateRequiresReconciliation(t *testing.T) {
 }
 
 func TestAtomicAssignmentAmbiguousDispatchErrorStaysSendingAndCannotRetry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	claimer := &atomicClaimLedger{}
 	var calls atomic.Int32
 	dispatcher := DispatchFunc(func(context.Context, DispatchRequest) (DispatchReceipt, error) {
 		calls.Add(1)
 		return DispatchReceipt{}, errors.New("connection lost after write")
 	})
-	store := NewStore("atomic-ambiguous-error")
+	store := NewStore(testSessionName(t, "atomic-ambiguous-error"))
 	coordinator := NewAtomicCoordinator(store, claimer, nil, dispatcher)
 	req := atomicTestRequest("ambiguous-key", "AgentA")
 
@@ -2464,13 +2489,13 @@ func TestAtomicAssignmentAmbiguousDispatchErrorStaysSendingAndCannotRetry(t *tes
 }
 
 func TestAtomicAssignmentEmptyDispatchReceiptStaysSendingAndCannotRetry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	var calls atomic.Int32
 	dispatcher := DispatchFunc(func(context.Context, DispatchRequest) (DispatchReceipt, error) {
 		calls.Add(1)
 		return DispatchReceipt{Duration: time.Millisecond}, nil
 	})
-	store := NewStore("atomic-empty-dispatch-receipt")
+	store := NewStore(testSessionName(t, "atomic-empty-dispatch-receipt"))
 	request := atomicTestRequest("empty-dispatch-receipt", "%96")
 	coordinator := NewAtomicCoordinator(store, &atomicClaimLedger{}, nil, dispatcher)
 	first, err := coordinator.Execute(t.Context(), request)
@@ -2488,8 +2513,8 @@ func TestAtomicAssignmentEmptyDispatchReceiptStaysSendingAndCannotRetry(t *testi
 }
 
 func TestAtomicAssignmentRefusesMalformedPersistedDispatchReplay(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-malformed-dispatch-replay")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-malformed-dispatch-replay"))
 	request := atomicTestRequest("malformed-dispatch-replay", "%97")
 	dispatcher := &atomicDispatchRecorder{}
 	coordinator := NewAtomicCoordinator(store, &atomicClaimLedger{}, nil, dispatcher)
@@ -2509,8 +2534,8 @@ func TestAtomicAssignmentRefusesMalformedPersistedDispatchReplay(t *testing.T) {
 }
 
 func TestRecordAtomicDispatchSentRejectsEmptyReceiptWithoutMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("atomic-record-empty-dispatch-receipt")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "atomic-record-empty-dispatch-receipt"))
 	request := atomicTestRequest("record-empty-dispatch-receipt", "%98")
 	actor := StableClaimActor(request.Actor, request.IdempotencyKey)
 	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
@@ -2559,6 +2584,7 @@ func (r *reconcilingReservationRecorder) ReconcileReservation(_ context.Context,
 }
 
 func TestAtomicAssignmentRecoversClaimBarrierBeforeAndAfterActuation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		seedExternal   bool
@@ -2569,11 +2595,12 @@ func TestAtomicAssignmentRecoversClaimBarrierBeforeAndAfterActuation(t *testing.
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			req := atomicTestRequest("claim-recovery-key", "%201")
 			actor := StableClaimActor(req.Actor, req.IdempotencyKey)
-			store := NewStore("atomic-claim-barrier-" + strings.ReplaceAll(test.name, " ", "-"))
+			store := NewStore(testSessionName(t, "atomic-claim-barrier-"+strings.ReplaceAll(test.name, " ", "-")))
 			if _, err := store.RecordAtomicIntent(req, actor, time.Now().UTC()); err != nil {
 				t.Fatalf("record pre-claim intent: %v", err)
 			}
@@ -2609,6 +2636,7 @@ func TestAtomicAssignmentRecoversClaimBarrierBeforeAndAfterActuation(t *testing.
 }
 
 func TestAtomicAssignmentRecoversReservationBarrierBeforeAndAfterActuation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		seedExternal     bool
@@ -2619,13 +2647,14 @@ func TestAtomicAssignmentRecoversReservationBarrierBeforeAndAfterActuation(t *te
 	}
 
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			req := atomicTestRequest("reservation-recovery-key", "%202")
 			req.RequireReservation = true
 			req.RequestedPaths = []string{"internal/assignment/**"}
 			actor := StableClaimActor(req.Actor, req.IdempotencyKey)
-			store := NewStore("atomic-reservation-barrier-" + strings.ReplaceAll(test.name, " ", "-"))
+			store := NewStore(testSessionName(t, "atomic-reservation-barrier-"+strings.ReplaceAll(test.name, " ", "-")))
 			if _, err := store.RecordAtomicIntent(req, actor, time.Now().UTC()); err != nil {
 				t.Fatalf("record intent: %v", err)
 			}
@@ -2661,12 +2690,12 @@ func TestAtomicAssignmentRecoversReservationBarrierBeforeAndAfterActuation(t *te
 }
 
 func TestAtomicAssignmentRecoveryUsesPersistedOriginalIntentChecksum(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	request := atomicTestRequest("recovered-intent-key", "%212")
 	request.Prompt = "[REDACTED] durable coordinator prompt"
 	request.IntentSHA256 = PromptSHA256("original prompt containing a secret")
 	actor := StableClaimActor(request.Actor, request.IdempotencyKey)
-	store := NewStore("atomic-recovered-intent")
+	store := NewStore(testSessionName(t, "atomic-recovered-intent"))
 	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
 		t.Fatalf("RecordAtomicIntent: %v", err)
 	}
@@ -2721,10 +2750,10 @@ func TestAtomicAssignmentRecoveryUsesPersistedOriginalIntentChecksum(t *testing.
 }
 
 func TestAtomicAssignmentRejectsRecoveryChecksumWithoutDurableIntent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	request := atomicTestRequest("orphan-recovery-key", "%213")
 	request.RecoveredIntentSHA256 = PromptSHA256(request.Prompt)
-	store := NewStore("atomic-orphan-recovery")
+	store := NewStore(testSessionName(t, "atomic-orphan-recovery"))
 	dispatcher := &atomicDispatchRecorder{}
 	result, err := NewAtomicCoordinator(store, &atomicClaimLedger{}, nil, dispatcher).Execute(t.Context(), request)
 	if err == nil || !strings.Contains(err.Error(), "requires an existing same-key assignment") || result.Sent || dispatcher.calls.Load() != 0 {
@@ -2736,12 +2765,12 @@ func TestAtomicAssignmentRejectsRecoveryChecksumWithoutDurableIntent(t *testing.
 }
 
 func TestAtomicAssignmentAmbiguousReservationWithoutInspectorFailsClosed(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	req := atomicTestRequest("reservation-unknown-key", "%203")
 	req.RequireReservation = true
 	req.RequestedPaths = []string{"internal/assignment/**"}
 	actor := StableClaimActor(req.Actor, req.IdempotencyKey)
-	store := NewStore("atomic-reservation-unknown")
+	store := NewStore(testSessionName(t, "atomic-reservation-unknown"))
 	if _, err := store.RecordAtomicIntent(req, actor, time.Now().UTC()); err != nil {
 		t.Fatalf("record intent: %v", err)
 	}
@@ -2779,12 +2808,12 @@ func (r unknownReservationWithHandles) ReconcileReservation(context.Context, Res
 }
 
 func TestAtomicAssignmentPersistsHandlesDiscoveredDuringUnknownReconciliation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	request := atomicTestRequest("reservation-unknown-handles-key", "%214")
 	request.RequireReservation = true
 	request.RequestedPaths = []string{"internal/assignment/a.go", "internal/assignment/b.go"}
 	actor := StableClaimActor(request.Actor, request.IdempotencyKey)
-	store := NewStore("atomic-reservation-unknown-handles")
+	store := NewStore(testSessionName(t, "atomic-reservation-unknown-handles"))
 	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
 		t.Fatalf("RecordAtomicIntent: %v", err)
 	}
@@ -2810,8 +2839,8 @@ func TestAtomicAssignmentPersistsHandlesDiscoveredDuringUnknownReconciliation(t 
 }
 
 func TestAtomicOperationLockWaitHonorsContext(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	storePath := NewStore("atomic-context-lock").path
+	t.Parallel()
+	storePath := NewStore(testSessionName(t, "atomic-context-lock")).path
 	firstUnlock, err := acquireAtomicBeadOperationLock(context.Background(), storePath, "ntm-context-lock")
 	if err != nil {
 		t.Fatalf("acquire first operation lock: %v", err)
@@ -2831,8 +2860,8 @@ func TestAtomicOperationLockWaitHonorsContext(t *testing.T) {
 }
 
 func TestAtomicOperationLockReleaseCancelRaceFailsClosed(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	storePath := NewStore("atomic-cancel-release-race").path
+	t.Parallel()
+	storePath := NewStore(testSessionName(t, "atomic-cancel-release-race")).path
 	lockPath := storePath + ".cancel-release-race.lock"
 
 	// Release the held lock only after the waiter has registered locally. This
@@ -2885,6 +2914,7 @@ func TestAtomicOperationLockReleaseCancelRaceFailsClosed(t *testing.T) {
 // refusal has to say who holds the pane, in what state, and for how long —
 // otherwise terminal residue is indistinguishable from live work.
 func TestTargetOccupiedErrorNamesStatusAndAge(t *testing.T) {
+	t.Parallel()
 	assignedAt := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
 	err := targetOccupiedError("%42", &Assignment{
 		BeadID: "ntm-stale", Status: StatusCompleted, AssignedAt: assignedAt,

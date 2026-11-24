@@ -15,10 +15,41 @@ import (
 	"time"
 )
 
+var testSessionSeq atomic.Int64
+
+func testSessionName(t testing.TB, prefix string) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%d", prefix, testSessionSeq.Add(1))
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("NTM_ASSIGNMENT_TEST_ISOLATED") == "1" || os.Getenv("NTM_ATOMIC_E2E_OPERATION") != "" {
+		os.Exit(m.Run())
+	}
+	home, err := os.MkdirTemp("", "ntm-assignment-test-home-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate assignment test home: %v\n", err)
+		os.Exit(1)
+	}
+	origHome, hadHome := os.LookupEnv("HOME")
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NTM_ASSIGNMENT_TEST_ISOLATED", "1")
+	code := m.Run()
+	_ = os.Unsetenv("NTM_ASSIGNMENT_TEST_ISOLATED")
+	if hadHome {
+		_ = os.Setenv("HOME", origHome)
+	} else {
+		_ = os.Unsetenv("HOME")
+	}
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func TestNewStore(t *testing.T) {
-	store := NewStore("test-session")
-	if store.SessionName != "test-session" {
-		t.Errorf("expected session name 'test-session', got '%s'", store.SessionName)
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
+	if !strings.HasPrefix(store.SessionName, "test-session-") {
+		t.Errorf("expected session name with prefix 'test-session-', got '%s'", store.SessionName)
 	}
 	if store.Assignments == nil {
 		t.Error("expected assignments map to be initialized")
@@ -36,8 +67,7 @@ func TestNewStore(t *testing.T) {
 
 func seedPaneContinuation(t *testing.T) (*AssignmentStore, *Assignment) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("continuation")
+	store := NewStore(testSessionName(t, "continuation"))
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	original := &Assignment{
@@ -60,6 +90,7 @@ func seedPaneContinuation(t *testing.T) (*AssignmentStore, *Assignment) {
 }
 
 func TestPaneContinuationPreservesDeliveredOwnershipAcrossReload(t *testing.T) {
+	t.Parallel()
 	store, original := seedPaneContinuation(t)
 	stale, err := LoadStoreStrict(store.SessionName)
 	if err != nil {
@@ -131,6 +162,7 @@ func TestPaneContinuationPreservesDeliveredOwnershipAcrossReload(t *testing.T) {
 }
 
 func TestPaneContinuationRenewsPendingOwnerWithoutMovingBarrier(t *testing.T) {
+	t.Parallel()
 	store, original := seedPaneContinuation(t)
 	current, _, err := store.BeginPaneContinuation(t.Context(), original, "rotation-renewal")
 	if err != nil {
@@ -177,6 +209,7 @@ func TestPaneContinuationRenewsPendingOwnerWithoutMovingBarrier(t *testing.T) {
 }
 
 func TestPaneContinuationBlocksDispatchClearAndTerminalEffects(t *testing.T) {
+	t.Parallel()
 	store, original := seedPaneContinuation(t)
 	current, _, err := store.BeginPaneContinuation(t.Context(), original, "rotation-barrier")
 	if err != nil {
@@ -240,8 +273,10 @@ func TestPaneContinuationBlocksDispatchClearAndTerminalEffects(t *testing.T) {
 }
 
 func TestPaneContinuationRefusesAmbiguousOrChangedOwnership(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"legacy target", "missing generation", "sending", "clearing", "unknown reservation", "changed recipient", "superseded generation", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			store, original := seedPaneContinuation(t)
 			current := cloneAssignment(original)
 			ctx := t.Context()
@@ -283,8 +318,10 @@ func TestPaneContinuationRefusesAmbiguousOrChangedOwnership(t *testing.T) {
 }
 
 func TestPaneContinuationAllowsUnregisteredTasksWithoutLeases(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"", "local-pane-label"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			store, original := seedPaneContinuation(t)
 			original.AgentName = name
 			original.ReservationRequired, original.ReservationCompleted = false, false
@@ -311,8 +348,9 @@ func TestPaneContinuationAllowsUnregisteredTasksWithoutLeases(t *testing.T) {
 }
 
 func TestRefreshReservationIfCurrentSerializesExternalRenewal(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session, beadID = "reservation-renewal", "bd-renew"
+	t.Parallel()
+	session := testSessionName(t, "reservation-renewal")
+	const beadID = "bd-renew"
 	seed := NewStore(session)
 	expiresAt := time.Now().UTC().Add(time.Minute)
 	seed.Assignments[beadID] = &Assignment{
@@ -373,10 +411,12 @@ func TestRefreshReservationIfCurrentSerializesExternalRenewal(t *testing.T) {
 }
 
 func TestRefreshReservationIfCurrentRejectsSupersededOrClearingGeneration(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"generation", "clearing", "terminal", "sending"} {
 		t.Run(kind, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("renewal-stale")
+			t.Parallel()
+			session := testSessionName(t, "renewal-stale-"+kind)
+			store := NewStore(session)
 			store.Assignments["bd-renew"] = &Assignment{
 				BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "old-generation",
 				DispatchState: DispatchSent, ReservationState: ReservationReserved, ReservationCompleted: true,
@@ -386,7 +426,7 @@ func TestRefreshReservationIfCurrentRejectsSupersededOrClearingGeneration(t *tes
 				t.Fatal(err)
 			}
 			observed := store.Get("bd-renew")
-			writer, err := LoadStoreStrict("renewal-stale")
+			writer, err := LoadStoreStrict(session)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -416,8 +456,8 @@ func TestRefreshReservationIfCurrentRejectsSupersededOrClearingGeneration(t *tes
 }
 
 func TestRefreshReservationIfCurrentPreservesOccupancyOnFailure(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("renewal-failure")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "renewal-failure"))
 	expiresAt := time.Now().UTC().Add(time.Minute)
 	store.Assignments["bd-renew"] = &Assignment{
 		BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "generation",
@@ -455,10 +495,11 @@ func TestRefreshReservationIfCurrentPreservesOccupancyOnFailure(t *testing.T) {
 }
 
 func TestRefreshReservationIfCurrentPreservesReplacementDuringCallback(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"generation", "owner", "lease"} {
 		t.Run(kind, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("renewal-concurrent-replacement")
+			t.Parallel()
+			store := NewStore(testSessionName(t, "renewal-concurrent-replacement-"+kind))
 			expiresAt := time.Now().UTC().Add(time.Minute)
 			store.Assignments["bd-renew"] = &Assignment{
 				BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "generation",
@@ -504,11 +545,8 @@ func TestRefreshReservationIfCurrentPreservesReplacementDuringCallback(t *testin
 }
 
 func TestAssign(t *testing.T) {
-	// Use temp directory
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 
 	assignment, err := store.Assign("bd-123", "Test bead title", 1, "claude", "TestAgent", "Test prompt")
 	if err != nil {
@@ -539,10 +577,8 @@ func TestAssign(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
 	// Test getting existing assignment
@@ -562,10 +598,8 @@ func TestGet(t *testing.T) {
 }
 
 func TestGetReturnsSnapshot(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	assigned, _ := store.Assign("bd-123", "Test bead", 1, "claude", "", "prompt")
 	assigned.Pane = 99
 
@@ -604,10 +638,8 @@ func TestGetReturnsSnapshot(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
 	_, _ = store.Assign("bd-2", "Bead 2", 2, "codex", "", "")
 	_, _ = store.Assign("bd-3", "Bead 3", 3, "gemini", "", "")
@@ -619,10 +651,8 @@ func TestList(t *testing.T) {
 }
 
 func TestListByStatus(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
 	_, _ = store.Assign("bd-2", "Bead 2", 2, "codex", "", "")
 
@@ -641,10 +671,8 @@ func TestListByStatus(t *testing.T) {
 }
 
 func TestListActive(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
 	_, _ = store.Assign("bd-2", "Bead 2", 2, "codex", "", "")
 	_, _ = store.Assign("bd-3", "Bead 3", 3, "gemini", "", "")
@@ -661,8 +689,7 @@ func TestListActive(t *testing.T) {
 }
 
 func TestStateTransitions(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -685,6 +712,7 @@ func TestStateTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isValidTransition(tt.from, tt.to)
 			if result != tt.valid {
 				t.Errorf("expected isValidTransition(%s, %s) = %v, got %v",
@@ -695,10 +723,8 @@ func TestStateTransitions(t *testing.T) {
 }
 
 func TestUpdateStatus(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
 	// Valid transition: assigned -> working
@@ -731,10 +757,8 @@ func TestUpdateStatus(t *testing.T) {
 }
 
 func TestInvalidTransition(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	if _, err := store.Assign("bd-123", "Test bead", 1, "claude", "", ""); err != nil {
 		t.Fatalf("Assign() error = %v", err)
 	}
@@ -773,10 +797,8 @@ func TestInvalidTransition(t *testing.T) {
 // completed without an "Invalid transition assigned -> completed" error
 // leaving the row stuck.
 func TestExternalCloseTransitionsAssignedToCompleted(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session-extclose")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session-extclose"))
 	_, _ = store.Assign("bd-456", "External close bead", 2, "claude", "", "")
 
 	// Skip Working — simulate br close fired externally before the agent
@@ -795,10 +817,8 @@ func TestExternalCloseTransitionsAssignedToCompleted(t *testing.T) {
 }
 
 func TestMarkFailed(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
 	err := store.MarkFailed("bd-123", "Agent crashed")
@@ -819,10 +839,8 @@ func TestMarkFailed(t *testing.T) {
 }
 
 func TestRetryTransitionClearsFailureMetadata(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 	if err := store.MarkWorking("bd-123"); err != nil {
 		t.Fatalf("MarkWorking: %v", err)
@@ -856,10 +874,8 @@ func TestRetryTransitionClearsFailureMetadata(t *testing.T) {
 }
 
 func TestReassign(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "Agent1", "Do the thing")
 	retryCount := 2
 	if err := store.Update("bd-123", AssignmentUpdate{RetryCount: &retryCount}); err != nil {
@@ -900,10 +916,8 @@ func TestReassign(t *testing.T) {
 }
 
 func TestUpdateAssignmentMetadata(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
 	prompt := "Actual delivered prompt"
@@ -928,10 +942,8 @@ func TestUpdateAssignmentMetadata(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
 	store.Remove("bd-123")
@@ -943,10 +955,8 @@ func TestRemove(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
 	_, _ = store.Assign("bd-2", "Bead 2", 2, "codex", "", "")
 
@@ -958,10 +968,8 @@ func TestClear(t *testing.T) {
 }
 
 func TestStats(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-
-	store := NewStore("test-session")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "test-session"))
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
 	_, _ = store.Assign("bd-2", "Bead 2", 2, "codex", "", "")
 	_, _ = store.Assign("bd-3", "Bead 3", 3, "gemini", "", "")
@@ -991,16 +999,16 @@ func TestStats(t *testing.T) {
 }
 
 func TestPersistenceSaveLoad(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
+	session := testSessionName(t, "persist-test")
 
 	// Create and save
-	store1 := NewStore("persist-test")
+	store1 := NewStore(session)
 	_, _ = store1.Assign("bd-123", "Test bead", 1, "claude", "TestAgent", "Test prompt")
 	_ = store1.MarkWorking("bd-123")
 
 	// Load in new store
-	store2, err := LoadStore("persist-test")
+	store2, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("unexpected error loading: %v", err)
 	}
@@ -1035,19 +1043,18 @@ func TestPersistenceSaveLoad(t *testing.T) {
 }
 
 func TestPersistenceBackupRecovery(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
+	session := testSessionName(t, "backup-test")
 
 	// Create valid backup file
 	// assignments are now in ~/.ntm/sessions/<session>/assignments.json
-	// So we need to create <tmpDir>/.ntm/sessions/backup-test/assignments.json.bak
-	dir := filepath.Join(tmpDir, ".ntm", "sessions", "backup-test")
+	dir := filepath.Join(StorageDir(), session)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
 
 	backupStore := &AssignmentStore{
-		SessionName: "backup-test",
+		SessionName: session,
 		Assignments: map[string]*Assignment{
 			"bd-backup": {
 				BeadID:     "bd-backup",
@@ -1076,7 +1083,7 @@ func TestPersistenceBackupRecovery(t *testing.T) {
 	}
 
 	// Load should recover from backup
-	store, err := LoadStore("backup-test")
+	store, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1094,11 +1101,11 @@ func TestPersistenceBackupRecovery(t *testing.T) {
 }
 
 func TestPersistenceRecoversReceiptPublishedOnlyToBackup(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "receipt-backup-recovery")
 	const (
-		session = "receipt-backup-recovery"
-		beadID  = "ntm-receipt-backup-recovery"
-		key     = "receipt-backup-key"
+		beadID = "ntm-receipt-backup-recovery"
+		key    = "receipt-backup-key"
 	)
 	now := time.Now().UTC()
 	req := AtomicRequest{
@@ -1196,8 +1203,8 @@ func TestPersistenceRecoversReceiptPublishedOnlyToBackup(t *testing.T) {
 }
 
 func TestPersistenceRecoversBackupOnlyInitialPublication(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("backup-only-initial")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "backup-only-initial"))
 	store.Assignments["ntm-initial"] = &Assignment{BeadID: "ntm-initial", Status: StatusClaiming, AssignedAt: time.Now().UTC()}
 	injected := errors.New("stop initial save after backup publication")
 	store.afterBackupPublished = func(*AssignmentStore) error { return injected }
@@ -1229,8 +1236,8 @@ func TestPersistenceRecoversBackupOnlyInitialPublication(t *testing.T) {
 }
 
 func TestPersistenceLegacyV8PairLoadsAndUpgradesOnSave(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("legacy-v8-upgrade")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "legacy-v8-upgrade"))
 	legacy := &AssignmentStore{
 		SessionName: store.SessionName,
 		Assignments: map[string]*Assignment{
@@ -1272,9 +1279,10 @@ func TestPersistenceLegacyV8PairLoadsAndUpgradesOnSave(t *testing.T) {
 }
 
 func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("equal generation divergent payload", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("split-brain-generation")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "split-brain-generation"))
 		if _, err := store.Assign("ntm-split", "Primary", 1, "codex", "", ""); err != nil {
 			t.Fatalf("Assign: %v", err)
 		}
@@ -1293,8 +1301,8 @@ func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
 	})
 
 	t.Run("equal generation unknown field divergence", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("split-brain-unknown-field")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "split-brain-unknown-field"))
 		if _, err := store.Assign("ntm-split-unknown", "Primary", 1, "codex", "", ""); err != nil {
 			t.Fatalf("Assign: %v", err)
 		}
@@ -1317,8 +1325,8 @@ func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
 	})
 
 	t.Run("backup generation jump", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("backup-generation-jump")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "backup-generation-jump"))
 		if _, err := store.Assign("ntm-jump", "Jump", 1, "codex", "", ""); err != nil {
 			t.Fatalf("Assign: %v", err)
 		}
@@ -1337,8 +1345,8 @@ func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
 	})
 
 	t.Run("malformed backup", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("malformed-backup")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "malformed-backup"))
 		if _, err := store.Assign("ntm-malformed", "Malformed", 1, "codex", "", ""); err != nil {
 			t.Fatalf("Assign: %v", err)
 		}
@@ -1353,8 +1361,8 @@ func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
 	for _, artifact := range []string{"primary", "backup"} {
 		artifact := artifact
 		t.Run("future schema "+artifact, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			store := NewStore("future-schema-" + artifact)
+			t.Parallel()
+			store := NewStore(testSessionName(t, "future-schema-"+artifact))
 			if _, err := store.Assign("ntm-future", "Future", 1, "codex", "", ""); err != nil {
 				t.Fatalf("Assign: %v", err)
 			}
@@ -1379,6 +1387,7 @@ func TestPersistenceStrictSelectionRejectsAmbiguousArtifacts(t *testing.T) {
 }
 
 func TestPersistenceStrictV9RejectsMalformedCompletionOutboxArtifacts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		mutate    func(*Assignment)
@@ -1510,8 +1519,8 @@ func TestPersistenceStrictV9RejectsMalformedCompletionOutboxArtifacts(t *testing
 		for _, test := range tests {
 			test := test
 			t.Run(artifact+"/"+test.name, func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				store := NewStore("completion-outbox-validation-" + artifact + "-" + strings.ReplaceAll(test.name, " ", "-"))
+				t.Parallel()
+				store := NewStore(testSessionName(t, "completion-outbox-validation-"+artifact+"-"+strings.ReplaceAll(test.name, " ", "-")))
 				if _, err := store.Assign("ntm-completion-validation", "Completion validation", 1, "codex", "", ""); err != nil {
 					t.Fatalf("Assign: %v", err)
 				}
@@ -1543,8 +1552,8 @@ func TestPersistenceStrictV9RejectsMalformedCompletionOutboxArtifacts(t *testing
 }
 
 func TestPersistenceLegacyVersionCannotBypassCompletionOutboxValidation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("legacy-completion-outbox-validation")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "legacy-completion-outbox-validation"))
 	detectedAt := time.Now().UTC()
 	legacy := &AssignmentStore{
 		SessionName: store.SessionName,
@@ -1577,8 +1586,8 @@ func TestPersistenceLegacyVersionCannotBypassCompletionOutboxValidation(t *testi
 }
 
 func TestPersistenceSelectsNewerPrimaryOverStaleBackup(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("newer-primary")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "newer-primary"))
 	if _, err := store.Assign("ntm-newer-primary", "Newer primary", 1, "codex", "", ""); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
@@ -1603,8 +1612,8 @@ func TestPersistenceSelectsNewerPrimaryOverStaleBackup(t *testing.T) {
 }
 
 func TestPersistenceNonStrictLoadUsesNewerBackupGeneration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("nonstrict-newer-backup")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "nonstrict-newer-backup"))
 	if _, err := store.Assign("ntm-nonstrict", "Before", 1, "codex", "", ""); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
@@ -1644,9 +1653,10 @@ func mustReadAssignmentSnapshot(t *testing.T, path, session string) (*Assignment
 }
 
 func TestLoadStoreStrictReadOnlyDoesNotCreateOrRepairDurableState(t *testing.T) {
+	t.Parallel()
 	t.Run("absent ledger does not create session directory or lock", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		const session = "strict-read-only-absent"
+		t.Parallel()
+		session := testSessionName(t, "strict-read-only-absent")
 		sessionDir := filepath.Join(StorageDir(), session)
 
 		loaded, err := LoadStoreStrictReadOnly(session)
@@ -1662,11 +1672,9 @@ func TestLoadStoreStrictReadOnlyDoesNotCreateOrRepairDurableState(t *testing.T) 
 	})
 
 	t.Run("newer backup is selected without lock or primary promotion", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		const (
-			session = "strict-read-only-newer-backup"
-			beadID  = "ntm-read-only-conflict"
-		)
+		t.Parallel()
+		session := testSessionName(t, "strict-read-only-newer-backup")
+		const beadID = "ntm-read-only-conflict"
 		sessionDir := filepath.Join(StorageDir(), session)
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			t.Fatalf("create ledger fixture directory: %v", err)
@@ -1732,25 +1740,25 @@ func TestLoadStoreStrictReadOnlyDoesNotCreateOrRepairDurableState(t *testing.T) 
 }
 
 func TestLoadStoreStrictRejectsCorruptLedgerWithoutBackup(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	store := NewStore("strict-corrupt")
+	t.Parallel()
+	session := testSessionName(t, "strict-corrupt")
+	store := NewStore(session)
 	if err := os.WriteFile(store.path, []byte("{not-json"), 0644); err != nil {
 		t.Fatalf("write corrupt ledger: %v", err)
 	}
 
-	if _, err := LoadStoreStrict("strict-corrupt"); err == nil {
+	if _, err := LoadStoreStrict(session); err == nil {
 		t.Fatal("expected strict load to reject corrupt primary without backup")
 	}
 }
 
 func TestLoadStoreStrictNeverRollsBackToBackup(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	store := NewStore("strict-stale-backup")
+	t.Parallel()
+	session := testSessionName(t, "strict-stale-backup")
+	store := NewStore(session)
 
 	stale := &AssignmentStore{
-		SessionName: "strict-stale-backup",
+		SessionName: session,
 		Assignments: map[string]*Assignment{
 			"bd-ambiguous": {
 				BeadID:         "bd-ambiguous",
@@ -1772,27 +1780,27 @@ func TestLoadStoreStrictNeverRollsBackToBackup(t *testing.T) {
 		t.Fatalf("write corrupt primary: %v", err)
 	}
 
-	if _, err := LoadStoreStrict("strict-stale-backup"); err == nil {
+	if _, err := LoadStoreStrict(session); err == nil {
 		t.Fatal("expected strict load to reject corrupt primary instead of restoring retryable backup")
 	}
 }
 
 func TestLoadStoreStrictRejectsOrphanedBackup(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	store := NewStore("strict-orphaned-backup")
-	if err := os.WriteFile(store.path+".bak", []byte(`{"session_name":"strict-orphaned-backup","assignments":{}}`), 0644); err != nil {
+	t.Parallel()
+	session := testSessionName(t, "strict-orphaned-backup")
+	store := NewStore(session)
+	if err := os.WriteFile(store.path+".bak", []byte(fmt.Sprintf(`{"session_name":%q,"assignments":{}}`, session)), 0644); err != nil {
 		t.Fatalf("write orphaned backup: %v", err)
 	}
 
-	if _, err := LoadStoreStrict("strict-orphaned-backup"); err == nil {
+	if _, err := LoadStoreStrict(session); err == nil {
 		t.Fatal("expected strict load to reject a backup with no primary ledger")
 	}
 }
 
 func TestLoadStoreStrictRejectsLaterGenerationOrphanedBackup(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("strict-later-orphaned-backup")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "strict-later-orphaned-backup"))
 	orphan := &AssignmentStore{
 		SessionName:           store.SessionName,
 		Assignments:           map[string]*Assignment{},
@@ -1814,11 +1822,11 @@ func TestLoadStoreStrictRejectsLaterGenerationOrphanedBackup(t *testing.T) {
 }
 
 func TestStaleLifecycleWriterPreservesAtomicDispatchBarrierAndReceipt(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "same-bead-field-merge")
 	const (
-		session = "same-bead-field-merge"
-		beadID  = "ntm-same-bead"
-		key     = "same-bead-attempt"
+		beadID = "ntm-same-bead"
+		key    = "same-bead-attempt"
 	)
 
 	seed := NewStore(session)
@@ -1892,8 +1900,8 @@ func TestStaleLifecycleWriterPreservesAtomicDispatchBarrierAndReceipt(t *testing
 }
 
 func TestSaveMergeRejectsCorruptPrimaryInsteadOfUsingBackup(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("strict-save-merge")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "strict-save-merge"))
 	if _, err := store.Assign("ntm-corrupt", "Corrupt", 1, "codex", "CodexOne", "prompt"); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
@@ -1906,8 +1914,9 @@ func TestSaveMergeRejectsCorruptPrimaryInsteadOfUsingBackup(t *testing.T) {
 }
 
 func TestReassignExplicitlyReplacesAtomicRecord(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("reassign-atomic-record")
+	t.Parallel()
+	session := testSessionName(t, "reassign-atomic-record")
+	store := NewStore(session)
 	req := AtomicRequest{
 		BeadID: "ntm-reassign", BeadTitle: "Reassign", Target: "%31", Pane: 1,
 		AgentType: "codex", AgentName: "CodexOne", Actor: "CodexOne",
@@ -1935,7 +1944,7 @@ func TestReassignExplicitlyReplacesAtomicRecord(t *testing.T) {
 		t.Fatalf("Reassign: %v", err)
 	}
 
-	reloaded, err := LoadStoreStrict("reassign-atomic-record")
+	reloaded, err := LoadStoreStrict(session)
 	if err != nil {
 		t.Fatalf("LoadStoreStrict: %v", err)
 	}
@@ -1950,6 +1959,7 @@ func TestReassignExplicitlyReplacesAtomicRecord(t *testing.T) {
 }
 
 func TestDestructiveStoreMutationsRejectStaleAtomicBarrier(t *testing.T) {
+	t.Parallel()
 	operations := []struct {
 		name string
 		run  func(*AssignmentStore, string) error
@@ -1972,8 +1982,8 @@ func TestDestructiveStoreMutationsRejectStaleAtomicBarrier(t *testing.T) {
 
 	for _, operation := range operations {
 		t.Run(operation.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			session := "stale-destructive-" + operation.name
+			t.Parallel()
+			session := testSessionName(t, "stale-destructive-"+operation.name)
 			beadID := "ntm-stale-" + operation.name
 			key := "stale-key-" + operation.name
 			seed := NewStore(session)
@@ -2026,8 +2036,8 @@ func TestDestructiveStoreMutationsRejectStaleAtomicBarrier(t *testing.T) {
 }
 
 func TestStaleLifecycleUpdateCannotResurrectRemovedAssignment(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "stale-update-after-remove"
+	t.Parallel()
+	session := testSessionName(t, "stale-update-after-remove")
 	const beadID = "ntm-removed-generation"
 
 	seed := NewStore(session)
@@ -2063,8 +2073,8 @@ func TestStaleLifecycleUpdateCannotResurrectRemovedAssignment(t *testing.T) {
 }
 
 func TestStaleLifecycleUpdateCannotCrossAssignmentGeneration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "stale-update-cross-generation"
+	t.Parallel()
+	session := testSessionName(t, "stale-update-cross-generation")
 	const beadID = "ntm-cross-generation"
 	now := time.Now().UTC()
 	oldRequest := AtomicRequest{
@@ -2121,8 +2131,8 @@ func TestStaleLifecycleUpdateCannotCrossAssignmentGeneration(t *testing.T) {
 }
 
 func TestRecordAtomicIntentConflictKeepsDurableWinnerInMemory(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "atomic-intent-concurrent-generation"
+	t.Parallel()
+	session := testSessionName(t, "atomic-intent-concurrent-generation")
 	const beadID = "ntm-intent-winner"
 	now := time.Now().UTC()
 	seed := NewStore(session)
@@ -2170,8 +2180,8 @@ func TestRecordAtomicIntentConflictKeepsDurableWinnerInMemory(t *testing.T) {
 }
 
 func TestRecordAtomicIntentCannotReplaceTerminalLeaseHandles(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "atomic-intent-terminal-lease"
+	t.Parallel()
+	session := testSessionName(t, "atomic-intent-terminal-lease")
 	const beadID = "ntm-terminal-lease"
 	now := time.Now().UTC()
 	store := NewStore(session)
@@ -2201,8 +2211,8 @@ func TestRecordAtomicIntentCannotReplaceTerminalLeaseHandles(t *testing.T) {
 }
 
 func TestAssignmentClearBarrierRetainsLeaseAndBlocksNewWork(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "assignment-clear-barrier"
+	t.Parallel()
+	session := testSessionName(t, "assignment-clear-barrier")
 	const beadID = "ntm-clear-barrier"
 	now := time.Now().UTC()
 	store := NewStore(session)
@@ -2273,15 +2283,16 @@ func TestAssignmentClearBarrierRetainsLeaseAndBlocksNewWork(t *testing.T) {
 }
 
 func TestExplicitClearRejectsPendingCompletionOutboxWithoutMutation(t *testing.T) {
+	t.Parallel()
 	for _, leased := range []bool{false, true} {
 		t.Run(fmt.Sprintf("leased_%t", leased), func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			t.Parallel()
 			const (
 				beadID  = "ntm-pending-completion-clear"
 				eventID = "pending-completion-clear-event"
 			)
 			now := time.Now().UTC()
-			store := NewStore("pending-completion-clear")
+			store := NewStore(testSessionName(t, fmt.Sprintf("pending-completion-clear-%t", leased)))
 			store.Assignments[beadID] = &Assignment{
 				BeadID: beadID, Status: StatusFailed, AssignedAt: now,
 				DispatchTarget: "%64", OccupancyKey: "%64",
@@ -2313,9 +2324,9 @@ func TestExplicitClearRejectsPendingCompletionOutboxWithoutMutation(t *testing.T
 }
 
 func TestCompleteClearRejectsPendingCompletionOutboxWithoutMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "pending-completion-complete-clear")
 	const (
-		session = "pending-completion-complete-clear"
 		beadID  = "ntm-pending-completion-complete-clear"
 		eventID = "pending-completion-complete-clear-event"
 	)
@@ -2343,8 +2354,8 @@ func TestCompleteClearRejectsPendingCompletionOutboxWithoutMutation(t *testing.T
 }
 
 func TestCompleteTerminalReconciliationRetainsReceiptAndClearsLeaseHandles(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "assignment-terminal-reconciliation"
+	t.Parallel()
+	session := testSessionName(t, "assignment-terminal-reconciliation")
 	const beadID = "ntm-terminal-reconciliation"
 	now := time.Now().UTC()
 	store := NewStore(session)
@@ -2419,11 +2430,9 @@ func TestCompleteTerminalReconciliationRetainsReceiptAndClearsLeaseHandles(t *te
 }
 
 func TestBeginTerminalReconciliationBackfillsCompletionEventOnMatchingBarrier(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const (
-		session = "assignment-terminal-event-backfill"
-		beadID  = "ntm-terminal-event-backfill"
-	)
+	t.Parallel()
+	session := testSessionName(t, "assignment-terminal-event-backfill")
+	const beadID = "ntm-terminal-event-backfill"
 
 	store := NewStore(session)
 	if _, err := store.Assign(beadID, "Backfill completion event", 4, "codex", "CodexFour", "prompt"); err != nil {
@@ -2457,6 +2466,7 @@ func TestBeginTerminalReconciliationBackfillsCompletionEventOnMatchingBarrier(t 
 }
 
 func TestBeginTerminalReconciliationBackfillsEventAfterNoEventCompletionWins(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status AssignmentStatus
@@ -2468,8 +2478,8 @@ func TestBeginTerminalReconciliationBackfillsEventAfterNoEventCompletionWins(t *
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			session := "terminal-event-after-complete-" + test.name
+			t.Parallel()
+			session := testSessionName(t, "terminal-event-after-complete-"+test.name)
 			beadID := "ntm-terminal-event-after-complete-" + test.name
 			store := NewStore(session)
 			if _, err := store.Assign(beadID, "Terminal event race", 5, "codex", "CodexFive", "prompt"); err != nil {
@@ -2512,8 +2522,8 @@ func TestBeginTerminalReconciliationBackfillsEventAfterNoEventCompletionWins(t *
 }
 
 func TestListPendingCompletionEventsUsesDeterministicReplayOrder(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("assignment-completion-outbox-order")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "assignment-completion-outbox-order"))
 	early := time.Date(2026, time.July, 13, 9, 30, 0, 0, time.UTC)
 	later := early.Add(time.Minute)
 	store.Assignments = map[string]*Assignment{
@@ -2548,9 +2558,9 @@ func TestListPendingCompletionEventsUsesDeterministicReplayOrder(t *testing.T) {
 }
 
 func TestCompletionEventLeaseOwnershipRenewalAndExpiryAcrossStores(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "assignment-completion-lease")
 	const (
-		session = "assignment-completion-lease"
 		beadID  = "ntm-completion-lease"
 		eventID = "completion-event-generation"
 	)
@@ -2610,9 +2620,9 @@ func TestCompletionEventLeaseOwnershipRenewalAndExpiryAcrossStores(t *testing.T)
 }
 
 func TestCompletionEventLeaseRenewalSamplesClockAfterOperationLock(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "assignment-completion-lease-contended")
 	const (
-		session       = "assignment-completion-lease-contended"
 		beadID        = "ntm-completion-lease-contended"
 		eventID       = "completion-event-contended"
 		consumerToken = "consumer-contended"
@@ -2691,6 +2701,7 @@ func TestCompletionEventLeaseRenewalSamplesClockAfterOperationLock(t *testing.T)
 }
 
 func TestOwnsLiveCompletionEventLease(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	expired := now.Add(-time.Nanosecond)
 	boundary := now
@@ -2749,6 +2760,7 @@ func TestOwnsLiveCompletionEventLease(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := ownsLiveCompletionEventLease(test.assignment, test.eventID, test.token, now); got != test.want {
 				t.Fatalf("ownsLiveCompletionEventLease()=%v, want %v", got, test.want)
 			}
@@ -2757,9 +2769,9 @@ func TestOwnsLiveCompletionEventLease(t *testing.T) {
 }
 
 func TestAcknowledgeCompletionEventRejectsExpiredLeaseWithoutMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
+	session := testSessionName(t, "assignment-expired-completion-ack")
 	const (
-		session       = "assignment-expired-completion-ack"
 		beadID        = "ntm-expired-completion-ack"
 		eventID       = "expired-completion-event"
 		consumerToken = "expired-completion-consumer"
@@ -2789,9 +2801,9 @@ func TestAcknowledgeCompletionEventRejectsExpiredLeaseWithoutMutation(t *testing
 }
 
 func TestCompleteTerminalReconciliationRequiresBarrierAndTerminalStatus(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const beadID = "ntm-terminal-barrier-required"
-	store := NewStore("assignment-terminal-barrier-required")
+	store := NewStore(testSessionName(t, "assignment-terminal-barrier-required"))
 	store.Assignments[beadID] = &Assignment{BeadID: beadID, Status: StatusClaimed, AssignedAt: time.Now().UTC()}
 	if err := store.Save(); err != nil {
 		t.Fatalf("seed assignment: %v", err)
@@ -2808,8 +2820,8 @@ func TestCompleteTerminalReconciliationRequiresBarrierAndTerminalStatus(t *testi
 }
 
 func TestBeginTerminalReconciliationRejectsSupersededGenerationBeforeBarrier(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "terminal-reconciliation-stale-generation"
+	t.Parallel()
+	session := testSessionName(t, "terminal-reconciliation-stale-generation")
 	const beadID = "ntm-terminal-reconciliation-stale"
 	store := NewStore(session)
 	observed, err := store.Assign(beadID, "Old", 1, "codex", "OldAgent", "old work")
@@ -2837,8 +2849,8 @@ func TestBeginTerminalReconciliationRejectsSupersededGenerationBeforeBarrier(t *
 }
 
 func TestBeginTerminalReconciliationConcurrentDifferentReasonsHasOneWinner(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "terminal-reconciliation-reason-race"
+	t.Parallel()
+	session := testSessionName(t, "terminal-reconciliation-reason-race")
 	const beadID = "ntm-terminal-reconciliation-reason-race"
 	seed := NewStore(session)
 	if _, err := seed.Assign(beadID, "Reason race", 1, "codex", "CodexOne", "work"); err != nil {
@@ -2902,6 +2914,7 @@ func TestBeginTerminalReconciliationConcurrentDifferentReasonsHasOneWinner(t *te
 }
 
 func TestAssignmentEventIdentityAndIdleUsePhysicalPaneIDsAcrossWindows(t *testing.T) {
+	t.Parallel()
 	completed := &Assignment{
 		BeadID: "ntm-window-zero", Pane: 1, Status: StatusCompleted,
 		OccupancyKey: "%41", DispatchTarget: "%41",
@@ -2910,7 +2923,7 @@ func TestAssignmentEventIdentityAndIdleUsePhysicalPaneIDsAcrossWindows(t *testin
 		BeadID: "ntm-window-one", Pane: 1, Status: StatusWorking,
 		OccupancyKey: "%42", DispatchTarget: "%42",
 	}
-	store := NewStore("event-physical-pane-identity")
+	store := NewStore(testSessionName(t, "event-physical-pane-identity"))
 	store.Assignments[completed.BeadID] = completed
 	store.Assignments[otherWindow.BeadID] = otherWindow
 
@@ -2933,9 +2946,9 @@ func TestAssignmentEventIdentityAndIdleUsePhysicalPaneIDsAcrossWindows(t *testin
 }
 
 func TestAssignmentClearRejectsUnknownDispatchOutcome(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const beadID = "ntm-clear-sending"
-	store := NewStore("assignment-clear-sending")
+	store := NewStore(testSessionName(t, "assignment-clear-sending"))
 	request := AtomicRequest{
 		BeadID: beadID, BeadTitle: "Sending", Target: "%71", OccupancyKey: "%71", Pane: 1,
 		AgentType: "codex", AgentName: "CodexOne", Actor: "CodexOne", Prompt: "work", IdempotencyKey: "sending-key",
@@ -2970,9 +2983,9 @@ func TestAssignmentClearRejectsUnknownDispatchOutcome(t *testing.T) {
 }
 
 func TestBeginClearForceIfStatusStillGuardsStatus(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	const beadID = "ntm-clear-force-status"
-	store := NewStore("assignment-clear-force-status")
+	store := NewStore(testSessionName(t, "assignment-clear-force-status"))
 	request := AtomicRequest{
 		BeadID: beadID, BeadTitle: "Sending", Target: "%72", OccupancyKey: "%72", Pane: 1,
 		AgentType: "codex", AgentName: "CodexOne", Actor: "CodexOne", Prompt: "work", IdempotencyKey: "force-status-key",
@@ -2994,8 +3007,8 @@ func TestBeginClearForceIfStatusStillGuardsStatus(t *testing.T) {
 }
 
 func TestBeginClearIfStatusRejectsConcurrentLifecycleChange(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "assignment-clear-status-guard"
+	t.Parallel()
+	session := testSessionName(t, "assignment-clear-status-guard")
 	const beadID = "ntm-clear-status-guard"
 	now := time.Now().UTC()
 	seed := NewStore(session)
@@ -3037,9 +3050,10 @@ func mustLoadAssignment(t *testing.T, session, beadID string) *Assignment {
 }
 
 func TestGuardedLifecycleTransitionsApplyOnlyToObservedGeneration(t *testing.T) {
+	t.Parallel()
 	t.Run("working then completed", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("guarded-lifecycle-success")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "guarded-lifecycle-success"))
 		observed, err := store.Assign("ntm-guarded-success", "Guarded", 1, "codex", "CodexOne", "work")
 		if err != nil {
 			t.Fatalf("Assign: %v", err)
@@ -3063,8 +3077,8 @@ func TestGuardedLifecycleTransitionsApplyOnlyToObservedGeneration(t *testing.T) 
 	})
 
 	t.Run("failed with reason", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		store := NewStore("guarded-lifecycle-failed")
+		t.Parallel()
+		store := NewStore(testSessionName(t, "guarded-lifecycle-failed"))
 		observed, err := store.Assign("ntm-guarded-failed", "Guarded", 1, "codex", "CodexOne", "work")
 		if err != nil {
 			t.Fatalf("Assign: %v", err)
@@ -3081,8 +3095,8 @@ func TestGuardedLifecycleTransitionsApplyOnlyToObservedGeneration(t *testing.T) 
 }
 
 func TestGuardedLifecycleTransitionsRejectSupersededAtomicGeneration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "guarded-lifecycle-superseded"
+	t.Parallel()
+	session := testSessionName(t, "guarded-lifecycle-superseded")
 	const beadID = "ntm-guarded-superseded"
 	now := time.Now().UTC()
 	store := NewStore(session)
@@ -3130,8 +3144,8 @@ func TestGuardedLifecycleTransitionsRejectSupersededAtomicGeneration(t *testing.
 }
 
 func TestGuardedLifecycleTransitionRejectsClearingGeneration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("guarded-lifecycle-clearing")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "guarded-lifecycle-clearing"))
 	observed, err := store.Assign("ntm-guarded-clearing", "Guarded", 1, "codex", "CodexOne", "work")
 	if err != nil {
 		t.Fatalf("Assign: %v", err)
@@ -3150,8 +3164,8 @@ func TestGuardedLifecycleTransitionRejectsClearingGeneration(t *testing.T) {
 }
 
 func TestGuardedLifecycleTransitionRequiresObservedGeneration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store := NewStore("guarded-lifecycle-required-observation")
+	t.Parallel()
+	store := NewStore(testSessionName(t, "guarded-lifecycle-required-observation"))
 	for name, observed := range map[string]*Assignment{
 		"nil":        nil,
 		"missing id": {},
@@ -3165,16 +3179,16 @@ func TestGuardedLifecycleTransitionRequiresObservedGeneration(t *testing.T) {
 }
 
 func TestLoadNormalizesLegacyFailureReason(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
+	session := testSessionName(t, "legacy-failure-test")
 
-	dir := filepath.Join(tmpDir, ".ntm", "sessions", "legacy-failure-test")
+	dir := filepath.Join(StorageDir(), session)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
 
-	raw := []byte(`{
-  "session_name": "legacy-failure-test",
+	raw := []byte(fmt.Sprintf(`{
+  "session_name": %q,
   "assignments": {
     "bd-legacy": {
       "bead_id": "bd-legacy",
@@ -3189,13 +3203,13 @@ func TestLoadNormalizesLegacyFailureReason(t *testing.T) {
   },
   "updated_at": "2026-01-01T00:05:00Z",
   "version": 1
-}`)
+}`, session))
 	mainPath := filepath.Join(dir, "assignments.json")
 	if err := os.WriteFile(mainPath, raw, 0644); err != nil {
 		t.Fatalf("failed to write legacy file: %v", err)
 	}
 
-	store, err := LoadStore("legacy-failure-test")
+	store, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
@@ -3213,11 +3227,11 @@ func TestLoadNormalizesLegacyFailureReason(t *testing.T) {
 }
 
 func TestPersistenceMissingDirectory(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
+	session := testSessionName(t, "missing-dir-test")
 
 	// Don't create directory - Load should handle it gracefully
-	store, err := LoadStore("missing-dir-test")
+	store, err := LoadStore(session)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3234,17 +3248,16 @@ func TestPersistenceMissingDirectory(t *testing.T) {
 	}
 
 	// Verify directory was created
-	dir := filepath.Join(tmpDir, ".ntm", "sessions", "missing-dir-test")
+	dir := filepath.Join(StorageDir(), session)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Error("expected directory to be created")
 	}
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
 
-	store := NewStore("concurrent-test")
+	store := NewStore(testSessionName(t, "concurrent-test"))
 
 	var wg sync.WaitGroup
 	numGoroutines := 10
@@ -3285,10 +3298,9 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestNonExistentAssignment(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	t.Parallel()
 
-	store := NewStore("test-session")
+	store := NewStore(testSessionName(t, "test-session"))
 
 	// Try to update non-existent assignment
 	err := store.MarkWorking("bd-nonexistent")
@@ -3317,6 +3329,7 @@ func TestStorageDir(t *testing.T) {
 }
 
 func TestPersistenceErrorTypes(t *testing.T) {
+	t.Parallel()
 	// Test PersistenceError
 	cause := os.ErrPermission
 	perr := &PersistenceError{
@@ -3353,8 +3366,8 @@ func TestPersistenceErrorTypes(t *testing.T) {
 // a webhook announcing a status that exists nowhere on disk, while cloning the
 // in-memory pointer saveLocked had just orphaned.
 func TestUpdateStatusFailsWhenMergeDiscardsTheTransition(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "assignment-discarded-status"
+	t.Parallel()
+	session := testSessionName(t, "assignment-discarded-status")
 	const beadID = "ntm-discarded-status"
 	now := time.Now().UTC()
 
@@ -3395,8 +3408,8 @@ func TestUpdateStatusFailsWhenMergeDiscardsTheTransition(t *testing.T) {
 }
 
 func TestMarkFailedFailsWhenMergeDiscardsTheTransition(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "assignment-discarded-failure"
+	t.Parallel()
+	session := testSessionName(t, "assignment-discarded-failure")
 	const beadID = "ntm-discarded-failure"
 	now := time.Now().UTC()
 
