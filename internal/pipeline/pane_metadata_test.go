@@ -455,7 +455,7 @@ panes:
 		{ID: "%2", ModelFamily: "cod"},
 		{ID: "%3", ModelFamily: "gmi"},
 	}
-	got := e.enrichStrategyPanesFromRoster(strategyPanes)
+	got := e.enrichStrategyPanesFromRoster(strategyPanes, []tmux.Pane{{ID: "%2", Index: 2}, {ID: "%3", Index: 3}})
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
@@ -497,7 +497,7 @@ panes:
 	strategyPanes := []paneStrategyPane{
 		{ID: "%2", ModelFamily: "cod", Domains: []string{"session-domain"}},
 	}
-	got := e.enrichStrategyPanesFromRoster(strategyPanes)
+	got := e.enrichStrategyPanesFromRoster(strategyPanes, []tmux.Pane{{ID: "%2", Index: 2}})
 	if want := []string{"session-domain"}; !equalStringSlices(got[0].Domains, want) {
 		t.Fatalf("got[0].Domains = %v, want %v (session metadata must win)", got[0].Domains, want)
 	}
@@ -600,5 +600,69 @@ func TestPaneMetadataNumericLookupFollowsDispatchIdentity(t *testing.T) {
 				t.Fatalf("lookup %q returned %q, %v; want %q", tc.ref, meta.PaneID, err, tc.want)
 			}
 		}
+	}
+}
+
+func TestRosterIdentityAgreesAcrossMetadataAndDomainRouting(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "RESUME.md"), `## Roster
+panes:
+  - {pane_id: "%41", index: 1, domain: payments}
+  - {pane_id: "%missing", index: 9, domain: retired}
+  - {index: 1, domain: ambiguous}
+  - {index: 4, domain: indexed}
+  - {index: 7, domain: ntm-alias}
+  - {index: 0, domain: zero}
+  - {domain: unspecified}
+  - {index: 8, domain: conflicting-a}
+  - {index: 8, domain: conflicting-b}
+  - {index: 3, domain: numeric}
+  - {pane_id: "%23", domain: exact}
+`)
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 9}, {ID: "%41", Index: 1},
+		{ID: "%43", Index: 1, WindowIndex: 2}, {ID: "%4", Index: 5},
+		{ID: "%55", Index: 4}, {ID: "%90", Index: 6, NTMIndex: 7},
+		{ID: "%19", Index: 0}, {ID: "%28", Index: 8}, {ID: "%23", Index: 3},
+	}
+	want := map[string]string{
+		"%1": "", "%41": "payments", "%43": "", "%4": "",
+		"%55": "indexed", "%90": "ntm-alias", "%19": "zero", "%28": "", "%23": "exact",
+	}
+	cache, err := LoadPaneMetadataCache(newCountingPaneMetadataClient(panes), "session", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultExecutorConfig("session")
+	cfg.ProjectDir = dir
+	e := NewExecutor(cfg)
+	strategies := e.enrichStrategyPanesFromRoster(foreachStrategyPanes(panes), panes)
+	for _, sp := range strategies {
+		meta, err := cache.Lookup(sp.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(meta.Domains, ","); got != want[sp.ID] {
+			t.Errorf("pane %s metadata domain = %q, want %q", sp.ID, got, want[sp.ID])
+		}
+		if got := strings.Join(sp.Domains, ","); got != want[sp.ID] {
+			t.Errorf("pane %s strategy domain = %q, want %q", sp.ID, got, want[sp.ID])
+		}
+	}
+	id, err := roundRobinByDomain(strategies, "payments", 0)
+	if err != nil || id != "%41" {
+		t.Fatalf("payments routed to %q, error = %v", id, err)
+	}
+
+	offline, err := LoadPaneMetadataCache(nil, "", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := offline.Lookup("4")
+	if err != nil || meta.PaneID != "" || strings.Join(meta.Domains, ",") != "indexed" {
+		t.Fatalf("offline legacy index 4 returned %+v, %v", meta, err)
+	}
+	if _, err := offline.Lookup("%4"); err == nil {
+		t.Fatal("offline roster invented a physical ID from index 4")
 	}
 }

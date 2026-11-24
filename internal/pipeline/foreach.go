@@ -384,7 +384,7 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 			itemPanes = newPaneMetadataCache(paneMetadataEntries(panes))
 		} else {
 			strategyPanes = foreachStrategyPanes(panes)
-			strategyPanes = e.enrichStrategyPanesFromRoster(strategyPanes)
+			strategyPanes = e.enrichStrategyPanesFromRoster(strategyPanes, panes)
 		}
 	}
 
