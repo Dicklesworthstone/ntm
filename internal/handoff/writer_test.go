@@ -626,6 +626,69 @@ func TestAppendLedgerEntry_EmptySession(t *testing.T) {
 	}
 }
 
+func TestAppendLedgerEntry_RejectsSymlinkDirAndFile(t *testing.T) {
+	outsideDir := testTempDir(t)
+	outsideFile := filepath.Join(outsideDir, "victim.txt")
+	if err := os.WriteFile(outsideFile, []byte("original\n"), 0644); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	// Case 1: .ntm/ledgers is a symlink pointing outside the workspace.
+	proj1 := testTempDir(t)
+	if err := os.MkdirAll(filepath.Join(proj1, ".ntm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(proj1, ".ntm", "ledgers")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	w1 := NewWriter(proj1)
+	if err := w1.appendLedgerEntry(&Handoff{Session: "proj", Goal: "g", Now: "n"}, "/tmp/h.yaml", false); err == nil {
+		t.Fatal("expected error when .ntm/ledgers is a symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "CONTINUITY_proj.md")); !os.IsNotExist(err) {
+		t.Fatalf("symlinked ledger dir wrote outside workspace: stat err=%v", err)
+	}
+
+	// Case 2: .ntm/ledgers/CONTINUITY_proj.md is a symlink pointing to victim.txt.
+	proj2 := testTempDir(t)
+	ledgers2 := filepath.Join(proj2, ".ntm", "ledgers")
+	if err := os.MkdirAll(ledgers2, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(ledgers2, "CONTINUITY_proj.md")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	w2 := NewWriter(proj2)
+	if err := w2.appendLedgerEntry(&Handoff{Session: "proj", Goal: "g", Now: "n"}, "/tmp/h.yaml", false); err == nil {
+		t.Fatal("expected error when CONTINUITY_proj.md is a symlink")
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("symlinked ledger file modified external victim: %q", string(got))
+	}
+
+	// Case 3: dangling symlink at CONTINUITY_proj.md must not create an external file.
+	proj3 := testTempDir(t)
+	ledgers3 := filepath.Join(proj3, ".ntm", "ledgers")
+	if err := os.MkdirAll(ledgers3, 0755); err != nil {
+		t.Fatal(err)
+	}
+	danglingTarget := filepath.Join(outsideDir, "must-not-exist.md")
+	if err := os.Symlink(danglingTarget, filepath.Join(ledgers3, "CONTINUITY_proj.md")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	w3 := NewWriter(proj3)
+	if err := w3.appendLedgerEntry(&Handoff{Session: "proj", Goal: "g", Now: "n"}, "/tmp/h.yaml", false); err == nil {
+		t.Fatal("expected error when CONTINUITY_proj.md is a dangling symlink")
+	}
+	if _, err := os.Stat(danglingTarget); !os.IsNotExist(err) {
+		t.Fatalf("dangling symlink created external file: stat err=%v", err)
+	}
+}
+
 // =============================================================================
 // Pure-function tests for coverage improvement
 // =============================================================================
