@@ -624,7 +624,7 @@ func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hy
 			if len(cands) == 0 {
 				continue
 			}
-			slugs := projectSlugCandidates(cands[0].projectKey)
+			slugs := projectSlugCandidates(cleanProj)
 			rankOf := func(subDir string) int {
 				for idx, s := range slugs {
 					if subDir == s {

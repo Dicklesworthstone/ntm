@@ -80,6 +80,23 @@ func TestProjectKeysEquivalent(t *testing.T) {
 	if !ProjectKeysEquivalent("/nonexistent/proj/", "/nonexistent/proj") {
 		t.Error("cleaned paths must remain equivalent")
 	}
+
+	// Symlink-plus-dotdot isolation: link -> base/a/b means link/.. resolves
+	// to base/a, NOT base. Lexical filepath.Clean must never conflate them.
+	nestedBase := t.TempDir()
+	nestedB := filepath.Join(nestedBase, "a", "b")
+	if err := os.MkdirAll(nestedB, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	nestedLink := filepath.Join(nestedBase, "link")
+	if err := os.Symlink(nestedB, nestedLink); err == nil {
+		if ProjectKeysEquivalent(nestedLink+"/..", nestedBase) {
+			t.Errorf("ProjectKeysEquivalent(%q, %q) = true, want false (symlink parent != lexical parent)", nestedLink+"/..", nestedBase)
+		}
+		if !ProjectKeysEquivalent(nestedLink+"/..", filepath.Join(nestedBase, "a")) {
+			t.Errorf("ProjectKeysEquivalent(%q, %q) = false, want true", nestedLink+"/..", filepath.Join(nestedBase, "a"))
+		}
+	}
 }
 
 func TestSymlinkedProjectPathRegistrySessionAndTokenHydration(t *testing.T) {

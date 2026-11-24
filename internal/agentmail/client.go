@@ -135,16 +135,17 @@ func (c *Client) SetRegistrationToken(projectKey, agentName, token string) {
 	if c == nil {
 		return
 	}
+	key := tokenKey(projectKey, agentName)
 	c.registrationTokensMu.Lock()
 	defer c.registrationTokensMu.Unlock()
 	if c.registrationTokens == nil {
 		c.registrationTokens = make(map[string]string)
 	}
 	if token == "" {
-		delete(c.registrationTokens, tokenKey(projectKey, agentName))
+		delete(c.registrationTokens, key)
 		return
 	}
-	c.registrationTokens[tokenKey(projectKey, agentName)] = token
+	c.registrationTokens[key] = token
 }
 
 // RegistrationToken returns the cached token for (project, agent), or
@@ -153,9 +154,10 @@ func (c *Client) RegistrationToken(projectKey, agentName string) string {
 	if c == nil {
 		return ""
 	}
+	key := tokenKey(projectKey, agentName)
 	c.registrationTokensMu.RLock()
 	defer c.registrationTokensMu.RUnlock()
-	return c.registrationTokens[tokenKey(projectKey, agentName)]
+	return c.registrationTokens[key]
 }
 
 // rememberRegistrationToken caches the token returned by an identity
