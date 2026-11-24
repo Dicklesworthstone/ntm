@@ -1120,7 +1120,9 @@ func TestRestorer_RestoreFromCheckpoint_PreservesSparseWindowIndexes(t *testing.
 					ID:          "%old-6",
 				},
 			},
-			ActivePaneIndex: 0,
+			// The last window created is 5. Restoring focus to pane 0 of
+			// window 2 must change the session's selected window as well.
+			ActivePaneIndex: 1,
 		},
 	}
 
@@ -1175,12 +1177,12 @@ func TestRestorer_RestoreFromCheckpoint_PreservesSparseWindowIndexes(t *testing.
 		}
 	}
 
-	activePaneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
+	activePaneID, err := getSessionActivePaneID(sessionName)
 	if err != nil {
 		t.Fatalf("display-message active pane failed: %v", err)
 	}
-	if activePaneID != sorted[1].ID {
-		t.Fatalf("active pane id = %q, want %q", activePaneID, sorted[1].ID)
+	if activePaneID != sorted[0].ID {
+		t.Fatalf("active pane id = %q, want %q", activePaneID, sorted[0].ID)
 	}
 }
 
