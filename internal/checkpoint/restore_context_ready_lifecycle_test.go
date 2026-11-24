@@ -54,10 +54,13 @@ func TestRestoreReadinessLifecycleWithholdsContextFromBlockedUI(t *testing.T) {
 			storage := saveLifecycleScrollback(t, cp, []string{"must never reach the blocked UI"})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var timer *time.Timer
+			captureLog := os.Getenv("NTM_RESTORE_TEST_CAPTURE_LOG")
+			stopWatcher := make(chan struct{})
+			var watcherDone chan struct{}
 			defer func() {
-				if timer != nil {
-					timer.Stop()
+				close(stopWatcher)
+				if watcherDone != nil {
+					<-watcherDone
 				}
 			}()
 			ctx = WithRestoreProgress(ctx, func(_ context.Context, event RestoreProgress) error {
@@ -66,7 +69,35 @@ func TestRestoreReadinessLifecycleWithholdsContextFromBlockedUI(t *testing.T) {
 					if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_SCREEN"), []byte(tc.screen), 0600); err != nil {
 						return err
 					}
-					timer = time.AfterFunc(80*time.Millisecond, cancel)
+					if watcherDone == nil {
+						watcherDone = make(chan struct{})
+						go func() {
+							defer close(watcherDone)
+							deadline := time.NewTimer(5 * time.Second)
+							defer deadline.Stop()
+							ticker := time.NewTicker(10 * time.Millisecond)
+							defer ticker.Stop()
+							for {
+								if data, err := os.ReadFile(captureLog); err == nil && strings.Count(string(data), "\n") >= 2 {
+									select {
+									case <-stopWatcher:
+										return
+									case <-time.After(25 * time.Millisecond):
+										cancel()
+										return
+									}
+								}
+								select {
+								case <-stopWatcher:
+									return
+								case <-deadline.C:
+									cancel()
+									return
+								case <-ticker.C:
+								}
+							}
+						}()
+					}
 				}
 				return nil
 			})
