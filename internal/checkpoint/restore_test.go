@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -1018,7 +1019,7 @@ func TestRestorer_RestoreFromCheckpoint_RelaunchesCommandsAcrossWindows(t *testi
 		}
 
 		sorted = sortedTmuxPanes(panes)
-		if sorted[0].Command == "sleep" && sorted[1].Command == "sleep" && sorted[2].Command == "sleep" {
+		if restoredPaneRunsCommand(sorted[0], "sleep") && restoredPaneRunsCommand(sorted[1], "sleep") && restoredPaneRunsCommand(sorted[2], "sleep") {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1152,7 +1153,7 @@ func TestRestorer_RestoreFromCheckpoint_PreservesSparseWindowIndexes(t *testing.
 		}
 
 		sorted = sortedTmuxPanes(panes)
-		if sorted[0].Command == "sleep" && sorted[1].Command == "sleep" && sorted[2].Command == "sleep" {
+		if restoredPaneRunsCommand(sorted[0], "sleep") && restoredPaneRunsCommand(sorted[1], "sleep") && restoredPaneRunsCommand(sorted[2], "sleep") {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1387,4 +1388,25 @@ func runGitCmd(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %v (output: %s)", args, err, string(out))
 	}
 	return string(out)
+}
+
+func restoredPaneRunsCommand(pane tmux.Pane, want string) bool {
+	if pane.Command == want {
+		return true
+	}
+	if !tmux.PaneCommandIsShell(pane.Command) || pane.PID <= 0 {
+		return false
+	}
+	// Under /bin/sh -> dash, `tmux respawn-pane ... "sleep 30"` keeps `sh -c`
+	// as the pane root PID and runs `sleep 30` as a live child process.
+	for _, childPID := range process.GetChildPIDs(pane.PID, 8) {
+		if !process.IsAlive(childPID) {
+			continue
+		}
+		argv := process.GetCmdline(childPID)
+		if len(argv) > 0 && filepath.Base(argv[0]) == want {
+			return true
+		}
+	}
+	return false
 }

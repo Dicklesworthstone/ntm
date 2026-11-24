@@ -114,9 +114,6 @@ func (le *LoopExecutor) finishLoopBreak(step *Step, result LoopResult, iteration
 
 func (le *LoopExecutor) restoreLoopBreak(step *Step) (LoopResult, bool) {
 	e := le.executor
-	if err := e.checkpointFailure(); err != nil {
-		return loopBreakError(step, err), true
-	}
 	e.stateMu.RLock()
 	if e.state == nil {
 		e.stateMu.RUnlock()
@@ -137,6 +134,9 @@ func (le *LoopExecutor) restoreLoopBreak(step *Step) (LoopResult, bool) {
 	}
 	result := LoopResult{Iterations: marker.Iteration + 1, Collected: append([]interface{}{}, progress.CollectedOutputs...)}
 	e.stateMu.RUnlock()
+	if cpErr := e.checkpointFailure(); cpErr != nil {
+		return loopBreakError(step, cpErr), true
+	}
 	if err != nil {
 		return loopBreakError(step, err), true
 	}

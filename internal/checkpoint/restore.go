@@ -1253,9 +1253,9 @@ func checkpointPaneDirectory(saved, original, target string, relocate, remote bo
 	if saved == "" {
 		return target, nil
 	}
-	const placeholder = "${WORKING_DIR}"
-	if saved == placeholder || strings.HasPrefix(saved, placeholder+"/") {
-		rel := strings.TrimPrefix(strings.TrimPrefix(saved, placeholder), "/")
+	const workingDirToken = "${WORKING_DIR}"
+	if saved == workingDirToken || strings.HasPrefix(saved, workingDirToken+"/") {
+		rel := strings.TrimPrefix(strings.TrimPrefix(saved, workingDirToken), "/")
 		if rel == "" {
 			return target, nil
 		}

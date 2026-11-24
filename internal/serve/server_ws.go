@@ -145,6 +145,8 @@ type WSClient struct {
 	conn       *websocket.Conn
 	hub        *WSHub
 	send       chan []byte
+	sendMu     sync.Mutex
+	sendClosed bool
 	topics     map[string]struct{}
 	topicsMu   sync.RWMutex
 	authClaims map[string]interface{}
@@ -231,7 +233,7 @@ func (h *WSHub) Run() {
 			h.clientsMu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				client.closeSend()
 			}
 			total := len(h.clients)
 			h.clientsMu.Unlock()
@@ -256,7 +258,7 @@ func (h *WSHub) Stop() {
 		defer h.clientsMu.Unlock()
 		for client := range h.clients {
 			delete(h.clients, client)
-			close(client.send)
+			client.closeSend()
 		}
 	})
 }
@@ -336,12 +338,11 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 			continue
 		}
 		if client.isSubscribed(event.Topic) {
-			select {
-			case client.send <- data:
+			if sent, closed := client.trySendStatus(data); sent {
 				// Delivery succeeded again: report and persist any gap this
 				// client accumulated while it was slow.
 				h.flushClientDrops(client, true)
-			default:
+			} else if !closed {
 				dropped := h.dropped.Add(1)
 				h.noteClientDrop(client, event.Topic, event.Seq)
 				log.Printf("ws client buffer full id=%s surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", client.id, len(client.send), dropped)
@@ -1874,21 +1875,49 @@ func extractStringSlice(v interface{}) []string {
 	return nil
 }
 
-func (c *WSClient) trySend(data []byte, onDrop func()) (ok bool) {
+func (c *WSClient) closeSend() {
+	if c == nil || c.send == nil {
+		return
+	}
+	c.sendMu.Lock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
+	}
+	c.sendMu.Unlock()
+}
+
+func (c *WSClient) trySendStatus(data []byte) (sent, closed bool) {
+	if c == nil || c.send == nil {
+		return false, true
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return false, true
+	}
+	// Guard against callers that close c.send directly without closeSend().
 	defer func() {
 		if recover() != nil {
-			ok = false
+			c.sendClosed = true
+			sent = false
+			closed = true
 		}
 	}()
 	select {
 	case c.send <- data:
-		return true
+		return true, false
 	default:
-		if onDrop != nil {
-			onDrop()
-		}
-		return false
+		return false, false
 	}
+}
+
+func (c *WSClient) trySend(data []byte, onDrop func()) bool {
+	sent, closed := c.trySendStatus(data)
+	if !sent && !closed && onDrop != nil {
+		onDrop()
+	}
+	return sent
 }
 
 // sendError sends a WebSocket error frame.

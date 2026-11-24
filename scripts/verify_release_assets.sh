@@ -205,8 +205,28 @@ if [ "$SKIP_GHCR" -eq 0 ] && [ -z "$TMP_DL" ] && [ -n "$ASSETS_DIR" ]; then
   # Staged local bundle check: inspect GHCR if docker is available unless --skip-ghcr is passed.
   :
 fi
-if [ "$SKIP_GHCR" -eq 0 ] && command -v docker >/dev/null 2>&1; then
-  if docker buildx imagetools inspect "ghcr.io/dicklesworthstone/ntm:${VER}" >/dev/null 2>&1; then
+verify_ghcr_manifest() {
+  local ver="$1"
+  if command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
+    docker buildx imagetools inspect "ghcr.io/dicklesworthstone/ntm:${ver}" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    local tok status
+    tok="$(curl -fsSL "https://ghcr.io/token?scope=repository:dicklesworthstone/ntm:pull" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+    if [ -n "$tok" ]; then
+      status="$(curl -sS -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer ${tok}" \
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+        "https://ghcr.io/v2/dicklesworthstone/ntm/manifests/${ver}" 2>/dev/null || true)"
+      [ "$status" = "200" ] && return 0
+    fi
+  fi
+  return 1
+}
+
+if [ "$SKIP_GHCR" -eq 0 ] && (command -v docker >/dev/null 2>&1 || command -v curl >/dev/null 2>&1); then
+  if verify_ghcr_manifest "$VER"; then
     say "GHCR manifest ghcr.io/dicklesworthstone/ntm:${VER} verified"
   else
     flunk "GHCR manifest ghcr.io/dicklesworthstone/ntm:${VER} not found or unreachable (pass --skip-ghcr only for offline dry-runs)"

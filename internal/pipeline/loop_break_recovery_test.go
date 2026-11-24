@@ -111,3 +111,23 @@ func TestLoopBreakCannotRestoreAfterFailedPersistence(t *testing.T) {
 		t.Fatal("failed checkpoint published collected output")
 	}
 }
+
+func TestLoopWithoutBreakMarkerStillRunsCleanupAfterCheckpointFailure(t *testing.T) {
+	t.Parallel()
+
+	wf := &Workflow{Name: "cleanup-after-checkpoint-err", Settings: DefaultWorkflowSettings(), Steps: []Step{{
+		ID: "cleanup_loop", Loop: &LoopConfig{Times: 2, Steps: []Step{{ID: "work", Command: "printf ok"}}},
+	}}}
+	e := createForeachTestExecutor(t, wf)
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, ".ntm"), []byte("block checkpoint directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.persistState(); err == nil || e.checkpointFailure() == nil {
+		t.Fatalf("expected checkpoint failure, got persist=%v recorded=%v", err, e.checkpointFailure())
+	}
+
+	le := NewLoopExecutor(e)
+	if _, restored := le.restoreLoopBreak(&wf.Steps[0]); restored {
+		t.Fatal("restoreLoopBreak aborted an unrelated loop that has no break marker")
+	}
+}

@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -405,5 +406,80 @@ func TestIntegrity_ReportsGitSkipReason(t *testing.T) {
 		if strings.Contains(w, "git state was not captured") {
 			t.Fatalf("disabled capture must not warn: %v", result.Warnings)
 		}
+	}
+}
+
+func TestCheckpointLiveRestoreRelaunchesAgentsInDistinctWorktrees(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	dirA := realPath(t, t.TempDir())
+	dirB := realPath(t, t.TempDir())
+	source := newIsolatedTmuxSession(t, "cpwt-agent-", dirA)
+	if _, err := tmux.DefaultClient.Run("split-window", "-t", tmux.SessionPaneTarget(source), "-c", dirB); err != nil {
+		t.Fatalf("split worktree pane: %v", err)
+	}
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create(source, "worktree-agents", WithGitCapture(false), WithScrollbackLines(10), func(opts *checkpointOptions) {
+		opts.captureAssignments = false
+		opts.captureBVSnapshot = false
+	})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	for i := range cp.Session.Panes {
+		cp.Session.Panes[i].AgentType = "cc"
+		cp.Session.Panes[i].Command = "sleep 30"
+	}
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	destination := source + "-restored"
+	t.Cleanup(func() { _ = tmux.KillSession(destination) })
+	result, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{
+		TargetSession: destination,
+		SkipGitCheck:  true,
+	})
+	if err != nil || result == nil || result.Stage != "completed" || result.PanesRestored != 2 {
+		t.Fatalf("live agent worktree restore failed: result=%+v err=%v", result, err)
+	}
+
+	panes, err := tmux.GetPanes(destination)
+	if err != nil || len(panes) != 2 {
+		t.Fatalf("restored panes = %+v, err=%v", panes, err)
+	}
+	sorted := sortedTmuxPanes(panes)
+	gotDir0, err := getPaneDir(sorted[0].ID)
+	if err != nil || realPath(t, gotDir0) != dirA {
+		t.Fatalf("pane 0 cwd = %q (err=%v), want %q", gotDir0, err, dirA)
+	}
+	gotDir1, err := getPaneDir(sorted[1].ID)
+	if err != nil || realPath(t, gotDir1) != dirB {
+		t.Fatalf("pane 1 cwd = %q (err=%v), want %q", gotDir1, err, dirB)
+	}
+	if !restoredPaneRunsCommand(sorted[0], "sleep") || !restoredPaneRunsCommand(sorted[1], "sleep") {
+		t.Fatalf("restored panes did not relaunch sleep command: [%+v, %+v]", sorted[0], sorted[1])
+	}
+
+	// Planted negative: removing a non-root pane worktree (while cp.WorkingDir
+	// itself still exists) must still be rejected by per-pane preflight before
+	// --force replaces the already-running destination session.
+	nonRootDir := dirB
+	if realPath(t, cp.WorkingDir) == dirB {
+		nonRootDir = dirA
+	}
+	if err := os.RemoveAll(nonRootDir); err != nil {
+		t.Fatalf("remove non-root pane dir %q: %v", nonRootDir, err)
+	}
+	_, err = NewRestorerWithStorage(storage).RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{
+		TargetSession: destination,
+		Force:         true,
+		SkipGitCheck:  true,
+	})
+	if !errors.Is(err, ErrWorkingDirInvalid) {
+		t.Fatalf("expected ErrWorkingDirInvalid for missing pane worktree, got %v", err)
+	}
+	if !tmux.SessionExists(destination) {
+		t.Fatal("existing destination session was destroyed before pane directory preflight")
 	}
 }
