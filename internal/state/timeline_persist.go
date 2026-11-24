@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,7 @@ type TimelineInfo struct {
 	Compressed bool      `json:"compressed"`
 	CreatedAt  time.Time `json:"created_at"`
 	ModifiedAt time.Time `json:"modified_at"`
+	fileInfo   os.FileInfo
 }
 
 // TimelineHeader contains metadata stored at the beginning of a timeline file.
@@ -150,6 +152,12 @@ func (p *TimelinePersister) SaveTimeline(sessionID string, events []AgentEvent) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	unlock, err := p.lockTimelineMutation(normalizedSessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	return p.saveTimelineLocked(normalizedSessionID, events)
 }
 
@@ -167,11 +175,22 @@ func (p *TimelinePersister) CheckpointTimeline(sessionID string, events []AgentE
 	if err != nil {
 		return err
 	}
+	for i, event := range events {
+		if event.AgentID == "" || event.Timestamp.IsZero() || event.State == "" || event.SessionID != normalizedSessionID {
+			return fmt.Errorf("invalid checkpoint event %d: identity, session, timestamp and state are required", i+1)
+		}
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	existing, loadErr := p.loadTimelineLocked(normalizedSessionID)
+	unlock, err := p.lockTimelineMutation(normalizedSessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	existing, loadErr := p.loadTimelineLocked(normalizedSessionID, true)
 	if loadErr != nil {
 		// An unreadable existing timeline must not be silently replaced with a
 		// narrower view; surface it so the operator can recover the file.
@@ -214,22 +233,27 @@ func (p *TimelinePersister) LoadTimeline(sessionID string) ([]AgentEvent, error)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	return p.loadTimelineLocked(normalizedSessionID)
+	return p.loadTimelineLocked(normalizedSessionID, false)
 }
 
 // loadTimelineLocked reads a session's persisted events. Callers must already
-// hold p.mu (read or write); SaveTimeline needs it under the write lock to merge
-// with what is already on disk.
-func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string) ([]AgentEvent, error) {
-	// Try uncompressed first, then compressed
-	path := p.getTimelinePath(normalizedSessionID, false)
+// hold p.mu (read or write). Checkpoint reads are strict: a best-effort view is
+// useful for inspection, but must never authorize replacing corrupt history.
+func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string, strict bool) ([]AgentEvent, error) {
+	// Open the snapshot directly. A separate stat can race with another
+	// process compressing it. Compression publishes gzip before removing the
+	// plain file; checkpointing publishes plain before removing gzip.
 	compressed := false
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		path = p.getTimelinePath(normalizedSessionID, true)
+	file, err := os.Open(p.getTimelinePath(normalizedSessionID, false))
+	if os.IsNotExist(err) {
+		file, err = os.Open(p.getTimelinePath(normalizedSessionID, true))
 		compressed = true
+		if os.IsNotExist(err) {
+			// A checkpoint may have replaced gzip after the first open.
+			file, err = os.Open(p.getTimelinePath(normalizedSessionID, false))
+			compressed = false
+		}
 	}
-
-	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil // No timeline exists
@@ -255,8 +279,11 @@ func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string) ([]Ag
 
 	events := make([]AgentEvent, 0, 100)
 	headerRead := false
+	var header TimelineHeader
+	lineNumber := 0
 
 	for scanner.Scan() {
+		lineNumber++
 		line := scanner.Bytes()
 
 		// Skip blank lines. A persisted timeline may have acquired leading
@@ -269,19 +296,41 @@ func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string) ([]Ag
 		// The first non-blank record is the header, not an event.
 		if !headerRead {
 			headerRead = true
+			if strict {
+				if err := json.Unmarshal(line, &header); err != nil {
+					return nil, fmt.Errorf("invalid timeline header at line %d: %w", lineNumber, err)
+				}
+				if header.Version != "1.0" || header.SessionID != normalizedSessionID || header.EventCount < 0 {
+					return nil, fmt.Errorf("invalid timeline header at line %d: version, session or event count does not match", lineNumber)
+				}
+			}
 			continue
 		}
 
 		var event AgentEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			// Log and skip malformed lines
+			if strict {
+				return nil, fmt.Errorf("invalid timeline event at line %d: %w", lineNumber, err)
+			}
+			// Inspection can still recover intact events from damaged history.
 			continue
+		}
+		if strict && (event.AgentID == "" || event.Timestamp.IsZero() || event.State == "" || event.SessionID != normalizedSessionID) {
+			return nil, fmt.Errorf("incomplete timeline event at line %d", lineNumber)
 		}
 		events = append(events, event)
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading timeline: %w", err)
+	}
+	if strict {
+		if !headerRead {
+			return nil, errors.New("existing timeline has no header")
+		}
+		if header.EventCount != len(events) {
+			return nil, fmt.Errorf("timeline event count mismatch: header records %d, read %d", header.EventCount, len(events))
+		}
 	}
 
 	return events, nil
@@ -381,6 +430,7 @@ func (p *TimelinePersister) ListTimelines() ([]TimelineInfo, error) {
 			Compressed: compressed,
 			CreatedAt:  info.ModTime(),
 			ModifiedAt: info.ModTime(),
+			fileInfo:   info,
 		}
 
 		if err == nil && header != nil {
@@ -419,6 +469,18 @@ func (p *TimelinePersister) DeleteTimeline(sessionID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	unlock, err := p.lockTimelineMutation(normalizedSessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	return p.deleteTimelineLocked(normalizedSessionID)
+}
+
+// deleteTimelineLocked removes both representations while the caller owns the
+// local mutex and the process-shared mutation fence.
+func (p *TimelinePersister) deleteTimelineLocked(normalizedSessionID string) error {
 	// Try to delete both compressed and uncompressed versions
 	pathUncompressed := p.getTimelinePath(normalizedSessionID, false)
 	pathCompressed := p.getTimelinePath(normalizedSessionID, true)
@@ -432,6 +494,42 @@ func (p *TimelinePersister) DeleteTimeline(sessionID string) error {
 	}
 
 	return lastErr
+}
+
+// deleteTimelineIfUnchanged prevents retention from deleting a newly active
+// session chosen from an older directory listing. The snapshot's inode, size
+// and modification time must still identify the preferred representation after
+// ownership is acquired. A replacement or plain/gzip transition defers cleanup.
+func (p *TimelinePersister) deleteTimelineIfUnchanged(observed TimelineInfo) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	unlock, err := p.lockTimelineMutation(observed.SessionID)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	path := p.getTimelinePath(observed.SessionID, false)
+	current, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		path = p.getTimelinePath(observed.SessionID, true)
+		current, err = os.Stat(path)
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if observed.fileInfo == nil || path != observed.Path ||
+		!os.SameFile(observed.fileInfo, current) || current.Size() != observed.Size ||
+		!current.ModTime().Equal(observed.ModifiedAt) {
+		return false, nil
+	}
+	if err := p.deleteTimelineLocked(observed.SessionID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Cleanup removes old timelines exceeding the configured maximum.
@@ -459,11 +557,14 @@ func (p *TimelinePersister) Cleanup() (int, error) {
 	var deleteErrs []error
 
 	for i := 0; i < toDelete; i++ {
-		if err := p.DeleteTimeline(timelines[i].SessionID); err != nil {
+		removed, err := p.deleteTimelineIfUnchanged(timelines[i])
+		if err != nil {
 			deleteErrs = append(deleteErrs, fmt.Errorf("delete timeline %s: %w", timelines[i].SessionID, err))
 			continue
 		}
-		deleted++
+		if removed {
+			deleted++
+		}
 	}
 
 	return deleted, errors.Join(deleteErrs...)
@@ -616,6 +717,44 @@ func (p *TimelinePersister) stopCheckpointRunner(sessionID string) {
 
 // Private helpers
 
+// lockTimelineMutation fences the complete read/merge/publish or compression
+// transaction across separate persisters and NTM processes. The stable lock
+// inode is never renamed or removed, including when the timeline is deleted.
+// Waiting is bounded so a stuck external writer cannot hang session shutdown.
+func (p *TimelinePersister) lockTimelineMutation(sessionID string) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := os.MkdirAll(p.config.BaseDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating timeline directory: %w", err)
+	}
+	path := p.getTimelinePath(sessionID, false) + ".lock"
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("opening timeline mutation lock: %w", err)
+	}
+	for {
+		locked, err := tryTimelineFileLock(file)
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("locking timeline %s: %w", sessionID, err)
+		}
+		if locked {
+			return func() {
+				_ = unlockTimelineFile(file)
+				_ = file.Close()
+			}, nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			_ = file.Close()
+			return nil, fmt.Errorf("waiting to update timeline %s: %w", sessionID, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
 func (p *TimelinePersister) getTimelinePath(sessionID string, compressed bool) string {
 	filename := sessionID + ".jsonl"
 	if compressed {
@@ -763,11 +902,21 @@ func (p *TimelinePersister) readHeader(path string, compressed bool) (*TimelineH
 }
 
 func (p *TimelinePersister) compressTimeline(sessionID string) error {
+	normalizedSessionID, err := validateTimelineSessionID(sessionID)
+	if err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	srcPath := p.getTimelinePath(sessionID, false)
-	dstPath := p.getTimelinePath(sessionID, true)
+	unlock, err := p.lockTimelineMutation(normalizedSessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	srcPath := p.getTimelinePath(normalizedSessionID, false)
+	dstPath := p.getTimelinePath(normalizedSessionID, true)
 
 	src, err := os.Open(srcPath)
 	if err != nil {
