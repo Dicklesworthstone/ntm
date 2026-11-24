@@ -1434,17 +1434,18 @@ func TestProbeResultDefaults(t *testing.T) {
 func TestPaneChangeLatency(t *testing.T) {
 	t.Parallel()
 	// Test that latency is calculated correctly
+	now := time.Now()
 	baseline := &PaneBaseline{
 		Content:     "content",
 		ContentHash: hashContent("content"),
 		LineCount:   1,
-		CapturedAt:  time.Now().Add(-100 * time.Millisecond),
+		CapturedAt:  now.Add(-100 * time.Millisecond),
 	}
 	current := &PaneBaseline{
 		Content:     "new content",
 		ContentHash: hashContent("new content"),
 		LineCount:   1,
-		CapturedAt:  time.Now(),
+		CapturedAt:  now,
 	}
 
 	change := ComparePaneState(baseline, current)
