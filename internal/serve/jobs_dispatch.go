@@ -663,23 +663,26 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 	// server's active project root; omitted custom_directory intentionally
 	// preserves global checkpoint replay semantics (restoring the checkpoint's
 	// own saved WorkingDir — see TestJobHTTPProjectScopeKeepsCheckpointReplayGlobal).
+	var validateWorkingDir func(string) (string, error)
 	if strings.TrimSpace(req.CustomDirectory) != "" {
 		resolvedDir, err := s.resolveCheckpointWorkDir(req.CustomDirectory)
 		if err != nil {
 			return nil, fmt.Errorf("custom_directory is not usable: %w", err)
 		}
 		req.CustomDirectory = resolvedDir
+		validateWorkingDir = s.resolveCheckpointWorkDir
 	}
 
 	restorer := checkpoint.NewRestorerWithStorage(storage)
 	result, err := restorer.RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
-		TargetSession:   req.TargetSession,
-		Force:           req.Force,
-		SkipGitCheck:    req.SkipGitCheck,
-		InjectContext:   req.InjectContext,
-		DryRun:          req.DryRun,
-		CustomDirectory: req.CustomDirectory,
-		ScrollbackLines: req.ScrollbackLines,
+		TargetSession:      req.TargetSession,
+		Force:              req.Force,
+		SkipGitCheck:       req.SkipGitCheck,
+		InjectContext:      req.InjectContext,
+		DryRun:             req.DryRun,
+		CustomDirectory:    req.CustomDirectory,
+		ValidateWorkingDir: validateWorkingDir,
+		ScrollbackLines:    req.ScrollbackLines,
 	})
 	var payload map[string]interface{}
 	if result != nil {

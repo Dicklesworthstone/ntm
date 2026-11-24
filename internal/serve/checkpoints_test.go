@@ -1304,3 +1304,54 @@ func TestCheckpointRestoreAndImportConfinement(t *testing.T) {
 		t.Fatal("out-of-project archive import unexpectedly persisted checkpoint")
 	}
 }
+
+func TestCheckpointPaneDirectoriesCannotEscapeRESTProject(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		t.Run(fmt.Sprintf("symlink=%v", symlink), func(t *testing.T) {
+			cp, logPath := restoreCheckpointHTTPFixture(t, 2)
+			outside := t.TempDir()
+			paneDirectory := outside
+			if symlink {
+				paneDirectory = filepath.Join(cp.WorkingDir, "outside-worktree")
+				if err := os.Symlink(outside, paneDirectory); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cp.Session.Panes[0].WorkingDir = cp.WorkingDir
+			cp.Session.Panes[1].WorkingDir = paneDirectory
+			storage := checkpoint.NewStorage()
+			if err := storage.Save(cp); err != nil {
+				t.Fatal(err)
+			}
+			req := checkpointRestoreRequest(t.Context(), cp, `{"target_session":"scoped-copy","force":true,"skip_git_check":true}`)
+			rec := httptest.NewRecorder()
+			(&Server{projectDir: cp.WorkingDir}).handleRestoreCheckpoint(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "pane 0.1") {
+				t.Fatalf("pane escape was not rejected: %d %s", rec.Code, rec.Body)
+			}
+			if calls, err := os.ReadFile(logPath); err == nil && len(calls) != 0 {
+				t.Fatalf("pane escape reached tmux before confinement: %s", calls)
+			}
+
+			archive := filepath.Join(t.TempDir(), "pane-paths.zip")
+			if _, err := storage.Export(cp.SessionName, cp.ID, archive, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := New(Config{ProjectDir: cp.WorkingDir})
+			defer srv.Stop()
+			importResponse := httptest.NewRecorder()
+			srv.Router().ServeHTTP(importResponse, wiringJSONRequest(t, http.MethodPost,
+				"/api/v1/sessions/scoped-import/checkpoints/import", ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(data)}))
+			if importResponse.Code != http.StatusBadRequest {
+				t.Fatalf("archive pane escape was not rejected: %d %s", importResponse.Code, importResponse.Body)
+			}
+			if _, err := storage.Load("scoped-import", cp.ID); err == nil {
+				t.Fatal("out-of-project pane metadata was published")
+			}
+		})
+	}
+}

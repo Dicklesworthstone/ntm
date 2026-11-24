@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,6 +54,9 @@ type RestoreOptions struct {
 	DryRun bool
 	// CustomDirectory overrides the checkpoint's working directory
 	CustomDirectory string
+	// ValidateWorkingDir optionally confines and canonicalizes every resolved
+	// directory, including pane-specific worktrees, before any session mutation.
+	ValidateWorkingDir func(string) (string, error)
 	// ScrollbackLines is how many lines of scrollback to inject (0 = all captured)
 	ScrollbackLines int
 	// Config supplies the caller's configured account launcher. Saved commands
@@ -108,6 +112,8 @@ type Restorer struct {
 	// launchPlans follows sortedCheckpointPanes and belongs to this restore
 	// operation. Account checks complete before --force can remove a session.
 	launchPlans []*resilience.AgentLaunchPlan
+	// paneDirectories follows the same sorted order and holds preflighted paths.
+	paneDirectories []string
 }
 
 // NewRestorer creates a new Restorer with default storage.
@@ -139,6 +145,12 @@ func (r *Restorer) RestoreFromCheckpointContext(ctx context.Context, cp *Checkpo
 	if cp == nil {
 		return nil, ErrNilCheckpoint
 	}
+	if cp.RemoteHost != "" && cp.RemoteHost != tmux.DefaultClient.Remote {
+		return nil, fmt.Errorf("checkpoint belongs to SSH host %q; select the same --ssh host before restoring it", cp.RemoteHost)
+	}
+	if tmux.DefaultClient.Remote != "" && opts.ValidateWorkingDir != nil {
+		return nil, fmt.Errorf("%w: SSH checkpoint paths cannot be validated against a local project", ErrWorkingDirInvalid)
+	}
 	if err := tmux.ValidateSessionName(cp.SessionName); err != nil {
 		return nil, fmt.Errorf("invalid checkpoint source session: %w", err)
 	}
@@ -152,6 +164,7 @@ func (r *Restorer) RestoreFromCheckpointContext(ctx context.Context, cp *Checkpo
 	op.sourceSession = cp.SessionName
 	op.restoredPaneIDs = nil
 	op.launchPlans = nil
+	op.paneDirectories = nil
 	if opts.TargetSession != "" && opts.TargetSession != cp.SessionName {
 		// Never rewrite the caller's checkpoint or persist a renamed copy.
 		// Pane IDs and scrollback references still identify the source artifact.
@@ -229,6 +242,9 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 			return nil, fmt.Errorf("checkpoint pane %d plugin %s has no saved launch specification; relaunch it with its configured command", pane.Index, pane.AgentType)
 		}
 		if pane.LaunchSpec != nil {
+			if tmux.DefaultClient.Remote != "" && (pane.LaunchSpec.SystemPromptFile != "" || pane.LaunchSpec.CAAMProfile != "" || pane.LaunchSpec.ClaudeIsolateCredentials) {
+				return nil, fmt.Errorf("checkpoint pane %d launch settings require local prompt/account/credential preflight; run recovery on the SSH host", pane.Index)
+			}
 			if err := pane.LaunchSpec.ValidateReplay(agentType); err != nil {
 				return nil, fmt.Errorf("checkpoint pane %d launch specification: %w", pane.Index, err)
 			}
@@ -294,10 +310,27 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 	if opts.CustomDirectory != "" {
 		workDir = opts.CustomDirectory
 	}
+	if tmux.DefaultClient.Remote != "" && workDir == "" {
+		return result, fmt.Errorf("%w: remote checkpoint has no working directory", ErrWorkingDirInvalid)
+	}
+	if opts.ValidateWorkingDir != nil {
+		validatedDir, err := opts.ValidateWorkingDir(workDir)
+		if err != nil {
+			return result, fmt.Errorf("%w: %w", ErrWorkingDirInvalid, err)
+		}
+		workDir = validatedDir
+	}
+	if workDir != "" && tmux.DefaultClient.Remote == "" {
+		absoluteDir, err := filepath.Abs(workDir)
+		if err != nil {
+			return result, fmt.Errorf("%w: %w", ErrWorkingDirInvalid, err)
+		}
+		workDir = absoluteDir
+	}
 
 	// Validate working directory exists and is usable.
 	if workDir != "" {
-		if err := validateWorkingDirectory(workDir); err != nil {
+		if err := validateRestoreDirectory(ctx, workDir); err != nil {
 			if opts.DryRun {
 				result.Warnings = append(result.Warnings, workingDirectoryIssue(workDir, err))
 			} else {
@@ -314,18 +347,38 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 	restoreDir := effectiveRestoreDir(workDir)
 	sortedStates := sortedCheckpointPanes(cp.Session.Panes)
 	r.launchPlans = make([]*resilience.AgentLaunchPlan, len(sortedStates))
+	r.paneDirectories = make([]string, len(sortedStates))
 	for i, pane := range sortedStates {
+		directory, err := checkpointPaneDirectory(pane.WorkingDir, cp.WorkingDir, restoreDir, opts.CustomDirectory != "", tmux.DefaultClient.Remote != "")
+		if err != nil {
+			return result, fmt.Errorf("%w: pane %d.%d: %w", ErrWorkingDirInvalid, pane.WindowIndex, pane.Index, err)
+		}
+		if opts.ValidateWorkingDir != nil {
+			directory, err = opts.ValidateWorkingDir(directory)
+			if err != nil {
+				return result, fmt.Errorf("%w: pane %d.%d: %w", ErrWorkingDirInvalid, pane.WindowIndex, pane.Index, err)
+			}
+		}
+		if pane.WorkingDir != "" {
+			if err := validateRestoreDirectory(ctx, directory); err != nil {
+				if !opts.DryRun {
+					return result, fmt.Errorf("%w: pane %d.%d: %s: %w", ErrWorkingDirInvalid, pane.WindowIndex, pane.Index, directory, err)
+				}
+				result.Warnings = append(result.Warnings, fmt.Sprintf("pane %d.%d: %s", pane.WindowIndex, pane.Index, workingDirectoryIssue(directory, err)))
+			}
+		}
+		r.paneDirectories[i] = directory
 		if pane.LaunchSpec == nil {
 			continue
 		}
-		plan, err := resilience.PreflightAgentLaunchSpec(ctx, opts.Config, *pane.LaunchSpec, restoreDir)
+		plan, err := resilience.PreflightAgentLaunchSpec(ctx, opts.Config, *pane.LaunchSpec, directory)
 		if err != nil {
 			return result, fmt.Errorf("checkpoint pane %d launch preflight: %w", pane.Index, err)
 		}
 		r.launchPlans[i] = plan
 	}
 	// Advisory git inspection is read-only and also precedes replacement.
-	if !opts.SkipGitCheck && cp.Git.Commit != "" && workDir != "" {
+	if !opts.SkipGitCheck && cp.Git.Commit != "" && workDir != "" && tmux.DefaultClient.Remote == "" {
 		if warning := r.checkGitState(cp, workDir); warning != "" {
 			result.Warnings = append(result.Warnings, warning)
 		}
@@ -453,6 +506,7 @@ func validateCheckpointAutomatedRelaunch(cp *Checkpoint) error {
 // createSession creates the initial tmux session.
 func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
 	ctx := r.operationContext()
+	workDir = r.restoredPaneDirectory(0, workDir)
 	if _, err := runRestoreMutation(ctx, RestoreProgress{Stage: "create_session"}, func() (string, error) {
 		return "", tmux.DefaultClient.CreateSessionContext(ctx, cp.SessionName, workDir)
 	}); err != nil {
@@ -507,6 +561,7 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 			return panesCreated, err
 		}
 		paneState := paneStates[i]
+		paneDir := r.restoredPaneDirectory(i, workDir)
 		windowTarget := fmt.Sprintf("%s:%d", cp.SessionName, paneState.WindowIndex)
 		splitWindow := paneState.WindowIndex == lastWindowIndex
 
@@ -516,12 +571,12 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 			if !splitWindow {
 				paneID, err = tmux.DefaultClient.RunContext(ctx,
 					"new-window", "-P", "-F", "#{pane_id}",
-					"-t", tmux.ExactTarget(windowTarget), "-c", workDir,
+					"-t", tmux.ExactTarget(windowTarget), "-c", paneDir,
 				)
 				lastWindowIndex = paneState.WindowIndex
 			} else {
 				paneID, err = tmux.DefaultClient.RunContext(ctx,
-					"split-window", "-t", tmux.ExactTarget(windowTarget), "-c", workDir,
+					"split-window", "-t", tmux.ExactTarget(windowTarget), "-c", paneDir,
 					"-P", "-F", "#{pane_id}",
 				)
 			}
@@ -627,13 +682,14 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		if agentCmd == "" {
 			continue
 		}
+		paneDir := r.restoredPaneDirectory(i, workDir)
 		if paneState.LaunchSpec != nil {
 			if i >= len(r.launchPlans) || r.launchPlans[i] == nil {
 				return fmt.Errorf("checkpoint pane %d launch specification was not preflighted", paneState.Index)
 			}
 			// Window-local pane indices may repeat. The sorted position gives
 			// each replacement an independent credential directory.
-			agentCmd, err = r.launchPlans[i].Prepare(ctx, workDir, cp.SessionName, i+1)
+			agentCmd, err = r.launchPlans[i].Prepare(ctx, paneDir, cp.SessionName, i+1)
 			if err != nil {
 				return fmt.Errorf("preparing restored pane %s launch: %w", paneID, err)
 			}
@@ -650,7 +706,7 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		}
 
 		attempted++
-		if err := relaunchRestoredPane(ctx, cp.SessionName, paneID, workDir, agentCmd); err != nil {
+		if err := relaunchRestoredPane(ctx, cp.SessionName, paneID, paneDir, agentCmd); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -1155,6 +1211,132 @@ func validateWorkingDirectory(workDir string) error {
 		return errWorkingDirNotDirectory
 	}
 	return nil
+}
+
+func validateCheckpointDirectoryPath(directory string, remote bool) error {
+	if _, err := tmux.BuildPaneCommand(directory, ":"); err != nil {
+		return fmt.Errorf("invalid saved working directory: %w", err)
+	}
+	absolute := filepath.IsAbs(directory)
+	if remote {
+		absolute = path.IsAbs(directory)
+	}
+	if !absolute {
+		return fmt.Errorf("saved working directory must be absolute: %q", directory)
+	}
+	return nil
+}
+
+func validateRestoreDirectory(ctx context.Context, directory string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateCheckpointDirectoryPath(directory, tmux.DefaultClient.Remote != ""); err != nil {
+		return err
+	}
+	if tmux.DefaultClient.Remote != "" {
+		return tmux.DefaultClient.ValidateRemoteDirectoryContext(ctx, directory)
+	}
+	return validateWorkingDirectory(directory)
+}
+
+// checkpointPaneDirectory preserves independent worktrees when no relocation
+// was requested. Relocation keeps descendants at the same relative path, but
+// refuses an external worktree rather than silently merging it into another
+// checkout or continuing to use the original project.
+func checkpointPaneDirectory(saved, original, target string, relocate, remote bool) (string, error) {
+	if saved == "" {
+		return target, nil
+	}
+	const placeholder = "${WORKING_DIR}"
+	if saved == placeholder || strings.HasPrefix(saved, placeholder+"/") {
+		rel := strings.TrimPrefix(strings.TrimPrefix(saved, placeholder), "/")
+		if rel == "" {
+			return target, nil
+		}
+		// Only canonical relative paths emitted by export may be expanded.
+		// Backslashes are forbidden as well, so another platform cannot turn
+		// an innocuous-looking archive entry into parent traversal.
+		if strings.Contains(rel, "\\") || path.IsAbs(rel) || path.Clean(rel) != rel || rel == ".." || strings.HasPrefix(rel, "../") {
+			return "", fmt.Errorf("invalid portable pane working directory %q", saved)
+		}
+		if remote {
+			return path.Join(target, rel), nil
+		}
+		return filepath.Join(target, filepath.FromSlash(rel)), nil
+	}
+	if err := validateCheckpointDirectoryPath(saved, remote); err != nil {
+		return "", err
+	}
+	if !relocate || sameCheckpointDirectory(original, target, remote) {
+		return saved, nil
+	}
+	rel, ok := relativeCheckpointDirectory(original, saved, remote)
+	if !ok {
+		return "", fmt.Errorf("cannot relocate pane working directory %q outside checkpoint directory %q; restore without a directory override to preserve that worktree", saved, original)
+	}
+	if remote {
+		return path.Join(target, rel), nil
+	}
+	return filepath.Join(target, rel), nil
+}
+
+func sameCheckpointDirectory(a, b string, remote bool) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if remote {
+		return path.Clean(a) == path.Clean(b)
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	// A scoped server may canonicalize the selected root through a symlink;
+	// that does not request relocation of external, independently saved panes.
+	a, errA := filepath.EvalSymlinks(a)
+	b, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && a == b
+}
+
+func relativeCheckpointDirectory(base, directory string, remote bool) (string, bool) {
+	if validateCheckpointDirectoryPath(base, remote) != nil || validateCheckpointDirectoryPath(directory, remote) != nil {
+		return "", false
+	}
+	if remote {
+		base, directory = path.Clean(base), path.Clean(directory)
+		if base == directory {
+			return ".", true
+		}
+		prefix := strings.TrimSuffix(base, "/") + "/"
+		if !strings.HasPrefix(directory, prefix) {
+			return "", false
+		}
+		return strings.TrimPrefix(directory, prefix), true
+	}
+	rel, err := filepath.Rel(base, directory)
+	within := func(rel string, err error) bool {
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	if within(rel, err) {
+		return rel, true
+	}
+	// tmux may report the physical cwd even when the saved root uses a
+	// symlink. Preserve the same descendant relationship when it can be
+	// resolved; a missing original directory cannot authorize relocation.
+	resolvedBase, baseErr := filepath.EvalSymlinks(base)
+	resolvedDirectory, dirErr := filepath.EvalSymlinks(directory)
+	if baseErr != nil || dirErr != nil {
+		return "", false
+	}
+	rel, err = filepath.Rel(resolvedBase, resolvedDirectory)
+	return rel, within(rel, err)
+}
+
+func (r *Restorer) restoredPaneDirectory(index int, fallback string) string {
+	if index < len(r.paneDirectories) {
+		return r.paneDirectories[index]
+	}
+	return fallback
 }
 
 func workingDirectoryIssue(workDir string, err error) string {

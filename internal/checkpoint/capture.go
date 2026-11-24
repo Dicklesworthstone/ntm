@@ -84,6 +84,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 		Name:        name,
 		Description: options.description,
 		SessionName: sessionName,
+		RemoteHost:  tmux.DefaultClient.Remote,
 		WorkingDir:  workingDir,
 		CreatedAt:   time.Now(),
 		Session:     sessionState,
@@ -92,6 +93,9 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	}
 	if workingDirErr != nil {
 		cp.WorkingDirError = workingDirErr.Error()
+	}
+	if options.captureGit && cp.RemoteHost != "" {
+		cp.Git = GitState{SkipReason: GitSkipRemoteHost, SkipDetail: "run checkpoint save on the SSH host to capture its Git state"}
 	}
 
 	// Save checkpoint first so directory exists
@@ -113,7 +117,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 
 	// Capture git state if enabled and the working directory resolved. A
 	// failed capture is recorded as such rather than left looking clean.
-	if options.captureGit && workingDir != "" {
+	if options.captureGit && workingDir != "" && cp.RemoteHost == "" {
 		gitState, err := c.captureGitState(workingDir, sessionName, checkpointID, options.captureUntracked)
 		if err != nil {
 			slog.Warn("failed to capture git state", "error", err)
@@ -124,7 +128,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	}
 
 	// Capture assignment state if enabled (bd-32ck)
-	if options.captureAssignments {
+	if options.captureAssignments && cp.RemoteHost == "" {
 		assignments, err := c.captureAssignments(sessionName)
 		if err != nil {
 			slog.Warn("failed to capture assignments", "error", err)
@@ -134,7 +138,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	}
 
 	// Capture BV snapshot if enabled (bd-32ck)
-	if options.captureBVSnapshot && workingDir != "" {
+	if options.captureBVSnapshot && workingDir != "" && cp.RemoteHost == "" {
 		bvSnapshot, err := c.captureBVSnapshot(workingDir)
 		if err != nil {
 			slog.Warn("failed to capture BV snapshot", "error", err)
@@ -168,6 +172,17 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 
 	for i, p := range panes {
 		state := FromTmuxPane(p)
+		// Physical pane IDs keep worktree attribution independent of whichever
+		// pane the operator selects while a checkpoint is being captured. A live
+		// pane with an unreadable directory must not become a lossy successful
+		// backup that later sends its agent into the session's other worktree.
+		if !p.Dead {
+			directory, err := getPaneDir(p.ID)
+			if err != nil {
+				return SessionState{}, fmt.Errorf("reading pane %s working directory: %w", p.ID, err)
+			}
+			state.WorkingDir = directory
+		}
 		// A pane-local launch record survives wrapper execs and foreground
 		// command changes. Absence is legitimate for older/external panes;
 		// a present but unreadable record must not silently become a lossy
@@ -331,7 +346,10 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string,
 // or nested tmux clients (which settle to their own cwd once the bound expires).
 // An empty answer is an error here so callers cannot mistake it for a path.
 func getSessionDir(sessionName string) (string, error) {
-	target := tmux.SessionPaneTarget(sessionName)
+	return getPaneDir(tmux.SessionPaneTarget(sessionName))
+}
+
+func getPaneDir(target string) (string, error) {
 	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
 		cmdOut, err := tmux.DefaultClient.Run("display-message", "-p", "-t", target, "#{pane_current_command}")
 		if err != nil {
@@ -349,7 +367,10 @@ func getSessionDir(sessionName string) (string, error) {
 	}
 	dir := strings.TrimSpace(out)
 	if dir == "" {
-		return "", fmt.Errorf("tmux reported no current path for the active pane of session %s", sessionName)
+		return "", fmt.Errorf("tmux reported no current path for pane %s", target)
+	}
+	if err := validateCheckpointDirectoryPath(dir, tmux.DefaultClient.Remote != ""); err != nil {
+		return "", err
 	}
 	return dir, nil
 }

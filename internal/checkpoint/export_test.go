@@ -1185,6 +1185,118 @@ func TestRewriteCheckpointForExport(t *testing.T) {
 	})
 }
 
+func TestExportImportRebasesEveryPaneDirectory(t *testing.T) {
+	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
+		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
+			sourceRoot, targetRoot := t.TempDir(), t.TempDir()
+			source := NewStorageWithDir(t.TempDir())
+			destination := NewStorageWithDir(t.TempDir())
+			cp := &Checkpoint{Version: CurrentVersion, ID: "portable-panes", Name: "worktrees", SessionName: "portable-source",
+				WorkingDir: sourceRoot, CreatedAt: time.Now(), PaneCount: 3,
+				Session: SessionState{Panes: []PaneState{
+					{ID: "%1", Index: 0, WorkingDir: sourceRoot},
+					{ID: "%2", Index: 1, WorkingDir: filepath.Join(sourceRoot, "worktrees", "agent one")},
+					{ID: "%3", Index: 0, WindowIndex: 1}, // Legacy pane inherits the restored root.
+				}}}
+			if err := source.Save(cp); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "portable."+string(format))
+			if _, err := source.Export(cp.SessionName, cp.ID, archive, ExportOptions{Format: format, RewritePaths: true}); err != nil {
+				t.Fatal(err)
+			}
+			imported, err := destination.Import(archive, ImportOptions{TargetSession: "portable-copy", TargetDir: targetRoot, VerifyChecksums: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := destination.Load(imported.SessionName, imported.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{targetRoot, filepath.Join(targetRoot, "worktrees", "agent one"), ""}
+			for i, pane := range loaded.Session.Panes {
+				if pane.WorkingDir != want[i] {
+					t.Fatalf("pane %d retained original project or lost relative path: %q, want %q", i, pane.WorkingDir, want[i])
+				}
+			}
+			if loaded.WorkingDir != targetRoot || loaded.SessionName != "portable-copy" || cp.Session.Panes[1].WorkingDir != filepath.Join(sourceRoot, "worktrees", "agent one") {
+				t.Fatalf("import root/identity or source immutability failed: %+v", loaded)
+			}
+			// Reading the separately serialized topology verifies import rewrote
+			// both files, including archives exported without scrollback.
+			data, err := os.ReadFile(filepath.Join(destination.BaseDir, loaded.SessionName, loaded.ID, SessionFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var session SessionState
+			if err := json.Unmarshal(data, &session); err != nil || session.Panes[1].WorkingDir != want[1] {
+				t.Fatalf("imported session metadata disagrees with checkpoint: %+v, %v", session, err)
+			}
+		})
+	}
+}
+
+func TestImportRefusesUnsafePaneDirectoryBeforeOverwrite(t *testing.T) {
+	for _, saved := range []string{"${WORKING_DIR}/../escape", "${WORKING_DIR}//escape", "${WORKING_DIR}/nested/../../escape", "relative/worktree", "/outside-checkpoint/agent-worktree"} {
+		t.Run(saved, func(t *testing.T) {
+			t.Parallel()
+			source := NewStorageWithDir(t.TempDir())
+			destination := NewStorageWithDir(t.TempDir())
+			root, target := t.TempDir(), t.TempDir()
+			cp := &Checkpoint{Version: CurrentVersion, ID: "same-id", Name: "unsafe", SessionName: "archive-source", WorkingDir: root, CreatedAt: time.Now(),
+				Session: SessionState{Panes: []PaneState{{ID: "%0", WorkingDir: saved}}}}
+			if err := source.Save(cp); err != nil {
+				t.Fatal(err)
+			}
+			existing := &Checkpoint{Version: CurrentVersion, ID: cp.ID, Name: "preserve-existing", SessionName: "archive-copy", WorkingDir: target, CreatedAt: time.Now()}
+			if err := destination.Save(existing); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "unsafe.zip")
+			if _, err := source.Export(cp.SessionName, cp.ID, archive, ExportOptions{Format: FormatZip}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := destination.Import(archive, ImportOptions{TargetSession: existing.SessionName, TargetDir: target, VerifyChecksums: true, AllowOverwrite: true}); err == nil {
+				t.Fatal("unsafe pane path was imported")
+			}
+			loaded, err := destination.Load(existing.SessionName, existing.ID)
+			if err != nil || loaded.Name != existing.Name {
+				t.Fatalf("refused import changed existing checkpoint: %+v, %v", loaded, err)
+			}
+		})
+	}
+}
+
+func TestExportImportRemoteProvenancePreservesRemotePaths(t *testing.T) {
+	t.Parallel()
+	source, destination := NewStorageWithDir(t.TempDir()), NewStorageWithDir(t.TempDir())
+	cp := &Checkpoint{Version: CurrentVersion, ID: "remote-paths", Name: "remote", SessionName: "remote-source",
+		RemoteHost: "operator@remote.example", WorkingDir: "/srv/remote-project", CreatedAt: time.Now(),
+		Session: SessionState{Panes: []PaneState{{ID: "%0", WorkingDir: "/srv/remote-project/worktrees/agent"}}}}
+	if err := source.Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "remote.zip")
+	if _, err := source.Export(cp.SessionName, cp.ID, archive, ExportOptions{Format: FormatZip, RewritePaths: true}); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := destination.Import(archive, ImportOptions{DefaultWorkingDir: t.TempDir(), VerifyChecksums: true})
+	if err != nil || imported.RemoteHost != cp.RemoteHost || imported.WorkingDir != cp.WorkingDir || imported.Session.Panes[0].WorkingDir != cp.Session.Panes[0].WorkingDir {
+		t.Fatalf("remote archive adopted a local cwd or lost host: %+v, %v", imported, err)
+	}
+	called := false
+	_, err = destination.Import(archive, ImportOptions{TargetSession: "scoped-copy", VerifyChecksums: true,
+		ValidateWorkingDir: func(directory string) (string, error) { called = true; return directory, nil },
+	})
+	if err == nil || called {
+		t.Fatalf("remote archive used local project validator: %v, called=%v", err, called)
+	}
+	if saved, err := destination.List("scoped-copy"); err != nil || len(saved) != 0 {
+		t.Fatalf("refused remote import published metadata: %+v, %v", saved, err)
+	}
+}
+
 func TestExportImport_OmitsScrollbackMetadataWhenScrollbackExcluded(t *testing.T) {
 	tmpDir := t.TempDir()
 	exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))

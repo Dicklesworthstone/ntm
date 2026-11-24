@@ -138,6 +138,66 @@ func TestGetSessionDir_FollowsCurrentWindow(t *testing.T) {
 	}
 }
 
+func TestCheckpointWorkingDirectoriesAcrossWindowsAndGitWorktrees(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	root := realPath(t, t.TempDir())
+	initGitRepoWithCommit(t, root)
+	worktree := filepath.Join(realPath(t, t.TempDir()), "agent-worktree")
+	gitSnapshotTestCommand(t, root, "worktree", "add", "--detach", worktree, "HEAD")
+	nested := filepath.Join(root, "nested-project")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := newIsolatedTmuxSession(t, "cpworktrees-", root)
+	if _, err := tmux.DefaultClient.Run("split-window", "-t", tmux.SessionPaneTarget(source), "-c", worktree); err != nil {
+		t.Fatalf("split worktree pane: %v", err)
+	}
+	if err := tmux.DefaultClient.RunSilent("new-window", "-t", tmux.SessionOptionTarget(source), "-c", nested); err != nil {
+		t.Fatalf("new project window: %v", err)
+	}
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create(source, "worktree-round-trip", WithGitCapture(false), WithScrollbackLines(10), func(opts *checkpointOptions) {
+		opts.captureAssignments = false
+		opts.captureBVSnapshot = false
+	})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	loaded, err := storage.Load(source, cp.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	saved := sortedCheckpointPanes(loaded.Session.Panes)
+	if len(saved) != 3 || realPath(t, saved[0].WorkingDir) != root || realPath(t, saved[1].WorkingDir) != worktree || realPath(t, saved[2].WorkingDir) != nested {
+		t.Fatalf("capture lost independent window/worktree cwd: %+v", saved)
+	}
+	destination := source + "-copy"
+	t.Cleanup(func() { _ = tmux.KillSession(destination) })
+	result, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(t.Context(), loaded, RestoreOptions{
+		TargetSession: destination, SkipGitCheck: true,
+	})
+	if err != nil || result == nil || result.Stage != "completed" || result.PanesRestored != 3 {
+		t.Fatalf("restore: %+v, %v", result, err)
+	}
+	panes, err := tmux.GetPanes(destination)
+	if err != nil || len(panes) != 3 {
+		t.Fatalf("restored topology: %+v, %v", panes, err)
+	}
+	for _, pane := range panes {
+		var expected string
+		for _, original := range saved {
+			if original.Index == pane.Index && original.WindowIndex == pane.WindowIndex {
+				expected = original.WorkingDir
+				break
+			}
+		}
+		directory, err := getPaneDir(pane.ID)
+		if err != nil || expected == "" || realPath(t, directory) != realPath(t, expected) {
+			t.Fatalf("restored pane %d.%d cwd = %q, want %q: %v", pane.WindowIndex, pane.Index, directory, expected, err)
+		}
+	}
+}
+
 func TestCapturer_Create_CapturesGitStateFromSessionDir(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 

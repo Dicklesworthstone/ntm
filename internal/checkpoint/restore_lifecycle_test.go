@@ -46,6 +46,13 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_RESTORE_TEST_PAYLOAD", filepath.Join(dir, "payload"))
 	t.Setenv("NTM_RESTORE_TEST_DELIVERIES", filepath.Join(dir, "deliveries"))
 	t.Setenv("NTM_RESTORE_TEST_LAUNCH_LOG", filepath.Join(dir, "launches"))
+	t.Setenv("NTM_RESTORE_TEST_TOPOLOGY_LOG", filepath.Join(dir, "topology"))
+	paneDirs := filepath.Join(dir, "pane-directories")
+	if err := os.Mkdir(paneDirs, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_RESTORE_TEST_PANE_DIRS", paneDirs)
+	t.Setenv("NTM_RESTORE_TEST_FAIL_PATH_TARGET", "")
 	t.Setenv("NTM_RESTORE_TEST_OBSERVATIONS", filepath.Join(dir, "observations"))
 	t.Setenv("NTM_RESTORE_TEST_SCREEN", filepath.Join(dir, "screen"))
 	t.Setenv("NTM_RESTORE_TEST_CAPTURE_LOG", filepath.Join(dir, "captures"))
@@ -78,8 +85,11 @@ case "$1" in
     if [ "$NTM_RESTORE_TEST_EXISTS" = 1 ]; then exit 0; fi
     echo "can't find session: restore_lifecycle" >&2
     exit 1 ;;
-  new-session) echo 1 > "$NTM_RESTORE_TEST_COUNT" ;;
+  new-session)
+    printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_TOPOLOGY_LOG"
+    echo 1 > "$NTM_RESTORE_TEST_COUNT" ;;
   split-window|new-window)
+    printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_TOPOLOGY_LOG"
     n=$(cat "$NTM_RESTORE_TEST_COUNT")
     echo $((n + 1)) > "$NTM_RESTORE_TEST_COUNT"
     printf '%%%s\n' "$((n + NTM_RESTORE_TEST_PANE_OFFSET))" ;;
@@ -132,7 +142,13 @@ case "$1" in
     fi ;;
   display-message)
     case "$5" in
-      '#{pane_current_path}') printf '%s\n' "$NTM_RESTORE_TEST_DIR" ;;
+      '#{pane_current_path}')
+        if [ "$4" = "$NTM_RESTORE_TEST_FAIL_PATH_TARGET" ]; then echo 'cannot read pane cwd' >&2; exit 2; fi
+        if [ -f "$NTM_RESTORE_TEST_PANE_DIRS/$4" ]; then
+          cat "$NTM_RESTORE_TEST_PANE_DIRS/$4"
+        else
+          printf '%s\n' "$NTM_RESTORE_TEST_DIR"
+        fi ;;
       '#{pane_id}') printf '%%0\n' ;;
     esac ;;
   capture-pane)
@@ -673,6 +689,192 @@ func TestCheckpointLaunchSpecRoundTripPreservesCommandAndRecoveryDirectory(t *te
 	again, err := storage.Load(cp.SessionName, cp.ID)
 	if err != nil || !reflect.DeepEqual(again, loaded) {
 		t.Fatalf("restore changed persisted source checkpoint: %+v, %v", again, err)
+	}
+}
+
+func TestCheckpointCaptureRestorePreservesIndependentPaneWorktrees(t *testing.T) {
+	_, _ = restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "node")
+	directories := []string{t.TempDir(), t.TempDir()}
+	t.Setenv("NTM_RESTORE_TEST_DIR", directories[0])
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i, directory := range directories {
+		paneID := fmt.Sprintf("%%%d", i)
+		if err := os.WriteFile(filepath.Join(os.Getenv("NTM_RESTORE_TEST_PANE_DIRS"), paneID), []byte(directory+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude,
+			Command: "node /opt/agents/claude.js --model saved-worktree"}
+		if err := tmux.SetPaneLaunchSpecContext(t.Context(), paneID, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create("worktree-source", "pane-directories", WithGitCapture(false), func(opts *checkpointOptions) {
+		opts.captureAssignments = false
+		opts.captureBVSnapshot = false
+	})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	loaded, err := storage.Load(cp.SessionName, cp.ID)
+	if err != nil || len(loaded.Session.Panes) != len(directories) {
+		t.Fatalf("load: %+v, %v", loaded, err)
+	}
+	for i, pane := range loaded.Session.Panes {
+		if pane.WorkingDir != directories[i] {
+			t.Fatalf("pane %s cwd = %q, want %q", pane.ID, pane.WorkingDir, directories[i])
+		}
+	}
+	before, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "")
+	result, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(t.Context(), loaded, RestoreOptions{
+		TargetSession: "worktree-copy", SkipGitCheck: true,
+	})
+	if err != nil || result == nil || result.Stage != "completed" || result.PanesRestored != 2 {
+		t.Fatalf("restore: %+v, %v", result, err)
+	}
+	launches, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LAUNCH_LOG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, directory := range directories {
+		if !strings.Contains(string(launches), fmt.Sprintf("-c %s -t %%%d node /opt/agents/claude.js --model saved-worktree", directory, i)) {
+			t.Fatalf("pane %d did not relaunch in its worktree: %s", i, launches)
+		}
+	}
+	topology, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_TOPOLOGY_LOG"))
+	if err != nil || !strings.Contains(string(topology), "new-session -d -s worktree-copy -c "+directories[0]) ||
+		!strings.Contains(string(topology), "split-window -t =worktree-copy:0 -c "+directories[1]) {
+		t.Fatalf("topology collapsed pane directories: %s, %v", topology, err)
+	}
+	after, err := json.Marshal(loaded)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("restore mutated its source checkpoint")
+	}
+}
+
+func TestCheckpointCaptureRefusesUnreadableLivePaneDirectory(t *testing.T) {
+	_, _ = restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	t.Setenv("NTM_RESTORE_TEST_FAIL_PATH_TARGET", "%1")
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create("unreadable-worktree", "refused", WithGitCapture(false))
+	if err == nil || cp != nil || !strings.Contains(err.Error(), "pane %1 working directory") {
+		t.Fatalf("capture claimed complete worktree recovery: %+v, %v", cp, err)
+	}
+	if saved, err := storage.List("unreadable-worktree"); err != nil || len(saved) != 0 {
+		t.Fatalf("lossy checkpoint was published: %+v, %v", saved, err)
+	}
+}
+
+func TestCheckpointCaptureRecordsRemoteHostWithoutLocalGit(t *testing.T) {
+	_, _ = restoreLifecycleFixture(t)
+	dir := filepath.Dir(os.Getenv("NTM_TMUX_BINARY"))
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	t.Setenv("NTM_RESTORE_TEST_DIR", "/srv/remote-only/checkpoint")
+	t.Setenv("NTM_RESTORE_TEST_LOCAL_GIT_LOG", filepath.Join(dir, "local-git"))
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const ssh = `#!/bin/sh
+if [ "$1" != -- ] || [ "$2" != operator@remote.example ]; then exit 2; fi
+exec /bin/sh -c "$3"
+`
+	const git = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_LOCAL_GIT_LOG"
+exit 1
+`
+	for name, script := range map[string]string{"ssh": ssh, "git": git} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create("remote-source", "host-bound", WithGitCapture(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := storage.Load(cp.SessionName, cp.ID)
+	if err != nil || loaded.RemoteHost != tmux.DefaultClient.Remote || loaded.Session.Panes[0].WorkingDir != cp.WorkingDir ||
+		loaded.Git.HasState() || loaded.Git.SkipReason != GitSkipRemoteHost {
+		t.Fatalf("remote provenance/Git boundary lost: %+v, %v", loaded, err)
+	}
+	if calls, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LOCAL_GIT_LOG")); err == nil && len(calls) != 0 {
+		t.Fatalf("remote checkpoint queried local Git: %s", calls)
+	}
+}
+
+func TestRestorePaneDirectoryPreflightProtectsExistingSession(t *testing.T) {
+	for _, kind := range []string{"missing", "file", "control", "external relocation"} {
+		t.Run(kind, func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+			cp := lifecycleCheckpoint(t, 2)
+			cp.Session.Panes[0].WorkingDir = cp.WorkingDir
+			opts := RestoreOptions{Force: true, SkipGitCheck: true}
+			switch kind {
+			case "missing":
+				cp.Session.Panes[1].WorkingDir = filepath.Join(t.TempDir(), "removed-worktree")
+			case "file":
+				cp.Session.Panes[1].WorkingDir = filepath.Join(t.TempDir(), "ordinary-file")
+				if err := os.WriteFile(cp.Session.Panes[1].WorkingDir, []byte("not a directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "control":
+				cp.Session.Panes[1].WorkingDir = cp.WorkingDir + "\tunsafe"
+			case "external relocation":
+				cp.Session.Panes[1].WorkingDir = t.TempDir()
+				opts.CustomDirectory = t.TempDir()
+			}
+			if _, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), cp, opts); !errors.Is(err, ErrWorkingDirInvalid) {
+				t.Fatalf("unsafe pane directory was accepted: %v", err)
+			}
+			if calls, err := os.ReadFile(log); err == nil && len(calls) != 0 {
+				t.Fatalf("pane directory refusal reached tmux: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRestoreLegacyPaneDirectoryAndRelocation(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			_, _ = restoreLifecycleFixture(t)
+			cp := lifecycleCheckpoint(t, 2)
+			destination := t.TempDir()
+			child := filepath.Join(destination, "worktrees", "agent one")
+			if err := os.MkdirAll(child, 0700); err != nil {
+				t.Fatal(err)
+			}
+			cp.Session.Panes[0].WorkingDir = cp.WorkingDir
+			if !legacy {
+				cp.Session.Panes[1].WorkingDir = filepath.Join(cp.WorkingDir, "worktrees", "agent one")
+			}
+			out, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{CustomDirectory: destination, SkipGitCheck: true})
+			if err != nil || out == nil || out.Stage != "completed" {
+				t.Fatalf("restore: %+v, %v", out, err)
+			}
+			want := child
+			if legacy {
+				want = destination
+			}
+			launches, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LAUNCH_LOG"))
+			if err != nil || !strings.Contains(string(launches), "-c "+want+" -t %1 ") {
+				t.Fatalf("wrong relocated/legacy pane directory: %s, %v", launches, err)
+			}
+		})
 	}
 }
 
