@@ -4403,6 +4403,7 @@ func (e *Executor) snapshotState() *ExecutionState {
 			}
 			value.CompletedIterationIDs = append([]string(nil), value.CompletedIterationIDs...)
 			value.CollectedOutputs = append([]interface{}(nil), value.CollectedOutputs...)
+			value.CollectOffsets = maps.Clone(value.CollectOffsets)
 			value.CompletedRounds = maps.Clone(value.CompletedRounds)
 			value.ConsumedFailures = maps.Clone(value.ConsumedFailures)
 			snapshot.ForeachState[key] = value

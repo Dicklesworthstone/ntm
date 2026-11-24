@@ -258,7 +258,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		default:
 		}
 
-		le.executor.markForeachIterationStarted(step.ID, i, total)
+		le.executor.markForeachIterationStarted(step.ID, i, total, loop.Collect != "")
 		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
 		le.executor.persistState()
 
