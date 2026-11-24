@@ -372,9 +372,7 @@ func filterAlertsForSession(active []alerts.Alert, session string) []alerts.Aler
 }
 
 func attentionEventMatchesSession(ev robot.AttentionEvent, session string) bool {
-	session = strings.TrimSpace(session)
-	evSession := strings.TrimSpace(ev.Session)
-	return session == "" || evSession == "" || evSession == session
+	return robot.AttentionEventMatchesSession(ev, session)
 }
 
 func attentionItemMatchesSession(item panels.AttentionItem, session string) bool {
@@ -525,7 +523,7 @@ func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) 
 		candidate := paneRef
 		foreignPrefix := false
 		if colon := strings.LastIndex(candidate, ":"); colon >= 0 {
-			prefix := strings.TrimPrefix(strings.TrimSpace(candidate[:colon]), "=")
+			prefix := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(candidate[:colon]), "="))
 			if prefix != "" {
 				if sourceSession == "" {
 					sourceSession = prefix

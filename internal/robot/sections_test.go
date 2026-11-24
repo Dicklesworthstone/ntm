@@ -228,10 +228,12 @@ func TestGetDashboardAttentionSectionFiltersForeignPaneRefFromSummary(t *testing
 		RetentionPeriod:   time.Hour,
 		HeartbeatInterval: 0,
 	})
-	defer feed.Stop()
-	prev := GetAttentionFeed()
+	prev := PeekAttentionFeed()
 	SetAttentionFeed(feed)
-	t.Cleanup(func() { SetAttentionFeed(prev) })
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(prev)
+	})
 
 	feed.Append(AttentionEvent{
 		Session:       "projA",
@@ -251,6 +253,17 @@ func TestGetDashboardAttentionSectionFiltersForeignPaneRefFromSummary(t *testing
 		Severity:      SeverityError,
 		Summary:       "foreign projB pane_ref error",
 		Details:       map[string]any{"pane_ref": "=projB:1.0"},
+	})
+	// Event claiming projA in Session but carrying a foreign pane_ref must also
+	// be rejected (including whitespace after '=').
+	feed.Append(AttentionEvent{
+		Session:       "projA",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityError,
+		Summary:       "mismatched session+pane_ref error",
+		Details:       map[string]any{"pane_ref": "= projB:1.0"},
 	})
 
 	section := GetDashboardAttentionSection(DashboardSectionLimits(), "projA")

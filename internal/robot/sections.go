@@ -419,19 +419,21 @@ type DashboardAttentionData struct {
 // and top 3 items), this returns full events for interactive scrolling.
 //
 // For alerts, use ProjectSections with the snapshot's AlertsDetailed field.
-func attentionEventMatchesSession(ev AttentionEvent, session string) bool {
+// AttentionEventMatchesSession reports whether ev belongs to session (or is a
+// global session-less event without a foreign pane_ref session prefix).
+func AttentionEventMatchesSession(ev AttentionEvent, session string) bool {
 	session = strings.TrimSpace(session)
 	if session == "" {
 		return true
 	}
-	if evSession := strings.TrimSpace(ev.Session); evSession != "" {
-		return evSession == session
+	if evSession := strings.TrimSpace(ev.Session); evSession != "" && evSession != session {
+		return false
 	}
 	if ev.Details != nil {
 		if rawRef, ok := ev.Details["pane_ref"].(string); ok {
 			ref := strings.TrimSpace(rawRef)
 			if colon := strings.LastIndex(ref, ":"); colon >= 0 {
-				prefix := strings.TrimPrefix(strings.TrimSpace(ref[:colon]), "=")
+				prefix := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ref[:colon]), "="))
 				if prefix != "" && prefix != session {
 					return false
 				}
@@ -479,7 +481,7 @@ func GetDashboardAttentionSection(limits SectionLimits, session string) Projecte
 	var actionEvents []AttentionEvent
 	var interestingEvents []AttentionEvent
 	for _, ev := range events {
-		if !attentionEventMatchesSession(ev, session) {
+		if !AttentionEventMatchesSession(ev, session) {
 			continue
 		}
 		scopedEvents = append(scopedEvents, ev)
