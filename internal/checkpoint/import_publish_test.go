@@ -81,6 +81,7 @@ func requireNativeImportExchange(t *testing.T) {
 }
 
 func TestCheckpointImportStagesBeforeVisibility(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "session", "cp")
 	p := newCheckpointImportPublisher()
 	writes := 0
@@ -333,6 +334,7 @@ func TestCheckpointImportRefusesExistingArtifactsAndSymlinks(t *testing.T) {
 }
 
 func TestCheckpointImportConcurrentCreateHasOneWinner(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	dir := filepath.Join(t.TempDir(), "cp")
 	const workers = 16
@@ -369,6 +371,7 @@ func TestCheckpointImportConcurrentCreateHasOneWinner(t *testing.T) {
 }
 
 func TestCheckpointImportCrashLeavesWholeGeneration(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	if phase := os.Getenv("NTM_TEST_IMPORT_CRASH_PHASE"); phase != "" {
 		dir := os.Getenv("NTM_TEST_IMPORT_CRASH_DIR")

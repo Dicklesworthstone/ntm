@@ -42,8 +42,6 @@ func gitSnapshotTestRepo(t *testing.T) (string, string) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for recovery patch round trips")
 	}
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	root := filepath.Join(t.TempDir(), "worktree with spaces ")
 	if err := os.Mkdir(root, 0755); err != nil {
 		t.Fatal(err)
@@ -75,6 +73,7 @@ func gitSnapshotTestApply(t *testing.T, source, patch string) string {
 }
 
 func TestCaptureWorkingTreePatchBinaryAndUntrackedRoundTrip(t *testing.T) {
+	t.Parallel()
 	root, commit := gitSnapshotTestRepo(t)
 	gitSnapshotTestWrite(t, root, "tracked.txt", []byte("staged\n"), 0644)
 	gitSnapshotTestCommand(t, root, "add", "tracked.txt")

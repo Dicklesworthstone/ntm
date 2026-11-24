@@ -1870,10 +1870,14 @@ func TestStorage_SaveScrollback_LargeContent(t *testing.T) {
 	}
 
 	// Create ~1MB of scrollback content
-	var content string
+	var sb strings.Builder
+	sb.Grow(10000 * 40)
 	for i := 0; i < 10000; i++ {
-		content += "Line " + string(rune('0'+i%10)) + " with some text content here\n"
+		sb.WriteString("Line ")
+		sb.WriteByte(byte('0' + i%10))
+		sb.WriteString(" with some text content here\n")
 	}
+	content := sb.String()
 
 	_, err := storage.SaveScrollback(cp.SessionName, cp.ID, "%0", content)
 	if err != nil {

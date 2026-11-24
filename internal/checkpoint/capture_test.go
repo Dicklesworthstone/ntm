@@ -900,6 +900,7 @@ func TestRunGitCommandReportsTimeoutWhileReadingOutput(t *testing.T) {
 }
 
 func TestRunGitCommandReturnsWhenDescendantHoldsStdout(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper relies on inherited Unix process descriptors")
 	}

@@ -17,8 +17,6 @@ import (
 
 func gitCaptureRecoveryRepo(t *testing.T) (string, string) {
 	t.Helper()
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	root := t.TempDir()
 	gitSnapshotTestCommand(t, root, "init", "-q", "-b", "main")
 	gitSnapshotTestCommand(t, root, "config", "user.name", "Capture test")
@@ -54,6 +52,7 @@ func gitCaptureTestOptions(include bool) []CheckpointOption {
 }
 
 func TestCheckpointCreateCapturesRecoverableBinaryAndUntrackedFiles(t *testing.T) {
+	t.Parallel()
 	root, _ := gitCaptureRecoveryRepo(t)
 	binary := []byte{0, 254, 129, 1, 4, 0}
 	gitSnapshotTestWrite(t, root, "asset.bin", binary, 0644)
@@ -87,6 +86,7 @@ func TestCheckpointCreateCapturesRecoverableBinaryAndUntrackedFiles(t *testing.T
 }
 
 func TestCheckpointCreateDefaultOmitsUntrackedWithAccurateCounts(t *testing.T) {
+	t.Parallel()
 	root, _ := gitCaptureRecoveryRepo(t)
 	gitSnapshotTestWrite(t, root, "new/a.go", []byte("a\n"), 0644)
 	gitSnapshotTestWrite(t, root, "new/b.go", []byte("b\n"), 0644)
@@ -104,6 +104,7 @@ func TestCheckpointCreateDefaultOmitsUntrackedWithAccurateCounts(t *testing.T) {
 }
 
 func TestCheckpointCreateRequestedGitFailurePreservesPartialCheckpoint(t *testing.T) {
+	t.Parallel()
 	root, _ := gitCaptureRecoveryRepo(t)
 	nested := filepath.Join(root, "nested")
 	if err := os.Mkdir(nested, 0755); err != nil {
@@ -127,6 +128,7 @@ func TestCheckpointCreateRequestedGitFailurePreservesPartialCheckpoint(t *testin
 }
 
 func TestCheckpointCreateRejectsUntrackedWithoutGitBeforeSessionLookup(t *testing.T) {
+	t.Parallel()
 	cp, err := NewCapturerWithStorage(NewStorageWithDir(t.TempDir())).Create("not-a-session", "invalid",
 		WithGitCapture(false), WithUntrackedCapture(true))
 	if err == nil || cp != nil || !strings.Contains(err.Error(), "requires git capture") {
@@ -149,6 +151,7 @@ func gitRecoveryTestCheckpoint(t *testing.T, root, commit, patch string) (*Stora
 }
 
 func TestGitRollbackPreflightAndApplyUseVerifiedBytes(t *testing.T) {
+	t.Parallel()
 	root, commit := gitCaptureRecoveryRepo(t)
 	gitSnapshotTestWrite(t, root, "asset.bin", []byte{0, 44, 255}, 0644)
 	gitSnapshotTestWrite(t, root, "new-source.go", []byte("package saved\n"), 0644)
@@ -192,8 +195,11 @@ func TestGitRollbackPreflightAndApplyUseVerifiedBytes(t *testing.T) {
 }
 
 func TestGitRollbackPreflightRejectsCorruptAndUnusablePatches(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"corrupt", "malformed", "wrong-base", "missing"} {
+		kind := kind
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			root, commit := gitCaptureRecoveryRepo(t)
 			gitSnapshotTestWrite(t, root, "tracked.txt", []byte("saved\n"), 0644)
 			snapshot, err := captureWorkingTreePatch(context.Background(), root, commit, gitPatchCaptureOptions{MaxBytes: MaxGitOutputBytes})
@@ -237,6 +243,7 @@ func TestGitRollbackPreflightRejectsCorruptAndUnusablePatches(t *testing.T) {
 }
 
 func TestGitRollbackLegacyWarningAndCancellation(t *testing.T) {
+	t.Parallel()
 	root, commit := gitCaptureRecoveryRepo(t)
 	gitSnapshotTestWrite(t, root, "tracked.txt", []byte("saved\n"), 0644)
 	snapshot, err := captureWorkingTreePatch(context.Background(), root, commit, gitPatchCaptureOptions{MaxBytes: MaxGitOutputBytes})
@@ -261,6 +268,7 @@ func TestGitRollbackLegacyWarningAndCancellation(t *testing.T) {
 }
 
 func TestGitCheckpointExportReportsOnlyIncludedUntrackedWork(t *testing.T) {
+	t.Parallel()
 	cp := &Checkpoint{Git: GitState{PatchFile: GitPatchFile, UntrackedCount: 3, UntrackedCaptured: 3}}
 	for _, include := range []bool{false, true} {
 		exported := rewriteCheckpointForExport(cp, ExportOptions{IncludeGitPatch: include})

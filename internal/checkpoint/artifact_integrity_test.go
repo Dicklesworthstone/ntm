@@ -43,6 +43,7 @@ func newArtifactIntegrityFixture(t *testing.T) (*Storage, *Checkpoint) {
 }
 
 func TestArtifactIntegrityPersistsAllPayloads(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	loaded, err := storage.Load(cp.SessionName, cp.ID)
 	if err != nil {
@@ -58,8 +59,11 @@ func TestArtifactIntegrityPersistsAllPayloads(t *testing.T) {
 }
 
 func TestArtifactIntegrityRejectsChangedPayloads(t *testing.T) {
+	t.Parallel()
 	for _, artifact := range []string{"scrollback", "patch", "status"} {
+		artifact := artifact
 		t.Run(artifact, func(t *testing.T) {
+			t.Parallel()
 			storage, cp := newArtifactIntegrityFixture(t)
 			rel := cp.Session.Panes[0].ScrollbackFile
 			if artifact == "patch" {
@@ -88,6 +92,7 @@ func TestArtifactIntegrityRejectsChangedPayloads(t *testing.T) {
 }
 
 func TestArtifactIntegrityRejectsIncompleteOrInvalidManifest(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		edit func(*Checkpoint)
@@ -117,6 +122,7 @@ func TestArtifactIntegrityRejectsIncompleteOrInvalidManifest(t *testing.T) {
 }
 
 func TestArtifactIntegrityLegacyCheckpointWarns(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	cp.ArtifactIntegrity = nil
 	if err := writeJSON(filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), MetadataFile), cp); err != nil {
@@ -132,6 +138,7 @@ func TestArtifactIntegrityLegacyCheckpointWarns(t *testing.T) {
 }
 
 func TestArtifactIntegrityResaveDoesNotBlessCorruption(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	dir := storage.CheckpointDir(cp.SessionName, cp.ID)
 	before, err := os.ReadFile(filepath.Join(dir, MetadataFile))
@@ -155,6 +162,7 @@ func TestArtifactIntegrityResaveDoesNotBlessCorruption(t *testing.T) {
 }
 
 func TestArtifactIntegrityCompressedScrollbackAndPruning(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	dir := storage.CheckpointDir(cp.SessionName, cp.ID)
 	var compressed bytes.Buffer
