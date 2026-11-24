@@ -396,6 +396,26 @@ func executeWorkflowManualCommand(t *testing.T, args []string) ([]byte, error) {
 	return append([]byte(nil), output.Bytes()...), err
 }
 
+func TestWorkflowCheckpointContextPreservesCallerDeadline(t *testing.T) {
+	t.Parallel()
+	wantDeadline := time.Now().Add(10 * time.Second)
+	parent, parentCancel := context.WithDeadline(context.Background(), wantDeadline)
+	defer parentCancel()
+	got, cancel := workflowCheckpointContext(parent)
+	defer cancel()
+	gotDeadline, ok := got.Deadline()
+	if !ok || !gotDeadline.Equal(wantDeadline) {
+		t.Fatalf("workflowCheckpointContext(explicit deadline) = (%v, %v), want %v", gotDeadline, ok, wantDeadline)
+	}
+
+	defCtx, defCancel := workflowCheckpointContext(context.Background())
+	defer defCancel()
+	defDeadline, ok := defCtx.Deadline()
+	if !ok || time.Until(defDeadline) <= 0 || time.Until(defDeadline) > 2*time.Second+200*time.Millisecond {
+		t.Fatalf("workflowCheckpointContext(no deadline) = (%v, %v), want ~2s default", defDeadline, ok)
+	}
+}
+
 func workflowManualStatus(t *testing.T, opts workflowRunOptions) workflowManualStatusResponse {
 	t.Helper()
 	output, err := executeWorkflowManualCommand(t, []string{"status", "--session", opts.Session, "--project-root", opts.ProjectRoot})

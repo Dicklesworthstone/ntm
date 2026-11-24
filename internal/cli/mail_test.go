@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -1789,6 +1790,12 @@ func TestMailSendOverseer_RedactModeScrubsBodyAndSubject(t *testing.T) {
 	}
 }
 
+var (
+	overseerSessionProbeOnce sync.Once
+	overseerSessionProbePath string
+	overseerSessionProbeErr  error
+)
+
 // Mail transport tests use an offline session probe so they need neither a
 // running tmux server nor permission to create Unix sockets.
 func isolateOverseerSessionProbe(t *testing.T) {
@@ -1796,11 +1803,23 @@ func isolateOverseerSessionProbe(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("session probe fixture requires /bin/sh")
 	}
-	path := filepath.Join(t.TempDir(), "tmux")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\ncase \"$1\" in\n-V) echo 'tmux 3.4';;\nlist-sessions|list-panes|has-session) exit 0;;\n*) exit 1;;\nesac\n"), 0700); err != nil {
-		t.Fatal(err)
+	overseerSessionProbeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ntm-mail-probe-*")
+		if err != nil {
+			overseerSessionProbeErr = err
+			return
+		}
+		path := filepath.Join(dir, "tmux")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\ncase \"$1\" in\n-V) echo 'tmux 3.4';;\nlist-sessions|list-panes|has-session) exit 0;;\n*) exit 1;;\nesac\n"), 0700); err != nil {
+			overseerSessionProbeErr = err
+			return
+		}
+		overseerSessionProbePath = path
+	})
+	if overseerSessionProbeErr != nil {
+		t.Fatal(overseerSessionProbeErr)
 	}
-	t.Setenv("NTM_TMUX_BINARY", path)
+	t.Setenv("NTM_TMUX_BINARY", overseerSessionProbePath)
 	oldClient := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -176,6 +178,11 @@ func TestMain(m *testing.M) {
 	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
 	pipeline.StageIdlePollInterval = 15 * time.Millisecond
 	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
+	// Keep CLI assignment tests hermetic against live host CPU load; tests
+	// asserting pressure behavior override via withAssignAllocationPressure.
+	collectAssignAllocationPressure = func(context.Context) assign.AllocationPressure {
+		return assign.AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 4}
+	}
 	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
 		return []string{"-test.run=^TestPipelineBackgroundResumeWorker$", "--"}, nil
 	}
