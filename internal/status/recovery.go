@@ -147,18 +147,27 @@ func (rm *RecoveryManager) deliverRecoveryToTarget(ctx context.Context, session 
 	if err := kind.ValidateAutomatedPromptDelivery(); err != nil {
 		return false, err
 	}
+	sendTarget = strings.TrimSpace(sendTarget)
+	trackingKey := strings.TrimSpace(paneID)
+	if trackingKey == "" {
+		if strings.HasPrefix(sendTarget, "%") {
+			trackingKey = sendTarget
+		} else {
+			trackingKey = makePaneID(session, paneIndex)
+		}
+	}
 	rm.mu.Lock()
-	if allowed, _ := rm.canSendRecoveryLocked(paneID); !allowed {
+	if allowed, _ := rm.canSendRecoveryLocked(trackingKey); !allowed {
 		rm.mu.Unlock()
 		return false, nil
 	}
 	if rm.inFlight == nil {
 		rm.inFlight = make(map[string]bool)
 	}
-	rm.inFlight[paneID] = true
+	rm.inFlight[trackingKey] = true
 	prompt, include := rm.prompt, rm.includeBeadContext
 	rm.mu.Unlock()
-	defer func() { rm.mu.Lock(); delete(rm.inFlight, paneID); rm.mu.Unlock() }()
+	defer func() { rm.mu.Lock(); delete(rm.inFlight, trackingKey); rm.mu.Unlock() }()
 
 	promptToSend := build(ctx, prompt, include)
 	if err := ctx.Err(); err != nil {
@@ -176,20 +185,20 @@ func (rm *RecoveryManager) deliverRecoveryToTarget(ctx context.Context, session 
 	target := makePaneID(session, paneIndex)
 	if strings.HasPrefix(sendTarget, "%") {
 		target = sendTarget
-	} else if strings.HasPrefix(paneID, "%") {
-		target = paneID
+	} else if strings.HasPrefix(trackingKey, "%") {
+		target = trackingKey
 	}
 	now := time.Now()
 	rm.mu.Lock()
-	rm.lastRecovery[paneID] = now
-	rm.recoveryCount[paneID]++
+	rm.lastRecovery[trackingKey] = now
+	rm.recoveryCount[trackingKey]++
 	rm.mu.Unlock()
 	err := rm.sendRecoveryPrompt(ctx, target, promptToSend, true, kind)
 	if err != nil {
 		return false, err
 	}
 	rm.mu.Lock()
-	rm.recoveryEvents = append(rm.recoveryEvents, RecoveryEvent{PaneID: paneID, Session: session, PaneIndex: paneIndex,
+	rm.recoveryEvents = append(rm.recoveryEvents, RecoveryEvent{PaneID: trackingKey, Session: session, PaneIndex: paneIndex,
 		SentAt: time.Now(), Prompt: promptToSend, TriggerText: triggerText})
 	rm.pruneEvents()
 	rm.mu.Unlock()
@@ -197,6 +206,7 @@ func (rm *RecoveryManager) deliverRecoveryToTarget(ctx context.Context, session 
 }
 
 func (rm *RecoveryManager) recoveryPaneInfo(session string, paneIndex int, paneID string) (agent.AgentType, string, error) {
+	paneID = strings.TrimSpace(paneID)
 	if rm.resolvePaneType != nil {
 		kind, err := rm.resolvePaneType(session, paneIndex, paneID)
 		return kind, paneID, err
@@ -221,7 +231,11 @@ func (rm *RecoveryManager) recoveryPaneInfo(session string, paneIndex int, paneI
 		match = p
 	}
 	if match == nil {
-		return agent.AgentTypeUnknown, paneID, fmt.Errorf("recovery pane %q not found in session %q", paneID, session)
+		label := paneID
+		if label == "" {
+			label = makePaneID(session, paneIndex)
+		}
+		return agent.AgentTypeUnknown, paneID, fmt.Errorf("recovery pane %q not found in session %q", label, session)
 	}
 	resolvedID := paneID
 	if strings.HasPrefix(match.ID, "%") {

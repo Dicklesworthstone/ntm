@@ -396,6 +396,19 @@ func TestRecoveryManagerTracksCallerKeyWhileDeliveringToPhysicalPaneID(t *testin
 	if can, reason := rm.CanSendRecovery(callerKey); can || !strings.Contains(reason, "cooldown") {
 		t.Fatalf("CanSendRecovery(%q) = (%v, %q), want (false, cooldown...)", callerKey, can, reason)
 	}
+
+	// Empty caller paneID must normalize to the resolved physical ID instead of
+	// colliding on the empty-string tracking bucket "".
+	sentEmpty, err := rm.sendRecoveryPromptByIDForAgent("proj", 2, "", "%22", "compacted", agent.AgentTypeClaudeCode)
+	if err != nil || !sentEmpty {
+		t.Fatalf("sendRecoveryPromptByIDForAgent(empty key) = %t, %v, want true, nil", sentEmpty, err)
+	}
+	if got := rm.GetRecoveryCount(""); got != 0 {
+		t.Fatalf("GetRecoveryCount(\"\") = %d, want 0", got)
+	}
+	if got := rm.GetRecoveryCount("%22"); got != 1 {
+		t.Fatalf("GetRecoveryCount(%%22) = %d, want 1", got)
+	}
 }
 
 // Generic summary prose is not a compaction banner, so it never reaches the
