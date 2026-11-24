@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -543,8 +544,9 @@ var procCensusScratchPool = sync.Pool{
 
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
 	// Bound bare (no-context) calls so test hooks calling commandGroupHasLiveMembers
-	// directly never overshoot short grace/settlement deadlines (even under -race).
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// directly match the settlement drain budget instead of giving up prematurely
+	// under heavy host fork traffic.
+	ctx, cancel := context.WithTimeout(context.Background(), effectiveCommandPipeDrainTimeout())
 	defer cancel()
 	return commandGroupHasLiveMembersContext(ctx, pgid)
 }
@@ -583,21 +585,38 @@ func commandGroupHasLiveMembersContext(ctx context.Context, pgid int) (bool, err
 	scratch := procCensusScratchPool.Get().(*procCensusScratch)
 	defer procCensusScratchPool.Put(scratch)
 
-	const maxBirthRaceImmediateRetries = 64
+	// Read the initial birth counter once; on birth-race retries, reuse the
+	// previous attempt's birthsAfter as the next attempt's birthsBefore. That
+	// timestamp precedes the rewind and scan, so an equal birthsAfter proves a
+	// strictly stronger zero-birth window while halving /proc/stat reads.
+	birthsBefore, err := readCommandProcessBirthsFD(statFD, &scratch.statBuf)
+	if err != nil {
+		return false, err
+	}
+
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			if ctx.Err() != nil {
 				return false, errCommandGroupBirthRace
 			}
+			if attempt&15 == 0 {
+				runtime.Gosched()
+				if freshBirths, readErr := readCommandProcessBirthsFD(statFD, &scratch.statBuf); readErr != nil {
+					return false, readErr
+				} else {
+					birthsBefore = freshBirths
+				}
+			}
 			if _, seekErr := unix.Seek(dirFD, 0, io.SeekStart); seekErr != nil {
 				return false, fmt.Errorf("rewind /proc directory: %w", seekErr)
 			}
 		}
-		alive, err := inspectCommandGroupLive(pgid, statFD, dirFD, mountBefore, &scratch.statBuf, &scratch.dentBuf)
+		alive, birthsAfter, err := inspectCommandGroupLive(pgid, statFD, dirFD, mountBefore, birthsBefore, &scratch.statBuf, &scratch.dentBuf)
 		if !errors.Is(err, errCommandGroupBirthRace) {
 			return alive, err
 		}
-		if ctx.Err() != nil || attempt >= maxBirthRaceImmediateRetries {
+		birthsBefore = birthsAfter
+		if ctx.Err() != nil {
 			return false, errCommandGroupBirthRace
 		}
 	}
@@ -656,18 +675,52 @@ func parsePositiveProcPID(name []byte) (int, bool) {
 	return pid, pid > 0
 }
 
-func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, statBuf, dentBuf *[]byte) (bool, error) {
-	birthsBefore, err := readCommandProcessBirthsFD(statFD, statBuf)
-	if err != nil {
-		return false, err
+func readProcPIDStatAt(dirFD int, pid int, stackBuf *[512]byte) ([]byte, error) {
+	var pathBuf [32]byte
+	p := strconv.AppendInt(pathBuf[:0], int64(pid), 10)
+	p = append(p, "/stat"...)
+	var fd int
+	var err error
+	for {
+		fd, err = unix.Openat(dirFD, string(p), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	total := 0
+	buf := stackBuf[:]
+	for {
+		if total == len(buf) {
+			grown := make([]byte, len(buf)*2)
+			copy(grown, buf)
+			buf = grown
+		}
+		n, rerr := unix.Read(fd, buf[total:])
+		if rerr != nil {
+			if errors.Is(rerr, syscall.EINTR) {
+				continue
+			}
+			return nil, rerr
+		}
+		if n == 0 {
+			return buf[:total], nil
+		}
+		total += n
+	}
+}
 
+func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, birthsBefore uint64, statBuf, dentBuf *[]byte) (bool, uint64, error) {
 	buf := *dentBuf
 	if len(buf) < 131072 {
 		buf = make([]byte, 131072)
 		*dentBuf = buf
 	}
 
+	var pidStatBuf [512]byte
 	leaderSeen, alive := false, false
 	for {
 		n, err := unix.Getdents(dirFD, buf)
@@ -675,7 +728,7 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
-			return false, fmt.Errorf("inspect command process group: %w", err)
+			return false, 0, fmt.Errorf("inspect command process group: %w", err)
 		}
 		if n == 0 {
 			break
@@ -684,18 +737,18 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 			// Linux getdents64 ABI layout (arch-independent):
 			// d_ino [0:8], d_off [8:16], d_reclen [16:18], d_type [18], d_name [19:reclen].
 			if off+19 > n {
-				return false, errors.New("inspect command process group: malformed procfs directory entry")
+				return false, 0, errors.New("inspect command process group: malformed procfs directory entry")
 			}
 			reclen := int(binary.NativeEndian.Uint16(buf[off+16 : off+18]))
 			if reclen < 19 || off+reclen > n {
-				return false, errors.New("inspect command process group: malformed procfs directory record length")
+				return false, 0, errors.New("inspect command process group: malformed procfs directory record length")
 			}
 			dtype := buf[off+18]
 			nameBytes := buf[off+19 : off+reclen]
 			off += reclen
 			nul := bytes.IndexByte(nameBytes, 0)
 			if nul < 0 {
-				return false, errors.New("inspect command process group: unterminated procfs directory entry")
+				return false, 0, errors.New("inspect command process group: unterminated procfs directory entry")
 			}
 			nameBytes = nameBytes[:nul]
 			pid, ok := parsePositiveProcPID(nameBytes)
@@ -723,10 +776,10 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 			if errno == 0 {
 				group := int(r1)
 				if group < 0 {
-					return false, fmt.Errorf("inspect process %d: invalid kernel process group %d", pid, group)
+					return false, 0, fmt.Errorf("inspect process %d: invalid kernel process group %d", pid, group)
 				}
 				if pid == pgid && group != pgid {
-					return false, errors.New("inspect command process group: leader changed process group")
+					return false, 0, errors.New("inspect command process group: leader changed process group")
 				}
 				if group != pgid {
 					continue
@@ -736,22 +789,21 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 				groupErr = fmt.Errorf("inspect process %d group: %w", pid, errno)
 			}
 
-			pidStr := strconv.Itoa(pid)
 			commandGroupProcStatOpens.Add(1)
-			data, readErr := os.ReadFile("/proc/" + pidStr + "/stat")
+			data, readErr := readProcPIDStatAt(dirFD, pid, &pidStatBuf)
 			if readErr != nil {
-				if groupErr == nil && (errors.Is(readErr, os.ErrNotExist) || errors.Is(readErr, syscall.ESRCH)) {
+				if groupErr == nil && (errors.Is(readErr, os.ErrNotExist) || errors.Is(readErr, syscall.ENOENT) || errors.Is(readErr, syscall.ESRCH)) {
 					continue
 				}
-				return false, errors.Join(groupErr, fmt.Errorf("inspect process %s: %w", pidStr, readErr))
+				return false, 0, errors.Join(groupErr, fmt.Errorf("inspect process %d: %w", pid, readErr))
 			}
 			group, processState, parseErr := parseCommandGroupStat(data, pid)
 			if parseErr != nil {
-				return false, errors.Join(groupErr, parseErr)
+				return false, 0, errors.Join(groupErr, parseErr)
 			}
 			if pid == pgid {
 				if group != pgid {
-					return false, errors.New("inspect command process group: leader changed process group")
+					return false, 0, errors.New("inspect command process group: leader changed process group")
 				}
 				leaderSeen = true
 			}
@@ -761,7 +813,7 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 				} else {
 					threads, threadErr := commandGroupStatThreads(data, pid)
 					if threadErr != nil {
-						return false, errors.Join(groupErr, threadErr)
+						return false, 0, errors.Join(groupErr, threadErr)
 					}
 					alive = alive || threads > 1
 				}
@@ -769,26 +821,26 @@ func inspectCommandGroupLive(pgid int, statFD, dirFD int, mountBefore string, st
 		}
 	}
 	if !leaderSeen {
-		return false, errors.New("inspect command process group: unreaped leader missing from procfs")
+		return false, 0, errors.New("inspect command process group: unreaped leader missing from procfs")
 	}
 	if alive {
-		return true, nil
+		return true, 0, nil
 	}
 	birthsAfter, err := readCommandProcessBirthsFD(statFD, statBuf)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if birthsBefore != birthsAfter {
-		return false, errCommandGroupBirthRace
+		return false, birthsAfter, errCommandGroupBirthRace
 	}
 	mountAfter, err := readCommandProcfsVisibility(os.ReadFile)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if mountBefore != mountAfter {
-		return false, errCommandGroupMountRace
+		return false, 0, errCommandGroupMountRace
 	}
-	return false, nil
+	return false, birthsAfter, nil
 }
 
 // Keep the observation operations local to each census. Besides making the
