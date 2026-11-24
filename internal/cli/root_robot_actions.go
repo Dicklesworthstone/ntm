@@ -910,7 +910,12 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		return true
 	}
 	if robotInspectPane != "" {
-		session, err := resolveRobotLiveSession(cmd.Context(), robotInspectPane)
+		sessionArg, paneSelector, err := splitRobotInspectPaneTarget(robotInspectPane, robotHistoryPane)
+		if err != nil {
+			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use --robot-inspect-pane=SESSION[:SELECTOR] or --pane=W.P|%N", "robot-inspect-pane")
+			return true
+		}
+		session, err := resolveRobotLiveSession(cmd.Context(), sessionArg)
 		if err != nil {
 			failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-inspect-pane")
 			return true
@@ -918,6 +923,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		opts := robot.InspectPaneOptions{
 			Session:     session,
 			PaneIndex:   robotInspectIndex,
+			PaneID:      paneSelector,
 			Lines:       resolveRobotSharedLines(cmd, "inspect-lines", robotInspectLines),
 			IncludeCode: robotInspectCode,
 		}
@@ -1723,4 +1729,27 @@ func parseRobotReservationPathsArg(raw string) ([]string, error) {
 		paths = append(paths, path)
 	}
 	return paths, nil
+}
+
+func splitRobotInspectPaneTarget(rawTarget, paneFlag string) (session, paneSelector string, err error) {
+	rawTarget = strings.TrimSpace(rawTarget)
+	paneFlag = strings.TrimSpace(paneFlag)
+	if rawTarget == "" {
+		return "", "", errors.New("session is required for --robot-inspect-pane")
+	}
+	if colon := strings.LastIndex(rawTarget, ":"); colon >= 0 {
+		session = strings.TrimSpace(rawTarget[:colon])
+		inlineSelector := strings.TrimSpace(rawTarget[colon+1:])
+		if session == "" {
+			return "", "", fmt.Errorf("invalid --robot-inspect-pane %q: session name is required before ':'", rawTarget)
+		}
+		if inlineSelector == "" {
+			return "", "", fmt.Errorf("invalid --robot-inspect-pane %q: pane selector is required after ':'", rawTarget)
+		}
+		if paneFlag != "" && paneFlag != inlineSelector {
+			return "", "", fmt.Errorf("conflicting pane selectors: --robot-inspect-pane specifies %q while --pane specifies %q", inlineSelector, paneFlag)
+		}
+		return session, inlineSelector, nil
+	}
+	return rawTarget, paneFlag, nil
 }
