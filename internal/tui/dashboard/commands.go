@@ -343,6 +343,7 @@ func (m *Model) fetchBeadsCmd() tea.Cmd {
 func (m *Model) fetchAlertsCmd() tea.Cmd {
 	gen := m.nextGen(refreshAlerts)
 	cfg := m.cfg
+	session := m.session
 	return func() tea.Msg {
 		// The robot surfaces' builder: same thresholds, plus the transcript
 		// context-usage source behind context warnings.
@@ -350,9 +351,26 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 
 		// Use GenerateAndTrack to benefit from lifecycle management and error handling
 		tracker := alerts.GenerateAndTrack(alertCfg)
-		activeAlerts := tracker.GetActive()
+		activeAlerts := filterAlertsForSession(tracker.GetActive(), session)
 		return AlertsUpdateMsg{Alerts: activeAlerts, Gen: gen}
 	}
+}
+
+func filterAlertsForSession(active []alerts.Alert, session string) []alerts.Alert {
+	if session == "" || len(active) == 0 {
+		return active
+	}
+	filtered := make([]alerts.Alert, 0, len(active))
+	for _, a := range active {
+		if a.Session == "" || a.Session == session {
+			filtered = append(filtered, a)
+		}
+	}
+	return filtered
+}
+
+func attentionEventMatchesSession(ev robot.AttentionEvent, session string) bool {
+	return session == "" || ev.Session == "" || ev.Session == session
 }
 
 // fetchAttentionCmd reads attention events via the shared section model.
@@ -360,14 +378,29 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 func (m *Model) fetchAttentionCmd() tea.Cmd {
 	gen := m.nextGen(refreshAttention)
 	requestedCursor := m.requestedAttentionCursor
-	paneAgents := make(map[int]string, len(m.panes))
+	session := m.session
+	paneAgentsByID := make(map[string]string, len(m.panes))
+	paneAgentsByIndex := make(map[int]string, len(m.panes))
+	paneIDByIndex := make(map[int]string, len(m.panes))
+	indexCounts := make(map[int]int, len(m.panes))
 	for _, pane := range m.panes {
-		if name := pane.Type.ProfileName(); name != "" {
-			paneAgents[pane.Index] = name
-			continue
+		indexCounts[pane.Index]++
+	}
+	for _, pane := range m.panes {
+		agentName := pane.Type.ProfileName()
+		if agentName == "" {
+			agentName = pane.Type.String()
 		}
-		if raw := pane.Type.String(); raw != "" {
-			paneAgents[pane.Index] = raw
+		if pane.ID != "" && agentName != "" {
+			paneAgentsByID[pane.ID] = agentName
+		}
+		if indexCounts[pane.Index] == 1 {
+			if agentName != "" {
+				paneAgentsByIndex[pane.Index] = agentName
+			}
+			if pane.ID != "" {
+				paneIDByIndex[pane.Index] = pane.ID
+			}
 		}
 	}
 
@@ -391,14 +424,18 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		// Convert events to panel items
+		// Convert events to panel items, filtering out foreign sessions so
+		// unrelated session activity does not contaminate or mis-zoom panes.
 		items := make([]panels.AttentionItem, 0, len(data.Events)+1)
 		for _, ev := range data.Events {
-			items = append(items, attentionItemFromEvent(ev, paneAgents))
+			if !attentionEventMatchesSession(ev, session) {
+				continue
+			}
+			items = append(items, attentionItemFromEvent(ev, paneAgentsByID, paneAgentsByIndex, paneIDByIndex))
 		}
 
 		// Handle requested cursor (for cursor navigation)
-		if requested := requestedAttentionItem(robot.PeekAttentionFeed(), paneAgents, requestedCursor); requested != nil &&
+		if requested := requestedAttentionItem(robot.PeekAttentionFeed(), session, paneAgentsByID, paneAgentsByIndex, paneIDByIndex, requestedCursor); requested != nil &&
 			!containsAttentionCursor(items, requested.Cursor) {
 			items = append(items, *requested)
 		}
@@ -421,25 +458,43 @@ func includeAttentionEvent(ev robot.AttentionEvent) bool {
 		ev.Actionability == robot.ActionabilityInteresting
 }
 
-func attentionItemFromEvent(ev robot.AttentionEvent, paneAgents map[int]string) panels.AttentionItem {
+func attentionItemFromEvent(ev robot.AttentionEvent, paneAgentsByID map[string]string, paneAgentsByIndex map[int]string, paneIDByIndex map[int]string) panels.AttentionItem {
+	paneID := ""
+	if ev.Details != nil {
+		if rawID, ok := ev.Details["pane_id"].(string); ok {
+			paneID = strings.TrimSpace(rawID)
+		}
+	}
+	if paneID == "" && ev.Pane >= 0 {
+		paneID = paneIDByIndex[ev.Pane]
+	}
 	item := panels.AttentionItem{
 		Summary:       ev.Summary,
 		Actionability: ev.Actionability,
 		Timestamp:     parseAttentionTimestamp(ev.Ts),
+		SourceSession: ev.Session,
 		SourcePane:    ev.Pane,
+		SourcePaneID:  paneID,
 		Cursor:        ev.Cursor,
 	}
-	if agent := paneAgents[ev.Pane]; agent != "" {
-		item.SourceAgent = agent
-	} else if ev.Details != nil {
-		if agent, ok := ev.Details["agent_type"].(string); ok {
+	if paneID != "" {
+		if agent := paneAgentsByID[paneID]; agent != "" {
 			item.SourceAgent = agent
+		}
+	}
+	if item.SourceAgent == "" {
+		if agent := paneAgentsByIndex[ev.Pane]; agent != "" {
+			item.SourceAgent = agent
+		} else if ev.Details != nil {
+			if agent, ok := ev.Details["agent_type"].(string); ok {
+				item.SourceAgent = agent
+			}
 		}
 	}
 	return item
 }
 
-func requestedAttentionItem(feed *robot.AttentionFeed, paneAgents map[int]string, requestedCursor int64) *panels.AttentionItem {
+func requestedAttentionItem(feed *robot.AttentionFeed, session string, paneAgentsByID map[string]string, paneAgentsByIndex map[int]string, paneIDByIndex map[int]string, requestedCursor int64) *panels.AttentionItem {
 	if feed == nil || requestedCursor <= 0 {
 		return nil
 	}
@@ -447,10 +502,10 @@ func requestedAttentionItem(feed *robot.AttentionFeed, paneAgents map[int]string
 	if err != nil || len(events) == 0 || events[0].Cursor != requestedCursor {
 		return nil
 	}
-	if !includeAttentionEvent(events[0]) {
+	if !includeAttentionEvent(events[0]) || !attentionEventMatchesSession(events[0], session) {
 		return nil
 	}
-	item := attentionItemFromEvent(events[0], paneAgents)
+	item := attentionItemFromEvent(events[0], paneAgentsByID, paneAgentsByIndex, paneIDByIndex)
 	return &item
 }
 

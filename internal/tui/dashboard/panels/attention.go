@@ -35,7 +35,9 @@ type AttentionItem struct {
 	Summary       string
 	Actionability robot.Actionability
 	Timestamp     time.Time
+	SourceSession string // Session that generated the event (empty for global)
 	SourcePane    int    // Pane index that generated the event
+	SourcePaneID  string // Physical tmux pane ID (%N) when known
 	SourceAgent   string // Agent type (e.g., "claude", "codex")
 	Cursor        int64  // Event cursor for tracking
 }

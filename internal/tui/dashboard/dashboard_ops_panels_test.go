@@ -569,7 +569,7 @@ func TestDashboardWaveF5ReliabilityAndParityFixes(t *testing.T) {
 	})
 
 	t.Run("D4_requestedAttentionItem_nil_feed_safe", func(t *testing.T) {
-		if got := requestedAttentionItem(nil, nil, 5); got != nil {
+		if got := requestedAttentionItem(nil, "", nil, nil, nil, 5); got != nil {
 			t.Fatalf("requestedAttentionItem(nil, ...) = %+v, want nil", got)
 		}
 	})
@@ -647,7 +647,7 @@ func TestDashboardWaveF5ReliabilityAndParityFixes(t *testing.T) {
 		oldZoom := dashboardZoomPane
 		defer func() { dashboardZoomPane = oldZoom }()
 		zoomCalled := false
-		dashboardZoomPane = func(session string, paneIndex int) error {
+		dashboardZoomPane = func(session string, pane tmux.Pane) error {
 			zoomCalled = true
 			return nil
 		}

@@ -3,6 +3,7 @@ package dashboard
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,11 +12,19 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
+	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 )
 
 var (
-	dashboardNow             = func() time.Time { return time.Now().UTC() }
-	dashboardZoomPane        = tmux.ZoomPane
+	dashboardNow = func() time.Time { return time.Now().UTC() }
+	// dashboardZoomPane zooms the target pane using its physical tmux ID (%N)
+	// when available so multi-window sessions zoom the exact pane across windows.
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
+		if strings.HasPrefix(pane.ID, "%") {
+			return tmux.ZoomPaneByID(pane.ID)
+		}
+		return tmux.ZoomPane(session, pane.Index)
+	}
 	dashboardDisplayMessage  = tmux.DisplayMessage
 	dashboardPublishBusEvent = ntmevents.PublishSync
 )
@@ -42,13 +51,28 @@ func (m *Model) activatePopupMode(now time.Time) {
 	}
 }
 
-func (m *Model) paneByIndex(paneIndex int) (tmux.Pane, bool) {
+func (m *Model) paneByID(paneID string) (tmux.Pane, bool) {
 	for _, pane := range m.panes {
-		if pane.Index == paneIndex {
+		if pane.ID != "" && pane.ID == paneID {
 			return pane, true
 		}
 	}
 	return tmux.Pane{}, false
+}
+
+func (m *Model) uniquePaneByIndex(paneIndex int) (tmux.Pane, bool, bool) {
+	var matched tmux.Pane
+	count := 0
+	for _, pane := range m.panes {
+		if pane.Index == paneIndex {
+			matched = pane
+			count++
+		}
+	}
+	if count == 1 {
+		return matched, true, false
+	}
+	return tmux.Pane{}, false, count > 1
 }
 
 func (m *Model) publishHumanZoomEvent(pane tmux.Pane, cursor int64) {
@@ -105,7 +129,7 @@ func (m *Model) exitPopupOverlay() tea.Cmd {
 }
 
 func (m *Model) handlePaneZoomWithCursor(pane tmux.Pane, cursor int64) tea.Cmd {
-	if err := dashboardZoomPane(m.session, pane.Index); err != nil {
+	if err := dashboardZoomPane(m.session, pane); err != nil {
 		m.healthMessage = fmt.Sprintf("Zoom failed: %v", err)
 		return nil
 	}
@@ -129,22 +153,47 @@ func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
 }
 
 // handleAttentionZoom zooms to the pane that generated the attention event.
-// If the pane no longer exists, displays a health message instead of zooming.
-func (m *Model) handleAttentionZoom(paneIndex int, cursor int64) tea.Cmd {
-	pane, ok := m.paneByIndex(paneIndex)
-	if !ok {
-		m.healthMessage = "Source pane no longer available"
+// Refuses cross-session items, prefers physical pane IDs for multi-window
+// precision, and displays a warning instead of zooming an ambiguous/missing pane.
+func (m *Model) handleAttentionZoom(item panels.AttentionItem) tea.Cmd {
+	if item.SourceSession != "" && m.session != "" && item.SourceSession != m.session {
+		m.healthMessage = "Attention item belongs to another session"
 		if m.toasts != nil {
 			m.toasts.Push(components.Toast{
-				ID:      fmt.Sprintf("attention-missing-pane-%d", paneIndex),
-				Message: "Source pane no longer available",
+				ID:      fmt.Sprintf("attention-foreign-session-%d", item.Cursor),
+				Message: "Attention item belongs to another session",
+				Level:   components.ToastWarning,
+			})
+		}
+		return nil
+	}
+	var (
+		pane      tmux.Pane
+		ok        bool
+		ambiguous bool
+	)
+	if item.SourcePaneID != "" {
+		pane, ok = m.paneByID(item.SourcePaneID)
+	} else {
+		pane, ok, ambiguous = m.uniquePaneByIndex(item.SourcePane)
+	}
+	if !ok {
+		msg := "Source pane no longer available"
+		if ambiguous {
+			msg = "Source pane is ambiguous across windows"
+		}
+		m.healthMessage = msg
+		if m.toasts != nil {
+			m.toasts.Push(components.Toast{
+				ID:      fmt.Sprintf("attention-missing-pane-%d", item.SourcePane),
+				Message: msg,
 				Level:   components.ToastWarning,
 			})
 		}
 		return nil
 	}
 	m.setPaneListSelectionByPaneID(pane.ID)
-	return m.handlePaneZoomWithCursor(pane, cursor)
+	return m.handlePaneZoomWithCursor(pane, item.Cursor)
 }
 
 func (m *Model) requestAttentionCursor(cursor int64) {

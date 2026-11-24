@@ -2409,7 +2409,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case synthtui.ZoomMsg:
-		pane, ok := m.paneByIndex(msg.PaneIndex)
+		pane, ok, ambiguous := m.uniquePaneByIndex(msg.PaneIndex)
+		if ambiguous {
+			m.healthMessage = "Source pane is ambiguous across windows"
+			return m, nil
+		}
 		if !ok {
 			pane = tmux.Pane{Index: msg.PaneIndex}
 		}
@@ -4476,7 +4480,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Zoom-to-source for attention panel items
 			if m.focusedPanel == PanelAttention && m.attentionPanel != nil {
 				if item := m.attentionPanel.SelectedItem(); item != nil {
-					return m, m.handleAttentionZoom(item.SourcePane, item.Cursor)
+					return m, m.handleAttentionZoom(*item)
 				}
 			}
 

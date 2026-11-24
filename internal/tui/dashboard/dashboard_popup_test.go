@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	ntmevents "github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -356,9 +357,9 @@ func TestPopupZoomPublishesHumanZoomAndDisplaysCursorHint(t *testing.T) {
 
 	var zoomSession string
 	var zoomPane int
-	dashboardZoomPane = func(session string, paneIndex int) error {
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
 		zoomSession = session
-		zoomPane = paneIndex
+		zoomPane = pane.Index
 		return nil
 	}
 
@@ -455,9 +456,9 @@ func TestHandleAttentionZoomUsesPaneIndexLookup(t *testing.T) {
 
 	var zoomSession string
 	var zoomPane int
-	dashboardZoomPane = func(session string, paneIndex int) error {
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
 		zoomSession = session
-		zoomPane = paneIndex
+		zoomPane = pane.Index
 		return nil
 	}
 
@@ -470,7 +471,7 @@ func TestHandleAttentionZoomUsesPaneIndexLookup(t *testing.T) {
 	}
 	m.rebuildPaneList()
 
-	cmd := m.handleAttentionZoom(3, 0)
+	cmd := m.handleAttentionZoom(panels.AttentionItem{SourcePane: 3, Cursor: 0})
 	if cmd == nil {
 		t.Fatal("expected handleAttentionZoom to return a zoom command for an existing pane index")
 	}
@@ -489,7 +490,7 @@ func TestHandleAttentionZoomMissingPaneShowsHealthMessage(t *testing.T) {
 	})
 
 	zoomCalled := false
-	dashboardZoomPane = func(session string, paneIndex int) error {
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
 		zoomCalled = true
 		return nil
 	}
@@ -502,7 +503,7 @@ func TestHandleAttentionZoomMissingPaneShowsHealthMessage(t *testing.T) {
 	}
 	m.rebuildPaneList()
 
-	cmd := m.handleAttentionZoom(99, 0)
+	cmd := m.handleAttentionZoom(panels.AttentionItem{SourcePane: 99, Cursor: 0})
 	if cmd != nil {
 		t.Fatalf("expected no zoom command for a missing pane, got %v", cmd)
 	}
@@ -539,9 +540,9 @@ func TestHandleAttentionZoomPopupUsesSelectedItemCursor(t *testing.T) {
 
 	var zoomSession string
 	var zoomPane int
-	dashboardZoomPane = func(session string, paneIndex int) error {
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
 		zoomSession = session
-		zoomPane = paneIndex
+		zoomPane = pane.Index
 		return nil
 	}
 
@@ -573,7 +574,7 @@ func TestHandleAttentionZoomPopupUsesSelectedItemCursor(t *testing.T) {
 	}
 	m.rebuildPaneList()
 
-	cmd := m.handleAttentionZoom(3, 2)
+	cmd := m.handleAttentionZoom(panels.AttentionItem{SourcePane: 3, Cursor: 2})
 	if cmd == nil {
 		t.Fatal("expected popup attention zoom to return a quit command")
 	}
@@ -1110,5 +1111,72 @@ func TestPublishHumanOverlayDismissIncludesDurationAndBackgroundAttention(t *tes
 	}
 	if details["duration_seconds"] != "5.000" {
 		t.Fatalf("normalized duration detail = %v, want %q", details["duration_seconds"], "5.000")
+	}
+}
+
+func TestDashboardMultiWindowZoomAndCrossSessionIsolation(t *testing.T) {
+	// 1. Alert session filtering keeps only current session and global alerts.
+	gotAlerts := filterAlertsForSession([]alerts.Alert{
+		{ID: "a1", Session: "projA"},
+		{ID: "a2", Session: "projB"},
+		{ID: "a3", Session: ""},
+	}, "projA")
+	if len(gotAlerts) != 2 || gotAlerts[0].ID != "a1" || gotAlerts[1].ID != "a3" {
+		t.Fatalf("filterAlertsForSession = %+v, want [a1 a3]", gotAlerts)
+	}
+
+	// 2. Attention event session matcher drops foreign sessions.
+	if !attentionEventMatchesSession(robot.AttentionEvent{Session: "projA"}, "projA") {
+		t.Fatal("same session attention event must match")
+	}
+	if !attentionEventMatchesSession(robot.AttentionEvent{Session: ""}, "projA") {
+		t.Fatal("global attention event must match")
+	}
+	if attentionEventMatchesSession(robot.AttentionEvent{Session: "projB"}, "projA") {
+		t.Fatal("foreign session attention event must be filtered out")
+	}
+
+	// 3. Multi-window zoom prefers physical SourcePaneID, refuses foreign
+	// session items, and refuses ambiguous bare-index items without PaneID.
+	oldZoom := dashboardZoomPane
+	t.Cleanup(func() { dashboardZoomPane = oldZoom })
+
+	var zoomed []tmux.Pane
+	dashboardZoomPane = func(session string, pane tmux.Pane) error {
+		zoomed = append(zoomed, pane)
+		return nil
+	}
+
+	m := New("projA", "")
+	m.width = 140
+	m.height = 30
+	m.panes = []tmux.Pane{
+		{ID: "%1", WindowIndex: 0, Index: 0, Title: "projA__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", WindowIndex: 1, Index: 0, Title: "projA__cod_1", Type: tmux.AgentCodex},
+	}
+	m.rebuildPaneList()
+
+	// Foreign session item must be refused without zooming.
+	if cmd := m.handleAttentionZoom(panels.AttentionItem{SourceSession: "projB", SourcePane: 0, SourcePaneID: "%1", Cursor: 10}); cmd != nil {
+		t.Fatalf("expected nil cmd for foreign session item, got %v", cmd)
+	}
+	if len(zoomed) != 0 || !strings.Contains(m.healthMessage, "another session") {
+		t.Fatalf("foreign session zoom: zoomed=%+v health=%q", zoomed, m.healthMessage)
+	}
+
+	// Ambiguous bare index without SourcePaneID must be refused.
+	if cmd := m.handleAttentionZoom(panels.AttentionItem{SourceSession: "projA", SourcePane: 0, Cursor: 11}); cmd != nil {
+		t.Fatalf("expected nil cmd for ambiguous bare pane index, got %v", cmd)
+	}
+	if len(zoomed) != 0 || !strings.Contains(m.healthMessage, "ambiguous") {
+		t.Fatalf("ambiguous zoom: zoomed=%+v health=%q", zoomed, m.healthMessage)
+	}
+
+	// Exact SourcePaneID in window 1 must zoom %2 (not window 0's %1).
+	if cmd := m.handleAttentionZoom(panels.AttentionItem{SourceSession: "projA", SourcePane: 0, SourcePaneID: "%2", Cursor: 12}); cmd == nil {
+		t.Fatal("expected zoom cmd for exact physical pane ID %2")
+	}
+	if len(zoomed) != 1 || zoomed[0].ID != "%2" || zoomed[0].WindowIndex != 1 {
+		t.Fatalf("zoomed = %+v, want %%2 in window 1", zoomed)
 	}
 }
