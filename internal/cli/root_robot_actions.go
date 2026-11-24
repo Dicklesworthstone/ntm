@@ -910,9 +910,18 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		return true
 	}
 	if robotInspectPane != "" {
+		if cmd != nil && cmd.Flags().Changed("pane") && strings.TrimSpace(robotHistoryPane) == "" {
+			failRobotCommand(errors.New("--pane requires a non-empty N, W.P, or %N selector"), robot.ErrCodeInvalidFlag, "Use --pane=W.P or --pane=%N", "robot-inspect-pane")
+			return true
+		}
 		sessionArg, paneSelector, err := splitRobotInspectPaneTarget(robotInspectPane, robotHistoryPane)
 		if err != nil {
 			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use --robot-inspect-pane=SESSION[:SELECTOR] or --pane=W.P|%N", "robot-inspect-pane")
+			return true
+		}
+		indexChanged := cmd != nil && (cmd.Flags().Changed("index") || cmd.Flags().Changed("inspect-index"))
+		if paneSelector != "" && indexChanged && paneSelector != strconv.Itoa(robotInspectIndex) {
+			failRobotCommand(fmt.Errorf("conflicting pane selectors: %q cannot be combined with --index=%d", paneSelector, robotInspectIndex), robot.ErrCodeInvalidFlag, "Specify either SESSION:SELECTOR / --pane or --index, not both", "robot-inspect-pane")
 			return true
 		}
 		session, err := resolveRobotLiveSession(cmd.Context(), sessionArg)
@@ -1742,6 +1751,9 @@ func splitRobotInspectPaneTarget(rawTarget, paneFlag string) (session, paneSelec
 		inlineSelector := strings.TrimSpace(rawTarget[colon+1:])
 		if session == "" {
 			return "", "", fmt.Errorf("invalid --robot-inspect-pane %q: session name is required before ':'", rawTarget)
+		}
+		if strings.Contains(session, ":") {
+			return "", "", fmt.Errorf("invalid --robot-inspect-pane %q: expected SESSION:SELECTOR with a single ':'", rawTarget)
 		}
 		if inlineSelector == "" {
 			return "", "", fmt.Errorf("invalid --robot-inspect-pane %q: pane selector is required after ':'", rawTarget)
