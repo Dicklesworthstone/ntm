@@ -1792,6 +1792,7 @@ func TestMailSendOverseer_RedactModeScrubsBodyAndSubject(t *testing.T) {
 
 var (
 	overseerSessionProbeOnce sync.Once
+	overseerSessionProbeDir  string
 	overseerSessionProbePath string
 	overseerSessionProbeErr  error
 )
@@ -1811,9 +1812,11 @@ func isolateOverseerSessionProbe(t *testing.T) {
 		}
 		path := filepath.Join(dir, "tmux")
 		if err := os.WriteFile(path, []byte("#!/bin/sh\ncase \"$1\" in\n-V) echo 'tmux 3.4';;\nlist-sessions|list-panes|has-session) exit 0;;\n*) exit 1;;\nesac\n"), 0700); err != nil {
+			_ = os.RemoveAll(dir)
 			overseerSessionProbeErr = err
 			return
 		}
+		overseerSessionProbeDir = dir
 		overseerSessionProbePath = path
 	})
 	if overseerSessionProbeErr != nil {

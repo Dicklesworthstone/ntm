@@ -189,6 +189,9 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	if overseerSessionProbeDir != "" {
+		_ = os.RemoveAll(overseerSessionProbeDir)
+	}
 	_ = os.Unsetenv("NTM_CLI_TEST_ISOLATED")
 
 	if hadDataHome {

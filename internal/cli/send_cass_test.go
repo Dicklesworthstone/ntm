@@ -398,10 +398,17 @@ func TestSendCASSCommandRespectsSelectedPaneCapacity(t *testing.T) {
 
 func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
 	oldUsageTimeout := ntmctx.MaxPaneContextUsageTimeout
-	ntmctx.MaxPaneContextUsageTimeout = 80 * time.Millisecond
 	t.Cleanup(func() { ntmctx.MaxPaneContextUsageTimeout = oldUsageTimeout })
 	for _, mode := range []string{"cancel", "deadline", "optional-probe-timeout"} {
 		t.Run(mode, func(t *testing.T) {
+			if mode == "optional-probe-timeout" {
+				ntmctx.MaxPaneContextUsageTimeout = 80 * time.Millisecond
+			} else {
+				// Keep the internal optional probe timeout strictly longer than
+				// the caller deadline (350ms) so caller cancellation/deadline
+				// fires first rather than degrading to an optional probe skip.
+				ntmctx.MaxPaneContextUsageTimeout = 5 * time.Second
+			}
 			projectRoot, tmuxLog, cassDir := sendCASSCapacityFixture(t, "wait")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
