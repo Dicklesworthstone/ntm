@@ -20,11 +20,13 @@ func TestParseProcessSnapshot(t *testing.T) {
 	const zombie = "203 101 203 -1 Z Thu Nov 12 16:10:16 2026 codex\n"
 	// macOS ps reports an exiting process with an unknown run state: "?E".
 	const exiting = "204 1 204 0 ?E Thu Nov 12 16:10:17 2026 bash\n"
-	got, err := parseProcessSnapshot([]byte(shell + agent + zombie + exiting))
+	// It prints 'H' (Mach TH_STATE_HALTED) when every thread is terminating.
+	const halted = "205 1 205 0 HE Thu Nov 12 16:10:18 2026 codex\n"
+	got, err := parseProcessSnapshot([]byte(shell + agent + zombie + exiting + halted))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 || got[101].Command != "bash" || got[202].PPID != 101 || got[202].State != "T+" || got[203].State != "Z" || got[203].TPGID != -1 || got[204].State != "?E" {
+	if len(got) != 5 || got[101].Command != "bash" || got[202].PPID != 101 || got[202].State != "T+" || got[203].State != "Z" || got[203].TPGID != -1 || got[204].State != "?E" || got[205].State != "HE" {
 		t.Fatalf("snapshot lost process evidence: %+v", got)
 	}
 	if got[101].Started != "Thu Nov 12 16:10:14 2026" {

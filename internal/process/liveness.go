@@ -346,11 +346,15 @@ func parseProcessSnapshot(output []byte) (map[int]SnapshotProcess, error) {
 			return nil, fmt.Errorf("process snapshot row %d repeats a process identifier", i+1)
 		}
 		state := fields[4]
-		// BSD/macOS ps prints '?' as the run state when the kernel reports
-		// none of the named states, typically for a process that is exiting
-		// ("?E"). Such a row is still a valid observation; rejecting it made
-		// every snapshot taken while any process on the host was exiting fail.
-		if !strings.ContainsRune("RSDTtZXxIKWPUE?", rune(state[0])) || strings.IndexFunc(state[1:], func(r rune) bool {
+		// macOS ps derives the run state from the process's threads and can
+		// print two letters its man page does not list: 'H' when every thread
+		// is terminating (Mach TH_STATE_HALTED), and '?' when it could not
+		// read any thread state, for example for an exiting process with no
+		// threads left ("?E"). Both rows are still valid observations of a
+		// process that has not been reaped, and callers treat them as live;
+		// rejecting either made every snapshot taken while any process on the
+		// host was exiting fail.
+		if !strings.ContainsRune("RSDTtZXxIKWPUEH?", rune(state[0])) || strings.IndexFunc(state[1:], func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '<' || r == '>' || r == '+')
 		}) >= 0 {
 			return nil, fmt.Errorf("process snapshot row %d has an invalid process state", i+1)
