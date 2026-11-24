@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2625,6 +2627,85 @@ func TestPaneSelectorMultiWindowAndStrictValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET output lines=10abc status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
+
+	// 6. Exercise the real chi router with both normal paths (RawPath == "")
+	// and non-canonical percent-encoded paths (RawPath != "") so %2520 is
+	// decoded exactly once and 1%2E2 resolves window 1 pane 2.
+	router := srv.Router()
+	routerCases := []struct {
+		name       string
+		target     string
+		wantRaw    bool
+		wantPaneID string
+	}{
+		{name: "normal_percent_pane_id", target: "/api/v1/sessions/proj/panes/%2520", wantRaw: false, wantPaneID: "%20"},
+		{name: "rawpath_percent_pane_id", target: "/api/v1/sessions/proj/panes/%25%32%30", wantRaw: true, wantPaneID: "%20"},
+		{name: "rawpath_window_pane", target: "/api/v1/sessions/proj/panes/1%2E2", wantRaw: true, wantPaneID: "%22"},
+	}
+	for _, tc := range routerCases {
+		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+		if (req.URL.RawPath != "") != tc.wantRaw {
+			t.Fatalf("%s: RawPath=%q, wantRaw=%v", tc.name, req.URL.RawPath, tc.wantRaw)
+		}
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s (%s): status = %d, want 200: %s", tc.name, tc.target, rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &paneResp); err != nil || paneResp.Pane.ID != tc.wantPaneID {
+			t.Fatalf("%s: got (%+v, %v), want pane ID %q", tc.name, paneResp.Pane, err, tc.wantPaneID)
+		}
+	}
+}
+
+func TestKernelSessionErrorHTTPMapsPaneSelectorErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "ambiguous_selector",
+			err:        &tmux.PaneSelectorError{Kind: tmux.PaneSelectorAmbiguous, Selector: "0", Matches: 2},
+			wantStatus: http.StatusConflict,
+			wantCode:   ErrCodeConflict,
+		},
+		{
+			name:       "invalid_selector",
+			err:        &tmux.PaneSelectorError{Kind: tmux.PaneSelectorInvalid, Selector: "1abc"},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   ErrCodeBadRequest,
+		},
+		{
+			name:       "missing_selector",
+			err:        &tmux.PaneSelectorError{Kind: tmux.PaneSelectorMissing},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   ErrCodeBadRequest,
+		},
+		{
+			name:       "not_found_selector",
+			err:        &tmux.PaneSelectorError{Kind: tmux.PaneSelectorNotFound, Selector: "9.9"},
+			wantStatus: http.StatusNotFound,
+			wantCode:   ErrCodeNotFound,
+		},
+		{
+			name:       "no_panes_match_string",
+			err:        errors.New("no panes match selector \"1.9\" in session \"proj\""),
+			wantStatus: http.StatusNotFound,
+			wantCode:   ErrCodeNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		status, code := kernelSessionErrorHTTP(tc.err)
+		if status != tc.wantStatus || code != tc.wantCode {
+			t.Fatalf("%s: kernelSessionErrorHTTP(%v) = (%d, %q), want (%d, %q)",
+				tc.name, tc.err, status, code, tc.wantStatus, tc.wantCode)
+		}
+	}
 }
 
 func TestRequestWaitAndCancelBodySessionAndBounds(t *testing.T) {
@@ -2699,5 +2780,27 @@ func TestRequestWaitAndCancelBodySessionAndBounds(t *testing.T) {
 	}
 	if waitResp.Session != "projA" || !waitResp.Terminal || waitResp.Status != string(state.SendOperationCanceled) {
 		t.Fatalf("wait(body session=projA) = %+v, want projA terminal canceled", waitResp)
+	}
+
+	// Huge timeout_ms on a NON-TERMINAL handle must clamp cleanly to 30m rather
+	// than wrapping signed int64 multiplication (18446744073710 * 1e6 == +448µs
+	// mod 2^64, which would fire a spurious <1ms TIMEOUT without the clamp).
+	if strconv.IntSize >= 64 {
+		if err := st.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "req_overflow_live", SessionName: "projA"}); err != nil {
+			t.Fatalf("CreateRobotWaitHandle req_overflow_live: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+		defer cancel()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/requests/req_overflow_live/wait", strings.NewReader(`{"session":"projA","timeout_ms":18446744073710,"poll_ms":100}`)).WithContext(ctx)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "req_overflow_live")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		start := time.Now()
+		rec = httptest.NewRecorder()
+		srv.handleWaitRequestV1(rec, req)
+		elapsed := time.Since(start)
+		if elapsed < 40*time.Millisecond {
+			t.Fatalf("wait(overflow timeout_ms) returned in %v (<40ms) — int64 duration wrapped instead of clamping (status=%d body=%s)", elapsed, rec.Code, rec.Body.String())
+		}
 	}
 }
