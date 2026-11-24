@@ -4350,25 +4350,26 @@ func ZoomPane(session string, paneIndex int) error {
 	return DefaultClient.ZoomPane(session, paneIndex)
 }
 
-// ZoomPaneByID selects the window and pane for a physical pane ID (%N) or
-// exact tmux target and toggles zoom on that pane across any window.
-func (c *Client) ZoomPaneByID(target string) error {
-	exact := ExactTarget(strings.TrimSpace(target))
-	if exact == "" {
-		return fmt.Errorf("pane target is required")
+// ZoomPaneByID selects the window and pane for a physical tmux pane ID (%N)
+// and toggles zoom on that pane across any window in the session.
+func (c *Client) ZoomPaneByID(paneID string) error {
+	trimmed := strings.TrimSpace(paneID)
+	sel, err := ParsePaneSelector(trimmed)
+	if err != nil || sel.Kind != PaneSelectorID {
+		return fmt.Errorf("invalid physical pane ID %q", paneID)
 	}
-	if err := c.RunSilent("select-window", "-t", exact); err != nil {
+	if err := c.RunSilent("select-window", "-t", sel.PaneID); err != nil {
 		return err
 	}
-	if err := c.RunSilent("select-pane", "-t", exact); err != nil {
+	if err := c.RunSilent("select-pane", "-t", sel.PaneID); err != nil {
 		return err
 	}
-	return c.RunSilent("resize-pane", "-t", exact, "-Z")
+	return c.RunSilent("resize-pane", "-t", sel.PaneID, "-Z")
 }
 
-// ZoomPaneByID zooms a specific pane by physical pane ID or exact target (default client).
-func ZoomPaneByID(target string) error {
-	return DefaultClient.ZoomPaneByID(target)
+// ZoomPaneByID zooms a specific pane by physical tmux pane ID (%N) (default client).
+func ZoomPaneByID(paneID string) error {
+	return DefaultClient.ZoomPaneByID(paneID)
 }
 
 // CapturePaneOutput captures the output of a pane with a default timeout to avoid hangs.
