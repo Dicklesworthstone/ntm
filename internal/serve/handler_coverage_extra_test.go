@@ -22,6 +22,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ---------------------------------------------------------------------------
@@ -2521,5 +2523,181 @@ func TestHandleSafetyUninstallV1(t *testing.T) {
 	srv.handleSafetyUninstallV1(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestPaneSelectorMultiWindowAndStrictValidation(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	panes := []tmux.Pane{
+		{ID: "%10", WindowIndex: 0, Index: 0, Title: "proj__user", Type: tmux.AgentUser},
+		{ID: "%11", WindowIndex: 0, Index: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "%20", WindowIndex: 1, Index: 0, Title: "proj__cod_1", Type: tmux.AgentCodex},
+		{ID: "%22", WindowIndex: 1, Index: 2, Title: "proj__pi_1", Type: tmux.AgentPi},
+	}
+	var gotSelectors []tmux.PaneSelector
+	srv.resolvePane = func(_ context.Context, _ string, sel tmux.PaneSelector) (tmux.Pane, error) {
+		gotSelectors = append(gotSelectors, sel)
+		var matches []tmux.Pane
+		for _, p := range panes {
+			switch sel.Kind {
+			case tmux.PaneSelectorID:
+				if p.ID == sel.PaneID {
+					matches = append(matches, p)
+				}
+			case tmux.PaneSelectorWindowPane:
+				if p.WindowIndex == sel.WindowIndex && p.Index == sel.PaneIndex {
+					matches = append(matches, p)
+				}
+			case tmux.PaneSelectorPaneIndex:
+				if p.Index == sel.Index {
+					matches = append(matches, p)
+				}
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return tmux.Pane{}, &tmux.PaneSelectorError{Kind: tmux.PaneSelectorAmbiguous, Selector: sel.Raw, Matches: len(matches)}
+		}
+		return tmux.Pane{}, &tmux.PaneSelectorError{Kind: tmux.PaneSelectorNotFound, Selector: sel.Raw}
+	}
+
+	reqWithParams := func(method, path, sessionID, paneParam string) *http.Request {
+		req := httptest.NewRequest(method, path, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("sessionId", sessionID)
+		rctx.URLParams.Add("paneIdx", paneParam)
+		return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	}
+
+	// 1. Canonical window.pane "1.2" must resolve %22 (not silently truncate to pane 1!)
+	rec := httptest.NewRecorder()
+	srv.handleGetPaneV1(rec, reqWithParams(http.MethodGet, "/api/v1/sessions/proj/panes/1.2", "proj", "1.2"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET pane 1.2 status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var paneResp struct {
+		Pane struct {
+			ID          string `json:"id"`
+			Index       int    `json:"index"`
+			WindowIndex int    `json:"window_index"`
+		} `json:"pane"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &paneResp); err != nil {
+		t.Fatalf("unmarshal pane 1.2: %v", err)
+	}
+	if paneResp.Pane.ID != "%22" || paneResp.Pane.WindowIndex != 1 || paneResp.Pane.Index != 2 {
+		t.Fatalf("GET pane 1.2 = %+v, want %%22 window=1 index=2", paneResp.Pane)
+	}
+
+	// 2. Physical pane ID "%20" (percent-encoded as %2520 in HTTP path) must resolve window 1 pane 0 unambiguously.
+	rec = httptest.NewRecorder()
+	srv.handleGetPaneV1(rec, reqWithParams(http.MethodGet, "/api/v1/sessions/proj/panes/%2520", "proj", "%20"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET pane %%20 status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &paneResp); err != nil || paneResp.Pane.ID != "%20" || paneResp.Pane.WindowIndex != 1 {
+		t.Fatalf("GET pane %%20 = (%+v, %v), want %%20 window=1", paneResp.Pane, err)
+	}
+
+	// 3. Ambiguous bare index "0" across windows must return 409 Conflict (not 200 or 404).
+	rec = httptest.NewRecorder()
+	srv.handleGetPaneV1(rec, reqWithParams(http.MethodGet, "/api/v1/sessions/proj/panes/0", "proj", "0"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("GET ambiguous bare pane 0 status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. Garbage trailing suffix ("1abc", "1.2x") and negative "-1" must return 400.
+	for _, bad := range []string{"1abc", "1.2x", "-1", "%", "1."} {
+		rec = httptest.NewRecorder()
+		srv.handleGetPaneV1(rec, reqWithParams(http.MethodGet, "/api/v1/sessions/proj/panes/invalid", "proj", bad))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET malformed pane %q status = %d, want 400: %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 5. Trailing garbage on ?lines=10abc must return 400 (no fmt.Sscanf truncation).
+	rec = httptest.NewRecorder()
+	srv.handlePaneOutputV1(rec, reqWithParams(http.MethodGet, "/api/v1/sessions/proj/panes/1.2/output?lines=10abc", "proj", "1.2"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET output lines=10abc status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequestWaitAndCancelBodySessionAndBounds(t *testing.T) {
+	t.Parallel()
+	srv, st := setupTestServer(t)
+
+	// Seed a wait handle owned by projA so JSON-body session scoping can be
+	// proved with both negative (wrong session -> 404) and positive checks.
+	if err := st.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "req_shared_body", SessionName: "projA"}); err != nil {
+		t.Fatalf("CreateRobotWaitHandle projA: %v", err)
+	}
+
+	reqWithID := func(path, body string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "req_shared_body")
+		return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	}
+
+	// Negative timeout_ms and poll_ms must be rejected with 400.
+	for _, badBody := range []string{`{"timeout_ms":-1}`, `{"poll_ms":-5}`} {
+		rec := httptest.NewRecorder()
+		srv.handleWaitRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/wait", badBody))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("wait(%s) status = %d, want 400: %s", badBody, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Oversized JSON body must be rejected with 400 by MaxBytesReader.
+	oversized := `{"session":"` + strings.Repeat("a", maxRequestLifecycleBodyBytes+128) + `"}`
+	rec := httptest.NewRecorder()
+	srv.handleCancelRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/cancel", oversized))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cancel(oversized) status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	// Wrong JSON body {"session":"projB"} must NOT cancel projA's handle.
+	rec = httptest.NewRecorder()
+	srv.handleCancelRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/cancel", `{"session":"projB"}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cancel(body session=projB) status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+
+	// JSON body {"session":"projA"} must cancel projA's handle.
+	rec = httptest.NewRecorder()
+	srv.handleCancelRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/cancel", `{"session":"projA"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel(body session=projA) status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	// Wrong JSON body {"session":"projB"} on wait must return 404 (not ignore body.Session).
+	rec = httptest.NewRecorder()
+	srv.handleWaitRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/wait", `{"session":"projB","timeout":"1s","poll":"100ms"}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("wait(body session=projB) status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+
+	// Wait with JSON body {"session":"projA","timeout":"87600h","poll":"1ns"}
+	// must clamp bounds safely and resolve projA's canceled handle immediately.
+	rec = httptest.NewRecorder()
+	srv.handleWaitRequestV1(rec, reqWithID("/api/v1/requests/req_shared_body/wait", `{"session":"projA","timeout":"87600h","poll":"1ns"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wait(body session=projA) status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var waitResp struct {
+		Session  string `json:"session"`
+		Terminal bool   `json:"terminal"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &waitResp); err != nil {
+		t.Fatalf("unmarshal wait response: %v", err)
+	}
+	if waitResp.Session != "projA" || !waitResp.Terminal || waitResp.Status != string(state.SendOperationCanceled) {
+		t.Fatalf("wait(body session=projA) = %+v, want projA terminal canceled", waitResp)
 	}
 }

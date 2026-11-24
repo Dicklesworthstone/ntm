@@ -204,6 +204,7 @@ func TestSpawnPolicyReachesSerializedAdmission(t *testing.T) {
 					t.Error("over-cap spawn crossed the admission boundary")
 					return false, errors.New("unexpected lifecycle access")
 				},
+				CollectPressure: deterministicTestPressure,
 			}
 			opts := robot.SpawnOptions{Session: "policy-budget", CCCount: 1, NoUserPane: true, DryRun: dryRun, LifecycleDeps: ports}
 			out, err := s.spawnWithPolicy(context.Background(), opts, "/operator/config.toml", true,

@@ -50,6 +50,7 @@ model = "http-project-model"
 				t.Error("recipe preview created a session")
 				return nil
 			},
+			CollectPressure: deterministicTestPressure,
 		}
 		return robot.GetSpawn(ctx, opts, cfg)
 	}
@@ -104,6 +105,7 @@ func TestConfiguredSwarmJobUsesSelectedLaunchCommand(t *testing.T) {
 			StartSessionMonitor: func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
 				return &resilience.SpawnMonitorResult{}, nil
 			},
+			CollectPressure: deterministicTestPressure,
 		}
 		return configured(ctx, opts)
 	}
@@ -196,6 +198,7 @@ func TestRESTSpawnProvisionsAgentMailIdentity(t *testing.T) {
 			StartSessionMonitor: func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
 				return &resilience.SpawnMonitorResult{}, nil
 			},
+			CollectPressure: deterministicTestPressure,
 		}
 		return configured(ctx, opts)
 	}
@@ -312,6 +315,7 @@ func TestConfiguredSwarmJobEnforcesFleetLimitWithoutAssignment(t *testing.T) {
 				t.Error("over-cap API spawn reached session creation preflight")
 				return false, errors.New("unexpected lifecycle access")
 			},
+			CollectPressure: deterministicTestPressure,
 		}
 		return configured(ctx, opts)
 	}

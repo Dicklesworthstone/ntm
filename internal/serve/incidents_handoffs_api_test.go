@@ -137,14 +137,8 @@ func TestIncidentsRESTEndpointsLifecycle(t *testing.T) {
 
 	// 2. Backed by real SQLite runtime store
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	store, err := statepkg.Open(dbPath)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
+	store := openFastServeStateStore(t, dbPath)
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("store.Migrate: %v", err)
-	}
 
 	srv := New(Config{ProjectDir: t.TempDir(), StateStore: store})
 	t.Cleanup(srv.Stop)

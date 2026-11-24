@@ -42,6 +42,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -205,6 +206,34 @@ func openFastMigratedMemoryStore(t testing.TB) *state.Store {
 		t.Fatalf("Failed to enable foreign_keys on deserialized store: %v", err)
 	}
 	return store
+}
+
+func openFastServeStateStore(t testing.TB, dbPath string) *state.Store {
+	t.Helper()
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+			t.Fatalf("mkdir serve state db dir: %v", err)
+		}
+		if err := os.WriteFile(dbPath, serveSchemaSnapshot(t), 0o600); err != nil {
+			t.Fatalf("seed serve state db: %v", err)
+		}
+	}
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open(%q): %v", dbPath, err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("store.Migrate(%q): %v", dbPath, err)
+	}
+	return store
+}
+
+func deterministicTestPressure(context.Context) pressure.Snapshot {
+	return pressure.Snapshot{
+		TakenAt: time.Now().UTC(),
+		Overall: pressure.LevelLow,
+	}
 }
 
 // setForceReleasePolicy points HOME at a hermetic dir whose policy pins
@@ -3489,7 +3518,16 @@ func TestEventStreamSSE(t *testing.T) {
 	// Create a request with a cancelable context
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
-	rec := httptest.NewRecorder()
+	flushed := make(chan struct{}, 1)
+	rec := &sseTestRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		onFlush: func() {
+			select {
+			case flushed <- struct{}{}:
+			default:
+			}
+		},
+	}
 
 	// Start the handler in a goroutine
 	done := make(chan struct{})
@@ -3498,8 +3536,13 @@ func TestEventStreamSSE(t *testing.T) {
 		close(done)
 	}()
 
-	// Give time for connection setup
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically for the initial connected event flush
+	select {
+	case <-flushed:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("Timed out waiting for initial SSE event flush")
+	}
 
 	// Cancel to end the request
 	cancel()
@@ -3508,7 +3551,7 @@ func TestEventStreamSSE(t *testing.T) {
 	select {
 	case <-done:
 		// OK
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("Handler did not complete after context cancel")
 	}
 

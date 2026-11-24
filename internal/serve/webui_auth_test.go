@@ -566,14 +566,7 @@ func TestServerMTLSAndHTTP2Qualification(t *testing.T) {
 		t.Fatalf("write trusted CA: %v", err)
 	}
 
-	store, err := state.Open(":memory:")
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		_ = store.Close()
-		t.Fatalf("store.Migrate: %v", err)
-	}
+	store := openFastMigratedMemoryStore(t)
 	t.Cleanup(func() { _ = store.Close() })
 
 	const seededSession = "mtls-qual-session"

@@ -148,6 +148,7 @@ func TestORISpawnParityAcrossCLIRobotAndREST(t *testing.T) {
 			},
 			CAAMSeatResolver: resolver,
 			HookExecutor:     hookExec,
+			CollectPressure:  deterministicTestPressure,
 		}
 		return deps, &launchDirs
 	}

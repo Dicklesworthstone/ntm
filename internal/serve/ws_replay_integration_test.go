@@ -26,14 +26,7 @@ import (
 // applied — the same path production takes in internal/cli/serve.go.
 func newMigratedStateStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		store.Close()
-		t.Fatalf("apply migrations: %v", err)
-	}
+	store := openFastServeStateStore(t, filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
 			t.Errorf("close state store: %v", err)
