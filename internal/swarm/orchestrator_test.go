@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestNewSessionOrchestrator(t *testing.T) {
@@ -755,5 +757,21 @@ func TestRemoteConnectionInfo_Failed(t *testing.T) {
 
 	if info.Error == "" {
 		t.Error("expected non-empty Error for failed connection")
+	}
+}
+
+func TestSwarmControlPaneAndOmpGracefulExit(t *testing.T) {
+	t.Parallel()
+	if !isSwarmControlPane(tmux.Pane{Index: 0, Type: tmux.AgentUser}) {
+		t.Fatal("expected user pane to be treated as control pane")
+	}
+	if !isSwarmControlPane(tmux.Pane{Index: 2, Service: "dev-server", Type: tmux.AgentUnknown}) {
+		t.Fatal("expected service pane to be treated as control pane")
+	}
+	if isSwarmControlPane(tmux.Pane{Index: 1, Title: "proj__cc_1", Type: tmux.AgentClaude}) {
+		t.Fatal("agent pane at index 1 must not be skipped as a control pane")
+	}
+	if got := gracefulExitMethodForAgent("omp"); got != gracefulExitEscapeClearEOF {
+		t.Fatalf("gracefulExitMethodForAgent(omp) = %v, want gracefulExitEscapeClearEOF", got)
 	}
 }

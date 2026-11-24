@@ -902,8 +902,8 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 				continue
 			}
 			for _, pane := range panes {
-				// Skip control panes (same logic as graceful path)
-				if pane.Index == 1 {
+				// Skip user shell and managed service control panes (never hardcode pane.Index == 1).
+				if isSwarmControlPane(pane) {
 					continue
 				}
 				result.ForceKills++
@@ -930,13 +930,13 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 			}
 
 			for _, pane := range panes {
-				// Skip control panes
-				if pane.Index == 1 {
+				// Skip user shell and managed service control panes.
+				if isSwarmControlPane(pane) {
 					continue
 				}
 
 				// Send graceful exit signal based on agent type
-				if err := sendGracefulExit(client, pane); err != nil {
+				if err := sendGracefulExit(ctx, client, pane); err != nil {
 					logger.Warn("[SwarmOrchestrator] graceful_exit_failed",
 						"pane", pane.ID,
 						"agent", pane.Type,
@@ -999,37 +999,58 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 	return result, nil
 }
 
-// sendGracefulExit sends the appropriate exit signal for an agent type.
-func sendGracefulExit(client *tmux.Client, pane tmux.Pane) error {
+func isSwarmControlPane(pane tmux.Pane) bool {
+	return pane.Type.Canonical() == tmux.AgentUser || pane.IsServicePane()
+}
+
+// sendGracefulExit sends the appropriate exit signal for an agent type using
+// real tmux key commands (SendInterrupt, Escape, SendOmpExitContext,
+// SendKeysForAgent) rather than passing raw control bytes through `-l`.
+func sendGracefulExit(ctx context.Context, client *tmux.Client, pane tmux.Pane) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agentType := string(pane.Type)
 
 	switch gracefulExitMethodForAgent(agentType) {
 	case gracefulExitDoubleInterrupt:
-		// Claude: Double Ctrl+C with 100ms gap
-		if err := client.SendKeys(pane.ID, "\x03", false); err != nil {
+		// Claude / Grok / Pi / OpenCode: Double Ctrl+C with 100ms gap
+		if err := client.SendInterruptContext(ctx, pane.ID); err != nil {
 			return err
 		}
-		time.Sleep(100 * time.Millisecond)
-		return client.SendKeys(pane.ID, "\x03", false)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+		return client.SendInterruptContext(ctx, pane.ID)
 
 	case gracefulExitSlashExit:
-		// Codex: /exit command
-		return client.SendKeys(pane.ID, "/exit", true)
+		// Codex: /exit command using agent-aware double-enter semantics
+		return client.SendKeysForAgentContext(ctx, pane.ID, "/exit", true, pane.Type)
 
 	case gracefulExitEscapeInterrupt:
-		// Gemini: Escape then Ctrl+C
-		if err := client.SendKeys(pane.ID, "\x1b", false); err != nil {
+		// Gemini / Antigravity: Escape then Ctrl+C
+		if err := client.RunSilentContext(ctx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "Escape"); err != nil {
 			return err
 		}
-		time.Sleep(50 * time.Millisecond)
-		return client.SendKeys(pane.ID, "\x03", false)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+		return client.SendInterruptContext(ctx, pane.ID)
+
+	case gracefulExitEscapeClearEOF:
+		// Oh My Pi: Escape -> Ctrl+C -> Ctrl+D
+		return client.SendOmpExitContext(ctx, pane.ID)
 
 	case gracefulExitSingleInterrupt:
-		// Just send Ctrl+C as a best effort graceful exit for these
-		return client.SendKeys(pane.ID, "\x03", false)
+		// Cursor / Windsurf / Aider / Ollama: single Ctrl+C
+		return client.SendInterruptContext(ctx, pane.ID)
 
 	default:
 		// Unknown agents: try standard Ctrl+C
-		return client.SendKeys(pane.ID, "\x03", false)
+		return client.SendInterruptContext(ctx, pane.ID)
 	}
 }

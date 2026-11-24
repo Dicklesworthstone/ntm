@@ -14,6 +14,7 @@ const (
 	gracefulExitDoubleInterrupt gracefulExitMethod = iota
 	gracefulExitSlashExit
 	gracefulExitEscapeInterrupt
+	gracefulExitEscapeClearEOF
 	gracefulExitSingleInterrupt
 )
 
@@ -25,6 +26,8 @@ func gracefulExitMethodForAgent(agentType string) gracefulExitMethod {
 		return gracefulExitSlashExit
 	case agent.GracefulExitEscapeInterrupt:
 		return gracefulExitEscapeInterrupt
+	case agent.GracefulExitEscapeClearEOF:
+		return gracefulExitEscapeClearEOF
 	case agent.GracefulExitSingleInterrupt:
 		return gracefulExitSingleInterrupt
 	default:
