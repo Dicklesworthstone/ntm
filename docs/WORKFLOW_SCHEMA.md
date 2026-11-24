@@ -561,7 +561,7 @@ steps:
 
     # Agent selection (choose one)
     agent: claude            # Agent type
-    pane: 1                  # OR specific pane index
+    pane: 1                  # OR a unique pane index, or a quoted physical tmux ID such as "%41"
     route: least-loaded      # OR routing strategy
 
     # Prompt (choose one)

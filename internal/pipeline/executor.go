@@ -3274,21 +3274,9 @@ func resolveErrorAction(stepOnError, workflowOnError ErrorAction) ErrorAction {
 	return ErrorActionFail
 }
 
-// resolvePaneExprCtx substitutes PaneSpec.Expr against the executor's variable
-// layer and parses the result as a 1-based pane index, populating
-// step.Pane.Index in place. No-op when Expr is empty or Index is already set
-// (foreach materialization fills Index from per-iteration assignments and
-// substituteForeachStepFields zeroes Expr after resolving, so a populated
-// Index means the value is already authoritative).
-//
-// A non-int substitution result surfaces a clear error rather than silently
-// dispatching to the wrong pane. The substitution uses the strict
-// substitutor so unresolved ${defaults.X} / ${vars.X} references fail
-// loudly at this seam (bd-6lkqr.4).
-//
-// bd-s2edh: foreach max_rounds round overlays attached to ctx must be
-// honoured when resolving Pane.Expr inside a body step, otherwise
-// pane.expr=${round} cannot resolve under parallel: true + max_rounds > 1.
+// resolvePaneExprCtx resolves a workflow pane expression in its iteration scope.
+// Integer results retain the workflow's pane-index semantics. A physical %ID
+// remains a string so it cannot be confused with a window-local index.
 func (e *Executor) resolvePaneExprCtx(ctx context.Context, step *Step) error {
 	if step == nil || step.Pane.Expr == "" || step.Pane.Index != 0 {
 		return nil
@@ -3298,6 +3286,13 @@ func (e *Executor) resolvePaneExprCtx(ctx context.Context, step *Step) error {
 		return fmt.Errorf("resolve pane expression %q: %w", step.Pane.Expr, err)
 	}
 	resolved = strings.TrimSpace(resolved)
+	if strings.HasPrefix(resolved, "%") {
+		if _, err := tmux.ParsePaneSelector(resolved); err != nil {
+			return err
+		}
+		step.Pane.Expr = resolved
+		return nil
+	}
 	idx, err := strconv.Atoi(resolved)
 	if err != nil {
 		return fmt.Errorf("pane expression %q resolved to %q which is not an integer pane index: %w",
@@ -3309,6 +3304,37 @@ func (e *Executor) resolvePaneExprCtx(ctx context.Context, step *Step) error {
 	step.Pane.Index = idx
 	step.Pane.Expr = ""
 	return nil
+}
+
+// explicitWorkflowPane preserves the workflow language's historical meaning of
+// a number (pane index) even when the session has several windows. Require a
+// physical ID if more than one pane occupies that index.
+func (e *Executor) explicitWorkflowPane(spec PaneSpec) (tmux.Pane, error) {
+	panes, err := e.tmuxClient().GetPanes(e.config.Session)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("failed to get panes: %w", err)
+	}
+	if spec.Index == 0 {
+		matches, err := tmux.ResolvePaneSelectors(panes, []string{spec.Expr}, true)
+		if err != nil {
+			return tmux.Pane{}, err
+		}
+		return matches[0], nil
+	}
+	var match *tmux.Pane
+	for i := range panes {
+		if panes[i].Index != spec.Index {
+			continue
+		}
+		if match != nil {
+			return tmux.Pane{}, fmt.Errorf("pane index %d is ambiguous across windows (%s, %s); specify a physical pane ID", spec.Index, match.ID, panes[i].ID)
+		}
+		match = &panes[i]
+	}
+	if match == nil {
+		return tmux.Pane{}, fmt.Errorf("pane %d not found", spec.Index)
+	}
+	return *match, nil
 }
 
 // selectAndMarkPane selects a pane for a step and marks it as used atomically.
@@ -3328,21 +3354,15 @@ func (e *Executor) selectAndMarkPane(ctx context.Context, step *Step, usedPanes 
 	if err := e.resolvePaneExprCtx(ctx, step); err != nil {
 		return "", "", err
 	}
-	if step.Pane.Index > 0 {
-		panes, err := e.tmuxClient().GetPanes(e.config.Session)
+	if !step.Pane.IsZero() {
+		pane, err := e.explicitWorkflowPane(step.Pane)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to get panes: %w", err)
+			return "", "", err
 		}
-		for _, p := range panes {
-			if p.Index == step.Pane.Index {
-				// We still need to mark it as used to prevent others from picking it via auto-selection
-				panesMu.Lock()
-				usedPanes[p.ID] = true
-				panesMu.Unlock()
-				return p.ID, string(p.Type), nil
-			}
-		}
-		return "", "", fmt.Errorf("pane %d not found", step.Pane.Index)
+		panesMu.Lock()
+		usedPanes[pane.ID] = true
+		panesMu.Unlock()
+		return pane.ID, string(pane.Type), nil
 	}
 
 	// Use ScoreAgents to get all scored agents (slow operation, do outside lock)
@@ -3447,17 +3467,12 @@ func (e *Executor) selectPane(ctx context.Context, step *Step) (paneID string, a
 	if err := e.resolvePaneExprCtx(ctx, step); err != nil {
 		return "", "", err
 	}
-	if step.Pane.Index > 0 {
-		panes, err := e.tmuxClient().GetPanes(e.config.Session)
+	if !step.Pane.IsZero() {
+		pane, err := e.explicitWorkflowPane(step.Pane)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to get panes: %w", err)
+			return "", "", err
 		}
-		for _, p := range panes {
-			if p.Index == step.Pane.Index {
-				return p.ID, string(p.Type), nil
-			}
-		}
-		return "", "", fmt.Errorf("pane %d not found", step.Pane.Index)
+		return pane.ID, string(pane.Type), nil
 	}
 
 	// Use ScoreAgents to get all scored agents
