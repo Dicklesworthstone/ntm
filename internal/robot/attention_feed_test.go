@@ -2084,17 +2084,8 @@ func TestSetAttentionFeed_StopsReplacedFeed(t *testing.T) {
 func newTestAttentionStore(t *testing.T) *state.Store {
 	t.Helper()
 
-	store, err := state.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open test store: %v", err)
-	}
+	store := openFastRobotMemoryStore(t)
 	t.Cleanup(func() { _ = store.Close() })
-
-	// Apply migrations to create the attention_events table
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate test store: %v", err)
-	}
-
 	return store
 }
 

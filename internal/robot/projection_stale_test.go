@@ -18,13 +18,7 @@ import (
 
 func newProjectionTestStore(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotMemoryStore(t)
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

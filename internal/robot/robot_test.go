@@ -267,10 +267,92 @@ func stubRobotWork(t *testing.T, collect func(ctx context.Context, store *state.
 var developerDataHome string
 
 var (
-	robotSchemaSnapshotOnce sync.Once
-	robotSchemaSnapshotData []byte
-	robotSchemaSnapshotErr  error
+	robotSchemaSnapshotOnce   sync.Once
+	robotSchemaSnapshotData   []byte
+	robotSchemaSnapshotErr    error
+	robotMemorySchemaOnce     sync.Once
+	robotMemorySchemaBytes    []byte
+	robotMemorySchemaErr      error
 )
+
+type robotSQLiteSerializer interface {
+	Serialize() ([]byte, error)
+}
+
+type robotSQLiteDeserializer interface {
+	Deserialize([]byte) error
+}
+
+func robotMemorySchemaSnapshot(t testing.TB) []byte {
+	t.Helper()
+	robotMemorySchemaOnce.Do(func() {
+		st, err := state.Open(":memory:")
+		if err != nil {
+			robotMemorySchemaErr = err
+			return
+		}
+		defer st.Close()
+		if err := st.Migrate(); err != nil {
+			robotMemorySchemaErr = err
+			return
+		}
+		sqlConn, err := st.DB().Conn(context.Background())
+		if err != nil {
+			robotMemorySchemaErr = err
+			return
+		}
+		defer sqlConn.Close()
+		var snapshot []byte
+		if err := sqlConn.Raw(func(driverConn any) error {
+			ser, ok := driverConn.(robotSQLiteSerializer)
+			if !ok {
+				return fmt.Errorf("sqlite driver connection %T does not implement Serialize()", driverConn)
+			}
+			var sErr error
+			snapshot, sErr = ser.Serialize()
+			return sErr
+		}); err != nil {
+			robotMemorySchemaErr = err
+			return
+		}
+		robotMemorySchemaBytes = snapshot
+	})
+	if robotMemorySchemaErr != nil {
+		t.Fatalf("build serialized robot state schema: %v", robotMemorySchemaErr)
+	}
+	return robotMemorySchemaBytes
+}
+
+func openFastRobotMemoryStore(t testing.TB) *state.Store {
+	t.Helper()
+	snapshot := robotMemorySchemaSnapshot(t)
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("state.Open(:memory:): %v", err)
+	}
+	sqlConn, err := store.DB().Conn(context.Background())
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("checkout sqlite conn: %v", err)
+	}
+	rawErr := sqlConn.Raw(func(driverConn any) error {
+		deser, ok := driverConn.(robotSQLiteDeserializer)
+		if !ok {
+			return fmt.Errorf("sqlite driver connection %T does not implement Deserialize()", driverConn)
+		}
+		return deser.Deserialize(snapshot)
+	})
+	_ = sqlConn.Close()
+	if rawErr != nil {
+		_ = store.Close()
+		t.Fatalf("deserialize robot state schema: %v", rawErr)
+	}
+	if _, err := store.DB().Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = store.Close()
+		t.Fatalf("enable foreign_keys on deserialized store: %v", err)
+	}
+	return store
+}
 
 // robotSchemaSnapshot builds one migrated SQLite state.db image once per test
 // binary so tests needing isolated on-disk state DBs skip re-running all
@@ -348,6 +430,15 @@ func TestMain(m *testing.M) {
 		return pressure.Snapshot{
 			TakenAt: time.Now().UTC(),
 			Overall: pressure.LevelLow,
+		}
+	}
+	collectSnapshotResourcePressure = func() *pressure.RobotPressure {
+		return &pressure.RobotPressure{
+			Success:           true,
+			Timestamp:         time.Now().UTC().Format(time.RFC3339),
+			Mode:              string(pressure.ModeObserve),
+			Overall:           pressure.LevelLow.String(),
+			RecommendedAction: "proceed",
 		}
 	}
 	if os.Getenv("NTM_ROBOT_TEST_ISOLATED") == "1" {
@@ -3535,13 +3626,7 @@ func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T
 
 func TestBuildProjectionBackedSnapshotSessionsLargeSwarmStableOrdering(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Migrate store: %v", err)
-	}
+	store := openFastRobotMemoryStore(t)
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
@@ -7154,6 +7239,33 @@ func TestOmpRobotStateDialogsAndContext(t *testing.T) {
 	}
 	if _, ok := ompStatusBarUsage("omp", selector, at); ok {
 		t.Error("a selector overlay hides the composer; no gauge reading expected")
+	}
+
+	piIdle := "────────────────────────────────────────\n\n────────────────────────────────────────\n" +
+		"~/repo (main)\n↑1.2k ↓500 12.5%/200k (auto)  (anthropic) claude-sonnet-4 • high\n"
+	piGauge, ok := piStatusBarUsage("pi", piIdle, at)
+	if !ok || piGauge.ContextWindow != 200000 || piGauge.Tokens != 25000 {
+		t.Errorf("pi gauge = (%+v, %v), want 12.5%% of 200000", piGauge, ok)
+	}
+	if _, ok := piStatusBarUsage("claude", piIdle, at); ok {
+		t.Error("the pi gauge must never be read for another agent type")
+	}
+	piAgent := &Agent{Type: "pi"}
+	enrichAgentContext(piAgent, "claude-sonnet-4", piIdle, nil)
+	if piAgent.ContextTokens != 25000 || piAgent.ContextLimit != 200000 || piAgent.ContextPercent != 12.5 {
+		t.Errorf("enrichAgentContext(pi) = tokens=%d limit=%d pct=%v, want 25000/200000/12.5",
+			piAgent.ContextTokens, piAgent.ContextLimit, piAgent.ContextPercent)
+	}
+	ocRaw, err := os.ReadFile("../agent/testdata/opencode_working.txt")
+	if err != nil {
+		t.Fatalf("read opencode fixture: %v", err)
+	}
+	ocSidebar := strings.NewReplacer("0 tokens", "50,000 tokens", "0% used", "25% used").Replace(string(ocRaw))
+	ocAgent := &Agent{Type: "opencode"}
+	enrichAgentContext(ocAgent, "", ocSidebar, nil)
+	if ocAgent.ContextTokens != 50000 || ocAgent.ContextLimit != 200000 || ocAgent.ContextPercent != 25 {
+		t.Errorf("enrichAgentContext(opencode) = tokens=%d limit=%d pct=%v, want 50000/200000/25",
+			ocAgent.ContextTokens, ocAgent.ContextLimit, ocAgent.ContextPercent)
 	}
 }
 
