@@ -1451,6 +1451,11 @@ const (
 	paneProcessStableObservations  = 2
 )
 
+// PaneProcessStartPoll controls how frequently WaitForPaneProcessStartContext
+// polls tmux while waiting for a newly launched command to stabilize.
+// Production keeps the 100ms default; tests may shorten it.
+var PaneProcessStartPoll = defaultPaneProcessStartPoll
+
 // A pane that tmux has just created is not immediately an idle shell: it
 // reports the tmux binary itself until the child execs the shell (~300 ms on
 // Linux), and then the shell's rc files run short-lived children (grep, sed,
@@ -1629,7 +1634,7 @@ func WaitForPaneProcessStartContext(ctx context.Context, session, paneID string)
 		session,
 		paneID,
 		defaultPaneProcessStartTimeout,
-		defaultPaneProcessStartPoll,
+		PaneProcessStartPoll,
 		paneProcessStableObservations,
 		GetPanesContext,
 	)
@@ -1655,7 +1660,10 @@ func waitForPaneProcessStartContext(
 		timeout = defaultPaneProcessStartTimeout
 	}
 	if pollInterval <= 0 {
-		pollInterval = defaultPaneProcessStartPoll
+		pollInterval = PaneProcessStartPoll
+		if pollInterval <= 0 {
+			pollInterval = defaultPaneProcessStartPoll
+		}
 	}
 	if requiredStableObservations < 1 {
 		requiredStableObservations = paneProcessStableObservations
@@ -4084,9 +4092,14 @@ func SendKeyName(target, keyName string) error {
 	return DefaultClient.SendKeyName(target, keyName)
 }
 
+// SendInterruptContext sends Ctrl+C to a pane with context cancellation.
+func (c *Client) SendInterruptContext(ctx context.Context, target string) error {
+	return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "C-c")
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
-	return c.RunSilent("send-keys", "-t", ExactTarget(target), "C-c")
+	return c.SendInterruptContext(context.Background(), target)
 }
 
 // SendInterrupt sends Ctrl+C to a pane (default client)
