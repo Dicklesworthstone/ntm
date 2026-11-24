@@ -266,6 +266,66 @@ describe("NtmWebSocket", () => {
       }
     });
 
+    it("refreshes expired attention history after a live-only subscription is accepted", async () => {
+      vi.useFakeTimers();
+      try {
+        const resets: string[] = [];
+        ws.onEvent((event) => resets.push(event.event_type));
+        ws.connect();
+        await vi.advanceTimersByTimeAsync(10);
+        const socket = MockWebSocket.instances[0];
+        const last = (s: MockWebSocket) => JSON.parse(String(s.send.mock.lastCall?.[0]));
+        const frame = (s: MockWebSocket, message: object) => s.onmessage?.({ data: JSON.stringify(message) });
+        const alpha = ws.subscribe("attention:alpha");
+        const original = last(socket);
+        const beta = ws.subscribe("attention:beta");
+        const current = last(socket);
+        frame(socket, { type: "error", code: "CURSOR_EXPIRED", message: "expired", request_id: original.request_id });
+        await expect(alpha).rejects.toThrow("expired");
+        expect(socket.send).toHaveBeenCalledTimes(2);
+
+        frame(socket, { type: "error", code: "CURSOR_EXPIRED", request_id: current.request_id });
+        const retry = last(socket);
+        expect(retry.data).toEqual({ topics: ["attention:alpha", "attention:beta"], since_cursor: -1 });
+        frame(socket, { type: "error", code: "CURSOR_EXPIRED", request_id: current.request_id });
+        expect(socket.send).toHaveBeenCalledTimes(3);
+        expect(resets).toEqual([]);
+        frame(socket, { type: "ack", request_id: retry.request_id, data: { attention: { newest_cursor: 87 } } });
+        await beta;
+        expect(resets).toEqual(["stream.reset"]);
+
+        // No event arrived between the recovery ACK and this disconnect.
+        socket.close(1013, "try again");
+        await vi.advanceTimersByTimeAsync(1010);
+        const next = MockWebSocket.instances[1];
+        expect(last(next).data.since_cursor).toBe(87);
+        frame(next, { type: "error", code: "CURSOR_EXPIRED", request_id: last(next).request_id });
+        expect(last(next).data.since_cursor).toBe(-1);
+        // Disconnect before the recovery ACK. The next socket must still
+        // start live and refresh only after that membership is confirmed.
+        next.close(1006, "lost before ack");
+        await vi.advanceTimersByTimeAsync(1010);
+        const third = MockWebSocket.instances[2];
+        expect(last(third).data.since_cursor).toBe(-1);
+        const thirdRef = last(third).request_id;
+        frame(third, { type: "event", topic: "attention:alpha", seq: 104, event_type: "mail.pending", data: {} });
+        frame(third, { type: "ack", request_id: thirdRef, data: { attention: { newest_cursor: 102 } } });
+        expect(resets).toEqual(["stream.reset", "mail.pending", "stream.reset"]);
+        third.close(1006, "reconnect");
+        await vi.advanceTimersByTimeAsync(1010);
+        const fourth = MockWebSocket.instances[3];
+        expect(last(fourth).data.since_cursor).toBe(104);
+
+        // A server rejecting even the live-only retry must not spin.
+        frame(fourth, { type: "error", code: "CURSOR_EXPIRED", request_id: last(fourth).request_id });
+        frame(fourth, { type: "error", code: "CURSOR_EXPIRED", request_id: last(fourth).request_id });
+        expect(fourth.send).toHaveBeenCalledTimes(2);
+      } finally {
+        ws.disconnect();
+        vi.useRealTimers();
+      }
+    });
+
     it("parses newline-batched websocket frames", async () => {
       const events: unknown[] = [];
       ws.onEvent((event) => events.push(event));
