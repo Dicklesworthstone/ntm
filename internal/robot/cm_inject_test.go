@@ -378,6 +378,71 @@ func TestInjectCMRules_NoRelevantRules(t *testing.T) {
 	}
 }
 
+func TestCMFallbackPreservesParentDeadlineAndCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("CLI transport fixture requires a POSIX shell")
+	}
+	for _, mode := range []string{"short-parent-deadline", "caller-canceled", "explicit-client"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := unavailableCMConfig(t)
+			cfg.SessionID = "session"
+			cfg.QueryTimeout = 10 * time.Second
+			marker := filepath.Join(cfg.ProjectDir, "cli-used")
+			cfg.CLIBinary = filepath.Join(cfg.ProjectDir, "cm")
+			script := "#!/bin/sh\n: > '" + strings.ReplaceAll(marker, "'", "'\\''") + "'\nprintf '%s\\n' '{\"success\":true,\"data\":{\"relevantBullets\":[{\"id\":\"fallback-rule\",\"content\":\"bounded fallback\"}]}}'\n"
+			if err := os.WriteFile(cfg.CLIBinary, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					return
+				}
+				if mode == "explicit-client" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				if mode == "caller-canceled" {
+					cancel()
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			u, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(u.Port())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(cfg.ProjectDir, ".ntm", "pids"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(cm.PIDFileInfo{PID: os.Getpid(), Port: port})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, ".ntm", "pids", "cm-session.pid"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "explicit-client" {
+				cfg.Client = cm.NewPortClient(port, cfg.SessionID)
+			}
+			message, info := InjectCMRules(ctx, "task", "original message", cfg)
+			_, usedCLI := os.Stat(marker)
+			if mode == "short-parent-deadline" {
+				if info.Source != "cli" || info.FallbackReason == "" || info.SkippedReason != "" || !strings.Contains(message, "bounded fallback") || usedCLI != nil || ctx.Err() != nil || info.outcome != nil {
+					t.Fatalf("parent deadline left no valid CLI fallback: info=%+v message=%q CLI=%v ctx=%v", info, message, usedCLI, ctx.Err())
+				}
+			} else if info.FallbackReason != "" || info.SkippedReason == "" || message != "original message" || !os.IsNotExist(usedCLI) {
+				t.Fatalf("cancellation or explicit override invoked fallback: info=%+v message=%q CLI=%v", info, message, usedCLI)
+			}
+		})
+	}
+}
+
 // --- daemon discovery ---
 
 func TestDiscoverCMDaemonClient(t *testing.T) {
@@ -738,7 +803,7 @@ func TestSendMemoryTargetScope(t *testing.T) {
 		t.Skip("recording transport requires a POSIX shell")
 	}
 	for _, tracked := range []bool{false, true} {
-		for _, mode := range []string{"daemon", "cli", "dry-run", "unknown", "remote", "canceled", "cancel-query", "disabled", "changed-daemon"} {
+		for _, mode := range []string{"daemon", "cli", "daemon-error", "daemon-timeout", "daemon-malformed", "daemon-empty", "fallback-error", "dry-run", "unknown", "remote", "canceled", "cancel-query", "disabled", "changed-daemon"} {
 			t.Run(fmt.Sprintf("tracked=%t/%s", tracked, mode), func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
@@ -779,6 +844,7 @@ exec /bin/sh -c "$command"
 				const cli = `#!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$NTM_CM_SCOPE_ROOT/cm-argv"
+if [ "$NTM_CM_SCOPE_MODE" = fallback-error ]; then printf 'memory index unavailable\n' >&2; exit 1; fi
 if [ "$1" = context ] && [ "$2" = --json ] && [ "$3" = "--workspace=$NTM_CM_SCOPE_TARGET" ] && [ "$4" = -- ]; then
   printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"target-rule","content":"TARGET_PROJECT_RULE"}]}}'
 else
@@ -853,6 +919,19 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 			if err := json.Unmarshal(args, &request); err != nil || request.Workspace != target {
 				t.Errorf("target daemon received wrong workspace: %s (%v)", args, err)
 			}
+			switch mode {
+			case "daemon-error", "fallback-error":
+				cmWriteToolError(t, w, id, "index is unavailable")
+				return
+			case "daemon-timeout":
+				time.Sleep(400 * time.Millisecond)
+			case "daemon-malformed":
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"relevantBullets":[{"id":"incomplete","content":"INCOMPLETE_DAEMON_RULE"}]}}{"unfinished":`)
+				return
+			case "daemon-empty":
+				cmWriteToolText(t, w, id, cmContextPayload())
+				return
+			}
 			if mode == "changed-daemon" {
 				writePID(target, "target", wrongPort)
 			}
@@ -890,6 +969,9 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 	mem.ProjectDir, mem.Workspace = caller, caller
 	mem.CLIBinary = filepath.Join(root, "cm")
 	mem.Enabled = mode != "disabled"
+	if mode == "daemon-timeout" {
+		mem.QueryTimeout = 600 * time.Millisecond
+	}
 	opts := SendOptions{Context: ctx, Session: "target", Pane: "%7", Message: "SCOPED_MEMORY_TASK", WithMemory: true, MemoryInject: &mem, DryRun: mode == "dry-run"}
 	if mode == "canceled" {
 		cancel()
@@ -928,15 +1010,29 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 		if info.SkippedReason == "" || queries.Load() != 0 || len(argv) != 0 || outcomes.Load() != 0 || strings.Contains(string(payload), "TARGET_PROJECT_RULE") {
 			t.Fatalf("unsafe scope did not skip memory: info=%+v queries=%d argv=%s payload=%s", info, queries.Load(), argv, payload)
 		}
+	} else if mode == "daemon-empty" || mode == "fallback-error" {
+		if info.SkippedReason == "" || len(info.RulesInjected) != 0 || outcomes.Load() != 0 || strings.Contains(string(payload), "TARGET_PROJECT_RULE") {
+			t.Fatalf("unavailable memory did not preserve a plain send: info=%+v payload=%s outcomes=%d", info, payload, outcomes.Load())
+		}
+		if mode == "daemon-empty" && (len(argv) != 0 || info.FallbackReason != "") {
+			t.Fatalf("a successful empty response triggered another lookup: info=%+v argv=%s", info, argv)
+		}
+		if mode == "fallback-error" && (len(argv) == 0 || info.FallbackReason == "") {
+			t.Fatalf("failed CLI fallback was not recorded: info=%+v argv=%s", info, argv)
+		}
 	} else {
 		if info.SkippedReason != "" || info.Workspace != target || len(info.RulesInjected) != 1 || info.RulesInjected[0] != "target-rule" {
 			t.Fatalf("wrong memory receipt: %+v", info)
 		}
-		if mode == "cli" && !strings.Contains(string(argv), "--workspace="+target+"\n") {
+		fallback := mode == "daemon-error" || mode == "daemon-timeout" || mode == "daemon-malformed"
+		if (mode == "cli" || fallback) && !strings.Contains(string(argv), "--workspace="+target+"\n") {
 			t.Fatalf("CM CLI lost target workspace: %s", argv)
 		}
+		if fallback && (info.Source != "cli" || info.FallbackReason == "" || queries.Load() != 1 || strings.Contains(string(payload), "INCOMPLETE_DAEMON_RULE")) {
+			t.Fatalf("daemon failover lost its source or accepted incomplete context: info=%+v queries=%d payload=%s", info, queries.Load(), payload)
+		}
 		wantOutcomes := int32(0)
-		if tracked && mode != "cli" && mode != "dry-run" {
+		if tracked && mode != "cli" && mode != "dry-run" && !fallback {
 			wantOutcomes = 1
 		}
 		if outcomes.Load() != wantOutcomes {
@@ -947,7 +1043,7 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 		if len(payload) != 0 || !output.DryRun {
 			t.Fatalf("dry run actuated: payload=%s output=%+v", payload, output)
 		}
-	} else if !strings.Contains(string(payload), "SCOPED_MEMORY_TASK") || (!skipped && !strings.Contains(string(payload), "TARGET_PROJECT_RULE")) {
+	} else if !strings.Contains(string(payload), "SCOPED_MEMORY_TASK") || (!skipped && mode != "daemon-empty" && mode != "fallback-error" && !strings.Contains(string(payload), "TARGET_PROJECT_RULE")) {
 		t.Fatalf("actual delivery omitted target memory/task: %s", payload)
 	}
 }

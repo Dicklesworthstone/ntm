@@ -6945,6 +6945,8 @@ export interface components {
         CMInjectionInfo: {
             /** @description Enabled */
             enabled: boolean;
+            /** @description Fallback reason */
+            fallback_reason?: string;
             /** @description Rules injected */
             rules_injected?: string[];
             /** @description Skipped reason */
