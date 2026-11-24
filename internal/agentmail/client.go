@@ -115,11 +115,16 @@ type Client struct {
 // nil field).
 type availabilityErrBox struct{ err error }
 
-// tokenKey builds the cache key for the registration-token map. Using
-// a unit-separator (\x1f) between components avoids any chance of
-// `project:agent` ambiguity from paths that happen to contain colons.
+// tokenKey builds the cache key for the registration-token map. Canonicalizing
+// symlinked project paths ensures tokens hydrated under one alias (e.g.
+// /data/projects/ntm) are found when callers invoke from another (/dp/ntm).
+// Using a unit-separator (\x1f) avoids ambiguity from paths containing colons.
 func tokenKey(projectKey, agentName string) string {
-	return projectKey + "\x1f" + agentName
+	canonical := CanonicalProjectKey(projectKey)
+	if canonical != "" {
+		canonical = filepath.Clean(canonical)
+	}
+	return canonical + "\x1f" + agentName
 }
 
 // SetRegistrationToken stores the registration token for an agent so

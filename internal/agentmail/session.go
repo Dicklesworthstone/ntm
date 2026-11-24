@@ -70,7 +70,19 @@ func validateSessionStorageName(sessionName string) error {
 	return nil
 }
 
+func canonicalCleanProjectKey(projectKey string) string {
+	canonical := CanonicalProjectKey(projectKey)
+	if canonical == "" {
+		return ""
+	}
+	return filepath.Clean(canonical)
+}
+
 func primaryProjectSlug(projectKey string) string {
+	canonical := canonicalCleanProjectKey(projectKey)
+	if canonical != "" {
+		projectKey = canonical
+	}
 	slug := ProjectSlugFromPath(projectKey)
 	if slug == "" {
 		slug = sanitizeSessionName(projectKey)
@@ -85,11 +97,16 @@ func projectSlugCandidates(projectKey string) []string {
 
 	candidates := []string{}
 	seen := make(map[string]struct{})
-	for _, slug := range []string{
+	canonical := canonicalCleanProjectKey(projectKey)
+	rawSlugs := []string{
 		primaryProjectSlug(projectKey),
+		ProjectSlugFromPath(projectKey),
+		legacyProjectSlugFromPath(canonical),
 		legacyProjectSlugFromPath(projectKey),
+		sanitizeSessionName(canonical),
 		sanitizeSessionName(projectKey),
-	} {
+	}
+	for _, slug := range rawSlugs {
 		if slug == "" {
 			continue
 		}
@@ -177,7 +194,7 @@ func LoadSessionAgent(sessionName, projectKey string) (*SessionAgentInfo, error)
 			if err := json.Unmarshal(data, &info); err != nil {
 				return nil, fmt.Errorf("parsing session agent: %w", err)
 			}
-			if projectKey != "" && filepath.Clean(info.ProjectKey) != filepath.Clean(projectKey) {
+			if projectKey != "" && !ProjectKeysEquivalent(info.ProjectKey, projectKey) {
 				continue
 			}
 			return &info, nil
@@ -297,8 +314,8 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 		return nil, err
 	}
 
-	// If already registered with same project, just update activity
-	if existing != nil && existing.ProjectKey == workingDir && existing.AgentName != "" {
+	// If already registered with same project (including symlink aliases), just update activity
+	if existing != nil && ProjectKeysEquivalent(existing.ProjectKey, workingDir) && existing.AgentName != "" {
 		// Prime the client's token cache with the persisted token so the
 		// re-register call below authenticates as the existing identity.
 		if existing.RegistrationToken != "" {
@@ -546,7 +563,7 @@ func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hy
 				size:    info.Size(),
 			},
 			projectKey: registry.ProjectKey,
-			cleanProj:  filepath.Clean(registry.ProjectKey),
+			cleanProj:  canonicalCleanProjectKey(registry.ProjectKey),
 			tokens:     registry.RegistrationTokens,
 		}, true
 	}
@@ -661,7 +678,7 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 	if err != nil || !baseInfo.IsDir() {
 		return
 	}
-	target := filepath.Clean(projectKey)
+	target := canonicalCleanProjectKey(projectKey)
 	baseModUnix := baseInfo.ModTime().UnixNano()
 	currentGen := tokenHydrationWriteGen.Load()
 
@@ -700,7 +717,7 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 			if err != nil || registry == nil {
 				continue
 			}
-			if filepath.Clean(registry.ProjectKey) != target {
+			if !ProjectKeysEquivalent(registry.ProjectKey, projectKey) {
 				continue
 			}
 			registry.HydrateClientTokens(c)
@@ -794,7 +811,7 @@ func LoadSessionAgentRegistry(sessionName, projectKey string) (*SessionAgentRegi
 			if err := json.Unmarshal(data, &registry); err != nil {
 				return nil, fmt.Errorf("parsing agent registry: %w", err)
 			}
-			if projectKey != "" && filepath.Clean(registry.ProjectKey) != filepath.Clean(projectKey) {
+			if projectKey != "" && !ProjectKeysEquivalent(registry.ProjectKey, projectKey) {
 				continue
 			}
 			return &registry, nil
@@ -916,7 +933,7 @@ func mutateSessionAgentRegistry(ctx context.Context, session, projectKey string,
 	if err != nil {
 		return err
 	}
-	if current != nil && (current.SessionName != session || filepath.Clean(current.ProjectKey) != filepath.Clean(projectKey)) {
+	if current != nil && (current.SessionName != session || !ProjectKeysEquivalent(current.ProjectKey, projectKey)) {
 		return errors.New("agent registry identity does not match mutation scope")
 	}
 	return apply(path, current)

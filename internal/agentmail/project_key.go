@@ -40,6 +40,9 @@ func ProjectKeysEquivalent(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
 	ra, errA := filepath.EvalSymlinks(a)
 	rb, errB := filepath.EvalSymlinks(b)
 	if errA != nil || errB != nil {

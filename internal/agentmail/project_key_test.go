@@ -77,4 +77,62 @@ func TestProjectKeysEquivalent(t *testing.T) {
 	if !ProjectKeysEquivalent("", "") {
 		t.Error("two empty keys are trivially equivalent")
 	}
+	if !ProjectKeysEquivalent("/nonexistent/proj/", "/nonexistent/proj") {
+		t.Error("cleaned paths must remain equivalent")
+	}
+}
+
+func TestSymlinkedProjectPathRegistrySessionAndTokenHydration(t *testing.T) {
+	realDir, linkDir := makeSymlinkedDir(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	const sessName = "symlink-test-sess"
+	info := &SessionAgentInfo{
+		AgentName:         "BlueLake",
+		ProjectKey:        realDir,
+		RegistrationToken: "tok-coord-1",
+	}
+	if err := SaveSessionAgent(sessName, realDir, info); err != nil {
+		t.Fatalf("SaveSessionAgent: %v", err)
+	}
+	loadedInfo, err := LoadSessionAgent(sessName, linkDir)
+	if err != nil || loadedInfo == nil || loadedInfo.AgentName != "BlueLake" {
+		t.Fatalf("LoadSessionAgent via symlink = (%+v, %v), want BlueLake", loadedInfo, err)
+	}
+
+	reg := &SessionAgentRegistry{
+		SessionName: sessName,
+		ProjectKey:  realDir,
+		Agents:      map[string]string{"%1": "GreenCastle"},
+	}
+	reg.SetRegistrationToken("GreenCastle", "tok-agent-1")
+	if err := SaveSessionAgentRegistry(reg); err != nil {
+		t.Fatalf("SaveSessionAgentRegistry: %v", err)
+	}
+
+	loadedReg, err := LoadSessionAgentRegistry(sessName, linkDir)
+	if err != nil || loadedReg == nil || loadedReg.Agents["%1"] != "GreenCastle" {
+		t.Fatalf("LoadSessionAgentRegistry via symlink = (%+v, %v), want GreenCastle", loadedReg, err)
+	}
+
+	client := NewClient()
+	HydrateClientTokensForProject(client, linkDir)
+	if got := client.RegistrationToken(linkDir, "GreenCastle"); got != "tok-agent-1" {
+		t.Fatalf("RegistrationToken via symlink = %q, want tok-agent-1", got)
+	}
+	if got := client.RegistrationToken(realDir, "GreenCastle"); got != "tok-agent-1" {
+		t.Fatalf("RegistrationToken via real path = %q, want tok-agent-1", got)
+	}
+
+	// Mutating via the symlink alias must update the same canonical registry
+	// file rather than creating a second split-brain slug directory.
+	loadedReg.ProjectKey = linkDir
+	loadedReg.SetRegistrationToken("GreenCastle", "tok-agent-2")
+	if err := SaveSessionAgentRegistry(loadedReg); err != nil {
+		t.Fatalf("SaveSessionAgentRegistry via symlink: %v", err)
+	}
+	reloadedReal, err := LoadSessionAgentRegistry(sessName, realDir)
+	if err != nil || reloadedReal == nil || reloadedReal.RegistrationToken("GreenCastle") != "tok-agent-2" {
+		t.Fatalf("reloaded real registry = (%+v, %v), want tok-agent-2", reloadedReal, err)
+	}
 }
