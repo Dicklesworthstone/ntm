@@ -29,8 +29,7 @@ var (
 
 // SessionCoordinator manages agent coordination for a tmux session.
 type SessionCoordinator struct {
-	mu          sync.RWMutex
-	lifecycleMu sync.Mutex
+	mu sync.RWMutex
 
 	// Identity
 	session    string // tmux session name
@@ -123,10 +122,19 @@ type SessionCoordinator struct {
 	events chan CoordinatorEvent
 
 	// Control
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	run      *coordinatorRun
 	started  bool
 	stopping bool
+}
+
+// coordinatorRun owns one start/stop generation, including the synchronous
+// initial observation. Stop cancels that observation and every background
+// action before joining them. A separate wait group per generation prevents a
+// retry from being joined or canceled by a previous Stop caller.
+type coordinatorRun struct {
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	finish sync.Once
 }
 
 // AgentState tracks the current state of an agent pane.
@@ -247,7 +255,6 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		agents:              make(map[string]*AgentState),
 		config:              DefaultCoordinatorConfig(),
 		events:              make(chan CoordinatorEvent, 100),
-		stopCh:              make(chan struct{}),
 	}
 	return c
 }
@@ -288,6 +295,11 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	c.mu.Lock()
+	if c.run != nil {
+		c.mu.Unlock()
+		return errors.New("coordinator already started")
+	}
 
 	// Validate and fix interval configuration to prevent ticker panics.
 	// time.NewTicker requires a positive duration.
@@ -298,77 +310,86 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 		c.config.DigestInterval = DefaultCoordinatorConfig().DigestInterval
 	}
 
-	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
-
-	c.mu.Lock()
-	if c.started || c.stopping {
-		c.mu.Unlock()
-		return errors.New("coordinator already started")
-	}
-
-	stopCh := make(chan struct{})
-	c.stopCh = stopCh
+	runCtx, cancel := context.WithCancel(ctx)
+	run := &coordinatorRun{cancel: cancel}
+	// Keep the count positive while startup may still add the worker loops.
+	// Stop must join startup even when an external reader ignores cancellation.
+	run.wg.Add(1)
+	c.run = run
 	c.started = true
 	c.stopping = false
 	c.mu.Unlock()
 
 	// Perform initial update synchronously to ensure state is ready. A coordinator
 	// that cannot observe its target session must not announce a healthy runtime.
-	if err := c.Observe(ctx); err != nil {
-		c.mu.Lock()
-		c.started = false
-		c.stopCh = nil
-		c.mu.Unlock()
+	err := c.Observe(runCtx)
+	if err == nil {
+		err = runCtx.Err()
+	}
+	if err != nil {
+		cancel()
+		run.wg.Done()
+		c.finishRun(run)
 		return fmt.Errorf("initial coordinator observation: %w", err)
 	}
 
 	// Start monitoring goroutine
-	c.wg.Add(1)
-	go c.monitorLoop(ctx, stopCh)
+	run.wg.Add(1)
+	go func() {
+		defer run.wg.Done()
+		c.monitorLoop(runCtx)
+	}()
 
 	// Start digest goroutine if enabled
 	if c.config.SendDigests {
-		c.wg.Add(1)
-		go c.digestLoop(ctx, stopCh)
+		run.wg.Add(1)
+		go func() {
+			defer run.wg.Done()
+			c.digestLoop(runCtx)
+		}()
 	}
+	run.wg.Done()
 
 	return nil
 }
 
 // Stop halts coordinator operations.
 func (c *SessionCoordinator) Stop() {
-	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
-
 	c.mu.Lock()
-	if !c.started || c.stopping {
+	run := c.run
+	if run == nil {
 		c.mu.Unlock()
 		return
 	}
-	stopCh := c.stopCh
 	c.started = false
 	c.stopping = true
+	run.cancel()
 	c.mu.Unlock()
 
-	if stopCh != nil {
-		close(stopCh)
-	}
-	c.wg.Wait()
+	c.finishRun(run)
+}
 
-	c.mu.Lock()
-	c.stopCh = nil
-	c.stopping = false
-	mailNudge := c.mailNudge
-	caamFailover := c.caamFailover
-	c.mu.Unlock()
-
-	if mailNudge != nil {
-		_ = mailNudge.Close()
-	}
-	if caamFailover != nil {
-		_ = caamFailover.Close()
-	}
+func (c *SessionCoordinator) finishRun(run *coordinatorRun) {
+	run.finish.Do(func() {
+		run.wg.Wait()
+		c.mu.Lock()
+		mailNudge := c.mailNudge
+		caamFailover := c.caamFailover
+		c.mu.Unlock()
+		if mailNudge != nil {
+			_ = mailNudge.Close()
+		}
+		if caamFailover != nil {
+			_ = caamFailover.Close()
+		}
+		c.mu.Lock()
+		c.mailNudge = nil
+		c.caamFailover = nil
+		c.run = nil
+		c.started = false
+		c.stopping = false
+		c.mu.Unlock()
+	})
 }
 
 // GetAgents returns the current state of all tracked agents.
@@ -430,17 +451,13 @@ func (c *SessionCoordinator) getAssignmentCandidates() []*AgentState {
 }
 
 // monitorLoop periodically updates agent states.
-func (c *SessionCoordinator) monitorLoop(ctx context.Context, stopCh <-chan struct{}) {
-	defer c.wg.Done()
-
+func (c *SessionCoordinator) monitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(c.config.PollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-stopCh:
 			return
 		case <-ticker.C:
 			results, err := c.RunCycle(ctx)
@@ -498,12 +515,24 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 		return nil, err
 	}
 	c.maybeCheckMailNudge(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.maybeCheckContextRotation(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.maybeCheckCaamFailover(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Conflict detection + negotiation behind the persisted flags
 	// (bd-ws2-wire-or-delete-ykmcz.1): runs before the AutoAssign early
 	// return so notify/negotiate work even when auto-assignment is off.
 	c.runConflictCycle(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !c.config.AutoAssign {
 		return nil, nil
 	}
@@ -876,17 +905,13 @@ func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.Agent
 }
 
 // digestLoop periodically sends digest summaries.
-func (c *SessionCoordinator) digestLoop(ctx context.Context, stopCh <-chan struct{}) {
-	defer c.wg.Done()
-
+func (c *SessionCoordinator) digestLoop(ctx context.Context) {
 	ticker := time.NewTicker(c.config.DigestInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-stopCh:
 			return
 		case <-ticker.C:
 			if err := c.SendDigest(ctx); err != nil {

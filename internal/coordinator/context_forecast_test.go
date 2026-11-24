@@ -40,7 +40,7 @@ func newForecastTickFixture() *forecastTickFixture {
 	}
 	f.rc = &rotationChecker{
 		session: "forecast", workDir: "/work", threshold: 95, autoConfirm: true,
-		getPanes: func(string) ([]tmux.Pane, error) { return f.panes, f.listErr },
+		getPanes: func(context.Context, string) ([]tmux.Pane, error) { return f.panes, f.listErr },
 		paneCwd:  func(string) (string, bool) { return "/shared/project", true },
 		processUsage: func(_ string, pid int) (*ntmctx.TranscriptUsage, bool) {
 			u := f.usages[pid]
@@ -50,7 +50,7 @@ func newForecastTickFixture() *forecastTickFixture {
 			f.cwdReads++
 			return f.usages[101], f.usages[101] != nil
 		},
-		capturePane: func(string, int) (string, error) {
+		capturePane: func(context.Context, string, int) (string, error) {
 			f.captures++
 			return "✻ Simmering… (esc to interrupt · 12s)\n\n ❯\n", nil
 		},

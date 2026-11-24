@@ -70,14 +70,14 @@ func newMailNudgeTestEnv(t *testing.T, serverURL string, panes []tmux.Pane, agen
 	env := &mailNudgeTestEnv{mc: mc, clock: time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)}
 	lastNudge := map[string]time.Time{}
 
-	mc.getPanes = func(string) ([]tmux.Pane, error) { return panes, nil }
+	mc.getPanes = func(context.Context, string) ([]tmux.Pane, error) { return panes, nil }
 	mc.agentLookup = func() func(paneTitle, paneID string) (string, bool) {
 		return func(paneTitle, paneID string) (string, bool) {
 			name, ok := agents[paneTitle]
 			return name, ok
 		}
 	}
-	mc.capturePane = func(paneID string, _ int) (string, error) { return capture(paneID) }
+	mc.capturePane = func(_ context.Context, paneID string, _ int) (string, error) { return capture(paneID) }
 	mc.dispatch = func(_ context.Context, _ []tmux.Pane, target tmux.Pane, message string) error {
 		env.mu.Lock()
 		defer env.mu.Unlock()

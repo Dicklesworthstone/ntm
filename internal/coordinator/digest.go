@@ -24,12 +24,16 @@ type WorkDigestSummary = robot.CoordinatorWorkDigestSummary
 
 // GenerateDigest creates a summary of the current session state.
 func (c *SessionCoordinator) GenerateDigest() DigestSummary {
+	return c.generateDigest(context.Background())
+}
+
+func (c *SessionCoordinator) generateDigest(ctx context.Context) DigestSummary {
 	digest := c.generateAgentDigest()
 	// Outside the coordinator mutex: triage may shell out.
-	c.populateWorkSummary(&digest)
+	c.populateWorkSummary(ctx, &digest)
 	// Also outside the mutex: queries Agent Mail for reservation
 	// wait-for cycles (deadlock_digest.go).
-	c.populateDeadlockAlerts(context.Background(), &digest)
+	c.populateDeadlockAlerts(ctx, &digest)
 	return digest
 }
 
@@ -142,11 +146,11 @@ func (c *SessionCoordinator) generateAgentDigest() DigestSummary {
 // Runs OUTSIDE the coordinator mutex: triage may shell out and must never
 // stall state updates. Failures are reported in WorkSummary.Status instead of
 // leaving zero-valued counts masquerading as facts (ntm-f7xz).
-func (c *SessionCoordinator) populateWorkSummary(digest *DigestSummary) {
+func (c *SessionCoordinator) populateWorkSummary(ctx context.Context, digest *DigestSummary) {
 	if digest == nil {
 		return
 	}
-	triage, err := bv.GetTriage(c.projectKey)
+	triage, err := bv.GetTriageContext(ctx, c.projectKey)
 	if err != nil {
 		digest.WorkSummary.Status = fmt.Sprintf("unavailable: %v", err)
 		return
@@ -170,7 +174,17 @@ func (c *SessionCoordinator) SendDigest(ctx context.Context) error {
 		return nil // No mail client configured
 	}
 
-	digest := c.GenerateDigest()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	digest := c.generateDigest(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Format as markdown
 	body := c.formatDigestMarkdown(digest)

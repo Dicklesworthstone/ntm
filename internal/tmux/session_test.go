@@ -1728,6 +1728,63 @@ func TestGetCurrentSessionContextRejectsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestSessionCreatedAtContextHonorsCancellationAndEarlierDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SSH fixture uses a POSIX shell")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	t.Setenv("NTM_SESSION_CREATED_CALLS", calls)
+	t.Setenv("NTM_SESSION_CREATED_PROBE", "timestamp")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NTM_SESSION_CREATED_CALLS\"\n" +
+		"if [ \"$NTM_SESSION_CREATED_PROBE\" = stall ]; then exec " + ShellQuote(sleepPath) + " 30; fi\n" +
+		"printf '1700000000\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	client := NewClient("session-age-probe.invalid")
+	for _, read := range []func() (time.Time, error){
+		func() (time.Time, error) { return client.SessionCreatedAt("session-age") },
+		func() (time.Time, error) { return client.SessionCreatedAtContext(nil, "session-age") },
+	} {
+		created, err := read()
+		if err != nil || !created.Equal(time.Unix(1700000000, 0)) {
+			t.Fatalf("session creation time = %v, %v", created, err)
+		}
+	}
+	before, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := client.SessionCreatedAtContext(ctx, "session-age"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled lookup error = %v", err)
+	}
+	after, err := os.ReadFile(calls)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("pre-canceled lookup started a subprocess: %v", err)
+	}
+
+	// The helper's default command bound must preserve an earlier caller
+	// deadline instead of replacing it with a fresh 30-second budget.
+	t.Setenv("NTM_SESSION_CREATED_PROBE", "stall")
+	deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer deadlineCancel()
+	start := time.Now()
+	if _, err := client.SessionCreatedAtContext(deadlineCtx, "session-age"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded lookup error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("lookup ignored its caller's earlier deadline: %v", elapsed)
+	}
+}
+
 // ============== Additional Tests for Coverage ==============
 
 func TestEnsureInstalled(t *testing.T) {

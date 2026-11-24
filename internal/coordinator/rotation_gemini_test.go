@@ -77,12 +77,12 @@ func TestGeminiNativeAccountingCoordinatorTick(t *testing.T) {
 			var records []robot.ActuationRecord
 			rc := &rotationChecker{
 				session: "test", workDir: cwd, threshold: 80,
-				getPanes: func(string) ([]tmux.Pane, error) { return panes, nil },
+				getPanes: func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
 				paneCwd:  func(string) (string, bool) { return cwd, true },
 				transcriptUsage: func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool) {
 					return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
 				},
-				capturePane: func(string, int) (string, error) { return tc.capture, nil },
+				capturePane: func(context.Context, string, int) (string, error) { return tc.capture, nil },
 				contextLimit: func(model string) (int, bool) {
 					if tc.unknownLimit {
 						return 0, false
@@ -228,7 +228,7 @@ func TestRotationServerScopedNativeAccounting(t *testing.T) {
 				t.Fatal("production constructor bypasses scoped accounting")
 			}
 			rc.rotator, rc.ctxMonitor, rc.storedPending = nil, nil, nil
-			rc.getPanes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{target}, nil }
+			rc.getPanes = func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{target}, nil }
 			rc.paneCwd = func(string) (string, bool) { return cwd, true }
 			rc.paneCwdContext = func(ctx context.Context, id string) (string, bool) {
 				if _, ok := ctx.Deadline(); !ok {
@@ -249,7 +249,7 @@ func TestRotationServerScopedNativeAccounting(t *testing.T) {
 				}
 				return nil, false
 			}
-			rc.capturePane = func(id string, _ int) (string, error) {
+			rc.capturePane = func(_ context.Context, id string, _ int) (string, error) {
 				if id != "%1" {
 					t.Error("captured a pane outside the target session")
 				}
@@ -315,7 +315,7 @@ func TestRotationGaugeDoesNotMakeSiblingWorkspaceUnique(t *testing.T) {
 	calls := 0
 	rc := &rotationChecker{
 		paneCwd: func(string) (string, bool) { return cwd, true },
-		capturePane: func(id string, _ int) (string, error) {
+		capturePane: func(_ context.Context, id string, _ int) (string, error) {
 			if id == "%1" {
 				return capture, nil
 			}
@@ -351,7 +351,7 @@ func TestRotationPiGaugeAndServerScopedTranscript(t *testing.T) {
 	transcriptCalls := 0
 	rc := &rotationChecker{
 		paneCwd: func(string) (string, bool) { return cwd, true },
-		capturePane: func(id string, _ int) (string, error) {
+		capturePane: func(_ context.Context, id string, _ int) (string, error) {
 			if id == "%1" {
 				return piCapture, nil
 			}
@@ -408,11 +408,11 @@ func TestRotationScopeRejectsCollidingClaudeStoreNames(t *testing.T) {
 		},
 	}
 	refs := []ntmctx.PaneTranscriptRef{{PaneID: "%1", AgentType: "claude", PID: 101, Cwd: left}}
-	if got := rc.resolveServerScopedTranscripts(refs, nil); len(got) != 0 {
+	if got := rc.resolveServerScopedTranscripts(t.Context(), refs, nil); len(got) != 0 {
 		t.Fatalf("different cwd names share one Claude store: %+v", got)
 	}
 	withPeer = false
-	if got := rc.resolveServerScopedTranscripts(refs, nil); len(got) != 1 || got["%1"].Tokens != 900 {
+	if got := rc.resolveServerScopedTranscripts(t.Context(), refs, nil); len(got) != 1 || got["%1"].Tokens != 900 {
 		t.Fatalf("non-colliding native reading lost: %+v", got)
 	}
 }
@@ -426,7 +426,7 @@ func TestRotationScopeFailureRetainsExactReadings(t *testing.T) {
 	rc := &rotationChecker{allPanes: func(context.Context) (map[string][]tmux.Pane, error) {
 		return nil, errors.New("scope unavailable")
 	}}
-	got := rc.resolveServerScopedTranscripts(refs, known)
+	got := rc.resolveServerScopedTranscripts(t.Context(), refs, known)
 	if len(got) != 1 || got["%1"] != known["%1"] || got["%2"] != nil {
 		t.Fatalf("scope failure erased exact evidence or guessed for a peer: %+v", got)
 	}

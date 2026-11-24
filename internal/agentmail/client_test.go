@@ -1804,7 +1804,6 @@ func TestCallToolPersistentSessionRejectionDoesNotLoop(t *testing.T) {
 	}
 }
 
-
 // Exercise the public bootstrap/resource paths against a stateful server that
 // requires the standard Accept header and keeps its SSE responses open. Every
 // reply must be correlated independently of progress events and transport IDs.
