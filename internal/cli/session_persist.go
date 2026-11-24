@@ -500,7 +500,7 @@ Examples:
 				Force:        force,
 				SkipGitCheck: skipGitCheck,
 			}
-			return runSessionsRestore(cmd.Context(), args[0], opts, attach, launchAgents, prompt, themeName)
+			return runSessionsRestore(cmd.Context(), cmd.OutOrStdout(), args[0], opts, attach, launchAgents, prompt, themeName)
 		},
 	}
 
@@ -603,7 +603,7 @@ func (r *SessionsRestoreResult) JSON() interface{} {
 	return r
 }
 
-func runSessionsRestore(ctx context.Context, savedName string, opts session.RestoreOptions, attach, launchAgents bool, prompt, themeName string) error {
+func runSessionsRestore(ctx context.Context, w io.Writer, savedName string, opts session.RestoreOptions, attach, launchAgents bool, prompt, themeName string) error {
 	if ctx == nil {
 		return fmt.Errorf("session restore requires a command context")
 	}
@@ -614,7 +614,7 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 	// bd-1yws7: hoisted above the tmux.EnsureInstalled() check so the
 	// early-fail path also emits a parseable envelope when --json is set.
 	emitRestoreFailure := func(result *SessionsRestoreResult) error {
-		if encErr := output.New(output.WithJSON(jsonOutput)).Output(result); encErr != nil {
+		if encErr := output.New(output.WithWriter(w), output.WithJSON(jsonOutput)).Output(result); encErr != nil {
 			return encErr
 		}
 		return jsonFailureExit()
@@ -737,7 +737,7 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 		result.Error = fmt.Sprintf("restored session but prompt dispatch was canceled: %v", promptErr)
 	}
 
-	if err := output.New(output.WithJSON(jsonOutput)).Output(result); err != nil {
+	if err := output.New(output.WithWriter(w), output.WithJSON(jsonOutput)).Output(result); err != nil {
 		return err
 	}
 	if operationErr != nil {
@@ -799,7 +799,7 @@ Examples:
   ntm sessions resume myproject --theme dracula  # Render output with a theme`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSessionsResume(cmd.Context(), args[0], name, force, attach, !nativeFlag, prompt, themeName)
+			return runSessionsResume(cmd.Context(), cmd.OutOrStdout(), args[0], name, force, attach, !nativeFlag, prompt, themeName)
 		},
 	}
 
@@ -1031,12 +1031,12 @@ func sendResumePrompt(ctx context.Context, sessionName, prompt string, launchedP
 	return sentCount, failedCount, nil
 }
 
-func runSessionsResume(ctx context.Context, savedName, name string, force, attach, preferCASR bool, prompt, themeName string) error {
+func runSessionsResume(ctx context.Context, w io.Writer, savedName, name string, force, attach, preferCASR bool, prompt, themeName string) error {
 	if ctx == nil {
 		return fmt.Errorf("session resume requires a command context")
 	}
 	emitFailure := func(result *SessionsResumeResult) error {
-		if encErr := output.New(output.WithJSON(jsonOutput)).Output(result); encErr != nil {
+		if encErr := output.New(output.WithWriter(w), output.WithJSON(jsonOutput)).Output(result); encErr != nil {
 			return encErr
 		}
 		return jsonFailureExit()
@@ -1106,7 +1106,7 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 		}
 	}
 
-	if err := output.New(output.WithJSON(jsonOutput)).Output(result); err != nil {
+	if err := output.New(output.WithWriter(w), output.WithJSON(jsonOutput)).Output(result); err != nil {
 		return err
 	}
 	if promptErr != nil {

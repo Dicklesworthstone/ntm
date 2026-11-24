@@ -51,6 +51,16 @@ func WithJSON(enabled bool) Option {
 	}
 }
 
+// WithWriter sets the destination writer for formatted output.
+// A nil writer keeps the default (os.Stdout).
+func WithWriter(w io.Writer) Option {
+	return func(f *Formatter) {
+		if w != nil {
+			f.writer = w
+		}
+	}
+}
+
 // IsJSON returns true if the output format is JSON
 func (f *Formatter) IsJSON() bool {
 	return f.format == FormatJSON

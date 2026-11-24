@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -158,12 +159,18 @@ func TestApplyModelCommandsPreservesRecordedLaunches(t *testing.T) {
 }
 
 func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
-	for _, operation := range []string{"restore", "resume"} {
+	sharedDir := installKeyedSessionRecoveryFixture(t)
+	for i, operation := range []string{"restore", "resume"} {
+		i, operation := i, operation
 		t.Run(operation, func(t *testing.T) {
-			logPath := sessionRecoveryCommandFixture(t)
+			t.Parallel()
+			sessionName := "fidelity-" + operation
+			pane0 := fmt.Sprintf("%%%d", 10+2*i)
+			pane1 := fmt.Sprintf("%%%d", 11+2*i)
+			logPath := registerKeyedSessionRecoveryCase(t, sharedDir, sessionName, pane0, pane1, "cod", "", "", "")
 			worktree := t.TempDir()
 			baseCommand := "/opt/codex --model saved-model -c 'model_reasoning_effort=high'"
-			state := &session.SessionState{Name: "fidelity", WorkDir: t.TempDir(), Panes: []session.PaneState{{
+			state := &session.SessionState{Name: sessionName, WorkDir: t.TempDir(), Panes: []session.PaneState{{
 				Index: 0, AgentType: "cod", Model: "stale-title", WorkDir: worktree,
 				LaunchSpec: &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: baseCommand},
 				SessionID:  "native-context", SessionProvider: "codex", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1,
@@ -172,14 +179,16 @@ func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := newSessionPersistCmd()
-			args := []string{operation, "fidelity", "--force"}
+			args := []string{operation, sessionName, "--force"}
 			if operation == "restore" {
 				args = append(args, "--launch")
 			}
+			var stdoutBuf bytes.Buffer
 			cmd.SetArgs(args)
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&stdoutBuf)
 			cmd.SetErr(io.Discard)
-			stdout, err := captureStdout(t, cmd.Execute)
+			err := cmd.Execute()
+			stdout := stdoutBuf.String()
 			if err != nil {
 				t.Fatalf("command failed: %v; %s", err, stdout)
 			}
@@ -207,12 +216,20 @@ func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
 }
 
 func TestSessionsCommandRestoresLegacyPiAndPreservesRecordedLaunch(t *testing.T) {
+	sharedDir := installKeyedSessionRecoveryFixture(t)
+	caseIdx := 0
 	for _, operation := range []string{"restore", "resume"} {
 		for _, source := range []string{"default", "saved model", "saved command", "launch specification"} {
+			idx := caseIdx
+			caseIdx++
+			operation, source := operation, source
 			t.Run(operation+"/"+source, func(t *testing.T) {
-				logPath := sessionRecoveryCommandFixture(t)
-				t.Setenv("NTM_SESSION_CLI_AGENT_TYPE", "pi")
-				state := &session.SessionState{Name: "pi-recovery", WorkDir: t.TempDir(), Agents: session.AgentConfig{Pi: 1, User: 1}, Panes: []session.PaneState{
+				t.Parallel()
+				sessionName := fmt.Sprintf("pi-recovery-%s-%d", operation, idx)
+				pane0 := fmt.Sprintf("%%%d", 20+2*idx)
+				pane1 := fmt.Sprintf("%%%d", 21+2*idx)
+				logPath := registerKeyedSessionRecoveryCase(t, sharedDir, sessionName, pane0, pane1, "pi", "", "", "")
+				state := &session.SessionState{Name: sessionName, WorkDir: t.TempDir(), Agents: session.AgentConfig{Pi: 1, User: 1}, Panes: []session.PaneState{
 					{Index: 0, AgentType: "pi-agent"},
 					{Index: 1, AgentType: "user"},
 				}}
@@ -240,10 +257,12 @@ func TestSessionsCommandRestoresLegacyPiAndPreservesRecordedLaunch(t *testing.T)
 				if operation == "restore" {
 					args = append(args, "--launch")
 				}
+				var stdoutBuf bytes.Buffer
 				cmd.SetArgs(args)
-				cmd.SetOut(io.Discard)
+				cmd.SetOut(&stdoutBuf)
 				cmd.SetErr(io.Discard)
-				stdout, err := captureStdout(t, cmd.Execute)
+				err := cmd.Execute()
+				stdout := stdoutBuf.String()
 				t.Logf("recovery command=%v source=%s output=%s", args, source, stdout)
 				calls, readErr := os.ReadFile(logPath)
 				if readErr != nil {
@@ -264,8 +283,8 @@ func TestSessionsCommandRestoresLegacyPiAndPreservesRecordedLaunch(t *testing.T)
 				if operation == "restore" && result.AgentCount != 1 || operation == "resume" && (result.Launched != 1 || result.Skipped != 1) {
 					t.Fatalf("Pi recovery reported wrong launch counts: %s", stdout)
 				}
-				payload := "send-keys -t %0 -l -- cd " + tmux.ShellQuote(state.WorkDir) + " && " + expected
-				if !strings.Contains(string(calls), payload) || strings.Contains(string(calls), "send-keys -t %1") || strings.Contains(string(calls), "stale-title") {
+				payload := "send-keys -t " + pane0 + " -l -- cd " + tmux.ShellQuote(state.WorkDir) + " && " + expected
+				if !strings.Contains(string(calls), payload) || strings.Contains(string(calls), "send-keys -t "+pane1) || strings.Contains(string(calls), "stale-title") {
 					t.Fatalf("Pi command/settings were lost or user pane was launched; want %q; calls=%s", payload, calls)
 				}
 			})
@@ -400,20 +419,211 @@ esac
 	return logPath
 }
 
+func installKeyedSessionRecoveryFixture(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	for _, sub := range []string{"by-target", "cases"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", dir)
+	t.Setenv("NTM_SESSION_CLI_KEYED_DIR", dir)
+	bin := filepath.Join(dir, "tmux")
+	const script = `#!/bin/sh
+action="$1"
+target=
+name=
+prev=
+for arg do
+  if [ "$prev" = -t ]; then target="$arg"; fi
+  if [ "$action" = new-session ] && [ "$prev" = -s ]; then name="$arg"; fi
+  prev="$arg"
+done
+lookup="${target#=}"
+lookup="${lookup%%:*}"
+if [ -z "$lookup" ] && [ -n "$name" ]; then lookup="$name"; fi
+case_dir=
+if [ -n "$lookup" ] && [ -f "$NTM_SESSION_CLI_KEYED_DIR/by-target/$lookup" ]; then
+  IFS= read -r case_dir < "$NTM_SESSION_CLI_KEYED_DIR/by-target/$lookup"
+fi
+if [ -n "$case_dir" ]; then
+  printf '%s\n' "$*" >> "$case_dir/tmux-calls"
+fi
+case "$action" in
+  -V) echo 'tmux 3.4' ;;
+  list-windows) echo 0 ;;
+  list-panes)
+    [ -n "$case_dir" ] && cat "$case_dir/panes" ;;
+  display-message)
+    if [ "$5" = '[#{@ntm_agent_type}]' ] && [ -n "$case_dir" ]; then
+      printf '[%s]\n' "$(cat "$case_dir/agent_type")"
+    fi ;;
+  if-shell)
+    if_target="$4"
+    cond="$5"
+    true_cmd="$6"
+    case "$cond" in
+      *'#{==:#{pane_pid},'*'#{==:#{pane_dead},0}'*'#{==:#{pane_current_command},bash}'*) ;;
+      *)
+        echo "fixture missing atomic pane guard condition: $cond" >&2
+        exit 99 ;;
+    esac
+    phase="other"
+    case "$true_cmd" in
+      *'@ntm_agent_launch'*) phase="metadata" ;;
+      *"'send-keys'"*"'Enter'") phase="enter" ;;
+      *'send-keys'*|*'paste-buffer'*) phase="input" ;;
+    esac
+    race_pane=
+    race_phase=
+    if [ -n "$case_dir" ] && [ -f "$case_dir/race_pane" ]; then IFS= read -r race_pane < "$case_dir/race_pane"; fi
+    if [ -n "$case_dir" ] && [ -f "$case_dir/race_phase" ]; then IFS= read -r race_phase < "$case_dir/race_phase"; fi
+    if [ -n "$race_pane" ] && [ "$if_target" = "$race_pane" ] && [ "$phase" = "$race_phase" ]; then
+      printf 'ntm_pane_identity_changed\n'
+      exit 0
+    fi
+    eval "exec \"\$0\" $true_cmd" ;;
+  load-buffer)
+    cat > "$NTM_SESSION_CLI_KEYED_DIR/buf-$3" ;;
+  paste-buffer)
+    pane="$7"
+    buf="$5"
+    fail_pane=
+    if [ -n "$case_dir" ] && [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
+    if [ -n "$fail_pane" ] && [ "$pane" = "$fail_pane" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi
+    if [ -f "$NTM_SESSION_CLI_KEYED_DIR/buf-$buf" ]; then
+      payload=$(cat "$NTM_SESSION_CLI_KEYED_DIR/buf-$buf")
+      [ -n "$case_dir" ] && printf 'pasted %s %s\n' "$pane" "$payload" >> "$case_dir/tmux-calls"
+    fi ;;
+  delete-buffer) ;;
+  send-keys)
+    fail_pane=
+    if [ -n "$case_dir" ] && [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
+    if [ -n "$fail_pane" ] && [ "$3" = "$fail_pane" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	previousClient, previousCfg, previousJSON := tmux.DefaultClient, cfg, jsonOutput
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 1 * time.Millisecond
+	tmux.DefaultClient, cfg, jsonOutput = fastClient, config.Default(), true
+	t.Cleanup(func() { tmux.DefaultClient, cfg, jsonOutput = previousClient, previousCfg, previousJSON })
+	return dir
+}
+
+func registerKeyedSessionRecoveryCase(t *testing.T, sharedDir, sessionName, pane0, pane1, agentType, failPane, racePane, racePhase string) string {
+	t.Helper()
+	caseDir := filepath.Join(sharedDir, "cases", sessionName)
+	if err := os.MkdirAll(caseDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	panes := fmt.Sprintf("%s_NTM_SEP_0_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n%s_NTM_SEP_1_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n",
+		pane0, agentType, pane1, agentType)
+	if err := os.WriteFile(filepath.Join(caseDir, "panes"), []byte(panes), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(caseDir, "agent_type"), []byte(agentType), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if failPane != "" {
+		if err := os.WriteFile(filepath.Join(caseDir, "fail_pane"), []byte(failPane+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if racePane != "" {
+		if err := os.WriteFile(filepath.Join(caseDir, "race_pane"), []byte(racePane+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(caseDir, "race_phase"), []byte(racePhase+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{sessionName, pane0, pane1} {
+		if err := os.WriteFile(filepath.Join(sharedDir, "by-target", key), []byte(caseDir+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return filepath.Join(caseDir, "tmux-calls")
+}
+
 func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
+	// Missing-command cases mutate cfg.Agents.Codex; run them first before
+	// launching the parallel preflight cases against the shared default config.
 	for _, command := range []string{"restore", "resume"} {
-		for _, malformed := range []string{"command", "directory", "missing command"} {
+		t.Run(command+"_missing command", func(t *testing.T) {
+			logPath := sessionRecoveryCommandFixture(t)
+			state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []session.PaneState{
+				{Index: 0, AgentType: "cod", Command: "codex"},
+				{Index: 1, AgentType: "cod", Command: ""},
+			}}
+			cfg.Agents.Codex = "{{invalid-template}}"
+			if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newSessionPersistCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			args := []string{command, "recovery", "--force"}
+			if command == "restore" {
+				args = append(args, "--launch")
+			}
+			var stdoutBuf bytes.Buffer
+			cmd.SetArgs(args)
+			cmd.SetOut(&stdoutBuf)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			stdout := stdoutBuf.String()
+			if !errors.Is(err, errJSONFailure) {
+				t.Fatalf("invalid forced %s did not exit with failure: %v; %s", command, err, stdout)
+			}
+			var envelope struct {
+				Success bool   `json:"success"`
+				Error   string `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || envelope.Success || envelope.Error == "" {
+				t.Fatalf("invalid recovery response: %s; %v", stdout, err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "kill-session") || strings.Contains(string(data), "new-session") || strings.Contains(string(data), "send-keys") {
+				t.Fatalf("failed preflight changed the live session: %s", data)
+			}
+		})
+	}
+
+	sharedDir := installKeyedSessionRecoveryFixture(t)
+	caseIdx := 0
+	for _, command := range []string{"restore", "resume"} {
+		for _, malformed := range []string{"command", "directory"} {
+			idx := caseIdx
+			caseIdx++
+			command, malformed := command, malformed
 			t.Run(command+"_"+malformed, func(t *testing.T) {
-				logPath := sessionRecoveryCommandFixture(t)
-				state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []session.PaneState{
+				t.Parallel()
+				sessionName := fmt.Sprintf("recovery-preflight-%s-%s", command, malformed)
+				pane0 := fmt.Sprintf("%%%d", 40+2*idx)
+				pane1 := fmt.Sprintf("%%%d", 41+2*idx)
+				logPath := registerKeyedSessionRecoveryCase(t, sharedDir, sessionName, pane0, pane1, "cod", "", "", "")
+				state := &session.SessionState{Name: sessionName, WorkDir: t.TempDir(), Panes: []session.PaneState{
 					{Index: 0, AgentType: "cod", Command: "codex"},
 					{Index: 1, AgentType: "cod", Command: "codex"},
 				}}
 				if malformed == "command" {
 					state.Panes[1].Command = "codex\ninvalid"
-				} else if malformed == "missing command" {
-					state.Panes[1].Command = ""
-					cfg.Agents.Codex = "{{invalid-template}}"
 				} else {
 					state.WorkDir = filepath.Join(t.TempDir(), "file")
 					if err := os.WriteFile(state.WorkDir, []byte("not a directory"), 0600); err != nil {
@@ -424,14 +634,17 @@ func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
 					t.Fatal(err)
 				}
 				cmd := newSessionPersistCmd()
-				args := []string{command, "recovery", "--force"}
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				args := []string{command, sessionName, "--force"}
 				if command == "restore" {
 					args = append(args, "--launch")
 				}
+				var stdoutBuf bytes.Buffer
 				cmd.SetArgs(args)
-				cmd.SetOut(io.Discard)
+				cmd.SetOut(&stdoutBuf)
 				cmd.SetErr(io.Discard)
-				stdout, err := captureStdout(t, cmd.Execute)
+				err := cmd.Execute()
+				stdout := stdoutBuf.String()
 				if !errors.Is(err, errJSONFailure) {
 					t.Fatalf("invalid forced %s did not exit with failure: %v; %s", command, err, stdout)
 				}
@@ -455,11 +668,16 @@ func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
 }
 
 func TestSessionsRecoveryCommandReportsPartialLaunchFailure(t *testing.T) {
-	for _, command := range []string{"restore", "resume"} {
+	sharedDir := installKeyedSessionRecoveryFixture(t)
+	for i, command := range []string{"restore", "resume"} {
+		i, command := i, command
 		t.Run(command, func(t *testing.T) {
-			logPath := sessionRecoveryCommandFixture(t)
-			t.Setenv("NTM_SESSION_CLI_FAIL_PANE", "%1")
-			state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Agents: session.AgentConfig{Codex: 2}, Panes: []session.PaneState{
+			t.Parallel()
+			sessionName := "recovery-partial-" + command
+			pane0 := fmt.Sprintf("%%%d", 50+2*i)
+			pane1 := fmt.Sprintf("%%%d", 51+2*i)
+			logPath := registerKeyedSessionRecoveryCase(t, sharedDir, sessionName, pane0, pane1, "cod", pane1, "", "")
+			state := &session.SessionState{Name: sessionName, WorkDir: t.TempDir(), Agents: session.AgentConfig{Codex: 2}, Panes: []session.PaneState{
 				{Index: 0, AgentType: "cod", Command: "codex"},
 				{Index: 1, AgentType: "cod", Command: "codex"},
 			}}
@@ -467,14 +685,17 @@ func TestSessionsRecoveryCommandReportsPartialLaunchFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := newSessionPersistCmd()
-			args := []string{command, "recovery", "--force"}
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			args := []string{command, sessionName, "--force"}
 			if command == "restore" {
 				args = append(args, "--launch")
 			}
+			var stdoutBuf bytes.Buffer
 			cmd.SetArgs(args)
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&stdoutBuf)
 			cmd.SetErr(io.Discard)
-			stdout, err := captureStdout(t, cmd.Execute)
+			err := cmd.Execute()
+			stdout := stdoutBuf.String()
 			if !errors.Is(err, errJSONFailure) {
 				t.Fatalf("partial %s reported success: %v; %s", command, err, stdout)
 			}
@@ -483,7 +704,7 @@ func TestSessionsRecoveryCommandReportsPartialLaunchFailure(t *testing.T) {
 				t.Fatalf("partial recovery response lost its failure: %s; %v", stdout, err)
 			}
 			if command == "resume" {
-				if envelope.ResumedAs != "recovery" || envelope.Launched != 1 || envelope.Failed != 1 || envelope.Skipped != 0 || len(envelope.Panes) != 2 {
+				if envelope.ResumedAs != sessionName || envelope.Launched != 1 || envelope.Failed != 1 || envelope.Skipped != 0 || len(envelope.Panes) != 2 {
 					t.Fatalf("partial resume lost pane outcomes: %+v", envelope)
 				}
 				var text bytes.Buffer
@@ -495,7 +716,7 @@ func TestSessionsRecoveryCommandReportsPartialLaunchFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Count(string(data), "kill-session") != 1 || !strings.Contains(string(data), "send-keys -t %0") {
+			if strings.Count(string(data), "kill-session") != 1 || !strings.Contains(string(data), "send-keys -t "+pane0) {
 				t.Fatalf("partial failure destroyed successful panes: %s", data)
 			}
 		})
@@ -622,20 +843,27 @@ func TestApplyModelCommands_GrokRoundTrip(t *testing.T) {
 }
 
 func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(t *testing.T) {
+	sharedDir := installKeyedSessionRecoveryFixture(t)
+	caseIdx := 0
 	for _, command := range []string{"restore", "resume"} {
 		for _, phase := range []string{"metadata", "input", "enter"} {
+			idx := caseIdx
+			caseIdx++
+			command, phase := command, phase
 			t.Run(command+"/"+phase, func(t *testing.T) {
-				logPath := sessionRecoveryCommandFixture(t)
-				t.Setenv("NTM_SESSION_CLI_RACE_PANE", "%1")
-				t.Setenv("NTM_SESSION_CLI_RACE_PHASE", phase)
+				t.Parallel()
+				sessionName := fmt.Sprintf("cli_race_%s_%s", command, phase)
+				pane0 := fmt.Sprintf("%%%d", 60+2*idx)
+				pane1 := fmt.Sprintf("%%%d", 61+2*idx)
+				logPath := registerKeyedSessionRecoveryCase(t, sharedDir, sessionName, pane0, pane1, "cod", "", pane1, phase)
 				state := &session.SessionState{
-					Name:    "cli_race",
+					Name:    sessionName,
 					WorkDir: t.TempDir(),
 					Agents:  session.AgentConfig{Codex: 2},
 					Panes: []session.PaneState{
 						{
 							Index:     0,
-							Title:     "cli_race__cod_1",
+							Title:     sessionName + "__cod_1",
 							AgentType: "cod",
 							LaunchSpec: &tmux.AgentLaunchSpec{
 								Version:   tmux.AgentLaunchSpecVersion,
@@ -645,7 +873,7 @@ func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(
 						},
 						{
 							Index:     1,
-							Title:     "cli_race__cod_2",
+							Title:     sessionName + "__cod_2",
 							AgentType: "cod",
 							LaunchSpec: &tmux.AgentLaunchSpec{
 								Version:   tmux.AgentLaunchSpecVersion,
@@ -659,14 +887,17 @@ func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(
 					t.Fatal(err)
 				}
 				cmd := newSessionPersistCmd()
-				args := []string{command, "cli_race", "--force"}
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				args := []string{command, sessionName, "--force"}
 				if command == "restore" {
 					args = append(args, "--launch")
 				}
+				var stdoutBuf bytes.Buffer
 				cmd.SetArgs(args)
-				cmd.SetOut(io.Discard)
+				cmd.SetOut(&stdoutBuf)
 				cmd.SetErr(io.Discard)
-				stdout, err := captureStdout(t, cmd.Execute)
+				err := cmd.Execute()
+				stdout := stdoutBuf.String()
 				if !errors.Is(err, errJSONFailure) {
 					t.Fatalf("%s %s race did not fail with errJSONFailure: err=%v stdout=%s", command, phase, err, stdout)
 				}
@@ -675,7 +906,7 @@ func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(
 					if uErr := json.Unmarshal([]byte(stdout), &env); uErr != nil || env.Success {
 						t.Fatalf("restore %s envelope invalid: err=%v stdout=%s", phase, uErr, stdout)
 					}
-					if env.RestoredAs != "cli_race" || env.AgentCount != 1 || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
+					if env.RestoredAs != sessionName || env.AgentCount != 1 || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
 						t.Fatalf("restore %s lost partial pane outcomes: %+v", phase, env)
 					}
 					if env.Panes[0].Action != "launched" || env.Panes[1].Action != "failed" || !strings.Contains(env.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
@@ -690,7 +921,7 @@ func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(
 					if uErr := json.Unmarshal([]byte(stdout), &env); uErr != nil || env.Success {
 						t.Fatalf("resume %s envelope invalid: err=%v stdout=%s", phase, uErr, stdout)
 					}
-					if env.ResumedAs != "cli_race" || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
+					if env.ResumedAs != sessionName || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
 						t.Fatalf("resume %s lost partial pane outcomes: %+v", phase, env)
 					}
 					if env.Panes[0].Action != "launched" || env.Panes[1].Action != "failed" || !strings.Contains(env.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
@@ -702,24 +933,24 @@ func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(
 					t.Fatal(rErr)
 				}
 				calls := string(data)
-				if !strings.Contains(calls, "if-shell -F -t %1") {
-					t.Fatalf("CLI %s did not guard pane %%1 with if-shell: %s", command, calls)
+				if !strings.Contains(calls, "if-shell -F -t "+pane1) {
+					t.Fatalf("CLI %s did not guard pane %s with if-shell: %s", command, pane1, calls)
 				}
-				if !strings.Contains(calls, "send-keys -t %0 -l -- ") || !strings.Contains(calls, "send-keys -t %0 Enter") {
-					t.Fatalf("CLI %s did not preserve pane %%0 launch: %s", command, calls)
+				if !strings.Contains(calls, "send-keys -t "+pane0+" -l -- ") || !strings.Contains(calls, "send-keys -t "+pane0+" Enter") {
+					t.Fatalf("CLI %s did not preserve pane %s launch: %s", command, pane0, calls)
 				}
 				switch phase {
 				case "metadata":
-					if strings.Contains(calls, "set-option -p -t %1 @ntm_agent_launch") || strings.Contains(calls, "send-keys -t %1") {
-						t.Fatalf("CLI %s metadata race still mutated %%1: %s", command, calls)
+					if strings.Contains(calls, "set-option -p -t "+pane1+" @ntm_agent_launch") || strings.Contains(calls, "send-keys -t "+pane1) {
+						t.Fatalf("CLI %s metadata race still mutated %s: %s", command, pane1, calls)
 					}
 				case "input":
-					if strings.Contains(calls, "send-keys -t %1") {
-						t.Fatalf("CLI %s input race still sent input to %%1: %s", command, calls)
+					if strings.Contains(calls, "send-keys -t "+pane1) {
+						t.Fatalf("CLI %s input race still sent input to %s: %s", command, pane1, calls)
 					}
 				case "enter":
-					if !strings.Contains(calls, "send-keys -t %1 -l -- ") || strings.Contains(calls, "send-keys -t %1 Enter") {
-						t.Fatalf("CLI %s enter race misbehaved on %%1: %s", command, calls)
+					if !strings.Contains(calls, "send-keys -t "+pane1+" -l -- ") || strings.Contains(calls, "send-keys -t "+pane1+" Enter") {
+						t.Fatalf("CLI %s enter race misbehaved on %s: %s", command, pane1, calls)
 					}
 				}
 			})
@@ -747,14 +978,17 @@ func TestSessionsRecoveryCommandPreflightsLongCommandBeforeForce(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := newSessionPersistCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
 			args := []string{command, "cli_long", "--force"}
 			if command == "restore" {
 				args = append(args, "--launch")
 			}
+			var stdoutBuf bytes.Buffer
 			cmd.SetArgs(args)
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&stdoutBuf)
 			cmd.SetErr(io.Discard)
-			stdout, err := captureStdout(t, cmd.Execute)
+			err := cmd.Execute()
+			stdout := stdoutBuf.String()
 			if !errors.Is(err, errJSONFailure) {
 				t.Fatalf("CLI %s long-command preflight did not exit with failure: err=%v stdout=%s", command, err, stdout)
 			}
@@ -784,14 +1018,17 @@ func TestSessionsRecoveryCommandPreflightsLongCommandBeforeForce(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := newSessionPersistCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
 			args := []string{command, "cli_long_ok", "--force"}
 			if command == "restore" {
 				args = append(args, "--launch")
 			}
+			var stdoutBuf bytes.Buffer
 			cmd.SetArgs(args)
-			cmd.SetOut(io.Discard)
+			cmd.SetOut(&stdoutBuf)
 			cmd.SetErr(io.Discard)
-			stdout, err := captureStdout(t, cmd.Execute)
+			err := cmd.Execute()
+			stdout := stdoutBuf.String()
 			if err != nil {
 				t.Fatalf("CLI %s long-command handoff failed: err=%v stdout=%s", command, err, stdout)
 			}
