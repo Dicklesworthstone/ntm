@@ -1179,4 +1179,113 @@ func TestDashboardMultiWindowZoomAndCrossSessionIsolation(t *testing.T) {
 	if len(zoomed) != 1 || zoomed[0].ID != "%2" || zoomed[0].WindowIndex != 1 {
 		t.Fatalf("zoomed = %+v, want %%2 in window 1", zoomed)
 	}
+
+	// 4. attentionItemFromEvent resolves pane_ref ("%2", "1.0", "projA:1.0") and
+	// never binds pane-less global events (Session == "", Pane == 0) to pane 0,
+	// missing W.P targets to another window's pane, exited pane IDs to a live
+	// pane's agent, or foreign-prefixed pane_ref to a local pane.
+	m.panes = append(m.panes, tmux.Pane{ID: "%3", WindowIndex: 0, Index: 1, Title: "projA__cc_2", Type: tmux.AgentClaude})
+	m.rebuildPaneList()
+	lookup := buildAttentionPaneLookup(m.session, m.panes)
+	byPhysicalRef := attentionItemFromEvent(robot.AttentionEvent{
+		Session: "projA",
+		Details: map[string]any{"pane_ref": "%2"},
+	}, lookup)
+	if byPhysicalRef.SourcePaneID != "%2" || byPhysicalRef.SourcePane != 0 || byPhysicalRef.SourceAgent == "" {
+		t.Fatalf("pane_ref %%2 = %+v, want SourcePaneID=%%2 SourcePane=0 with agent", byPhysicalRef)
+	}
+
+	byWindowPaneRef := attentionItemFromEvent(robot.AttentionEvent{
+		Session: "projA",
+		Details: map[string]any{"pane_ref": "projA:1.0"},
+	}, lookup)
+	if byWindowPaneRef.SourcePaneID != "%2" || byWindowPaneRef.SourcePane != 0 {
+		t.Fatalf("pane_ref projA:1.0 = %+v, want SourcePaneID=%%2 SourcePane=0", byWindowPaneRef)
+	}
+
+	// Missing window 2 pane 1 must NOT fall back to unique window 0 pane 1 (%3).
+	missingWindowPane := attentionItemFromEvent(robot.AttentionEvent{
+		Session: "projA",
+		Details: map[string]any{"pane_ref": "2.1"},
+	}, lookup)
+	if missingWindowPane.SourcePaneID != "" || missingWindowPane.SourcePane != -1 || missingWindowPane.SourceAgent != "" {
+		t.Fatalf("missing W.P pane_ref 2.1 = %+v, want SourcePane=-1 SourcePaneID=\"\" SourceAgent=\"\"", missingWindowPane)
+	}
+	zoomed = nil
+	if cmd := m.handleAttentionZoom(missingWindowPane); cmd != nil || len(zoomed) != 0 {
+		t.Fatalf("handleAttentionZoom(missing 2.1) zoomed=%+v cmd=%v, want refusal", zoomed, cmd)
+	}
+
+	// Exited physical pane_id "%99" with Pane=1 must preserve Details["agent_type"]
+	// instead of stealing live pane 1 (%3)'s agent.
+	exitedPaneItem := attentionItemFromEvent(robot.AttentionEvent{
+		Session: "projA",
+		Pane:    1,
+		Details: map[string]any{"pane_id": "%99", "agent_type": "gemini"},
+	}, lookup)
+	if exitedPaneItem.SourcePaneID != "%99" || exitedPaneItem.SourceAgent != "gemini" {
+		t.Fatalf("exited pane_id %%99 = %+v, want SourcePaneID=%%99 SourceAgent=gemini", exitedPaneItem)
+	}
+
+	// Global event carrying a foreign session prefix in pane_ref ("projB:1.0")
+	// must NOT bind to projA's window 1 pane 0 (%2) and must be refused on zoom.
+	foreignPrefixed := attentionItemFromEvent(robot.AttentionEvent{
+		Session: "",
+		Details: map[string]any{"pane_ref": "projB:1.0"},
+	}, lookup)
+	if foreignPrefixed.SourcePaneID != "" || foreignPrefixed.SourcePane != -1 || foreignPrefixed.SourceSession != "projB" {
+		t.Fatalf("foreign-prefixed pane_ref = %+v, want SourceSession=projB SourcePane=-1 SourcePaneID=\"\"", foreignPrefixed)
+	}
+	zoomed = nil
+	if cmd := m.handleAttentionZoom(foreignPrefixed); cmd != nil || len(zoomed) != 0 {
+		t.Fatalf("handleAttentionZoom(foreign-prefixed) zoomed=%+v cmd=%v, want refusal", zoomed, cmd)
+	}
+
+	globalItem := attentionItemFromEvent(robot.AttentionEvent{
+		Session:       "",
+		Pane:          0,
+		Category:      robot.EventCategoryAlert,
+		Actionability: robot.ActionabilityInteresting,
+		Summary:       "Global disk warning",
+	}, lookup)
+	if globalItem.SourcePane != -1 || globalItem.SourcePaneID != "" || globalItem.SourceAgent != "" {
+		t.Fatalf("global pane-less event = %+v, want SourcePane=-1 SourcePaneID=\"\" SourceAgent=\"\"", globalItem)
+	}
+
+	// 5. End-to-end fetchAttentionCmd must not be starved by >60 foreign-session events.
+	lockAttentionFeedForTest(t)
+	oldFeed := robot.PeekAttentionFeed()
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       256,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		robot.SetAttentionFeed(oldFeed)
+	})
+	feed.Append(robot.AttentionEvent{
+		Session:       "projA",
+		Category:      robot.EventCategoryAgent,
+		Actionability: robot.ActionabilityActionRequired,
+		Summary:       "projA approval needed",
+		Details:       map[string]any{"pane_ref": "1.0"},
+	})
+	for i := 0; i < 70; i++ {
+		feed.Append(robot.AttentionEvent{
+			Session:       "projB",
+			Pane:          0,
+			Category:      robot.EventCategoryAgent,
+			Actionability: robot.ActionabilityActionRequired,
+			Summary:       "foreign event",
+		})
+	}
+	msg, ok := m.fetchAttentionCmd()().(AttentionUpdateMsg)
+	if !ok || !msg.FeedAvailable {
+		t.Fatalf("fetchAttentionCmd() = %#v, want available AttentionUpdateMsg", msg)
+	}
+	if len(msg.Items) != 1 || msg.Items[0].SourceSession != "projA" || msg.Items[0].SourcePaneID != "%2" {
+		t.Fatalf("fetchAttentionCmd items = %+v, want single projA item targeting %%2", msg.Items)
+	}
 }

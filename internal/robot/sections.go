@@ -31,6 +31,7 @@
 package robot
 
 import (
+	"strings"
 	"time"
 )
 
@@ -409,14 +410,16 @@ type DashboardAttentionData struct {
 }
 
 // GetDashboardAttentionSection returns an attention section with full events
-// suitable for TUI dashboard display. Returns a ProjectedSection with consistent
-// truncation metadata.
+// suitable for TUI dashboard display. When session is non-empty, events are
+// scoped to that session (retaining global session-less events) BEFORE applying
+// dashboard item limits so heavy foreign-session or background traffic cannot
+// starve the active session's action_required items.
 //
 // Unlike projectAttentionSection which returns SnapshotAttentionSummary (counts
 // and top 3 items), this returns full events for interactive scrolling.
 //
 // For alerts, use ProjectSections with the snapshot's AlertsDetailed field.
-func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
+func GetDashboardAttentionSection(limits SectionLimits, session string) ProjectedSection {
 	hints := DefaultSectionFormatHints(SectionAttention)
 
 	feed := PeekAttentionFeed()
@@ -433,45 +436,65 @@ func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
 	if maxEvents <= 0 {
 		maxEvents = 60 // Default for dashboard
 	}
+	session = strings.TrimSpace(session)
 
-	replayLimit := stats.Count
-	if replayLimit > maxEvents {
-		replayLimit = maxEvents
-	}
-
-	// Replay walks the journal from the head and stops at the limit, so it
-	// returns the OLDEST events after the cursor. A dashboard panel needs the
-	// newest: with Replay(0, 60) the panel showed events 1..60 forever once the
-	// journal held more than 60, and no amount of newer action-required activity
-	// could ever appear. Start the window near the tail instead, clamped to what
-	// is still retained so the request cannot be rejected as expired.
-	since := int64(0)
-	if stats.Count > replayLimit {
-		since = stats.NewestCursor - int64(replayLimit)
-		if oldest := stats.OldestCursor; oldest > 0 && since < oldest-1 {
-			since = oldest - 1
+	// Replay the retained journal window before filtering by actionability and
+	// session so heavy background or foreign-session traffic cannot crowd out
+	// this session's action_required / interesting items before truncation.
+	// Use cursor 0 ("all currently retained events") rather than OldestCursor-1
+	// so concurrent ring-buffer eviction or retention GC between Stats() and
+	// Replay() cannot trigger a spurious CursorExpiredError.
+	var events []AttentionEvent
+	if stats.Count > 0 {
+		var err error
+		events, _, err = feed.Replay(0, stats.Count)
+		if err != nil {
+			section := NewProjectedSection(SectionAttention, DashboardAttentionData{
+				FeedAvailable: true,
+			}).WithFormatHints(hints)
+			return section.WithOmission("error", "failed to replay attention events")
 		}
-		if since < 0 {
-			since = 0
-		}
-	}
-
-	events, _, err := feed.Replay(since, replayLimit)
-	if err != nil {
-		section := NewProjectedSection(SectionAttention, DashboardAttentionData{
-			FeedAvailable: true,
-		}).WithFormatHints(hints)
-		return section.WithOmission("error", "failed to replay attention events")
 	}
 
 	// Filter to action_required and interesting (exclude background for dashboard)
-	filtered := make([]AttentionEvent, 0, len(events))
+	// and to the target session (retaining global session-less events).
+	var actionEvents []AttentionEvent
+	var interestingEvents []AttentionEvent
 	for _, ev := range events {
-		if ev.Actionability == ActionabilityActionRequired ||
-			ev.Actionability == ActionabilityInteresting {
-			filtered = append(filtered, ev)
+		if session != "" && ev.Session != "" && ev.Session != session {
+			continue
+		}
+		switch ev.Actionability {
+		case ActionabilityActionRequired:
+			actionEvents = append(actionEvents, ev)
+		case ActionabilityInteresting:
+			interestingEvents = append(interestingEvents, ev)
 		}
 	}
+
+	totalMatching := len(actionEvents) + len(interestingEvents)
+	if len(actionEvents) > maxEvents {
+		actionEvents = actionEvents[len(actionEvents)-maxEvents:]
+	}
+	remaining := maxEvents - len(actionEvents)
+	if len(interestingEvents) > remaining {
+		interestingEvents = interestingEvents[len(interestingEvents)-remaining:]
+	}
+
+	// Merge surviving action_required and interesting slices in ascending cursor order.
+	filtered := make([]AttentionEvent, 0, len(actionEvents)+len(interestingEvents))
+	i, j := 0, 0
+	for i < len(actionEvents) && j < len(interestingEvents) {
+		if actionEvents[i].Cursor <= interestingEvents[j].Cursor {
+			filtered = append(filtered, actionEvents[i])
+			i++
+		} else {
+			filtered = append(filtered, interestingEvents[j])
+			j++
+		}
+	}
+	filtered = append(filtered, actionEvents[i:]...)
+	filtered = append(filtered, interestingEvents[j:]...)
 
 	// Build summary from feed
 	summary := buildSnapshotAttentionSummary(feed)
@@ -484,9 +507,9 @@ func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
 
 	section := NewProjectedSection(SectionAttention, data).WithFormatHints(hints)
 
-	// Report truncation if we limited the results
-	if stats.Count > maxEvents {
-		section = section.WithTruncation(stats.Count, stats.Count-len(filtered),
+	// Report truncation if matching events exceeded the dashboard limit
+	if totalMatching > maxEvents {
+		section = section.WithTruncation(totalMatching, totalMatching-len(filtered),
 			"limit", "use --robot-attention for full event replay")
 	}
 

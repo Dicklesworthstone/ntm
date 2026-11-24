@@ -379,35 +379,12 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 	gen := m.nextGen(refreshAttention)
 	requestedCursor := m.requestedAttentionCursor
 	session := m.session
-	paneAgentsByID := make(map[string]string, len(m.panes))
-	paneAgentsByIndex := make(map[int]string, len(m.panes))
-	paneIDByIndex := make(map[int]string, len(m.panes))
-	indexCounts := make(map[int]int, len(m.panes))
-	for _, pane := range m.panes {
-		indexCounts[pane.Index]++
-	}
-	for _, pane := range m.panes {
-		agentName := pane.Type.ProfileName()
-		if agentName == "" {
-			agentName = pane.Type.String()
-		}
-		if pane.ID != "" && agentName != "" {
-			paneAgentsByID[pane.ID] = agentName
-		}
-		if indexCounts[pane.Index] == 1 {
-			if agentName != "" {
-				paneAgentsByIndex[pane.Index] = agentName
-			}
-			if pane.ID != "" {
-				paneIDByIndex[pane.Index] = pane.ID
-			}
-		}
-	}
+	panes := buildAttentionPaneLookup(session, m.panes)
 
 	return func() tea.Msg {
-		// Use the shared section model for attention data.
-		// This ensures consistent filtering and truncation with other renderers.
-		section := robot.GetDashboardAttentionSection(robot.DashboardSectionLimits())
+		// Use the shared section model for attention data, scoping to the active
+		// session BEFORE truncation so foreign-session traffic cannot starve it.
+		section := robot.GetDashboardAttentionSection(robot.DashboardSectionLimits(), session)
 
 		// Check if section is omitted (feed unavailable)
 		if section.IsOmitted() {
@@ -431,11 +408,11 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 			if !attentionEventMatchesSession(ev, session) {
 				continue
 			}
-			items = append(items, attentionItemFromEvent(ev, paneAgentsByID, paneAgentsByIndex, paneIDByIndex))
+			items = append(items, attentionItemFromEvent(ev, panes))
 		}
 
 		// Handle requested cursor (for cursor navigation)
-		if requested := requestedAttentionItem(robot.PeekAttentionFeed(), session, paneAgentsByID, paneAgentsByIndex, paneIDByIndex, requestedCursor); requested != nil &&
+		if requested := requestedAttentionItem(robot.PeekAttentionFeed(), session, panes, requestedCursor); requested != nil &&
 			!containsAttentionCursor(items, requested.Cursor) {
 			items = append(items, *requested)
 		}
@@ -453,48 +430,152 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 	}
 }
 
+type attentionPaneLookup struct {
+	session        string
+	agentsByID     map[string]string
+	agentsByIndex  map[int]string
+	idByIndex      map[int]string
+	idByWindowPane map[string]string
+	indexByID      map[string]int
+}
+
+func buildAttentionPaneLookup(session string, panes []tmux.Pane) attentionPaneLookup {
+	lookup := attentionPaneLookup{
+		session:        strings.TrimSpace(session),
+		agentsByID:     make(map[string]string, len(panes)),
+		agentsByIndex:  make(map[int]string, len(panes)),
+		idByIndex:      make(map[int]string, len(panes)),
+		idByWindowPane: make(map[string]string, len(panes)),
+		indexByID:      make(map[string]int, len(panes)),
+	}
+	indexCounts := make(map[int]int, len(panes))
+	for _, pane := range panes {
+		indexCounts[pane.Index]++
+	}
+	for _, pane := range panes {
+		agentName := pane.Type.ProfileName()
+		if agentName == "" {
+			agentName = pane.Type.String()
+		}
+		if pane.ID != "" {
+			lookup.indexByID[pane.ID] = pane.Index
+			if agentName != "" {
+				lookup.agentsByID[pane.ID] = agentName
+			}
+			lookup.idByWindowPane[fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)] = pane.ID
+		}
+		if indexCounts[pane.Index] == 1 {
+			if agentName != "" {
+				lookup.agentsByIndex[pane.Index] = agentName
+			}
+			if pane.ID != "" {
+				lookup.idByIndex[pane.Index] = pane.ID
+			}
+		}
+	}
+	return lookup
+}
+
 func includeAttentionEvent(ev robot.AttentionEvent) bool {
 	return ev.Actionability == robot.ActionabilityActionRequired ||
 		ev.Actionability == robot.ActionabilityInteresting
 }
 
-func attentionItemFromEvent(ev robot.AttentionEvent, paneAgentsByID map[string]string, paneAgentsByIndex map[int]string, paneIDByIndex map[int]string) panels.AttentionItem {
+func attentionItemFromEvent(ev robot.AttentionEvent, panes attentionPaneLookup) panels.AttentionItem {
 	paneID := ""
+	paneRef := ""
 	if ev.Details != nil {
 		if rawID, ok := ev.Details["pane_id"].(string); ok {
 			paneID = strings.TrimSpace(rawID)
 		}
+		if rawRef, ok := ev.Details["pane_ref"].(string); ok {
+			paneRef = strings.TrimSpace(rawRef)
+		}
 	}
-	if paneID == "" && ev.Pane >= 0 {
-		paneID = paneIDByIndex[ev.Pane]
+
+	sourceSession := strings.TrimSpace(ev.Session)
+	sourcePane := -1
+	if paneID != "" {
+		if idx, ok := panes.indexByID[paneID]; ok {
+			sourcePane = idx
+		} else if ev.Pane > 0 || (ev.Pane == 0 && sourceSession != "") {
+			sourcePane = ev.Pane
+		}
+	} else if paneRef != "" {
+		candidate := paneRef
+		foreignPrefix := false
+		if colon := strings.LastIndex(candidate, ":"); colon >= 0 {
+			prefix := strings.TrimSpace(candidate[:colon])
+			if prefix != "" {
+				if sourceSession == "" {
+					sourceSession = prefix
+				}
+				if (panes.session != "" && prefix != panes.session) || (ev.Session != "" && prefix != strings.TrimSpace(ev.Session)) {
+					foreignPrefix = true
+				}
+			}
+			candidate = strings.TrimSpace(candidate[colon+1:])
+		}
+		if !foreignPrefix {
+			if sel, err := tmux.ParsePaneSelector(candidate); err == nil {
+				switch sel.Kind {
+				case tmux.PaneSelectorID:
+					paneID = sel.PaneID
+					if idx, ok := panes.indexByID[paneID]; ok {
+						sourcePane = idx
+					} else if ev.Pane > 0 {
+						sourcePane = ev.Pane
+					}
+				case tmux.PaneSelectorWindowPane:
+					// Only bind an explicit W.P reference when that exact window.pane
+					// exists; leaving sourcePane=-1 prevents falling back to a
+					// different window's pane with the same bare index.
+					if id, ok := panes.idByWindowPane[fmt.Sprintf("%d.%d", sel.WindowIndex, sel.PaneIndex)]; ok {
+						paneID = id
+						sourcePane = sel.PaneIndex
+					}
+				case tmux.PaneSelectorPaneIndex:
+					paneID = panes.idByIndex[sel.Index]
+					sourcePane = sel.Index
+				}
+			} else if ev.Pane > 0 {
+				sourcePane = ev.Pane
+				paneID = panes.idByIndex[ev.Pane]
+			}
+		}
+	} else if ev.Pane > 0 || (ev.Pane == 0 && sourceSession != "" && (ev.Category == robot.EventCategoryPane || ev.Category == robot.EventCategoryAgent)) {
+		sourcePane = ev.Pane
+		paneID = panes.idByIndex[ev.Pane]
 	}
+
 	item := panels.AttentionItem{
 		Summary:       ev.Summary,
 		Actionability: ev.Actionability,
 		Timestamp:     parseAttentionTimestamp(ev.Ts),
-		SourceSession: ev.Session,
-		SourcePane:    ev.Pane,
+		SourceSession: sourceSession,
+		SourcePane:    sourcePane,
 		SourcePaneID:  paneID,
 		Cursor:        ev.Cursor,
 	}
 	if paneID != "" {
-		if agent := paneAgentsByID[paneID]; agent != "" {
+		if agent := panes.agentsByID[paneID]; agent != "" {
 			item.SourceAgent = agent
 		}
 	}
-	if item.SourceAgent == "" {
-		if agent := paneAgentsByIndex[ev.Pane]; agent != "" {
+	if item.SourceAgent == "" && paneID == "" && sourcePane >= 0 {
+		if agent := panes.agentsByIndex[sourcePane]; agent != "" {
 			item.SourceAgent = agent
-		} else if ev.Details != nil {
-			if agent, ok := ev.Details["agent_type"].(string); ok {
-				item.SourceAgent = agent
-			}
+		}
+	}
+	if item.SourceAgent == "" && ev.Details != nil {
+		if agent, ok := ev.Details["agent_type"].(string); ok {
+			item.SourceAgent = agent
 		}
 	}
 	return item
 }
 
-func requestedAttentionItem(feed *robot.AttentionFeed, session string, paneAgentsByID map[string]string, paneAgentsByIndex map[int]string, paneIDByIndex map[int]string, requestedCursor int64) *panels.AttentionItem {
+func requestedAttentionItem(feed *robot.AttentionFeed, session string, panes attentionPaneLookup, requestedCursor int64) *panels.AttentionItem {
 	if feed == nil || requestedCursor <= 0 {
 		return nil
 	}
@@ -505,7 +586,7 @@ func requestedAttentionItem(feed *robot.AttentionFeed, session string, paneAgent
 	if !includeAttentionEvent(events[0]) || !attentionEventMatchesSession(events[0], session) {
 		return nil
 	}
-	item := attentionItemFromEvent(events[0], paneAgentsByID, paneAgentsByIndex, paneIDByIndex)
+	item := attentionItemFromEvent(events[0], panes)
 	return &item
 }
 

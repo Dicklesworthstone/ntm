@@ -569,7 +569,7 @@ func TestDashboardWaveF5ReliabilityAndParityFixes(t *testing.T) {
 	})
 
 	t.Run("D4_requestedAttentionItem_nil_feed_safe", func(t *testing.T) {
-		if got := requestedAttentionItem(nil, "", nil, nil, nil, 5); got != nil {
+		if got := requestedAttentionItem(nil, "", attentionPaneLookup{}, 5); got != nil {
 			t.Fatalf("requestedAttentionItem(nil, ...) = %+v, want nil", got)
 		}
 	})
