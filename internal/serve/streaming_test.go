@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -189,6 +190,77 @@ func TestStreamManagerIntegration(t *testing.T) {
 	// Verify stopped
 	if len(sm.ListActive()) != 0 {
 		t.Error("expected no active streams after stop")
+	}
+}
+
+func TestPaneStreamEventDataKeepsLineOrientedConsumerContract(t *testing.T) {
+	// This is the existing embedded dashboard's behavior: full snapshots
+	// replace its buffer, ordinary events append complete lines. No knowledge
+	// of partial/continues_line fields is needed or advertised on the wire.
+	var display []string
+	events := []struct {
+		event tmux.StreamEvent
+		want  []string
+		full  bool
+	}{
+		{
+			event: tmux.StreamEvent{Lines: []string{"first"}, Seq: 1},
+			want:  []string{"first"},
+		},
+		{
+			event: tmux.StreamEvent{
+				Lines: []string{"prompt> "}, Partial: true,
+				SnapshotLines: []string{"first", "prompt> "}, Seq: 2,
+			},
+			want: []string{"first", "prompt> "}, full: true,
+		},
+		{
+			event: tmux.StreamEvent{
+				Lines: []string{"working"}, ContinuesLine: true,
+				SnapshotLines: []string{"first", "prompt> working"}, Seq: 3,
+			},
+			want: []string{"first", "prompt> working"}, full: true,
+		},
+		{
+			event: tmux.StreamEvent{Lines: []string{"ordinary"}, Seq: 4},
+			want:  []string{"first", "prompt> working", "ordinary"},
+		},
+		{
+			event: tmux.StreamEvent{Lines: []string{"polling snapshot"}, IsFull: true, Seq: 5},
+			want:  []string{"polling snapshot"}, full: true,
+		},
+	}
+	for _, test := range events {
+		data := paneStreamEventData(test.event)
+		if _, exists := data["partial"]; exists {
+			t.Fatal("partial framing escaped the snapshot publication boundary")
+		}
+		if _, exists := data["continues_line"]; exists {
+			t.Fatal("continuation framing escaped the snapshot publication boundary")
+		}
+		wire, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Lines  []string `json:"lines"`
+			IsFull bool     `json:"is_full"`
+			Seq    int64    `json:"seq"`
+		}
+		if err := json.Unmarshal(wire, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.IsFull != test.full || decoded.Seq != test.event.Seq {
+			t.Fatalf("wrong publication metadata: %s", wire)
+		}
+		if decoded.IsFull {
+			display = decoded.Lines
+		} else {
+			display = append(display, decoded.Lines...)
+		}
+		if !reflect.DeepEqual(display, test.want) {
+			t.Fatalf("seq=%d display=%q want=%q wire=%s", decoded.Seq, display, test.want, wire)
+		}
 	}
 }
 

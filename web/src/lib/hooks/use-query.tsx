@@ -158,6 +158,13 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
     console.log("[WS Bridge] Event:", event_type, topic);
   }
 
+  // The retained cursor no longer proves what changed. Refresh active views
+  // from their authoritative endpoints, including global/empty-topic resets.
+  if (event_type === "stream.reset") {
+    queryClient.invalidateQueries();
+    return;
+  }
+
   // Map events to query invalidations
   // Sessions events
   if (topic.startsWith("sessions:") || event_type.startsWith("session.")) {

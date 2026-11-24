@@ -392,6 +392,11 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     setStreamActive(false);
 
     const unsubEvent = ws.onEvent((event) => {
+      if (event.event_type === "stream.reset") {
+        wsFullSnapshotKeyRef.current = null;
+        void refetchOutputBackfill();
+        return;
+      }
       if (!subscribedTopics.has(event.topic)) {
         return;
       }

@@ -2,7 +2,6 @@
 package tmux
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // StreamEvent represents a pane output event.
@@ -23,6 +23,15 @@ type StreamEvent struct {
 	Seq       int64     // Sequence number
 	Timestamp time.Time // When the event was captured
 	IsFull    bool      // True if this is a full capture (polling), false if incremental (pipe)
+	// ContinuesLine joins the first fragment to the preceding event's last
+	// unterminated line. Partial means this event's last line has no newline.
+	ContinuesLine bool
+	Partial       bool
+	// SnapshotLines is the bounded stream tail for line-oriented consumers
+	// when this event contains or completes an unterminated line.
+	// It includes only output observed since this reader started, not earlier
+	// capture-pane backfill; restarting a reader begins a new tail.
+	SnapshotLines []string
 }
 
 // StreamCallback is called when new output is available.
@@ -35,6 +44,10 @@ type PaneStreamerConfig struct {
 
 	// MaxLinesPerEvent limits lines per WebSocket event (default: 100)
 	MaxLinesPerEvent int
+
+	// MaxBytesPerEvent bounds buffered output, including newline delimiters.
+	// Long lines are emitted as fragments rather than retained until a newline.
+	MaxBytesPerEvent int
 
 	// FlushInterval is the max time to buffer before flushing (default: 50ms)
 	FlushInterval time.Duration
@@ -51,6 +64,7 @@ func DefaultPaneStreamerConfig() PaneStreamerConfig {
 	return PaneStreamerConfig{
 		FIFODir:              defaultFIFODir(),
 		MaxLinesPerEvent:     100,
+		MaxBytesPerEvent:     64 * 1024,
 		FlushInterval:        50 * time.Millisecond,
 		FallbackPollInterval: 500 * time.Millisecond,
 		FallbackPollLines:    LinesHealthCheck,
@@ -121,6 +135,12 @@ func NewPaneStreamer(client *Client, target string, callback StreamCallback, cfg
 	}
 	if cfg.MaxLinesPerEvent <= 0 {
 		cfg.MaxLinesPerEvent = 100
+	}
+	if cfg.MaxBytesPerEvent <= 0 {
+		cfg.MaxBytesPerEvent = 64 * 1024
+	} else if cfg.MaxBytesPerEvent < utf8.UTFMax {
+		// Every valid UTF-8 rune must fit without being split across frames.
+		cfg.MaxBytesPerEvent = utf8.UTFMax
 	}
 
 	if cfg.FlushInterval <= 0 {
@@ -215,7 +235,7 @@ func (ps *PaneStreamer) Stop() {
 	}
 
 	// Stop pipe-pane before closing the FIFO. Closing the descriptor wakes an
-	// idle reader that would otherwise remain blocked in ReadString forever.
+	// idle reader, and runFIFOReader joins it before Stop returns.
 	if ps.ownsPipePane {
 		_ = ps.client.RunSilent("pipe-pane", "-t", ExactTarget(ps.target))
 		paneStreamOwners.Lock()
@@ -341,96 +361,215 @@ func (ps *PaneStreamer) runFIFOReader() {
 	default:
 	}
 
-	var lineBuf []string
-	flushTicker := time.NewTicker(ps.config.FlushInterval)
-	defer flushTicker.Stop()
-
-	flushLines := func() {
-		if len(lineBuf) == 0 {
-			return
-		}
-		ps.callback(StreamEvent{
-			Target:    ps.target,
-			Lines:     lineBuf,
-			Seq:       ps.nextSeq(),
-			Timestamp: time.Now(),
-			IsFull:    false,
-		})
-		lineBuf = nil
+	err = ps.readOutputStream(ctx, stopCh, fifo)
+	if err != nil && err != io.EOF && !strings.Contains(err.Error(), "file already closed") {
+		log.Printf("pipe-pane: read error for %s: %v", ps.target, err)
 	}
+	select {
+	case <-stopCh:
+		return
+	case <-ctx.Done():
+		return
+	default:
+		// Unexpected stream termination, fallback to a full polling snapshot.
+		log.Printf("pipe-pane: stream ended unexpectedly for %s, switching to fallback", ps.target)
+		ps.useFallback.Store(true)
+		ps.wg.Add(1)
+		go ps.runPollingLoop()
+	}
+}
 
-	lineCh := make(chan string)
-	errCh := make(chan error, 1)
-
+// readOutputStream reads bounded chunks, not newline-terminated strings: agent
+// composers and progress indicators routinely write without a newline. The
+// timer must be able to publish those bytes while the producer remains idle.
+// The reader is closed and joined on every exit, including cancellation.
+func (ps *PaneStreamer) readOutputStream(ctx context.Context, stopCh <-chan struct{}, reader io.ReadCloser) error {
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readCh := make(chan readResult)
+	readerDone := make(chan struct{})
+	readerCtx, cancelReader := context.WithCancel(ctx)
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("pane streamer: panic recovered: %v", r)
-			}
-		}()
-		reader := bufio.NewReader(fifo)
+		defer close(readerDone)
+		chunk := make([]byte, 4096)
 		for {
-			line, err := reader.ReadString('\n')
-			if len(line) > 0 {
+			n, err := reader.Read(chunk)
+			if n > 0 || err != nil {
+				result := readResult{data: append([]byte(nil), chunk[:n]...), err: err}
 				select {
-				case lineCh <- line:
-				case <-stopCh:
-					return
-				case <-ctx.Done():
+				case readCh <- result:
+				case <-readerCtx.Done():
 					return
 				}
 			}
 			if err != nil {
-				select {
-				case errCh <- err:
-				case <-stopCh:
-					return
-				case <-ctx.Done():
-					return
-				}
 				return
 			}
 		}
 	}()
+	defer func() {
+		cancelReader()
+		_ = reader.Close()
+		<-readerDone
+	}()
 
+	history := paneOutputHistory{
+		maxBytes: ps.config.MaxBytesPerEvent,
+		maxLines: ps.config.FallbackPollLines,
+	}
+	buffer := paneOutputBuffer{
+		maxBytes: ps.config.MaxBytesPerEvent,
+		maxLines: ps.config.MaxLinesPerEvent,
+		emit: func(lines []string, continuesLine, partial bool) {
+			history.append(lines, continuesLine)
+			event := StreamEvent{
+				Target: ps.target, Lines: lines, Seq: ps.nextSeq(), Timestamp: time.Now(),
+				ContinuesLine: continuesLine, Partial: partial,
+			}
+			if partial || continuesLine {
+				event.SnapshotLines = append([]string(nil), history.lines...)
+			}
+			ps.callback(event)
+		},
+	}
+	defer buffer.flush(true)
+	flushTicker := time.NewTicker(ps.config.FlushInterval)
+	defer flushTicker.Stop()
 	for {
 		select {
 		case <-stopCh:
-			flushLines()
-			return
+			return nil
 		case <-ctx.Done():
-			flushLines()
-			return
+			return nil
 		case <-flushTicker.C:
-			flushLines()
-		case err := <-errCh:
-			flushLines()
-			if err != io.EOF && !strings.Contains(err.Error(), "file already closed") {
-				log.Printf("pipe-pane: read error for %s: %v", ps.target, err)
-			}
-
-			// Check if we are actually stopping
-			select {
-			case <-stopCh:
-				return
-			case <-ctx.Done():
-				return
-			default:
-				// Unexpected stream termination, fallback to polling
-				log.Printf("pipe-pane: stream ended unexpectedly for %s, switching to fallback", ps.target)
-				ps.useFallback.Store(true)
-				ps.wg.Add(1)
-				go ps.runPollingLoop()
-			}
-			return
-		case line := <-lineCh:
-			lineBuf = append(lineBuf, strings.TrimSuffix(line, "\n"))
-
-			// Flush if buffer is full
-			if len(lineBuf) >= ps.config.MaxLinesPerEvent {
-				flushLines()
+			buffer.flush(false)
+		case result := <-readCh:
+			buffer.write(result.data)
+			if result.err != nil {
+				return result.err
 			}
 		}
+	}
+}
+
+// paneOutputBuffer preserves line boundaries while limiting both event bytes
+// and lines. At most three incomplete UTF-8 bytes survive a timed flush; they
+// are joined with the next read so JSON encoding cannot replace a split rune.
+type paneOutputBuffer struct {
+	data          []byte
+	maxBytes      int
+	maxLines      int
+	newlines      int
+	continuesLine bool
+	emit          func(lines []string, continuesLine, partial bool)
+}
+
+func (b *paneOutputBuffer) write(data []byte) {
+	for len(data) > 0 {
+		n := min(len(data), b.maxBytes-len(b.data))
+		for i, ch := range data[:n] {
+			if ch == '\n' {
+				b.newlines++
+				if b.newlines == b.maxLines {
+					n = i + 1
+					break
+				}
+			}
+		}
+		b.data = append(b.data, data[:n]...)
+		data = data[n:]
+		if len(b.data) == b.maxBytes || b.newlines == b.maxLines {
+			b.flush(false)
+		}
+	}
+}
+
+func (b *paneOutputBuffer) flush(final bool) {
+	n := len(b.data)
+	if n == 0 {
+		return
+	}
+	if !final {
+		start := n - 1
+		for start > 0 && !utf8.RuneStart(b.data[start]) {
+			start--
+		}
+		if !utf8.FullRune(b.data[start:]) {
+			n = start
+		}
+	}
+	if n == 0 {
+		return
+	}
+	partial := b.data[n-1] != '\n'
+	lines := strings.Split(string(b.data[:n]), "\n")
+	if !partial {
+		lines = lines[:len(lines)-1]
+	}
+	b.emit(lines, b.continuesLine, partial)
+	b.continuesLine = partial
+	copy(b.data, b.data[n:])
+	b.data = b.data[:len(b.data)-n]
+	b.newlines = 0 // Only an incomplete UTF-8 rune can remain.
+}
+
+// paneOutputHistory keeps a bounded tail for snapshot publication. It belongs
+// to one read lifecycle, so restarting a stream cannot retain another stream's
+// partial line. Fragments still use the same reader and ordering as full lines.
+type paneOutputHistory struct {
+	lines    []string
+	maxBytes int
+	maxLines int
+}
+
+func (h *paneOutputHistory) append(lines []string, continuesLine bool) {
+	if len(lines) == 0 {
+		return
+	}
+	if continuesLine && len(h.lines) > 0 {
+		h.lines[len(h.lines)-1] += lines[0]
+		lines = lines[1:]
+	}
+	h.lines = append(h.lines, lines...)
+	trimmed := false
+	if len(h.lines) > h.maxLines {
+		h.lines = h.lines[len(h.lines)-h.maxLines:]
+		trimmed = true
+	}
+
+	remaining := h.maxBytes
+	for i := len(h.lines) - 1; i >= 0; i-- {
+		if len(h.lines[i]) > remaining {
+			start := len(h.lines[i]) - remaining
+			for start < len(h.lines[i]) && !utf8.RuneStart(h.lines[i][start]) {
+				start++
+			}
+			h.lines[i] = h.lines[i][start:]
+			h.lines = h.lines[i:]
+			trimmed = true
+			break
+		}
+		remaining -= len(h.lines[i])
+		if i > 0 {
+			if remaining == 0 {
+				h.lines = h.lines[i:]
+				trimmed = true
+				break
+			}
+			remaining-- // Newline separating this line from the preceding one.
+		}
+	}
+	if trimmed {
+		// Split lines and truncated suffixes share their source allocation.
+		// Release dropped bytes as well as dropped slice entries so a tiny
+		// retained tail cannot keep a much larger event or joined line alive.
+		retained := make([]string, len(h.lines))
+		for i, line := range h.lines {
+			retained[i] = strings.Clone(line)
+		}
+		h.lines = retained
 	}
 }
 

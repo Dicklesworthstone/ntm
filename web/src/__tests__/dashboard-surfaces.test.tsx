@@ -476,6 +476,7 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
 
     const requestedPaths: string[] = [];
     let outputFetchCount = 0;
+    let backfillOutput = "initial backfill line 1\ninitial backfill line 2";
 
     vi.stubGlobal(
       "fetch",
@@ -502,7 +503,7 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
           outputFetchCount += 1;
           return reply({
             pane: "0",
-            output: "initial backfill line 1\ninitial backfill line 2",
+            output: backfillOutput,
             lines: 2,
           });
         }
@@ -634,6 +635,52 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     // Wait > 2.6s while WS remains connected: 2.5s REST polling MUST NOT fire!
     await new Promise((resolve) => setTimeout(resolve, 2700));
     expect(outputFetchCount).toBe(1);
+
+    // Unterminated prompts use the existing full-snapshot wire contract, so
+    // both this source UI and the shipped embedded UI replace the same line.
+    act(() => {
+      socket.onmessage?.({
+        data: [
+          JSON.stringify({
+            type: "event", topic: "panes:%7", event_type: "pane.output", seq: 13,
+            data: { lines: ["recent history", "ready> "], is_full: true },
+          }),
+          JSON.stringify({
+            type: "event", topic: "panes:%7", event_type: "pane.output", seq: 14,
+            data: { lines: ["recent history", "ready> working"], is_full: true },
+          }),
+          JSON.stringify({
+            type: "event", topic: "panes:%7", event_type: "pane.output", seq: 15,
+            data: { lines: ["ordinary complete line"], is_full: false },
+          }),
+        ].join("\n"),
+      });
+    });
+    expect(await screen.findByText("ready> working")).toBeInTheDocument();
+    expect(screen.getByText("ordinary complete line")).toBeInTheDocument();
+    expect(screen.queryByText("ready>", { exact: true })).not.toBeInTheDocument();
+
+    // The global reset emitted when ingress overflows must refresh the REST
+    // snapshot even though it has no pane topic.
+    backfillOutput = "fresh authoritative snapshot";
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: "stream.reset", reason: "broadcast_overflow", current_seq: 15 }),
+      });
+    });
+    expect(await screen.findByText("fresh authoritative snapshot")).toBeInTheDocument();
+    expect(screen.queryByText("ready> working")).not.toBeInTheDocument();
+    expect(outputFetchCount).toBe(2);
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "event", topic: "panes:%7", event_type: "pane.output", seq: 16,
+          data: { lines: ["fresh authoritative snapshot", "resumed prompt"], is_full: true },
+        }),
+      });
+    });
+    expect(await screen.findByText("resumed prompt")).toBeInTheDocument();
+    expect(screen.getByText("fresh authoritative snapshot")).toBeInTheDocument();
 
     // Verify sendPrompt and interruptPane also encode sessionId
     fireEvent.change(screen.getByPlaceholderText("Send a prompt to this pane..."), {

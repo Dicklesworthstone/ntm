@@ -156,16 +156,16 @@ type WSClient struct {
 
 // WSHub manages WebSocket connections and topic routing.
 type WSHub struct {
-	clients      map[*WSClient]struct{}
-	clientsMu    sync.RWMutex
-	register     chan *WSClient
-	unregister   chan *WSClient
-	broadcast    chan *WSEvent
+	clients    map[*WSClient]struct{}
+	clientsMu  sync.RWMutex
+	register   chan *WSClient
+	unregister chan *WSClient
+	broadcast  chan *WSEvent
 	// Once ingress loses an event, pause admission until the Run goroutine
 	// drains the accepted prefix and records a durable gap. Publishers only
 	// hold this mutex for channel admission, never for persistence or delivery.
-	ingressMu   sync.Mutex
-	ingressGap  bool
+	ingressMu    sync.Mutex
+	ingressGap   bool
 	ingressWake  chan struct{}
 	resetWake    chan struct{} // Coalesced transport progress; owned by Run.
 	dropped      atomic.Int64
