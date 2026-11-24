@@ -455,14 +455,26 @@ if [ -n "$case_dir" ]; then
 fi
 case "$action" in
   -V) echo 'tmux 3.4' ;;
-  list-windows) echo 0 ;;
+  has-session)
+    [ -n "$case_dir" ] || exit 1 ;;
+  list-windows)
+    [ -n "$case_dir" ] || exit 2
+    echo 0 ;;
   list-panes)
-    [ -n "$case_dir" ] && cat "$case_dir/panes" ;;
+    [ -n "$case_dir" ] || exit 2
+    cat "$case_dir/panes" ;;
   display-message)
-    if [ "$5" = '[#{@ntm_agent_type}]' ] && [ -n "$case_dir" ]; then
+    [ -n "$case_dir" ] || exit 2
+    if [ "$5" = '[#{@ntm_agent_type}]' ]; then
       printf '[%s]\n' "$(cat "$case_dir/agent_type")"
+    else
+      echo "unexpected display-message format: $*" >&2
+      exit 2
     fi ;;
+  kill-session|new-session|split-window|select-layout|select-pane|set-option|rename-window|resize-pane)
+    [ -n "$case_dir" ] || exit 2 ;;
   if-shell)
+    [ -n "$case_dir" ] || exit 2
     if_target="$4"
     cond="$5"
     true_cmd="$6"
@@ -480,8 +492,8 @@ case "$action" in
     esac
     race_pane=
     race_phase=
-    if [ -n "$case_dir" ] && [ -f "$case_dir/race_pane" ]; then IFS= read -r race_pane < "$case_dir/race_pane"; fi
-    if [ -n "$case_dir" ] && [ -f "$case_dir/race_phase" ]; then IFS= read -r race_phase < "$case_dir/race_phase"; fi
+    if [ -f "$case_dir/race_pane" ]; then IFS= read -r race_pane < "$case_dir/race_pane"; fi
+    if [ -f "$case_dir/race_phase" ]; then IFS= read -r race_phase < "$case_dir/race_phase"; fi
     if [ -n "$race_pane" ] && [ "$if_target" = "$race_pane" ] && [ "$phase" = "$race_phase" ]; then
       printf 'ntm_pane_identity_changed\n'
       exit 0
@@ -490,26 +502,31 @@ case "$action" in
   load-buffer)
     cat > "$NTM_SESSION_CLI_KEYED_DIR/buf-$3" ;;
   paste-buffer)
+    [ -n "$case_dir" ] || exit 2
     pane="$7"
     buf="$5"
     fail_pane=
-    if [ -n "$case_dir" ] && [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
+    if [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
     if [ -n "$fail_pane" ] && [ "$pane" = "$fail_pane" ]; then
       echo 'fixture pane dispatch failed' >&2
       exit 2
     fi
     if [ -f "$NTM_SESSION_CLI_KEYED_DIR/buf-$buf" ]; then
       payload=$(cat "$NTM_SESSION_CLI_KEYED_DIR/buf-$buf")
-      [ -n "$case_dir" ] && printf 'pasted %s %s\n' "$pane" "$payload" >> "$case_dir/tmux-calls"
+      printf 'pasted %s %s\n' "$pane" "$payload" >> "$case_dir/tmux-calls"
     fi ;;
   delete-buffer) ;;
   send-keys)
+    [ -n "$case_dir" ] || exit 2
     fail_pane=
-    if [ -n "$case_dir" ] && [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
+    if [ -f "$case_dir/fail_pane" ]; then IFS= read -r fail_pane < "$case_dir/fail_pane"; fi
     if [ -n "$fail_pane" ] && [ "$3" = "$fail_pane" ]; then
       echo 'fixture pane dispatch failed' >&2
       exit 2
     fi ;;
+  *)
+    echo "unexpected tmux action: $*" >&2
+    exit 2 ;;
 esac
 `
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {

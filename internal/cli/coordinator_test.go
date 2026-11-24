@@ -436,21 +436,24 @@ if [ -n "$case_dir" ]; then
 fi
 case "$action" in
   -V) echo 'tmux 3.4' ;;
-  has-session) ;;
+  has-session)
+    [ -n "$case_dir" ] || exit 1 ;;
   list-sessions)
     for f in "$NTM_MAINT_BATCH_DIR/sessions"/*; do
       [ -f "$f" ] && cat "$f"
-    done ;;
+    done
+    exit 0 ;;
   list-panes)
     if [ -n "$case_dir" ] && [ -f "$case_dir/tmux-fail-list-panes" ]; then
       echo 'topology unavailable' >&2
       exit 1
     fi
-    case "$*" in
+    case " $* " in
       *" -a "*)
         for f in "$NTM_MAINT_BATCH_DIR/all-panes"/*; do
           [ -f "$f" ] && cat "$f"
-        done ;;
+        done
+        exit 0 ;;
       *window_activity*)
         [ -n "$case_dir" ] && cat "$case_dir/activity" ;;
       *)
@@ -459,9 +462,10 @@ case "$action" in
   capture-pane)
     if [ -n "$case_dir" ] && [ -f "$case_dir/fail-capture" ]; then
       IFS= read -r bad_pane < "$case_dir/fail-capture"
-      case "$*" in
-        *"$bad_pane"*) echo 'sibling capture unavailable' >&2; exit 1 ;;
-      esac
+      if [ "$target" = "$bad_pane" ]; then
+        echo 'sibling capture unavailable' >&2
+        exit 1
+      fi
     fi
     printf '● Done. All tests pass.\n\n❯ \n' ;;
   *) echo "unexpected tmux action: $*" >&2; exit 1 ;;

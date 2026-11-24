@@ -581,7 +581,12 @@ func exerciseContextRotationRecovery(t *testing.T, mode string, parallel bool, r
 			t.Setenv(envKey, val)
 			return
 		}
-		if err := os.WriteFile(filepath.Join(root, fileName), []byte(val), 0600); err != nil {
+		targetPath := filepath.Join(root, fileName)
+		tmpPath := targetPath + ".tmp"
+		if err := os.WriteFile(tmpPath, []byte(val), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmpPath, targetPath); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1035,6 +1040,10 @@ read_val() {
   if [ -f "$1" ]; then IFS= read -r _rv < "$1"; printf '%s' "$_rv"; fi
 }
 case "$1" in
+  -V)
+    echo 'tmux 3.4'
+    exit 0
+    ;;
   load-buffer)
     cat > "$NTM_CONFIRM_CASES_ROOT/buf-${bufname:-default}"
     exit 0
@@ -1086,9 +1095,12 @@ emit_case_panes() {
 }
 case "$1" in
   list-windows) printf '0\n'; exit 0 ;;
-  has-session) exit 0 ;;
+  has-session)
+    [ -n "$case_dir" ] && [ -d "$case_dir" ] || exit 1
+    exit 0
+    ;;
   list-panes)
-    case "$*" in
+    case " $* " in
       *' -a '*)
         for _d in "$NTM_CONFIRM_CASES_ROOT/cases"/*; do
           [ -d "$_d" ] && emit_case_panes "$_d" 1
@@ -1115,9 +1127,10 @@ case "$1" in
     ;;
   if-shell)
     for value do
+      _tok_tmp="$case_dir/.token.${target#%}.$$.tmp"
       case "$value" in
-        'set-option -p -u '*) : > "$case_dir/token.${target#%}" ;;
-        'set-option -p -t '*) printf '%s' "${value##* }" > "$case_dir/token.${target#%}" ;;
+        'set-option -p -u '*) : > "$_tok_tmp" && mv -f "$_tok_tmp" "$case_dir/token.${target#%}" ;;
+        'set-option -p -t '*) printf '%s' "${value##* }" > "$_tok_tmp" && mv -f "$_tok_tmp" "$case_dir/token.${target#%}" ;;
       esac
     done
     ;;
@@ -1205,6 +1218,12 @@ case "$1" in
       if [ "$(read_val "$case_dir/kill-failure")" = 1 ]; then exit 1; fi
       if [ "$(read_val "$case_dir/keep-replacement")" != 1 ]; then printf '1' > "$case_dir/replacement-retired"; fi
     fi
+    ;;
+  select-pane|set-option|resize-pane|rename-window|select-layout)
+    ;;
+  *)
+    echo "unexpected tmux action: $*" >&2
+    exit 2
     ;;
 esac
 `
