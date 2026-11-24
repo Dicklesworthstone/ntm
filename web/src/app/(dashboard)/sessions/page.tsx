@@ -397,9 +397,21 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       : `panes:${sessionId}:${paneSelector}`;
     const subscribedTopics = new Set<string>([fallbackTopic]);
     const encodedPaneSelector = encodeURIComponent(String(paneSelector));
-    const streamPath = `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneSelector}/stream`;
+    // Each mounted viewer owns its claim independently, including during
+    // React effect cleanup and reconnects to the same physical pane.
+    const lease = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+    const streamPath = (selector: string) =>
+      `/api/v1/sessions/${encodedSessionId}/panes/${selector}/stream?lease=${lease}`;
+    let leasePath = streamPath(encodedPaneSelector);
     let cancelled = false;
     let startedOnServer = false;
+    let renewalTimer: ReturnType<typeof setTimeout> | undefined;
+    let leaseDeadline = 0;
+    const release = () => {
+      void apiFetch(leasePath, { method: "DELETE" }).catch(() => {});
+    };
     wsFullSnapshotKeyRef.current = null;
     setStreamActive(false);
 
@@ -434,16 +446,47 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
     });
 
+    type PaneStreamResponse = { target?: string; topic?: string; lease_ttl_seconds?: number };
+    const scheduleRenewal = (ttlSeconds?: number) => {
+      if (!ttlSeconds || ttlSeconds <= 0 || cancelled) return;
+      leaseDeadline = Date.now() + ttlSeconds * 1000;
+      renewalTimer = setTimeout(() => void renew(), (ttlSeconds * 1000) / 3);
+    };
+    const renew = async () => {
+      if (cancelled) return;
+      try {
+        const res = await apiFetch<PaneStreamResponse>(leasePath, { method: "POST" });
+        if (cancelled) {
+          release();
+          return;
+        }
+        // A suspended browser tab may have slept past the server's expiry.
+        if (Date.now() >= leaseDeadline) {
+          wsFullSnapshotKeyRef.current = null;
+          void refetchOutputBackfill();
+        }
+        setStreamActive(true);
+        scheduleRenewal(res?.lease_ttl_seconds);
+      } catch {
+        if (!cancelled) {
+          setStreamActive(false);
+          leaseDeadline = 0;
+          renewalTimer = setTimeout(() => void renew(), 5000);
+        }
+      }
+    };
+
     if (isConnected) {
       void (async () => {
         try {
           await ws.subscribe(fallbackTopic, { mode: "lines" });
           if (cancelled) return;
-          const res = await apiFetch<{ topic?: string }>(streamPath, {
-            method: "POST",
-          });
+          const res = await apiFetch<PaneStreamResponse>(leasePath, { method: "POST" });
+          if (res?.target?.startsWith("%")) {
+            leasePath = streamPath(encodeURIComponent(res.target));
+          }
           if (cancelled) {
-            void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+            release();
             return;
           }
           startedOnServer = true;
@@ -461,10 +504,15 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           }
           if (!cancelled) {
             setStreamActive(true);
+            scheduleRenewal(res?.lease_ttl_seconds);
           }
         } catch (err) {
           if (!cancelled) {
             setStreamActive(false);
+            if (startedOnServer) {
+              release();
+              startedOnServer = false;
+            }
           }
           if (process.env.NODE_ENV === "development") {
             console.error("[Sessions] Start pane stream failed, falling back to polling", err);
@@ -475,13 +523,14 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
     return () => {
       cancelled = true;
+      clearTimeout(renewalTimer);
       setStreamActive(false);
       unsubEvent();
       for (const topic of subscribedTopics) {
         void ws.unsubscribe(topic).catch(() => {});
       }
       if (startedOnServer) {
-        void apiFetch(streamPath, { method: "DELETE" }).catch(() => {});
+        release();
       }
     };
   }, [activePaneKey, encodedSessionId, isConnected, paneSelector, refetchOutputBackfill, sessionId]);

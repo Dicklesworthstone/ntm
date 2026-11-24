@@ -586,8 +586,8 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
 
     // Subscribe to the physical pane's topic before starting its stream.
     await waitFor(() => {
-      expect(requestedPaths).toContain(
-        "POST /api/v1/sessions/my%2Fproj%231/panes/%257/stream"
+      expect(requestedPaths).toContainEqual(
+        expect.stringMatching(/^POST .*\/%257\/stream\?lease=[0-9a-f]{32}$/)
       );
       expect(
         socket.sentFrames.some(
@@ -697,8 +697,16 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     expect(await screen.findByText("other window output")).toBeInTheDocument();
     expect(screen.queryByText("resumed prompt")).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(requestedPaths).toContain("DELETE /api/v1/sessions/my%2Fproj%231/panes/%257/stream");
-      expect(requestedPaths).toContain("POST /api/v1/sessions/my%2Fproj%231/panes/%258/stream");
+      const first = requestedPaths.find((path) =>
+        path.startsWith("POST /api/v1/sessions/my%2Fproj%231/panes/%257/stream?lease=")
+      );
+      const next = requestedPaths.find((path) =>
+        path.startsWith("POST /api/v1/sessions/my%2Fproj%231/panes/%258/stream?lease=")
+      );
+      expect(first).toBeDefined();
+      expect(next).toBeDefined();
+      expect(requestedPaths).toContain(first!.replace("POST ", "DELETE "));
+      expect(first!.split("lease=")[1]).not.toBe(next!.split("lease=")[1]);
     });
 
     fireEvent.change(screen.getByPlaceholderText("Send a prompt to this pane..."), {

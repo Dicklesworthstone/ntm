@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ============================================================================
@@ -565,6 +567,29 @@ const (
 // Streaming API Handlers
 // =============================================================================
 
+const paneStreamLeaseDuration = 2 * time.Minute
+
+// Missing lease preserves the original shared start/stop contract. Reject
+// malformed lease parameters so they cannot accidentally release that claim.
+func paneStreamLeaseFromRequest(w http.ResponseWriter, r *http.Request, reqID string) (string, bool) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane stream query", nil, reqID)
+		return "", false
+	}
+	values, present := query["lease"]
+	if !present {
+		return "", true
+	}
+	if len(values) == 1 && len(values[0]) == 32 {
+		if _, err := hex.DecodeString(values[0]); err == nil {
+			return strings.ToLower(values[0]), true
+		}
+	}
+	writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "lease must be a 32-digit hexadecimal viewer ID", nil, reqID)
+	return "", false
+}
+
 // handleStartPaneStreamV1 handles POST /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
 func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -579,22 +604,40 @@ func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	lease, ok := paneStreamLeaseFromRequest(w, r, reqID)
+	if !ok {
+		return
+	}
 	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
 	topic := streamTopicForTarget(target)
 
-	if err := s.streamManager.StartStream(target); err != nil {
+	var err error
+	if lease == "" {
+		err = s.streamManager.StartStream(target)
+	} else {
+		err = s.streamManager.AcquireStreamLease(target, lease, paneStreamLeaseDuration)
+	}
+	if errors.Is(err, tmux.ErrStreamViewerLimit) {
+		writeErrorResponse(w, http.StatusTooManyRequests, ErrCodeRateLimited, err.Error(), nil, reqID)
+		return
+	}
+	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"target":  target,
 		"topic":   topic,
 		"message": "streaming started",
-	}, reqID)
+	}
+	if lease != "" {
+		response["lease_ttl_seconds"] = int(paneStreamLeaseDuration.Seconds())
+	}
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleStopPaneStreamV1 handles DELETE /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
@@ -611,15 +654,25 @@ func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	lease, ok := paneStreamLeaseFromRequest(w, r, reqID)
+	if !ok {
+		return
+	}
 	target, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneSelector, reqID)
 	if !ok {
 		return
 	}
-	s.streamManager.StopStream(target)
+	message := "streaming stopped"
+	if lease == "" {
+		s.streamManager.StopStream(target)
+	} else {
+		s.streamManager.ReleaseStreamLease(target, lease)
+		message = "stream lease released"
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"target":  target,
-		"message": "streaming stopped",
+		"message": message,
 	}, reqID)
 }
 

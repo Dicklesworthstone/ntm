@@ -1126,3 +1126,75 @@ func TestPaneStreamer_FIFOPathGeneration(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamManagerIndependentViewerLeases(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	const target = "%42"
+	acquire := func(owner string) {
+		t.Helper()
+		if err := sm.AcquireStreamLease(target, owner, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acquire("first")
+	worker := sm.streamers[target]
+	stale := sm.claims[target]["first"]
+	acquire("first")
+	acquire("second")
+	if err := sm.StartStream(target); err != nil {
+		t.Fatal(err)
+	}
+	sm.StopStream(target)
+	sm.releaseStream(target, "first", stale)
+	sm.ReleaseStreamLease(target, "second")
+	sm.ReleaseStreamLease(target, "second")
+	if sm.streamers[target] != worker || len(sm.claims[target]) != 1 {
+		t.Fatal("a stale expiry, duplicate release, or legacy stop interrupted the first viewer")
+	}
+	sm.ReleaseStreamLease(target, "first")
+	if got := sm.ListActive(); len(got) != 0 {
+		t.Fatalf("worker retained after last release: %v", got)
+	}
+}
+
+func TestStreamManagerExpiresAbandonedLease(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	if err := sm.AcquireStreamLease("%42", "abandoned", 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(sm.ListActive()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("abandoned viewer kept capture worker alive")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestStreamManagerCapsNewLeasesAndAllowsRenewal(t *testing.T) {
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FallbackPollInterval = time.Hour
+	sm := NewStreamManager(NewClient("lease-test-host"), func(StreamEvent) {}, cfg)
+	t.Cleanup(sm.StopAll)
+	for i := 0; i < maxViewerLeasesPerPane; i++ {
+		if err := sm.AcquireStreamLease("%42", fmt.Sprint(i), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sm.AcquireStreamLease("%42", "extra", time.Hour); !errors.Is(err, ErrStreamViewerLimit) {
+		t.Fatalf("excess viewer error = %v", err)
+	}
+	if err := sm.AcquireStreamLease("%42", "0", time.Hour); err != nil {
+		t.Fatalf("existing viewer could not renew at capacity: %v", err)
+	}
+	sm.ReleaseStreamLease("%42", "0")
+	if err := sm.AcquireStreamLease("%42", "extra", time.Hour); err != nil {
+		t.Fatalf("released slot stayed unavailable: %v", err)
+	}
+}

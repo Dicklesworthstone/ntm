@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -664,9 +665,18 @@ type StreamManager struct {
 	config    PaneStreamerConfig
 	callback  StreamCallback
 	streamers map[string]*PaneStreamer
+	claims    map[string]map[string]*paneStreamClaim
 	mu        sync.RWMutex
 	ctx       context.Context
 	cancel    context.CancelFunc
+}
+
+const maxViewerLeasesPerPane = 1024
+
+var ErrStreamViewerLimit = errors.New("too many viewers streaming this pane")
+
+type paneStreamClaim struct {
+	expiry *time.Timer
 }
 
 // NewStreamManager creates a new stream manager.
@@ -680,43 +690,98 @@ func NewStreamManager(client *Client, callback StreamCallback, cfg PaneStreamerC
 		config:    cfg,
 		callback:  callback,
 		streamers: make(map[string]*PaneStreamer),
+		claims:    make(map[string]map[string]*paneStreamClaim),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
 }
 
-// StartStream starts streaming for a pane. Idempotent.
+// StartStream acquires the shared, non-expiring claim used by legacy callers.
 func (sm *StreamManager) StartStream(target string) error {
+	return sm.acquireStream(target, "", 0)
+}
+
+// AcquireStreamLease starts or renews one viewer's expiring claim. All
+// viewers of the same target share one capture worker.
+func (sm *StreamManager) AcquireStreamLease(target, owner string, ttl time.Duration) error {
+	if owner == "" || ttl <= 0 {
+		return fmt.Errorf("stream lease requires a viewer ID and a positive duration")
+	}
+	return sm.acquireStream(target, owner, ttl)
+}
+
+func (sm *StreamManager) acquireStream(target, owner string, ttl time.Duration) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if _, exists := sm.streamers[target]; exists {
-		return nil // Already streaming
+	if sm.streamers[target] == nil {
+		streamer := NewPaneStreamer(sm.client, target, sm.callback, sm.config)
+		if err := streamer.Start(sm.ctx); err != nil {
+			return err
+		}
+		sm.streamers[target] = streamer
+		sm.claims[target] = make(map[string]*paneStreamClaim)
+		log.Printf("stream_manager: started streaming for %s", target)
 	}
-
-	streamer := NewPaneStreamer(sm.client, target, sm.callback, sm.config)
-	if err := streamer.Start(sm.ctx); err != nil {
-		return err
+	owners := sm.claims[target]
+	if previous := owners[owner]; previous != nil {
+		if previous.expiry == nil {
+			return nil
+		}
+		previous.expiry.Stop()
+	} else if owner != "" {
+		viewers := len(owners)
+		if owners[""] != nil {
+			viewers--
+		}
+		if viewers >= maxViewerLeasesPerPane {
+			return ErrStreamViewerLimit
+		}
 	}
-
-	sm.streamers[target] = streamer
-	log.Printf("stream_manager: started streaming for %s", target)
+	claim := &paneStreamClaim{}
+	owners[owner] = claim
+	if ttl > 0 {
+		claim.expiry = time.AfterFunc(ttl, func() { sm.releaseStream(target, owner, claim) })
+	}
 	return nil
 }
 
-// StopStream stops streaming for a pane.
+// StopStream releases the legacy claim. Leased viewers continue streaming.
 func (sm *StreamManager) StopStream(target string) {
-	sm.mu.Lock()
-	streamer, exists := sm.streamers[target]
-	if exists {
-		delete(sm.streamers, target)
+	sm.releaseStream(target, "", nil)
+}
+
+// ReleaseStreamLease drops one viewer's claim, including after a retry.
+func (sm *StreamManager) ReleaseStreamLease(target, owner string) {
+	if owner != "" {
+		sm.releaseStream(target, owner, nil)
 	}
+}
+
+func (sm *StreamManager) releaseStream(target, owner string, expected *paneStreamClaim) {
+	sm.mu.Lock()
+	owners := sm.claims[target]
+	claim := owners[owner]
+	// A timer already running at renewal/shutdown must not retire a new claim.
+	if claim == nil || (expected != nil && claim != expected) {
+		sm.mu.Unlock()
+		return
+	}
+	if claim.expiry != nil {
+		claim.expiry.Stop()
+	}
+	delete(owners, owner)
+	if len(owners) != 0 {
+		sm.mu.Unlock()
+		return
+	}
+	streamer := sm.streamers[target]
+	delete(sm.claims, target)
+	delete(sm.streamers, target)
 	sm.mu.Unlock()
 
-	if exists {
-		streamer.Stop()
-		log.Printf("stream_manager: stopped streaming for %s", target)
-	}
+	streamer.Stop()
+	log.Printf("stream_manager: stopped streaming for %s", target)
 }
 
 // StopAll stops all streamers. The manager remains usable for later streams.
@@ -727,6 +792,14 @@ func (sm *StreamManager) StopAll() {
 	for _, s := range sm.streamers {
 		streamers = append(streamers, s)
 	}
+	for _, owners := range sm.claims {
+		for _, claim := range owners {
+			if claim.expiry != nil {
+				claim.expiry.Stop()
+			}
+		}
+	}
+	sm.claims = make(map[string]map[string]*paneStreamClaim)
 	sm.streamers = make(map[string]*PaneStreamer)
 	sm.ctx, sm.cancel = context.WithCancel(context.Background())
 	sm.mu.Unlock()
