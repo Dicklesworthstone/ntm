@@ -434,32 +434,48 @@ func (w *Writer) appendLedgerEntry(h *Handoff, handoffPath string, isAuto bool) 
 		return err
 	}
 
-	ntmDir := filepath.Dir(w.baseDir)
+	ntmDir, err := filepath.Abs(filepath.Dir(w.baseDir))
+	if err != nil {
+		return fmt.Errorf("resolve ledger root: %w", err)
+	}
 	if err := ensureSafeDir(ntmDir); err != nil {
 		return fmt.Errorf("validate ledger root: %w", err)
 	}
 
-	// Open the parent -> .ntm -> ledgers chain with os.OpenRoot (RESOLVE_IN_ROOT)
-	// plus Lstat checks so directory swaps, symlinks, and non-regular files cannot
-	// escape the workspace or block on FIFOs.
+	// Open parent -> .ntm -> ledgers with os.OpenRoot (RESOLVE_IN_ROOT) and verify
+	// SameFile against Lstat at every hop so neither cross-root nor in-root symlink
+	// swaps can redirect writes or hang on FIFOs.
+	var ntmRoot *os.Root
 	parentDir := filepath.Dir(ntmDir)
-	ntmName := filepath.Base(ntmDir)
-	parentRoot, err := os.OpenRoot(parentDir)
-	if err != nil {
-		return fmt.Errorf("open ledger root parent: %w", err)
-	}
-	defer parentRoot.Close()
+	if parentDir == ntmDir {
+		ntmRoot, err = os.OpenRoot(ntmDir)
+		if err != nil {
+			return fmt.Errorf("open ntm root: %w", err)
+		}
+	} else {
+		ntmName := filepath.Base(ntmDir)
+		parentRoot, openErr := os.OpenRoot(parentDir)
+		if openErr != nil {
+			return fmt.Errorf("open ledger root parent: %w", openErr)
+		}
+		defer parentRoot.Close()
 
-	ntmInfo, err := parentRoot.Lstat(ntmName)
-	if err != nil {
-		return fmt.Errorf("lstat ntm dir: %w", err)
-	}
-	if ntmInfo.Mode()&os.ModeSymlink != 0 || !ntmInfo.IsDir() {
-		return fmt.Errorf("ledger root %s is not a real directory", ntmDir)
-	}
-	ntmRoot, err := parentRoot.OpenRoot(ntmName)
-	if err != nil {
-		return fmt.Errorf("open ntm root: %w", err)
+		ntmInfo, statErr := parentRoot.Lstat(ntmName)
+		if statErr != nil {
+			return fmt.Errorf("lstat ntm dir: %w", statErr)
+		}
+		if ntmInfo.Mode()&os.ModeSymlink != 0 || !ntmInfo.IsDir() {
+			return fmt.Errorf("ledger root %s is not a real directory", ntmDir)
+		}
+		ntmRoot, err = parentRoot.OpenRoot(ntmName)
+		if err != nil {
+			return fmt.Errorf("open ntm root: %w", err)
+		}
+		openedNtm, statErr := ntmRoot.Stat(".")
+		if statErr != nil || !os.SameFile(ntmInfo, openedNtm) {
+			_ = ntmRoot.Close()
+			return fmt.Errorf("ledger root %s changed during open", ntmDir)
+		}
 	}
 	defer ntmRoot.Close()
 
@@ -482,35 +498,61 @@ func (w *Writer) appendLedgerEntry(h *Handoff, handoffPath string, isAuto bool) 
 		return fmt.Errorf("open ledger dir root: %w", err)
 	}
 	defer ledgerRoot.Close()
+	if openedLedger, statErr := ledgerRoot.Stat("."); statErr != nil || !os.SameFile(linfo, openedLedger) {
+		return fmt.Errorf("ledger dir %s changed during open", filepath.Join(ntmDir, "ledgers"))
+	}
 
 	ledgerName := fmt.Sprintf("CONTINUITY_%s.md", session)
 	ledgerPath := filepath.Join(ntmDir, "ledgers", ledgerName)
-	if info, statErr := ledgerRoot.Lstat(ledgerName); statErr == nil {
+	entry := formatLedgerEntry(h, handoffPath, isAuto, time.Now().UTC())
+
+	var f *os.File
+	for attempt := 0; attempt < 2; attempt++ {
+		info, statErr := ledgerRoot.Lstat(ledgerName)
+		if os.IsNotExist(statErr) {
+			// O_CREATE|O_EXCL refuses to follow any symlink (including in-root links).
+			opened, openErr := ledgerRoot.OpenFile(ledgerName, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0644)
+			if openErr != nil {
+				if os.IsExist(openErr) && attempt == 0 {
+					continue
+				}
+				return fmt.Errorf("open ledger: %w", openErr)
+			}
+			fi, fstatErr := opened.Stat()
+			if fstatErr != nil || !fi.Mode().IsRegular() {
+				_ = opened.Close()
+				return fmt.Errorf("ledger path %s is not a regular file", ledgerPath)
+			}
+			f = opened
+			break
+		}
+		if statErr != nil {
+			return fmt.Errorf("lstat ledger: %w", statErr)
+		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("ledger path %s is a symlink", ledgerPath)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("ledger path %s is not a regular file", ledgerPath)
 		}
-	} else if !os.IsNotExist(statErr) {
-		return fmt.Errorf("lstat ledger: %w", statErr)
+		// Open existing regular file without O_CREATE and confirm inode identity
+		// so an in-root symlink swap cannot redirect the append.
+		opened, openErr := ledgerRoot.OpenFile(ledgerName, os.O_WRONLY|os.O_APPEND, 0644)
+		if openErr != nil {
+			return fmt.Errorf("open ledger: %w", openErr)
+		}
+		fi, fstatErr := opened.Stat()
+		if fstatErr != nil || !fi.Mode().IsRegular() || !os.SameFile(info, fi) {
+			_ = opened.Close()
+			return fmt.Errorf("ledger path %s changed or became a symlink during open", ledgerPath)
+		}
+		f = opened
+		break
 	}
-
-	entry := formatLedgerEntry(h, handoffPath, isAuto, time.Now().UTC())
-
-	f, err := ledgerRoot.OpenFile(ledgerName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("open ledger: %w", err)
+	if f == nil {
+		return fmt.Errorf("open ledger %s: concurrent creation race", ledgerPath)
 	}
 	defer f.Close()
-
-	fi, statErr := f.Stat()
-	if statErr != nil {
-		return fmt.Errorf("stat opened ledger: %w", statErr)
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("ledger path %s is not a regular file", ledgerPath)
-	}
 
 	if _, err := f.WriteString(entry); err != nil {
 		return fmt.Errorf("append ledger: %w", err)
