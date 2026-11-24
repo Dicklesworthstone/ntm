@@ -865,7 +865,7 @@ func TestIsGitRepoWithCommand_RespectsCancellation(t *testing.T) {
 
 	dir := t.TempDir()
 	gitPath := filepath.Join(dir, "git")
-	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o755); err != nil {
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
 
