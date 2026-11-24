@@ -305,10 +305,21 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 	// Start the pipe-pane command
 	// Note: pipe-pane runs the command in a shell, output goes to the command's stdin
 	catCmd := pipePaneCatCommand(ps.fifoPath)
-	if err := ps.client.RunSilent("pipe-pane", "-t", ExactTarget(ps.target), catCmd); err != nil {
-		os.Remove(ps.fifoPath)
+	// Check the actual tmux server, where a user's recorder or another NTM
+	// process may already own the pane's only pipe. Perform the check and
+	// attach on the server queue so simultaneous starts cannot both win.
+	target := ExactTarget(ps.target)
+	attach := "pipe-pane -t " + ShellQuote(target) + " " + ShellQuote(catCmd)
+	const occupied = "ntm_pane_pipe_occupied"
+	out, err := ps.client.Run("if-shell", "-F", "-t", target, "#{pane_pipe}",
+		"display-message -p "+occupied, attach)
+	if err != nil || out == occupied {
+		_ = os.Remove(ps.fifoPath)
 		ps.fifoPath = ""
-		return fmt.Errorf("pipe-pane: %w", err)
+		if err != nil {
+			return fmt.Errorf("pipe-pane: %w", err)
+		}
+		return fmt.Errorf("pane %s already has an active pipe", ps.target)
 	}
 	paneStreamOwners.owners[key] = ps
 	ps.ownsPipePane = true

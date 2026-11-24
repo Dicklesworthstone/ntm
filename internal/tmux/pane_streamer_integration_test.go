@@ -4,6 +4,8 @@ package tmux
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -425,4 +427,63 @@ func TestIntegration_PaneStreamer_StopWhilePolling(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("Stop timed out - may be deadlocked")
 	}
+}
+
+// A pane has only one pipe-pane consumer. A stream opened against an already
+// recorded pane must keep serving output without taking over the recorder.
+func TestIntegration_PaneStreamerPreservesExistingRecorder(t *testing.T) {
+	skipIfNoTmux(t)
+	name := uniqueSessionName("stream_recorder")
+	t.Cleanup(func() { cleanupSession(t, name) })
+	if err := CreateSession(name, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	panes, err := GetPanes(name)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("list initial pane: %v, %v", panes, err)
+	}
+	target := panes[0].ID
+	recording := filepath.Join(t.TempDir(), "recorded output")
+	if err := DefaultClient.RunSilent("pipe-pane", "-t", target, pipePaneCatCommand(recording)); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan StreamEvent, 8)
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FIFODir = t.TempDir()
+	cfg.FallbackPollInterval = 25 * time.Millisecond
+	stream := NewPaneStreamer(DefaultClient, target, func(event StreamEvent) {
+		select {
+		case events <- event:
+		default:
+		}
+	}, cfg)
+	if err := stream.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stream.Stop)
+	if !stream.UsingFallback() {
+		t.Fatal("streamer took over an active recorder")
+	}
+	select {
+	case event := <-events:
+		if !event.IsFull || event.Target != target {
+			t.Fatalf("unexpected polling event: %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("occupied pane never produced a polling snapshot")
+	}
+	stream.Stop()
+	// Output written after Stop must still flow into the original recorder.
+	if err := SendKeys(target, "echo ntm-recorder-survived", true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(recording)
+		if err == nil && strings.Contains(string(b), "ntm-recorder-survived") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the original recorder did not receive output after streaming stopped")
 }
