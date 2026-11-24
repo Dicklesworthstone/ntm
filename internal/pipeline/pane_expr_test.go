@@ -241,3 +241,30 @@ func TestWorkflowExplicitPaneAcrossWindows(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkflowYAMLPhysicalPaneDispatch(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseString(`schema_version: "2.0"
+name: physical-pane
+steps:
+  - id: dispatch
+    pane: "%41"
+    prompt: "inspect"
+`, "yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := Validate(workflow); !result.Valid {
+		t.Fatalf("invalid workflow: %+v", result.Errors)
+	}
+	e := createForeachTestExecutor(t, workflow)
+	e.SetTmuxClient(NewMockTmuxClient(
+		tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30"},
+		tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41"},
+	))
+	id, _, err := e.selectPane(context.Background(), &workflow.Steps[0])
+	if err != nil || id != "%41" {
+		t.Fatalf("parsed workflow selected %q: %v", id, err)
+	}
+}

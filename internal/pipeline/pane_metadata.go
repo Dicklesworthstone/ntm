@@ -99,24 +99,38 @@ func (l *PaneMetadataLoader) Cache() (*PaneMetadataCache, error) {
 }
 
 type PaneMetadataCache struct {
-	byID    map[string]PaneMetadata
-	byIndex map[int]PaneMetadata
+	byID       map[string]*PaneMetadata
+	byIndex    map[int]*PaneMetadata
+	byNTMIndex map[int]*PaneMetadata
 }
 
 func newPaneMetadataCache(entries []PaneMetadata) *PaneMetadataCache {
 	cache := &PaneMetadataCache{
-		byID:    make(map[string]PaneMetadata, len(entries)),
-		byIndex: make(map[int]PaneMetadata, len(entries)),
+		byID:       make(map[string]*PaneMetadata, len(entries)),
+		byIndex:    make(map[int]*PaneMetadata, len(entries)),
+		byNTMIndex: make(map[int]*PaneMetadata, len(entries)),
 	}
-	for _, entry := range entries {
-		if entry.PaneID != "" {
-			cache.byID[entry.PaneID] = entry
+	// A present key with a nil value records a collision.
+	indexEntry := func(index map[int]*PaneMetadata, key int, entry *PaneMetadata) {
+		if _, exists := index[key]; exists {
+			entry = nil
 		}
-		if entry.Index != 0 {
-			cache.byIndex[entry.Index] = entry
+		index[key] = entry
+	}
+	for i := range entries {
+		entry := &entries[i]
+		if entry.PaneID != "" {
+			if _, exists := cache.byID[entry.PaneID]; exists {
+				cache.byID[entry.PaneID] = nil
+			} else {
+				cache.byID[entry.PaneID] = entry
+			}
+		}
+		if entry.Index != 0 || entry.Source == "ntm_session" {
+			indexEntry(cache.byIndex, entry.Index, entry)
 		}
 		if entry.NTMIndex != 0 {
-			cache.byIndex[entry.NTMIndex] = entry
+			indexEntry(cache.byNTMIndex, entry.NTMIndex, entry)
 		}
 	}
 	return cache
@@ -131,11 +145,23 @@ func (c *PaneMetadataCache) Lookup(paneRef string) (PaneMetadata, error) {
 		return PaneMetadata{}, fmt.Errorf("pane reference is empty")
 	}
 	if meta, ok := c.byID[paneRef]; ok {
-		return meta, nil
+		if meta == nil {
+			return PaneMetadata{}, fmt.Errorf("pane metadata ID %q is ambiguous", paneRef)
+		}
+		return *meta, nil
 	}
 	if idx, err := strconv.Atoi(strings.TrimPrefix(paneRef, "pane ")); err == nil {
-		if meta, ok := c.byIndex[idx]; ok {
-			return meta, nil
+		// Workflow dispatch interprets numbers as tmux pane indexes.
+		// Keep the roster's NTM index as a fallback for metadata-only lookups.
+		meta, found := c.byIndex[idx]
+		if !found {
+			meta, found = c.byNTMIndex[idx]
+		}
+		if found {
+			if meta == nil {
+				return PaneMetadata{}, fmt.Errorf("pane metadata index %d is ambiguous; specify a physical pane ID", idx)
+			}
+			return *meta, nil
 		}
 	}
 	return PaneMetadata{}, fmt.Errorf("pane metadata not found for %q", paneRef)
@@ -263,11 +289,15 @@ func paneMetadataFromSession(client TmuxClient, session string) ([]PaneMetadata,
 	if err != nil {
 		return nil, fmt.Errorf("load pane metadata from ntm session: %w", err)
 	}
+	return paneMetadataEntries(panes), nil
+}
+
+func paneMetadataEntries(panes []tmux.Pane) []PaneMetadata {
 	entries := make([]PaneMetadata, 0, len(panes))
 	for _, pane := range panes {
 		entries = append(entries, paneMetadataFromTmuxPane(pane))
 	}
-	return entries, nil
+	return entries
 }
 
 func paneMetadataFromTmuxPane(pane tmux.Pane) PaneMetadata {

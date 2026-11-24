@@ -1680,3 +1680,32 @@ func TestForeachPaneKeepsPhysicalTargetUntilDispatch(t *testing.T) {
 		}
 	}
 }
+
+func TestForeachPaneRequiresUnambiguousLiveItem(t *testing.T) {
+	t.Parallel()
+
+	workflow := &Workflow{Name: "fanout", Settings: DefaultWorkflowSettings()}
+	e := createForeachTestExecutor(t, workflow)
+	e.SetTmuxClient(NewMockTmuxClient(
+		tmux.Pane{WindowIndex: 1, Index: 1, ID: "%30"},
+		tmux.Pane{WindowIndex: 2, Index: 1, ID: "%41"},
+	))
+	config := &ForeachConfig{PaneStrategy: "round_robin"}
+	parent := &Step{ID: "fanout", ForeachPane: config}
+	for _, item := range []interface{}{
+		map[string]interface{}{"index": 1},
+		map[string]interface{}{"index": 0},
+		map[string]interface{}{"id": "%90", "index": 1},
+		map[string]interface{}{},
+	} {
+		plans, err := e.prepareForeachIterations(context.Background(), parent, config, "foreach_pane", nil, []interface{}{item})
+		if err == nil || len(plans) != 0 {
+			t.Fatalf("item %v unexpectedly planned: %+v, %v", item, plans, err)
+		}
+	}
+	cache := newPaneMetadataCache(paneMetadataEntries([]tmux.Pane{{Index: 0, ID: "%8"}}))
+	id, _, _ := paneAssignmentFromItem(map[string]interface{}{"index": 0}, cache)
+	if id != "%8" {
+		t.Fatalf("unique physical index zero resolved to %q", id)
+	}
+}

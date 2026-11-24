@@ -575,3 +575,30 @@ panes:
 		t.Errorf("pane 2 model = %q, want cod", got.Model)
 	}
 }
+
+func TestPaneMetadataNumericLookupFollowsDispatchIdentity(t *testing.T) {
+	t.Parallel()
+
+	first := PaneMetadata{PaneID: "%30", Index: 1, NTMIndex: 7}
+	second := PaneMetadata{PaneID: "%41", Index: 2, NTMIndex: 1}
+	third := PaneMetadata{PaneID: "%59", Index: 2, NTMIndex: 7}
+	duplicateID := newPaneMetadataCache([]PaneMetadata{first, first})
+	if _, err := duplicateID.Lookup("%30"); err == nil {
+		t.Fatal("duplicate physical ID yielded pane metadata")
+	}
+	for _, entries := range [][]PaneMetadata{{first, second, third}, {third, second, first}} {
+		cache := newPaneMetadataCache(entries)
+		for _, tc := range []struct {
+			ref  string
+			want string
+		}{
+			{"1", "%30"}, {"pane 1", "%30"}, {"2", ""}, {"7", ""},
+			{"%30", "%30"}, {"%41", "%41"}, {"%59", "%59"},
+		} {
+			meta, err := cache.Lookup(tc.ref)
+			if meta.PaneID != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("lookup %q returned %q, %v; want %q", tc.ref, meta.PaneID, err, tc.want)
+			}
+		}
+	}
+}
