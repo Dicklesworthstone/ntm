@@ -148,6 +148,9 @@ type CMInjectionInfo struct {
 	SkippedReason string `json:"skipped_reason,omitempty"`
 	// Source records which transport produced the rules: "daemon" or "cli".
 	Source string `json:"source,omitempty"`
+	// FallbackReason records degraded daemon retrieval even when the CLI
+	// successfully supplies rules. It contains no task or historical content.
+	FallbackReason string `json:"fallback_reason,omitempty"`
 	// Workspace is the absolute project used for this retrieval.
 	Workspace string `json:"workspace,omitempty"`
 	outcome   CMOutcomeClient
@@ -348,7 +351,34 @@ func InjectCMRules(ctx context.Context, task, message string, cfg CMInjectConfig
 	queryCtx, cancel := context.WithTimeout(ctx, cfg.QueryTimeout)
 	defer cancel()
 
-	result, err := client.GetContext(queryCtx, task, cfg.Workspace)
+	// A discovered daemon may be alive but unable to serve memory (restart,
+	// locked index, protocol error). Reserve half of the remaining query
+	// budget for the CLI when it is available, so a wedged daemon cannot
+	// consume the entire send's optional enrichment allowance. An explicit
+	// client override remains authoritative and never discovers other tools.
+	var fallback CMContextClient
+	attemptCtx := queryCtx
+	finishAttempt := func() {}
+	if source == "daemon" && cfg.Client == nil {
+		cli := cm.NewCLIClient(cm.WithCLIBinaryPath(cfg.CLIBinary), cm.WithCLITimeout(cfg.QueryTimeout))
+		if cli.IsInstalled() {
+			fallback = cmCLIContextAdapter{cli: cli}
+			deadline, _ := queryCtx.Deadline()
+			attemptCtx, finishAttempt = context.WithTimeout(queryCtx, time.Until(deadline)/2)
+		}
+	}
+	result, err := client.GetContext(attemptCtx, task, cfg.Workspace)
+	if attemptCtx.Err() != nil {
+		err = attemptCtx.Err()
+	}
+	finishAttempt()
+	if err != nil && fallback != nil && queryCtx.Err() == nil {
+		info.FallbackReason = "cm daemon query failed; attempted CLI within the original query budget"
+		slog.Debug("cm context falling back to CLI", "session", cfg.SessionID, "workspace", cfg.Workspace)
+		client = fallback
+		info.Source = "cli"
+		result, err = client.GetContext(queryCtx, task, cfg.Workspace)
+	}
 	if queryCtx.Err() != nil {
 		err = queryCtx.Err()
 	}

@@ -7,6 +7,7 @@ package coordinator
 // same harness as the decision-table test.
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestRotationChecker_RestartThresholdTriggers(t *testing.T) {
 			)
 			env.rc.restartTokensAbove = tc.tokensAbove
 			env.rc.restartSessionAge = tc.sessionAge
-			env.rc.sessionCreated = func(string) (time.Time, bool) {
+			env.rc.sessionCreated = func(context.Context, string) (time.Time, bool) {
 				return sessionStart, true
 			}
 

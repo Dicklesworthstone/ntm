@@ -100,7 +100,7 @@ func newRotationTestEnv(t *testing.T, threshold float64, autoConfirm bool, panes
 		autoConfirm: autoConfirm,
 		rotator:     rotator,
 		ctxMonitor:  ctxMonitor,
-		getPanes: func(string) ([]tmux.Pane, error) {
+		getPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			return panes, nil
 		},
 		paneCwd: func(paneID string) (string, bool) {
@@ -110,7 +110,7 @@ func newRotationTestEnv(t *testing.T, threshold float64, autoConfirm bool, panes
 		transcriptUsage: func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool) {
 			return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
 		},
-		capturePane: func(paneID string, lines int) (string, error) {
+		capturePane: func(_ context.Context, paneID string, lines int) (string, error) {
 			if err, ok := captureErrs[paneID]; ok {
 				return "", err
 			}
@@ -205,7 +205,7 @@ func TestRotationChecker_DecisionTable(t *testing.T) {
 				map[string]error{},
 			)
 			if tc.captureErr != nil {
-				env.rc.capturePane = func(string, int) (string, error) { return "", tc.captureErr }
+				env.rc.capturePane = func(context.Context, string, int) (string, error) { return "", tc.captureErr }
 			}
 
 			decisions := env.rc.runOnce(t.Context())
@@ -515,7 +515,7 @@ func TestRotationChecker_OpenCodeGaugeAdmission(t *testing.T) {
 			pane := tmux.Pane{ID: "%28", Title: "rotsess__oc_1", Type: tmux.AgentOpencode, Width: 200}
 			env := newRotationTestEnv(t, 80, false, []tmux.Pane{pane}, nil, nil, nil)
 			captures := 0
-			env.rc.capturePane = func(string, int) (string, error) {
+			env.rc.capturePane = func(context.Context, string, int) (string, error) {
 				captures++
 				if captures > 1 && tc.latest != "" {
 					return tc.latest, nil
@@ -791,7 +791,7 @@ func TestRunCycle_RotationTriggerGating(t *testing.T) {
 	c.rotation = &rotationChecker{
 		session:   "rot-tick",
 		threshold: 90,
-		getPanes: func(string) ([]tmux.Pane, error) {
+		getPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			calls++
 			return nil, nil
 		},
@@ -967,12 +967,73 @@ func TestRotationCheckerInvalidAccountingCannotUseOtherTriggers(t *testing.T) {
 			env.rc.contextLimit = func(string) (int, bool) { return 200000, tc.known }
 			env.rc.restartTokensAbove = 1
 			env.rc.restartSessionAge = time.Hour
-			env.rc.sessionCreated = func(string) (time.Time, bool) { return time.Now().Add(-2 * time.Hour), true }
+			env.rc.sessionCreated = func(context.Context, string) (time.Time, bool) { return time.Now().Add(-2 * time.Hour), true }
 			if decisions := env.rc.runOnce(t.Context()); len(decisions) != 0 || len(env.confirmed) != 0 {
 				t.Fatalf("invalid accounting authorized another trigger: %+v, confirmed=%v", decisions, env.confirmed)
 			}
 			if pending, err := store.Get(pane.Title); err != nil || pending != nil {
 				t.Fatalf("invalid accounting persisted rotation: %+v, %v", pending, err)
+			}
+		})
+	}
+}
+
+func TestRotationTranscriptObservationsHonorCancellation(t *testing.T) {
+	originalClient := tmux.DefaultClient
+	t.Cleanup(func() { tmux.DefaultClient = originalClient })
+	tmux.DefaultClient = tmux.NewClient("")
+	for _, stage := range []string{"cwd", "fleet"} {
+		t.Run(stage, func(t *testing.T) {
+			cwd := t.TempDir()
+			entered := make(chan struct{})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			pane := ccPane("%5", "cancel-observation__cc_1")
+			pane.PID = 101
+			rc := &rotationChecker{
+				session: "cancel-observation", threshold: 90,
+				getPanes: func(context.Context, string) ([]tmux.Pane, error) {
+					return []tmux.Pane{pane}, nil
+				},
+				paneCwd: func(string) (string, bool) {
+					t.Error("rotation used the non-context cwd reader")
+					return cwd, true
+				},
+				paneCwdContext: func(probeCtx context.Context, _ string) (string, bool) {
+					if stage == "cwd" {
+						close(entered)
+						<-probeCtx.Done()
+						return "", false
+					}
+					return cwd, true
+				},
+				processUsageContext: func(context.Context, string, int) (*ntmctx.TranscriptUsage, bool) {
+					return nil, false
+				},
+				allPanes: func(probeCtx context.Context) (map[string][]tmux.Pane, error) {
+					if stage == "fleet" {
+						close(entered)
+						<-probeCtx.Done()
+					}
+					return nil, probeCtx.Err()
+				},
+				now: time.Now,
+			}
+			done := make(chan []rotationDecision, 1)
+			go func() { done <- rc.runOnce(ctx) }()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("rotation did not reach the expected observation")
+			}
+			cancel()
+			select {
+			case decisions := <-done:
+				if len(decisions) != 0 {
+					t.Fatalf("canceled observation produced decisions: %+v", decisions)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("rotation observation detached from caller cancellation")
 			}
 		})
 	}

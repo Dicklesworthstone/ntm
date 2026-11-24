@@ -28537,6 +28537,10 @@
             "type": "boolean",
             "description": "Enabled"
           },
+          "fallback_reason": {
+            "type": "string",
+            "description": "Fallback reason"
+          },
           "rules_injected": {
             "type": "array",
             "description": "Rules injected",

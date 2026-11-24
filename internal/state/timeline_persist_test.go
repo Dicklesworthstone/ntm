@@ -1,9 +1,17 @@
 package state
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1747,6 +1755,367 @@ func TestCheckpointTimelinePreservesHistoryOutsideRetentionWindow(t *testing.T) 
 	}
 	if len(reloaded) != 3 {
 		t.Fatalf("got %d events after repeat checkpoint, want 3 (merge must dedupe)", len(reloaded))
+	}
+}
+
+func TestCheckpointTimelinePreservesDamagedHistory(t *testing.T) {
+	for _, compressed := range []bool{false, true} {
+		for _, damage := range []string{"empty", "header", "session", "version", "truncated", "malformed", "null", "missing-event"} {
+			t.Run(fmt.Sprintf("%s/compressed=%t", damage, compressed), func(t *testing.T) {
+				t.Parallel()
+				persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				const sessionID = "preserve-history"
+				event := AgentEvent{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, Timestamp: time.Now().UTC()}
+				if err := persister.SaveTimeline(sessionID, []AgentEvent{event}); err != nil {
+					t.Fatal(err)
+				}
+				plainPath := persister.getTimelinePath(sessionID, false)
+				original, err := os.ReadFile(plainPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts := bytes.SplitAfterN(original, []byte("\n"), 2)
+				var damaged []byte
+				switch damage {
+				case "empty":
+					damaged = []byte("\n\n")
+				case "header":
+					damaged = append([]byte("{invalid header}\n"), parts[1]...)
+				case "session":
+					damaged = bytes.Replace(original, []byte(sessionID), []byte("different-session"), 1)
+				case "version":
+					damaged = bytes.Replace(original, []byte("\"version\":\"1.0\""), []byte("\"version\":\"99.0\""), 1)
+				case "truncated":
+					damaged = original[:len(original)-5]
+				case "malformed":
+					damaged = append(append([]byte(nil), parts[0]...), []byte("broken record\n")...)
+					damaged = append(damaged, parts[1]...)
+				case "null":
+					damaged = append(append([]byte(nil), parts[0]...), []byte("null\n")...)
+				case "missing-event":
+					damaged = parts[0]
+				}
+				if err := os.WriteFile(plainPath, damaged, 0600); err != nil {
+					t.Fatal(err)
+				}
+				path := plainPath
+				if compressed {
+					if err := persister.compressTimeline(sessionID); err != nil {
+						t.Fatal(err)
+					}
+					path = persister.getTimelinePath(sessionID, true)
+				}
+				before, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				event.AgentID = "cod_2"
+				if err := persister.CheckpointTimeline(sessionID, []AgentEvent{event}); err == nil {
+					t.Fatal("checkpoint replaced damaged history with a partial view")
+				}
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("damaged evidence changed: read error=%v", err)
+				}
+				if compressed {
+					if _, err := os.Stat(plainPath); !os.IsNotExist(err) {
+						t.Fatalf("failed merge published a plain replacement: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCheckpointTimelineRejectsDamagedCompressedTrailer(t *testing.T) {
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "damaged-gzip"
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, "{\"version\":\"1.0\",\"session_id\":\"damaged-gzip\",\"event_count\":0}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	damaged := compressed.Bytes()
+	damaged[len(damaged)-8] ^= 0xff // Corrupt CRC after an otherwise complete stream.
+	path := persister.getTimelinePath(sessionID, true)
+	if err := os.WriteFile(path, damaged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := persister.CheckpointTimeline(sessionID, nil); err == nil {
+		t.Fatal("checkpoint accepted a compressed stream with a corrupt checksum")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(after, damaged) {
+		t.Fatalf("damaged gzip history changed: %v", err)
+	}
+}
+
+func TestCheckpointTimelineRejectsInvalidFreshEvents(t *testing.T) {
+	for _, invalid := range []string{"agent", "timestamp", "state", "session"} {
+		t.Run(invalid, func(t *testing.T) {
+			persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := AgentEvent{AgentID: "cc_1", SessionID: "valid-history", State: TimelineWorking, Timestamp: time.Now().UTC()}
+			if err := persister.CheckpointTimeline(event.SessionID, []AgentEvent{event}); err != nil {
+				t.Fatal(err)
+			}
+			path := persister.getTimelinePath(event.SessionID, false)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch invalid {
+			case "agent":
+				event.AgentID = ""
+			case "timestamp":
+				event.Timestamp = time.Time{}
+			case "state":
+				event.State = ""
+			case "session":
+				event.SessionID = "different-session"
+			}
+			if err := persister.CheckpointTimeline("valid-history", []AgentEvent{event}); err == nil {
+				t.Fatal("accepted invalid event that would poison later checkpoint reads")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("rejected event changed existing history: %v", err)
+			}
+		})
+	}
+}
+
+func TestTimelineCleanupPreservesRefreshedSnapshot(t *testing.T) {
+	for _, transition := range []string{"replace-plain", "compress", "replace-compressed"} {
+		t.Run(transition, func(t *testing.T) {
+			first, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir(), MaxTimelines: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := NewTimelinePersister(&first.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			old := AgentEvent{AgentID: "cc_1", SessionID: "old-session", State: TimelineWorking, Timestamp: now.Add(-2 * time.Hour)}
+			other := AgentEvent{AgentID: "cod_1", SessionID: "other-session", State: TimelineWorking, Timestamp: now.Add(-time.Hour)}
+			for _, event := range []AgentEvent{old, other} {
+				if err := first.CheckpointTimeline(event.SessionID, []AgentEvent{event}); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(first.getTimelinePath(event.SessionID, false), event.Timestamp, event.Timestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if transition == "replace-compressed" {
+				if err := first.compressTimeline(old.SessionID); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(first.getTimelinePath(old.SessionID, true), old.Timestamp, old.Timestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			listed, err := first.ListTimelines()
+			if err != nil || len(listed) != 2 || listed[1].SessionID != old.SessionID {
+				t.Fatalf("oldest cleanup candidate = %+v, err=%v", listed, err)
+			}
+			candidate := listed[1]
+			// Interleave another controller exactly after retention's listing
+			// and before its mutation fence. The previous DeleteTimeline call
+			// unconditionally removed this freshly replaced snapshot.
+			if transition == "compress" {
+				if err := second.compressTimeline(old.SessionID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				fresh := old
+				fresh.Timestamp, fresh.State = now, TimelineIdle
+				if err := second.CheckpointTimeline(old.SessionID, []AgentEvent{fresh}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			removed, err := first.deleteTimelineIfUnchanged(candidate)
+			if err != nil || removed {
+				t.Fatalf("stale retention decision deleted refreshed history: removed=%t err=%v", removed, err)
+			}
+			events, err := first.LoadTimeline(old.SessionID)
+			want := 2
+			if transition == "compress" {
+				want = 1
+			}
+			if err != nil || len(events) != want {
+				t.Fatalf("refreshed history = %+v, err=%v, want %d events", events, err, want)
+			}
+			// A fresh cleanup pass can enforce retention against its current
+			// oldest candidate without deleting the newly active session.
+			deleted, err := first.Cleanup()
+			if err != nil || deleted != 1 {
+				t.Fatalf("fresh Cleanup deleted=%d err=%v, want 1", deleted, err)
+			}
+			events, err = first.LoadTimeline(old.SessionID)
+			if err != nil || len(events) != want {
+				t.Fatalf("fresh cleanup lost current session: %d events, err=%v", len(events), err)
+			}
+		})
+	}
+}
+
+func TestTimelineMutationsShareFenceAcrossPersisters(t *testing.T) {
+	for _, operation := range []string{"checkpoint", "replace", "compress", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			first, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := NewTimelinePersister(&first.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const sessionID = "shared-history"
+			events := []AgentEvent{{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, Timestamp: time.Now().UTC()}}
+			if err := first.SaveTimeline(sessionID, events); err != nil {
+				t.Fatal(err)
+			}
+			unlock, err := first.lockTimelineMutation(sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var unlockOnce sync.Once
+			release := func() { unlockOnce.Do(unlock) }
+			defer release()
+			entered := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				close(entered)
+				switch operation {
+				case "checkpoint":
+					done <- second.CheckpointTimeline(sessionID, events)
+				case "replace":
+					done <- second.SaveTimeline(sessionID, events)
+				case "compress":
+					done <- second.compressTimeline(sessionID)
+				case "delete":
+					done <- second.DeleteTimeline(sessionID)
+				}
+			}()
+			<-entered
+			select {
+			case err := <-done:
+				t.Fatalf("%s escaped another persister's mutation fence: %v", operation, err)
+			case <-time.After(40 * time.Millisecond):
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("mutation did not resume after its predecessor released ownership")
+			}
+		})
+	}
+}
+
+func TestTimelineCheckpointIndependentProcesses(t *testing.T) {
+	const workers, batches = 6, 12
+	const sessionID = "process-history"
+	dir := t.TempDir()
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All children compete for the same history with independent address
+	// spaces and batches. A process-local mutex cannot preserve their union.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var commands []*exec.Cmd
+	var gates []io.WriteCloser
+	var outputs []*bytes.Buffer
+	for worker := 0; worker < workers; worker++ {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTimelineCheckpointProcessHelper$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "NTM_TIMELINE_TEST_DIR="+dir,
+			"NTM_TIMELINE_TEST_WORKER="+strconv.Itoa(worker), "NTM_TIMELINE_TEST_BATCHES="+strconv.Itoa(batches))
+		gate, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := new(bytes.Buffer)
+		cmd.Stdout, cmd.Stderr = output, output
+		if err := cmd.Start(); err != nil {
+			_ = gate.Close()
+			for _, running := range commands {
+				_ = running.Process.Kill()
+				_ = running.Wait()
+			}
+			t.Fatal(err)
+		}
+		commands, gates, outputs = append(commands, cmd), append(gates, gate), append(outputs, output)
+	}
+	for _, gate := range gates {
+		_, _ = io.WriteString(gate, "go")
+		_ = gate.Close()
+	}
+	for worker, cmd := range commands {
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("worker %d: %v\n%s", worker, err, outputs[worker].String())
+		}
+	}
+	loaded, err := persister.LoadTimeline(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != workers*batches {
+		t.Fatalf("concurrent checkpoints lost history: got %d events, want %d", len(loaded), workers*batches)
+	}
+	seen := make(map[string]int)
+	for _, event := range loaded {
+		seen[event.AgentID]++
+	}
+	for worker := 0; worker < workers; worker++ {
+		if seen[fmt.Sprintf("worker-%d", worker)] != batches {
+			t.Errorf("worker %d history incomplete: %d events", worker, seen[fmt.Sprintf("worker-%d", worker)])
+		}
+	}
+}
+
+func TestTimelineCheckpointProcessHelper(t *testing.T) {
+	dir := os.Getenv("NTM_TIMELINE_TEST_DIR")
+	if dir == "" {
+		return
+	}
+	worker := os.Getenv("NTM_TIMELINE_TEST_WORKER")
+	batches, err := strconv.Atoi(os.Getenv("NTM_TIMELINE_TEST_BATCHES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
+	}
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for batch := 0; batch < batches; batch++ {
+		event := AgentEvent{
+			AgentID: "worker-" + worker, SessionID: "process-history", State: TimelineWorking,
+			Timestamp: time.Unix(1700000000+int64(batch), 0).UTC(),
+			Details:   map[string]string{"batch": strconv.Itoa(batch), "output": strings.Repeat("history ", 128)},
+		}
+		if err := persister.CheckpointTimeline(event.SessionID, []AgentEvent{event}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

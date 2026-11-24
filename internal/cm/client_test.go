@@ -1,14 +1,18 @@
 package cm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -196,14 +200,27 @@ func TestGetContextDirectResultShape(t *testing.T) {
 // Regression for #249: a JSON-RPC error arrives with HTTP 200. Decoding it as
 // a success produced an empty ContextResult and silently dropped all context.
 func TestGetContextSurfacesJSONRPCError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeRPCError(t, w, nil, -32601, "Unsupported method: undefined")
-	}))
-	defer ts.Close()
-
-	_, err := testClient(ts, "").GetContext(context.Background(), "test task", "")
-	if err == nil || !strings.Contains(err.Error(), "Unsupported method") {
-		t.Fatalf("GetContext() error = %v, want surfaced JSON-RPC error", err)
+	for _, tc := range []struct {
+		name, body string
+		wantDetail bool
+	}{
+		{name: "null id", body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32601,"message":"Unsupported method: undefined"}}`, wantDetail: true},
+		{name: "missing id", body: `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Unsupported method: malformed request"}}`, wantDetail: true},
+		{name: "matching id", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Unsupported method: undefined"}}`, wantDetail: true},
+		{name: "different id", body: `{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Unsupported method: undefined"}}`},
+		{name: "result plus error", body: `{"jsonrpc":"2.0","id":null,"result":{"relevantBullets":[]},"error":{"code":-32601,"message":"Unsupported method: undefined"}}`},
+		{name: "wrong protocol", body: `{"jsonrpc":"1.0","id":null,"error":{"code":-32601,"message":"Unsupported method: undefined"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer ts.Close()
+			result, err := testClient(ts, "").GetContext(context.Background(), "test task", "")
+			if result != nil || err == nil || strings.Contains(err.Error(), "Unsupported method") != tc.wantDetail {
+				t.Fatalf("GetContext() result=%+v error=%v, wantDetail=%t", result, err, tc.wantDetail)
+			}
+		})
 	}
 }
 
@@ -1496,4 +1513,117 @@ func TestCLIClientGetContext_OptionEndAndEqualsWorkspace(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("cm argv = %q, want %q", got, want)
 	}
+}
+
+func TestCMResponseRequiresCompleteBoundedRPC(t *testing.T) {
+	const valid = `{"jsonrpc":"2.0","id":1,"result":{"relevantBullets":[{"id":"r1","content":"keep this rule"}]}}`
+	for _, tc := range []struct {
+		name, body string
+		wantLimit  bool
+	}{
+		{name: "trailing object", body: valid + `{}`},
+		{name: "trailing malformed data", body: valid + `{"unfinished":`},
+		{name: "wrong request", body: strings.Replace(valid, `"id":1`, `"id":2`, 1)},
+		{name: "missing protocol", body: `{"id":1,"result":{}}`},
+		{name: "malformed tool envelope", body: `{"jsonrpc":"2.0","id":1,"result":{"content":"invalid","isError":false}}`},
+		{name: "oversized after valid prefix", body: valid + strings.Repeat(" ", maxCMResponseBytes), wantLimit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer ts.Close()
+			result, err := testClient(ts, "session").GetContext(t.Context(), "task", "/project")
+			if err == nil || result != nil {
+				t.Fatalf("incomplete response produced context: result=%+v err=%v", result, err)
+			}
+			if tc.wantLimit && !errors.Is(err, ErrOutputLimit) {
+				t.Fatalf("oversized response error=%v, want ErrOutputLimit", err)
+			}
+		})
+	}
+}
+
+// Run the CLI entry point against actual subprocess pipes. A valid response
+// prefix must never hide excessive stderr or an inherited pipe that never
+// completes; those conditions otherwise look like usable context to sends.
+func TestCMCLIRejectsOverflowAndIncompleteTransport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("CLI transport fixture requires a POSIX shell")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"stdout", "stderr", "inherited-pipe", "crash-after-json", "valid"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cm")
+			script := "#!/bin/sh\nNTM_CM_OUTPUT_HELPER=" + mode + " exec '" + strings.ReplaceAll(executable, "'", "'\\''") + "' -test.run=^TestCMCLIOutputHelper$\n"
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			client := NewCLIClient(WithCLIBinaryPath(path), WithCLITimeout(3*time.Second))
+			started := time.Now()
+			result, err := client.GetContext(t.Context(), "task", "/project")
+			switch mode {
+			case "valid":
+				if err != nil || result == nil || !result.Success || len(result.RelevantBullets) != 1 {
+					t.Fatalf("valid subprocess response lost: result=%+v err=%v", result, err)
+				}
+			case "inherited-pipe":
+				if result != nil || !errors.Is(err, exec.ErrWaitDelay) {
+					t.Fatalf("unjoined transport returned context: result=%+v err=%v", result, err)
+				}
+			case "crash-after-json":
+				if result != nil || err == nil {
+					t.Fatalf("failed process returned successful context: result=%+v err=%v", result, err)
+				}
+			default:
+				if result != nil || !errors.Is(err, ErrOutputLimit) {
+					t.Fatalf("overflow returned context: result=%+v err=%v", result, err)
+				}
+			}
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("optional CM response held dispatch for %v", elapsed)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if result, err := NewCLIClient(WithCLIBinaryPath("/nonexistent/cm")).GetContext(ctx, "task", "/project"); result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancellation lost to discovery: result=%+v err=%v", result, err)
+	}
+}
+
+func TestCMCLIOutputHelper(t *testing.T) {
+	mode := os.Getenv("NTM_CM_OUTPUT_HELPER")
+	if mode == "" {
+		return
+	}
+	const valid = `{"success":true,"data":{"relevantBullets":[{"id":"r1","content":"bounded rule"}]}}`
+	switch mode {
+	case "stdout":
+		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), maxCMResponseBytes+1))
+	case "stderr":
+		_, _ = io.WriteString(os.Stdout, valid)
+		_, _ = os.Stderr.Write(bytes.Repeat([]byte("x"), maxCMStderrBytes+1))
+	case "inherited-pipe":
+		_, _ = io.WriteString(os.Stdout, valid)
+		child := exec.Command(os.Args[0], "-test.run=^TestCMCLIOutputHelper$")
+		child.Env = append(os.Environ(), "NTM_CM_OUTPUT_HELPER=hold-pipe")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+	case "hold-pipe":
+		time.Sleep(750 * time.Millisecond)
+	case "valid":
+		_, _ = io.WriteString(os.Stdout, valid)
+	case "crash-after-json":
+		_, _ = io.WriteString(os.Stdout, valid)
+		os.Exit(7)
+	default:
+		t.Fatalf("unknown CM helper mode %q", mode)
+	}
+	os.Exit(0)
 }

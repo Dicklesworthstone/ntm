@@ -106,10 +106,10 @@ type mailNudgeChecker struct {
 	message    string // "" means the default template
 
 	// Seams (default to real implementations).
-	getPanes    func(session string) ([]tmux.Pane, error)
+	getPanes    func(context.Context, string) ([]tmux.Pane, error)
 	agentLookup func() func(paneTitle, paneID string) (string, bool)
 	fetchInbox  func(ctx context.Context, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error)
-	capturePane func(paneID string, lines int) (string, error)
+	capturePane func(context.Context, string, int) (string, error)
 	dispatch    func(ctx context.Context, panes []tmux.Pane, target tmux.Pane, message string) error
 	lastNudgeAt func(scope string) (time.Time, bool)
 	recordNudge func(scope, mailAgent string, at time.Time)
@@ -145,7 +145,7 @@ func newMailNudgeChecker(session, projectKey string, coordCfg CoordinatorConfig,
 		projectKey: projectKey,
 		cooldown:   cooldown,
 		message:    strings.TrimSpace(coordCfg.NudgeMessage),
-		getPanes:   tmux.GetPanes,
+		getPanes:   tmux.GetPanesContext,
 		agentLookup: func() func(paneTitle, paneID string) (string, bool) {
 			registry, err := agentmail.LoadSessionAgentRegistry(session, projectKey)
 			if err != nil || registry == nil {
@@ -158,8 +158,8 @@ func newMailNudgeChecker(session, projectKey string, coordCfg CoordinatorConfig,
 			return registry.GetAgent
 		},
 		fetchInbox: mailClient.FetchInbox,
-		capturePane: func(paneID string, _ int) (string, error) {
-			return tmux.CapturePaneVisible(paneID)
+		capturePane: func(ctx context.Context, paneID string, _ int) (string, error) {
+			return tmux.CapturePaneVisibleContext(ctx, paneID)
 		},
 		dispatch: func(ctx context.Context, panes []tmux.Pane, target tmux.Pane, message string) error {
 			return dispatchMailNudge(ctx, session, panes, target, message)
@@ -313,11 +313,14 @@ func (mc *mailNudgeChecker) runOnce(ctx context.Context) []mailNudgeDecision {
 	if mc == nil {
 		return nil
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
 		return nil
 	}
 
-	panes, err := mc.getPanes(mc.session)
+	panes, err := mc.getPanes(ctx, mc.session)
 	if err != nil {
 		slog.Warn("mail nudge check could not list panes",
 			"session", mc.session, "error", err)
@@ -408,7 +411,10 @@ func (mc *mailNudgeChecker) checkPane(ctx context.Context, panes []tmux.Pane, pa
 
 	// Fire-time safety gates on a FRESH capture. A pane we cannot observe is
 	// a pane we must not type into.
-	captured, err := mc.capturePane(pane.ID, mailNudgeCaptureLines)
+	captured, err := mc.capturePane(ctx, pane.ID, mailNudgeCaptureLines)
+	if ctx.Err() != nil {
+		return mailNudgeDecision{}, false
+	}
 	if err != nil {
 		decision.Action = "skipped"
 		decision.SkipReason = "capture_failed"

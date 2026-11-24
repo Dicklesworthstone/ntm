@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,15 @@ import (
 
 // ErrNotInstalled is returned when the cm binary is not found
 var ErrNotInstalled = fmt.Errorf("cm is not installed")
+
+// ErrOutputLimit means CM exceeded its bounded response budget. The caller
+// must discard the partial response and may continue without memory context.
+var ErrOutputLimit = errors.New("cm output exceeds response budget")
+
+const (
+	maxCMResponseBytes = 10 << 20
+	maxCMStderrBytes   = 64 << 10
+)
 
 // Client talks to a `cm serve` daemon. The daemon speaks MCP JSON-RPC over
 // HTTP at its root path (there are no REST routes such as /context or
@@ -104,8 +114,10 @@ type rpcErrorPayload struct {
 }
 
 type rpcResponsePayload struct {
-	Result json.RawMessage  `json:"result"`
-	Error  *rpcErrorPayload `json:"error"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      json.RawMessage  `json:"id"`
+	Result  json.RawMessage  `json:"result"`
+	Error   *rpcErrorPayload `json:"error"`
 }
 
 // rpc performs one MCP JSON-RPC call against the daemon root. A JSON-RPC
@@ -113,6 +125,12 @@ type rpcResponsePayload struct {
 // treating those responses as success is exactly the silent context drop
 // reported in #249.
 func (c *Client) rpc(ctx context.Context, method string, params any, result any) error {
+	if ctx == nil {
+		return errors.New("cm request requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -142,12 +160,38 @@ func (c *Client) rpc(ctx context.Context, method string, params any, result any)
 		return fmt.Errorf("cm %s failed: %s", method, resp.Status)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCMResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read cm %s response: %w", method, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(body) > maxCMResponseBytes {
+		return ErrOutputLimit
+	}
 	var rpcResp rpcResponsePayload
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&rpcResp); err != nil {
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return fmt.Errorf("decode cm %s response: %w", method, err)
 	}
+	if rpcResp.JSONRPC != "2.0" {
+		return fmt.Errorf("cm %s response does not match its JSON-RPC request", method)
+	}
+	id := bytes.TrimSpace(rpcResp.ID)
+	matchesRequest := bytes.Equal(id, []byte("1"))
 	if rpcResp.Error != nil {
-		return fmt.Errorf("cm %s failed (%d): %s", method, rpcResp.Error.Code, rpcResp.Error.Message)
+		if len(rpcResp.Result) != 0 {
+			return fmt.Errorf("cm %s response contains both a result and an error", method)
+		}
+		// Servers may reject a protocol request before identifying its ID.
+		// Preserve that negative diagnostic, including legacy omitted IDs,
+		// while never accepting an uncorrelated result as successful context.
+		if matchesRequest || len(id) == 0 || bytes.Equal(id, []byte("null")) {
+			return fmt.Errorf("cm %s failed (%d): %s", method, rpcResp.Error.Code, rpcResp.Error.Message)
+		}
+	}
+	if !matchesRequest {
+		return fmt.Errorf("cm %s response does not match its JSON-RPC request", method)
 	}
 	// A JSON-RPC response with neither result nor error is not a valid
 	// answer to any method we call. Enforcing this even when the caller
@@ -200,7 +244,10 @@ func (c *Client) callTool(ctx context.Context, name string, arguments any, resul
 		isEnvelope = hasContent || hasIsError
 	}
 	var envelope mcpToolEnvelope
-	if isEnvelope && json.Unmarshal(raw, &envelope) == nil {
+	if isEnvelope {
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return fmt.Errorf("decode cm tool %s envelope: %w", name, err)
+		}
 		var text string
 		for _, content := range envelope.Content {
 			if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
@@ -339,6 +386,29 @@ type CLIClient struct {
 	timeout    time.Duration
 }
 
+// Each stream has one os/exec copy goroutine. Cmd.Run joins those copies
+// before GetContext inspects their buffers or overflow markers.
+type boundedCLIOutput struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+	cancel   context.CancelFunc
+}
+
+func (w *boundedCLIOutput) Write(data []byte) (int, error) {
+	if w.exceeded {
+		return 0, ErrOutputLimit
+	}
+	remaining := w.limit - w.buffer.Len()
+	if len(data) <= remaining {
+		return w.buffer.Write(data)
+	}
+	n, _ := w.buffer.Write(data[:remaining])
+	w.exceeded = true
+	w.cancel()
+	return n, ErrOutputLimit
+}
+
 // CLIContextResponse matches the JSON output of `cm context --json`.
 // Current CM releases wrap the payload in a {success, data} envelope;
 // older releases emit the fields at the top level. decodeCLIContextResponse
@@ -398,43 +468,63 @@ func (c *CLIClient) IsInstalled() bool {
 // workspaces (e.g. /clientA/app and /clientB/app) do not share recovery
 // context (#132). Empty workspace falls through to the unscoped CM query.
 func (c *CLIClient) GetContext(ctx context.Context, task string, workspace string) (*CLIContextResponse, error) {
+	if ctx == nil {
+		return nil, errors.New("cm context query requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !c.IsInstalled() {
 		return nil, nil // Graceful degradation: CM not available
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
 
 	args := []string{"context", "--json"}
 	if strings.TrimSpace(workspace) != "" {
 		args = append(args, "--workspace="+workspace)
 	}
 	args = append(args, "--", task)
-	cmd := exec.CommandContext(ctx, c.binaryPath, args...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd := exec.CommandContext(runCtx, c.binaryPath, args...)
+	// Memory is optional enrichment on the send path. A child retaining the
+	// output pipes must not extend a completed or canceled lookup by seconds.
+	cmd.WaitDelay = 100 * time.Millisecond
 	// Run from a stable directory. Some environments (and some tests) temporarily
 	// chdir into directories that may later be removed; if that happens, `cm`
 	// can fail even though it doesn't need the current project directory.
 	cmd.Dir = os.TempDir()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		// Check if context was cancelled or timed out
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("cm context %v after %v", ctx.Err(), c.timeout)
-		}
+	stdout := &boundedCLIOutput{limit: maxCMResponseBytes, cancel: stop}
+	stderr := &boundedCLIOutput{limit: maxCMStderrBytes, cancel: stop}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	runErr := cmd.Run()
+	// Cancellation and failed pipe draining take precedence over a complete
+	// JSON prefix. Optional context cannot be reported as a successful query
+	// after the transport has failed or the requesting send has been canceled.
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("cm context query: %w", ctx.Err())
+	}
+	if stdout.exceeded || stderr.exceeded {
+		return nil, ErrOutputLimit
+	}
+	if runErr != nil {
 		// Non-zero exit but may still have valid JSON (e.g., empty results)
-		// Try to parse stdout anyway
-		if stdout.Len() == 0 {
-			return nil, fmt.Errorf("cm context failed: %w (stderr: %s)", err, stderr.String())
+		// is the CLI's known soft-error contract. Other execution errors,
+		// including WaitDelay with inherited pipes, are never valid replies.
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) || stdout.buffer.Len() == 0 {
+			return nil, fmt.Errorf("cm context failed: %w (stderr: %s)", runErr, stderr.buffer.String())
 		}
 	}
 
-	result, err := decodeCLIContextResponse(stdout.Bytes())
+	result, err := decodeCLIContextResponse(stdout.buffer.Bytes())
 	if err != nil {
-		return nil, fmt.Errorf("parsing cm output: %w (raw: %s)", err, stdout.String())
+		return nil, fmt.Errorf("parsing cm output: %w", err)
+	}
+	if runErr != nil && result.Success {
+		return nil, fmt.Errorf("cm reported success but exited unsuccessfully: %w", runErr)
 	}
 	return result, nil
 }

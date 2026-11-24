@@ -5,12 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -637,6 +645,309 @@ func TestStartObservationFailureCanBeRetried(t *testing.T) {
 	c.Stop()
 }
 
+func TestStopCancelsInFlightAssignmentAndAllowsRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	originalGetPanes := getPanesWithActivity
+	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
+	c := New("cancel-assignment", t.TempDir(), nil, "Coordinator")
+	c.config.PollInterval = MinPollInterval
+	c.config.AutoAssign = true
+	parent, cancel := context.WithCancel(t.Context())
+	t.Cleanup(func() { cancel(); c.Stop() })
+	entered := make(chan struct{})
+	exited := make(chan error, 1)
+	c.assignWorkFn = func(ctx context.Context) ([]AssignmentResult, error) {
+		close(entered)
+		<-ctx.Done()
+		exited <- ctx.Err()
+		return nil, ctx.Err()
+	}
+	if err := c.Start(parent); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("assignment did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { c.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel and join the active assignment")
+	}
+	if err := <-exited; !errors.Is(err, context.Canceled) {
+		t.Fatalf("assignment error = %v, want cancellation", err)
+	}
+	if parent.Err() != nil {
+		t.Fatal("Stop canceled the caller's context")
+	}
+	restarted := make(chan error, 1)
+	c.assignWorkFn = func(ctx context.Context) ([]AssignmentResult, error) {
+		select {
+		case restarted <- ctx.Err():
+		default:
+		}
+		return nil, nil
+	}
+	if err := c.Start(parent); err != nil {
+		t.Fatalf("restart failed: %v", err)
+	}
+	select {
+	case err := <-restarted:
+		if err != nil {
+			t.Fatalf("restart reused the canceled run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restarted coordinator did not run assignments")
+	}
+	c.Stop()
+}
+
+func TestStopCancelsInitialObservation(t *testing.T) {
+	originalGetPanes := getPanesWithActivity
+	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
+	entered := make(chan struct{})
+	getPanesWithActivity = func(ctx context.Context, _ string) ([]tmux.PaneActivity, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	c := New("cancel-startup", t.TempDir(), nil, "Coordinator")
+	parent, cancel := context.WithCancel(t.Context())
+	t.Cleanup(func() { cancel(); c.Stop() })
+	started := make(chan error, 1)
+	go func() { started <- c.Start(parent) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("initial observation did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { c.Stop(); close(stopped) }()
+	select {
+	case err := <-started:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel the synchronous initial observation")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join canceled startup")
+	}
+	if parent.Err() != nil {
+		t.Fatal("Stop canceled the caller's context")
+	}
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
+	if err := c.Start(parent); err != nil {
+		t.Fatalf("restart after canceled startup failed: %v", err)
+	}
+	c.Stop()
+}
+
+func TestRunCycleCancellationDoesNotAdmitWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	originalGetPanes := getPanesWithActivity
+	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
+	c := New("cancel-before-admission", t.TempDir(), nil, "Coordinator")
+	c.config.AutoAssign = true
+	c.config.ConflictNotify = true
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c.detectConflictsFn = func(context.Context) ([]Conflict, error) {
+		cancel()
+		return nil, nil
+	}
+	admitted := false
+	c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+		admitted = true
+		return nil, nil
+	}
+	if _, err := c.RunCycle(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunCycle error = %v, want cancellation", err)
+	}
+	if admitted {
+		t.Fatal("canceled conflict collection continued into work admission")
+	}
+}
+
+func TestSendDigestCancellationStopsCollectionBeforeSending(t *testing.T) {
+	// Keep triage independent of host tools; cancellation must reach the real
+	// Agent Mail resource request used to prepare the outgoing digest.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	entered := make(chan struct{}, 1)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		var rpc agentmail.JSONRPCRequest
+		if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
+			t.Errorf("decode Agent Mail request: %v", err)
+			return
+		}
+		if _, err := io.Copy(io.Discard, req.Body); err != nil {
+			t.Errorf("drain Agent Mail request: %v", err)
+			return
+		}
+		if rpc.Method != "resources/read" {
+			t.Errorf("unexpected mutation or fallback after digest cancellation: %s", rpc.Method)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		entered <- struct{}{}
+		<-req.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL))
+	c := New("cancel-digest", t.TempDir(), client, "Coordinator")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	completed := make(chan error, 1)
+	go func() { completed <- c.SendDigest(ctx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("digest reservation collection did not start")
+	}
+	cancel()
+	select {
+	case err := <-completed:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SendDigest error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("digest ignored cancellation while collecting reservations")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("digest made %d requests, want only the canceled resource read", got)
+	}
+}
+
+// Stop must reach the actual tmux subprocess, including the observations
+// that run after the canonical session monitor completed its own snapshot.
+func TestStopCancelsAutomaticActionTmuxProbes(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("subprocess fixture requires a POSIX shell")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalGetPanes := getPanesWithActivity
+	originalClient := tmux.DefaultClient
+	t.Cleanup(func() {
+		getPanesWithActivity = originalGetPanes
+		tmux.DefaultClient = originalClient
+	})
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
+
+	for _, probe := range []string{"rotation-list", "rotation-capture", "rotation-age", "nudge-list", "nudge-capture"} {
+		t.Run(probe, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			binDir := t.TempDir()
+			marker := filepath.Join(binDir, "started")
+			t.Setenv("NTM_COORDINATOR_PROBE_STARTED", marker)
+			script := "#!/bin/sh\nprintf ready > \"$NTM_COORDINATOR_PROBE_STARTED\"\nexec " + tmux.ShellQuote(sleepPath) + " 30\n"
+			if err := os.WriteFile(filepath.Join(binDir, "ssh"), []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			tmux.DefaultClient = tmux.NewClient("cancellation-probe.invalid")
+			client := agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1"))
+			c := New("cancel-"+probe, t.TempDir(), client, "Coordinator")
+			c.config.PollInterval = MinPollInterval
+			c.config.AutoAssign = true
+			var mutations atomic.Int32
+			c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+				mutations.Add(1)
+				return nil, nil
+			}
+			if strings.HasPrefix(probe, "rotation-") {
+				c.config.RotationUsageThreshold = 99
+				c.rotation = newRotationChecker(c.session, c.projectKey, c.config, nil)
+				c.rotation.enqueue = func(string, string, float64) *ntmctx.PendingRotation {
+					mutations.Add(1)
+					return nil
+				}
+				if probe != "rotation-list" {
+					c.rotation.getPanes = func(context.Context, string) ([]tmux.Pane, error) {
+						return []tmux.Pane{ompPane("%5", c.session+"__omp_1")}, nil
+					}
+				}
+				if probe == "rotation-age" {
+					c.rotation.restartSessionAge = time.Hour
+					c.rotation.capturePane = func(context.Context, string, int) (string, error) {
+						return ompGaugeCapture("", "20%"), nil
+					}
+				}
+			} else {
+				c.config.MailNudge = true
+				c.mailNudge = newMailNudgeChecker(c.session, c.projectKey, c.config, client)
+				if probe == "nudge-capture" {
+					c.mailNudge.getPanes = func(context.Context, string) ([]tmux.Pane, error) {
+						return []tmux.Pane{ccPane("%5", c.session+"__cc_1")}, nil
+					}
+					c.mailNudge.agentLookup = func() func(string, string) (string, bool) {
+						return func(string, string) (string, bool) { return "BlueLake", true }
+					}
+					c.mailNudge.fetchInbox = func(context.Context, agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error) {
+						return []agentmail.InboxMessage{{}}, nil
+					}
+					c.mailNudge.lastNudgeAt = func(string) (time.Time, bool) { return time.Time{}, false }
+					c.mailNudge.recordNudge = func(string, string, time.Time) { mutations.Add(1) }
+					c.mailNudge.dispatch = func(context.Context, []tmux.Pane, tmux.Pane, string) error {
+						mutations.Add(1)
+						return nil
+					}
+				}
+			}
+			parent, cancel := context.WithCancel(t.Context())
+			t.Cleanup(func() {
+				cancel()
+				c.Stop()
+			})
+			if err := c.Start(parent); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				if _, err := os.Stat(marker); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("automatic action did not reach its tmux subprocess")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			stopped := make(chan struct{})
+			go func() {
+				c.Stop()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("Stop failed to cancel the automatic action's tmux subprocess")
+			}
+			if got := mutations.Load(); got != 0 {
+				t.Fatalf("canceled observation admitted %d later mutations", got)
+			}
+			if parent.Err() != nil {
+				t.Fatal("Stop canceled the parent context")
+			}
+		})
+	}
+}
+
 func TestStop_WaitsForInFlightMonitorCycle(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.PollInterval = MinPollInterval
@@ -746,8 +1057,8 @@ func TestStop_WaitsForConcurrentStartInitialization(t *testing.T) {
 
 	select {
 	case err := <-startDone:
-		if err != nil {
-			t.Fatalf("Start failed: %v", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want cancellation after joined initialization", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Start did not finish after releasing initial update")

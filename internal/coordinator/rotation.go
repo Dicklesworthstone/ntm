@@ -77,7 +77,7 @@ type rotationChecker struct {
 	forecaster *ntmctx.ExhaustionForecaster
 
 	// Seams (default to real implementations).
-	getPanes func(session string) ([]tmux.Pane, error)
+	getPanes func(context.Context, string) ([]tmux.Pane, error)
 	allPanes func(context.Context) (map[string][]tmux.Pane, error)
 	paneCwd  func(paneID string) (string, bool)
 	// Fleet probes share one deadline instead of multiplying command timeouts.
@@ -87,9 +87,9 @@ type rotationChecker struct {
 	// An injected reader owns workspace attribution in its observation domain.
 	// Production leaves this nil and checks the entire tmux server below.
 	transcriptUsage func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool)
-	capturePane     func(paneID string, lines int) (string, error)
+	capturePane     func(context.Context, string, int) (string, error)
 	contextLimit    func(model string) (int, bool)
-	sessionCreated  func(session string) (time.Time, bool)
+	sessionCreated  func(context.Context, string) (time.Time, bool)
 	storedPending   func(agentID string) (*ntmctx.PendingRotation, error)
 	enqueue         func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation
 	confirm         func(ctx context.Context, agentID string) ntmctx.RotationResult
@@ -141,18 +141,10 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 		restartSessionAge:  time.Duration(thresholds.RestartIfSessionHours) * time.Hour,
 		rotator:            rotator,
 		ctxMonitor:         ctxMonitor,
-		getPanes:           tmux.GetPanes,
-		sessionCreated: func(session string) (time.Time, bool) {
-			created, err := tmux.SessionCreatedAt(session)
+		getPanes:           tmux.GetPanesContext,
+		sessionCreated: func(ctx context.Context, session string) (time.Time, bool) {
+			created, err := tmux.SessionCreatedAtContext(ctx, session)
 			return created, err == nil
-		},
-		paneCwd: func(paneID string) (string, bool) {
-			cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
-			if err != nil {
-				return "", false
-			}
-			cwd = strings.TrimSpace(cwd)
-			return cwd, cwd != ""
 		},
 		processUsageContext: ntmctx.ProcessTranscriptUsage,
 		paneCwdContext: func(ctx context.Context, paneID string) (string, bool) {
@@ -160,10 +152,10 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			cwd = strings.TrimSpace(cwd)
 			return cwd, err == nil && cwd != ""
 		},
-		capturePane: func(paneID string, _ int) (string, error) {
+		capturePane: func(ctx context.Context, paneID string, _ int) (string, error) {
 			// A historical composer or sidebar in scrollback is not a live
 			// readiness signal or a current native context measurement.
-			return tmux.CapturePaneVisible(paneID)
+			return tmux.CapturePaneVisibleContext(ctx, paneID)
 		},
 		contextLimit:  models.LookupContextLimit,
 		storedPending: ntmctx.GetPendingRotationByID,
@@ -192,11 +184,14 @@ func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
 	if rc == nil || (rc.threshold <= 0 && rc.restartTokensAbove <= 0 && rc.restartSessionAge <= 0) {
 		return nil
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
 		return nil
 	}
 
-	panes, err := rc.getPanes(rc.session)
+	panes, err := rc.getPanes(ctx, rc.session)
 	if err != nil {
 		rc.reportContextForecasts(nil, nil)
 		slog.Warn("context rotation check could not list panes",
@@ -286,7 +281,7 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 	case rc.restartTokensAbove > 0 && float64(usage.Tokens) > rc.restartTokensAbove:
 		triggerReason = "tokens_above"
 	case rc.restartSessionAge > 0 && rc.sessionCreated != nil:
-		if created, ok := rc.sessionCreated(rc.session); ok && now.Sub(created) > rc.restartSessionAge {
+		if created, ok := rc.sessionCreated(ctx, rc.session); ok && now.Sub(created) > rc.restartSessionAge {
 			triggerReason = "session_age"
 		}
 	}
@@ -347,7 +342,10 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 
 	// Fire-time safety gates on a FRESH capture. A pane we cannot observe is
 	// a pane we must not rotate.
-	captured, err := rc.capturePane(pane.ID, rotationCaptureLines)
+	captured, err := rc.capturePane(ctx, pane.ID, rotationCaptureLines)
+	if ctx.Err() != nil {
+		return rotationDecision{}, false
+	}
 	if err != nil {
 		decision.Action = "skipped"
 		decision.SkipReason = "capture_failed"
@@ -641,7 +639,7 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 			// needs no cwd correlation and survives the shared-directory swarm
 			// layout that leaves transcripts ambiguous.
 			if rc.capturePane != nil {
-				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
+				if captured, err := rc.capturePane(ctx, pane.ID, rotationCaptureLines); err == nil {
 					if usage, ok := ntmctx.OmpStatusBarUsage(captured, rc.now()); ok {
 						gauges[pane.ID] = usage
 					}
@@ -654,7 +652,7 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 			// Prefer the pane-local gauge (surviving shared-directory swarms),
 			// and fall back to server-scoped transcript correlation otherwise.
 			if rc.capturePane != nil {
-				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
+				if captured, err := rc.capturePane(ctx, pane.ID, rotationCaptureLines); err == nil {
 					if usage, ok := ntmctx.PiStatusBarUsage(captured, rc.now()); ok {
 						gauges[pane.ID] = usage
 					}
@@ -663,7 +661,7 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 			agentType = "pi"
 		case agent.AgentTypeOpencode:
 			if rc.capturePane != nil {
-				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil &&
+				if captured, err := rc.capturePane(ctx, pane.ID, rotationCaptureLines); err == nil &&
 					tmux.InspectComposer(captured, agent.AgentTypeOpencode).MarkerVisible {
 					if usage, ok := ntmctx.OpencodeStatusBarUsage(captured, 0, rc.now()); ok {
 						gauges[pane.ID] = usage
@@ -684,8 +682,16 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 		if remote {
 			continue // A captured gauge is remote evidence; local files/PIDs are not.
 		}
-		cwd, _ := rc.paneCwd(pane.ID)
+		var cwd string
+		if rc.paneCwdContext != nil {
+			cwd, _ = rc.paneCwdContext(ctx, pane.ID)
+		} else if rc.paneCwd != nil {
+			cwd, _ = rc.paneCwd(pane.ID)
+		}
 		refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: pane.ID, AgentType: agentType, PID: pane.PID, Cwd: cwd})
+	}
+	if ctx.Err() != nil {
+		return gauges
 	}
 	var processLookup func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
 	if rc.processUsage != nil {
@@ -699,7 +705,7 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 	if rc.transcriptUsage != nil {
 		return ntmctx.AttributePaneTranscripts(refs, known, nil, rc.transcriptUsage)
 	}
-	return rc.resolveServerScopedTranscripts(refs, known)
+	return rc.resolveServerScopedTranscripts(ctx, refs, known)
 }
 
 // resolveServerScopedTranscripts adds only workspace readings proven unique in
@@ -707,7 +713,7 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 // transcript store; a local-session count cannot prove ownership. Exact process
 // readings and pane-local gauges survive an unavailable inventory, but never
 // remove a peer from the ambiguity count. No other session's transcript is read.
-func (rc *rotationChecker) resolveServerScopedTranscripts(targets []ntmctx.PaneTranscriptRef, known map[string]*ntmctx.TranscriptUsage) map[string]*ntmctx.TranscriptUsage {
+func (rc *rotationChecker) resolveServerScopedTranscripts(ctx context.Context, targets []ntmctx.PaneTranscriptRef, known map[string]*ntmctx.TranscriptUsage) map[string]*ntmctx.TranscriptUsage {
 	needed := make(map[string]bool)
 	for _, target := range targets {
 		if known[target.PaneID] == nil {
@@ -717,7 +723,7 @@ func (rc *rotationChecker) resolveServerScopedTranscripts(targets []ntmctx.PaneT
 	if len(needed) == 0 {
 		return known
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	list := rc.allPanes
 	if list == nil {
