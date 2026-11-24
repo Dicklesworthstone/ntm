@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,10 +164,13 @@ func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 }
 
 type coordinatorMaintenanceCLIFixture struct {
-	session string
-	project string
-	store   *assignment.AssignmentStore
-	renewed chan struct{}
+	session      string
+	project      string
+	activePaneID string
+	caseDir      string
+	batchDir     string
+	store        *assignment.AssignmentStore
+	renewed      chan struct{}
 
 	mu           sync.Mutex
 	reservations []agentmail.FileReservation
@@ -189,7 +193,7 @@ func newCoordinatorMaintenanceCLIFixture(t *testing.T, unobservableSibling bool)
 		t.Fatal(err)
 	}
 	f := &coordinatorMaintenanceCLIFixture{
-		session: "coordinator-maintenance", project: project, renewed: make(chan struct{}),
+		session: "coordinator-maintenance", project: project, activePaneID: "%94", renewed: make(chan struct{}),
 	}
 	if err := os.MkdirAll(filepath.Join(f.project, ".git"), 0700); err != nil {
 		t.Fatal(err)
@@ -383,6 +387,359 @@ esac
 	return f
 }
 
+type coordinatorMaintenanceBatch struct {
+	root   string
+	binDir string
+
+	mu             sync.RWMutex
+	byKey          map[string]*coordinatorMaintenanceCLIFixture
+	panesBySession map[string][]tmux.Pane
+	dirByPane      map[string]string
+}
+
+func newCoordinatorMaintenanceBatch(t *testing.T, configTOML string) *coordinatorMaintenanceBatch {
+	t.Helper()
+	isolateIdentityDirs(t)
+	t.Setenv("NTM_CONFIG", "")
+	seedCLIStateDB(t, filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "ntm", "state.db"))
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	for _, sub := range []string{"bin", "cases", "by-target", "sessions", "all-panes", "staging"} {
+		if err := os.MkdirAll(filepath.Join(root, sub), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := &coordinatorMaintenanceBatch{
+		root:           root,
+		binDir:         binDir,
+		byKey:          make(map[string]*coordinatorMaintenanceCLIFixture),
+		panesBySession: make(map[string][]tmux.Pane),
+		dirByPane:      make(map[string]string),
+	}
+	t.Setenv("NTM_MAINT_BATCH_DIR", root)
+	const tmuxScript = `#!/bin/sh
+action="$1"
+target=
+prev=
+for arg do
+  if [ "$prev" = -t ]; then target="$arg"; fi
+  prev="$arg"
+done
+lookup="${target#=}"
+lookup="${lookup%%:*}"
+case_dir=
+if [ -n "$lookup" ] && [ -f "$NTM_MAINT_BATCH_DIR/by-target/$lookup" ]; then
+  IFS= read -r case_dir < "$NTM_MAINT_BATCH_DIR/by-target/$lookup"
+fi
+if [ -n "$case_dir" ]; then
+  printf '%s\n' "$*" >> "$case_dir/tmux-calls"
+fi
+case "$action" in
+  -V) echo 'tmux 3.4' ;;
+  has-session) ;;
+  list-sessions)
+    for f in "$NTM_MAINT_BATCH_DIR/sessions"/*; do
+      [ -f "$f" ] && cat "$f"
+    done ;;
+  list-panes)
+    if [ -n "$case_dir" ] && [ -f "$case_dir/tmux-fail-list-panes" ]; then
+      echo 'topology unavailable' >&2
+      exit 1
+    fi
+    case "$*" in
+      *" -a "*)
+        for f in "$NTM_MAINT_BATCH_DIR/all-panes"/*; do
+          [ -f "$f" ] && cat "$f"
+        done ;;
+      *window_activity*)
+        [ -n "$case_dir" ] && cat "$case_dir/activity" ;;
+      *)
+        [ -n "$case_dir" ] && cat "$case_dir/panes" ;;
+    esac ;;
+  capture-pane)
+    if [ -n "$case_dir" ] && [ -f "$case_dir/fail-capture" ]; then
+      IFS= read -r bad_pane < "$case_dir/fail-capture"
+      case "$*" in
+        *"$bad_pane"*) echo 'sibling capture unavailable' >&2; exit 1 ;;
+      esac
+    fi
+    printf '● Done. All tests pass.\n\n❯ \n' ;;
+  *) echo "unexpected tmux action: $*" >&2; exit 1 ;;
+esac
+`
+	const brScript = `#!/bin/sh
+printf '%s\n' "$*" >> "$PWD/.ntm-test-br-calls"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    info) printf '{"database_path":"%s/.beads/lost-owner.db"}\n' "$PWD"; exit ;;
+    sync) printf '{}\n'; exit ;;
+    show)
+      case "$2" in
+        ntm-maintenance) echo '[{"id":"ntm-maintenance","title":"Maintain active.go","issue_type":"task","status":"in_progress","assignee":"BlueLake:ntm-maintenance","labels":[],"dependencies":[]}]' ;;
+        ntm-unobservable) echo '[{"id":"ntm-unobservable","title":"Maintain unknown.go","issue_type":"task","status":"in_progress","assignee":"RedLake:ntm-unobservable","labels":[],"dependencies":[]}]' ;;
+        ntm-finished) echo '[{"id":"ntm-finished","title":"Finished work","issue_type":"task","status":"closed","assignee":"","labels":[],"dependencies":[]}]' ;;
+        *) echo 'unexpected bead' >&2; exit 1 ;;
+      esac
+      exit ;;
+  esac
+  shift
+done
+echo 'unexpected br operation' >&2
+exit 1
+`
+	for name, data := range map[string]string{"tmux": tmuxScript, "br": brScript} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(data), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(binDir, "tmux"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previousClient, previousConfigFile, previousJSON := tmux.DefaultClient, cfgFile, jsonOutput
+	previousExists, previousPanes, previousPath := coordinatorSessionExists, coordinatorGetPanes, coordinatorPaneCurrentDir
+	t.Cleanup(func() {
+		tmux.DefaultClient, cfgFile, jsonOutput = previousClient, previousConfigFile, previousJSON
+		coordinatorSessionExists, coordinatorGetPanes, coordinatorPaneCurrentDir = previousExists, previousPanes, previousPath
+	})
+	tmux.DefaultClient = tmux.NewClient("")
+	cfgFile = filepath.Join(root, "config.toml")
+	if err := os.WriteFile(cfgFile, []byte(configTOML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	jsonOutput = true
+	coordinatorSessionExists = func(string) bool { return true }
+	coordinatorGetPanes = func(session string) ([]tmux.Pane, error) {
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return append([]tmux.Pane(nil), b.panesBySession[session]...), nil
+	}
+	coordinatorPaneCurrentDir = func(paneID string) (string, error) {
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		path, ok := b.dirByPane[paneID]
+		if !ok {
+			return "", errors.New("missing pane path")
+		}
+		return path, nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				URI       string `json:"uri"`
+				Arguments struct {
+					HumanKey       string   `json:"human_key"`
+					ProjectKey     string   `json:"project_key"`
+					AgentName      string   `json:"agent_name"`
+					ExtendSeconds  int      `json:"extend_seconds"`
+					ReservationIDs []int    `json:"file_reservation_ids"`
+					Paths          []string `json:"paths"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		writeResult := func(result any) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		}
+		lookupFixture := func(key string) *coordinatorMaintenanceCLIFixture {
+			b.mu.RLock()
+			defer b.mu.RUnlock()
+			if f, ok := b.byKey[key]; ok {
+				return f
+			}
+			if key != "" {
+				if f, ok := b.byKey[filepath.Clean(key)]; ok {
+					return f
+				}
+			}
+			return nil
+		}
+		if request.Method == "resources/read" {
+			uri := request.Params.URI
+			rawKey := strings.TrimPrefix(uri, "resource://file_reservations/")
+			if idx := strings.Index(rawKey, "?"); idx >= 0 {
+				rawKey = rawKey[:idx]
+			}
+			if decoded, err := url.PathUnescape(rawKey); err == nil {
+				rawKey = decoded
+			}
+			f := lookupFixture(rawKey)
+			if f == nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32602, "message": "unknown fixture uri " + uri}})
+				return
+			}
+			f.mu.Lock()
+			rows, _ := json.Marshal(f.reservations)
+			f.mu.Unlock()
+			writeResult(map[string]any{"contents": []map[string]any{{"uri": uri, "mimeType": "application/json", "text": string(rows)}}})
+			return
+		}
+		args := request.Params.Arguments
+		key := args.ProjectKey
+		if request.Params.Name == "ensure_project" {
+			key = args.HumanKey
+		}
+		f := lookupFixture(key)
+		if f == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32602, "message": "unknown fixture project " + key}})
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.toolCalls = append(f.toolCalls, request.Params.Name)
+		switch request.Params.Name {
+		case "ensure_project":
+			writeResult(map[string]any{"id": 9, "slug": f.session, "human_key": args.HumanKey})
+		case "register_agent":
+			writeResult(map[string]any{"id": 1, "name": "AmberLake", "project_id": 9, "program": "ntm", "model": "coordinator"})
+		case "renew_file_reservations":
+			f.renewals = append(f.renewals, agentmail.RenewReservationsOptions{
+				ProjectKey: args.ProjectKey, AgentName: args.AgentName, ExtendSeconds: args.ExtendSeconds,
+				ReservationIDs: append([]int(nil), args.ReservationIDs...), Paths: append([]string(nil), args.Paths...),
+			})
+			for i := range f.reservations {
+				for _, id := range args.ReservationIDs {
+					if f.reservations[i].ID == id {
+						f.reservations[i].ExpiresTS.Time = f.reservations[i].ExpiresTS.Add(time.Duration(args.ExtendSeconds) * time.Second)
+					}
+				}
+			}
+			writeResult(map[string]any{"renewed": len(args.ReservationIDs)})
+			f.renewOnce.Do(func() { close(f.renewed) })
+		case "release_file_reservations":
+			f.releaseIDs = append(f.releaseIDs, append([]int(nil), args.ReservationIDs...))
+			for i := range f.reservations {
+				for _, id := range args.ReservationIDs {
+					if f.reservations[i].ID == id {
+						f.reservations[i].ReleasedTS = &agentmail.FlexTime{Time: time.Now().UTC()}
+					}
+				}
+			}
+			writeResult(map[string]any{"released": len(args.ReservationIDs)})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "unexpected tool " + request.Params.Name}})
+		}
+	}))
+	t.Cleanup(server.Close)
+	enableFakeAgentMail(t, server.URL)
+	return b
+}
+
+func (b *coordinatorMaintenanceBatch) addCase(t *testing.T, session, activePane, unobsPane, finishedPane string, unobservableSibling bool) *coordinatorMaintenanceCLIFixture {
+	t.Helper()
+	project, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(b.root, "cases", session)
+	if err := os.MkdirAll(caseDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f := &coordinatorMaintenanceCLIFixture{
+		session: session, project: project, activePaneID: activePane, caseDir: caseDir, batchDir: b.root, renewed: make(chan struct{}),
+	}
+	if err := os.MkdirAll(filepath.Join(f.project, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.store = assignment.NewStore(f.session)
+	expires := time.Now().UTC().Add(2 * time.Minute)
+	registry := agentmail.NewSessionAgentRegistry(f.session, f.project)
+	var activityLines, paneLines []string
+	for _, seed := range []struct {
+		bead, pane, owner, path string
+		index, id               int
+	}{
+		{"ntm-maintenance", activePane, "BlueLake", "active.go", 1, 941},
+		{"ntm-unobservable", unobsPane, "RedLake", "unknown.go", 2, 951},
+		{"ntm-finished", finishedPane, "GreenLake", "finished.go", 3, 961},
+	} {
+		if seed.bead == "ntm-unobservable" && !unobservableSibling {
+			continue
+		}
+		actor := seed.owner + ":" + seed.bead
+		if seed.bead == "ntm-finished" {
+			actor = ""
+		}
+		row := &assignment.Assignment{
+			BeadID: seed.bead, BeadTitle: "Maintain " + seed.path, Pane: seed.index, AgentType: "cc", AgentName: seed.owner,
+			Status: assignment.StatusWorking, AssignedAt: time.Now().UTC().Add(-58 * time.Minute), IdempotencyKey: seed.bead,
+			ClaimActor: actor, DispatchTarget: seed.pane, OccupancyKey: seed.pane, DispatchState: assignment.DispatchSent,
+			ReservationRequired: true, ReservationState: assignment.ReservationReserved, ReservationCompleted: true,
+			ReservationAgent: seed.owner, ReservationTarget: seed.pane, ReservationRequested: []string{seed.path},
+			ReservedPaths: []string{seed.path}, ReservationIDs: []int{seed.id}, ReservationExpiresAt: &expires,
+		}
+		f.reservations = append(f.reservations, agentmail.FileReservation{
+			ID: seed.id, ProjectID: 9, AgentName: seed.owner, PathPattern: seed.path,
+			Reason: "bead assignment: " + seed.bead, Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+		})
+		if seed.bead == "ntm-maintenance" {
+			row.ReservationRequested = append(row.ReservationRequested, "active_test.go")
+			row.ReservedPaths = append(row.ReservedPaths, "active_test.go")
+			row.ReservationIDs = append(row.ReservationIDs, 942)
+			f.reservations = append(f.reservations, agentmail.FileReservation{
+				ID: 942, ProjectID: 9, AgentName: seed.owner, PathPattern: "active_test.go",
+				Reason: "bead assignment: " + seed.bead, Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+			})
+		}
+		f.store.Assignments[seed.bead] = row
+		if seed.bead != "ntm-finished" {
+			title := fmt.Sprintf("%s__cc_%d", f.session, seed.index)
+			registry.AddAgent(title, seed.pane, seed.owner)
+			primary := []string{seed.pane, fmt.Sprint(seed.index), title, "claude", "100", "30", "0"}
+			activity := append(append([]string(nil), primary...), fmt.Sprint(time.Now().Unix()), "4242", "0", "cc")
+			plain := append(append([]string(nil), primary...), "4242", "0", "cc")
+			activityLines = append(activityLines, strings.Join(activity, tmux.FieldSeparator))
+			paneLines = append(paneLines, strings.Join(plain, tmux.FieldSeparator))
+		}
+	}
+	f.reservations = append(f.reservations, agentmail.FileReservation{
+		ID: 999, ProjectID: 9, AgentName: "BlueLake", PathPattern: "unrelated.go", Reason: "another task",
+		Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+	})
+	if err := f.store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"activity": strings.Join(activityLines, "\n") + "\n", "panes": strings.Join(paneLines, "\n") + "\n"} {
+		if err := os.WriteFile(filepath.Join(caseDir, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if unobservableSibling {
+		if err := os.WriteFile(filepath.Join(caseDir, "fail-capture"), []byte(unobsPane+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBatchFileAtomic := func(subDir, name, content string) {
+		t.Helper()
+		tmpPath := filepath.Join(b.root, "staging", session+"-"+subDir+"-"+name)
+		if err := os.WriteFile(tmpPath, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmpPath, filepath.Join(b.root, subDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{session, activePane, unobsPane, finishedPane} {
+		writeBatchFileAtomic("by-target", key, caseDir+"\n")
+	}
+	writeBatchFileAtomic("sessions", session, session+"_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today\n")
+	b.mu.Lock()
+	b.byKey[filepath.Clean(f.project)] = f
+	b.byKey[f.session] = f
+	b.panesBySession[f.session] = []tmux.Pane{{ID: activePane, Index: 1}}
+	b.dirByPane[activePane] = f.project
+	b.mu.Unlock()
+	return f
+}
+
 func TestCoordinatorRunOnceMaintainsHealthyAssignmentsDespiteSiblingCaptureFailure(t *testing.T) {
 	f := newCoordinatorMaintenanceCLIFixture(t, true)
 	beforeUnknown := f.store.Get("ntm-unobservable")
@@ -433,9 +790,18 @@ func TestCoordinatorRunOnceMaintainsHealthyAssignmentsDespiteSiblingCaptureFailu
 }
 
 func TestCoordinatorRunOnceRecoversLostOwnerWithExactExternalCleanup(t *testing.T) {
-	for _, state := range []string{"lost", "recipient rebound", "pane moved to another session", "topology unavailable"} {
+	batch := newCoordinatorMaintenanceBatch(t, "[coordinator]\nauto_assign=false\nconflict_notify=false\n")
+	// Keep subtests sequential: `newCoordinatorRunCmd().Execute()` opens the
+	// process-wide durable attention feed (`robot.SetAttentionFeed`) and closes
+	// it on exit, which would race across concurrent subtests.
+	for idx, state := range []string{"lost", "recipient rebound", "pane moved to another session", "topology unavailable"} {
 		t.Run(state, func(t *testing.T) {
-			f := newCoordinatorMaintenanceCLIFixture(t, false)
+			session := fmt.Sprintf("coord-lost-%d", idx)
+			activePane := fmt.Sprintf("%%%d", 204+idx*10)
+			unobsPane := fmt.Sprintf("%%%d", 205+idx*10)
+			finishedPane := fmt.Sprintf("%%%d", 206+idx*10)
+			userPaneID := fmt.Sprintf("%%%d", 207+idx*10)
+			f := batch.addCase(t, session, activePane, unobsPane, finishedPane, false)
 			current := f.store.Assignments["ntm-maintenance"]
 			current.DispatchReceiptID = "agent-mail-message-94"
 			expires := time.Now().UTC().Add(time.Hour)
@@ -443,21 +809,28 @@ func TestCoordinatorRunOnceRecoversLostOwnerWithExactExternalCleanup(t *testing.
 			if err := f.store.Save(); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(cfgFile, []byte("[coordinator]\nauto_assign=false\nconflict_notify=false\n"), 0600); err != nil {
+			tmpTarget := filepath.Join(f.batchDir, "staging", f.session+"-user-target")
+			if err := os.WriteFile(tmpTarget, []byte(f.caseDir+"\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			binDir := os.Getenv("NTM_MAINTENANCE_FIXTURE")
-			userPane := []string{"%97", "4", "user", "bash", "100", "30", "0", fmt.Sprint(time.Now().Unix()), "4242", "0", "user"}
-			if err := os.WriteFile(filepath.Join(binDir, "activity"), []byte(strings.Join(userPane, tmux.FieldSeparator)+"\n"), 0600); err != nil {
+			if err := os.Rename(tmpTarget, filepath.Join(f.batchDir, "by-target", userPaneID)); err != nil {
 				t.Fatal(err)
 			}
-			allPane := []string{f.session, "%97", "4", "user", "bash", "100", "30", "0", "4242", "0", "user"}
+			userPane := []string{userPaneID, "4", "user", "bash", "100", "30", "0", fmt.Sprint(time.Now().Unix()), "4242", "0", "user"}
+			if err := os.WriteFile(filepath.Join(f.caseDir, "activity"), []byte(strings.Join(userPane, tmux.FieldSeparator)+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			allPane := []string{f.session, userPaneID, "4", "user", "bash", "100", "30", "0", "4242", "0", "user"}
 			allPaneOutput := strings.Join(allPane, tmux.FieldSeparator) + "\n"
 			if state == "pane moved to another session" {
-				movedPane := []string{"other-session", "%94", "1", "moved", "claude", "100", "30", "0", "4243", "0", "cc"}
+				movedPane := []string{"other-session", activePane, "1", "moved", "claude", "100", "30", "0", "4243", "0", "cc"}
 				allPaneOutput += strings.Join(movedPane, tmux.FieldSeparator) + "\n"
 			}
-			if err := os.WriteFile(filepath.Join(binDir, "all-panes"), []byte(allPaneOutput), 0600); err != nil {
+			tmpAllPanes := filepath.Join(f.batchDir, "staging", f.session+"-all-panes")
+			if err := os.WriteFile(tmpAllPanes, []byte(allPaneOutput), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(tmpAllPanes, filepath.Join(f.batchDir, "all-panes", f.session)); err != nil {
 				t.Fatal(err)
 			}
 			if state == "recipient rebound" {
@@ -465,22 +838,13 @@ func TestCoordinatorRunOnceRecoversLostOwnerWithExactExternalCleanup(t *testing.
 				if err != nil {
 					t.Fatal(err)
 				}
-				registry.AddAgent("user", "%97", current.AgentName)
+				registry.AddAgent("user", userPaneID, current.AgentName)
 				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if state == "topology unavailable" {
-				const unavailableTmux = `#!/bin/sh
-case "$1" in
-  -V) echo 'tmux 3.4' ;;
-  has-session) ;;
-  list-sessions) echo 'coordinator-maintenance_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
-  list-panes) echo 'topology unavailable' >&2; exit 1 ;;
-  *) echo 'unexpected tmux operation' >&2; exit 1 ;;
-esac
-`
-				if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(unavailableTmux), 0700); err != nil {
+				if err := os.WriteFile(filepath.Join(f.caseDir, "tmux-fail-list-panes"), []byte("1\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -497,6 +861,10 @@ esac
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { db.Close() })
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, statement := range []string{
 				`CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', status TEXT,
  assignee TEXT, updated_at TEXT NOT NULL, content_hash TEXT, defer_until TEXT,
@@ -510,35 +878,17 @@ esac
 				`CREATE TABLE export_hashes (issue_id TEXT PRIMARY KEY, content_hash TEXT)`,
 				`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)`,
 			} {
-				if _, err := db.Exec(statement); err != nil {
+				if _, err := tx.Exec(statement); err != nil {
+					_ = tx.Rollback()
 					t.Fatal(err)
 				}
 			}
-			if _, err := db.Exec(`INSERT INTO issues (id, title, status, assignee, updated_at, content_hash) VALUES (?, ?, 'in_progress', ?, ?, 'original')`,
+			if _, err := tx.Exec(`INSERT INTO issues (id, title, status, assignee, updated_at, content_hash) VALUES (?, ?, 'in_progress', ?, ?, 'original')`,
 				current.BeadID, current.BeadTitle, current.ClaimActor, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				_ = tx.Rollback()
 				t.Fatal(err)
 			}
-			t.Setenv("NTM_LOST_ASSIGNMENT_DB", databasePath)
-			const claimBr = `#!/bin/sh
-printf '%s\n' "$*" >> "$NTM_MAINTENANCE_FIXTURE/br-calls"
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    info) printf '{"database_path":"%s"}\n' "$NTM_LOST_ASSIGNMENT_DB"; exit ;;
-    sync) printf '{}\n'; exit ;;
-    show)
-      case "$2" in
-        ntm-maintenance) echo '[{"id":"ntm-maintenance","title":"Interrupted work","issue_type":"task","status":"in_progress","assignee":"BlueLake:ntm-maintenance","labels":[],"dependencies":[]}]' ;;
-        ntm-finished) echo '[{"id":"ntm-finished","title":"Finished work","issue_type":"task","status":"closed","assignee":"","labels":[],"dependencies":[]}]' ;;
-        *) echo 'unexpected bead' >&2; exit 1 ;;
-      esac
-      exit ;;
-  esac
-  shift
-done
-echo 'unexpected br operation' >&2
-exit 1
-`
-			if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(claimBr), 0700); err != nil {
+			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			run := func() {

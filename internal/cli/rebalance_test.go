@@ -789,6 +789,11 @@ func rebalanceSafeObserver(session string, panes ...tmux.Pane) *rebalanceTestObs
 func seedRebalanceWorkingAssignment(t *testing.T, session string, reservationPaths []string, reservationIDs []int) (*assignment.AssignmentStore, *assignment.Assignment) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	return seedRebalanceWorkingAssignmentInHome(t, session, reservationPaths, reservationIDs)
+}
+
+func seedRebalanceWorkingAssignmentInHome(t *testing.T, session string, reservationPaths []string, reservationIDs []int) (*assignment.AssignmentStore, *assignment.Assignment) {
+	t.Helper()
 	store := assignment.NewStore(session)
 	now := time.Now().UTC()
 	request := assignment.AtomicRequest{
@@ -904,8 +909,11 @@ func TestApplyTransfersAtomicSuccessReplayAndExactReservationTransfer(t *testing
 }
 
 func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	t.Run("stale generation", func(t *testing.T) {
-		store, source := seedRebalanceWorkingAssignment(t, "rebalance-stale", nil, nil)
+		t.Parallel()
+		store, source := seedRebalanceWorkingAssignmentInHome(t, "rebalance-stale", nil, nil)
 		before := store.Get(source.BeadID)
 		claim := &rebalanceTestClaimPort{owner: source.ClaimActor, status: "in_progress"}
 		release := &rebalanceTestReleasePort{}
@@ -927,7 +935,8 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 	})
 
 	t.Run("live owner changed", func(t *testing.T) {
-		store, source := seedRebalanceWorkingAssignment(t, "rebalance-owner", nil, nil)
+		t.Parallel()
+		store, source := seedRebalanceWorkingAssignmentInHome(t, "rebalance-owner", nil, nil)
 		before := store.Get(source.BeadID)
 		claim := &rebalanceTestClaimPort{owner: "different-live-owner", status: "in_progress"}
 		release := &rebalanceTestReleasePort{}
@@ -949,7 +958,8 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 	for _, policyChange := range []string{"operator gate appeared", "blocker appeared"} {
 		policyChange := policyChange
 		t.Run(policyChange, func(t *testing.T) {
-			store, source := seedRebalanceWorkingAssignment(t, "rebalance-"+strings.ReplaceAll(policyChange, " ", "-"), nil, nil)
+			t.Parallel()
+			store, source := seedRebalanceWorkingAssignmentInHome(t, "rebalance-"+strings.ReplaceAll(policyChange, " ", "-"), nil, nil)
 			before := store.Get(source.BeadID)
 			claim := &rebalanceTestClaimPort{
 				owner: source.ClaimActor, status: "in_progress",
@@ -977,7 +987,8 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 	}
 
 	t.Run("target is not freshly idle", func(t *testing.T) {
-		store, source := seedRebalanceWorkingAssignment(t, "rebalance-busy-target", nil, nil)
+		t.Parallel()
+		store, source := seedRebalanceWorkingAssignmentInHome(t, "rebalance-busy-target", nil, nil)
 		before := store.Get(source.BeadID)
 		claim := &rebalanceTestClaimPort{owner: source.ClaimActor, status: "in_progress"}
 		release := &rebalanceTestReleasePort{}

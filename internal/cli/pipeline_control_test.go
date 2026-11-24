@@ -157,6 +157,11 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 // enough evidence to continue without submitting the original work again.
 func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain bool) *pipeline.ExecutionState {
 	t.Helper()
+	return pipelineAgentDeliveryCheckpointIn(t, root, "delivery-session", "%17", kind, uncertain)
+}
+
+func pipelineAgentDeliveryCheckpointIn(t *testing.T, root, session, paneID, kind string, uncertain bool) *pipeline.ExecutionState {
+	t.Helper()
 	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 150 * time.Millisecond}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
@@ -173,9 +178,9 @@ func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain 
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: "%17", Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
+	mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: paneID, Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
 	t.Cleanup(mock.Reset)
-	if err := mock.SetPaneOutput("%17", "OLD-ANSWER\n"); err != nil {
+	if err := mock.SetPaneOutput(paneID, "OLD-ANSWER\n"); err != nil {
 		t.Fatal(err)
 	}
 	if uncertain {
@@ -183,7 +188,7 @@ func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain 
 			return errors.New("submission acknowledgment was lost")
 		})
 	}
-	cfg := pipeline.DefaultExecutorConfig("delivery-session")
+	cfg := pipeline.DefaultExecutorConfig(session)
 	cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, path, pipeline.GenerateRunID()
 	executor := pipeline.NewExecutor(cfg)
 	executor.SetTmuxClient(mock)
@@ -219,7 +224,7 @@ func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain 
 	if (!uncertain && !delivered) || runErr == nil || state == nil || state.Status != wantStatus {
 		t.Fatalf("initial dispatch did not stop after confirmed delivery: delivered=%t state=%+v err=%v", delivered, state, runErr)
 	}
-	history, err := mock.PasteHistory("%17")
+	history, err := mock.PasteHistory(paneID)
 	if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
 		t.Fatalf("initial dispatch was not sent and verified exactly once: pastes=%+v verifications=%+v err=%v", history, mock.VerificationHistory(), err)
 	}
@@ -261,22 +266,118 @@ func executePipelineRecoveryCommandIn(t *testing.T, root string, asJSON bool, ar
 	return output.String(), err
 }
 
+func installKeyedPipelineRecoveryTmux(t *testing.T) string {
+	t.Helper()
+	sharedRoot := t.TempDir()
+	for _, sub := range []string{"by-target", "sessions"} {
+		if err := os.MkdirAll(filepath.Join(sharedRoot, sub), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_PIPELINE_KEYED_ROOT", sharedRoot)
+	const script = `#!/bin/sh
+target=
+prev=
+for arg do
+  if [ "$prev" = -t ]; then target="$arg"; fi
+  prev="$arg"
+done
+lookup="${target#=}"
+lookup="${lookup%%:*}"
+case_dir=
+if [ -n "$lookup" ] && [ -f "$NTM_PIPELINE_KEYED_ROOT/by-target/$lookup" ]; then
+  IFS= read -r case_dir < "$NTM_PIPELINE_KEYED_ROOT/by-target/$lookup"
+fi
+if [ -n "$case_dir" ]; then
+  printf '%s\n' "$*" >> "$case_dir/recovery-tmux-calls"
+fi
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  has-session)
+    [ -n "$case_dir" ] || exit 1
+    ;;
+  list-sessions)
+    for f in "$NTM_PIPELINE_KEYED_ROOT/sessions"/*; do
+      [ -f "$f" ] && cat "$f"
+    done
+    ;;
+  list-panes)
+    [ -n "$case_dir" ] && cat "$case_dir/recovery-panes"
+    ;;
+  capture-pane)
+    [ -n "$case_dir" ] && cat "$case_dir/recovery-pane-output"
+    ;;
+  display-message)
+    [ -n "$case_dir" ] && printf '%s\n' "$case_dir"
+    ;;
+  load-buffer|paste-buffer|send-keys) exit 97 ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.MkdirAll(filepath.Join(sharedRoot, "staging"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(sharedRoot, "recovery-tmux")
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	oldClient := tmux.DefaultClient
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+	})
+	return sharedRoot
+}
+
+func registerKeyedPipelineRecoveryCase(t *testing.T, sharedRoot, subRoot, session, paneID, panePID, transcript string) string {
+	t.Helper()
+	logPath := filepath.Join(subRoot, "recovery-tmux-calls")
+	if err := os.WriteFile(filepath.Join(subRoot, "recovery-pane-output"), []byte(transcript), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paneLine := fmt.Sprintf("%s_NTM_SEP_1_NTM_SEP_%s__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n", paneID, session, panePID)
+	if err := os.WriteFile(filepath.Join(subRoot, "recovery-panes"), []byte(paneLine), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeAtomic := func(subDir, name, content string) {
+		t.Helper()
+		tmpPath := filepath.Join(sharedRoot, "staging", session+"-"+subDir+"-"+name)
+		if err := os.WriteFile(tmpPath, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmpPath, filepath.Join(sharedRoot, subDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{session, paneID} {
+		writeAtomic("by-target", key, subRoot+"\n")
+	}
+	sessLine := fmt.Sprintf("%s_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000\n", session)
+	writeAtomic("sessions", session, sessLine)
+	return logPath
+}
+
 func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *testing.T) {
-	for _, kind := range []string{"prompt", "template"} {
+	sharedRoot := installKeyedPipelineRecoveryTmux(t)
+	for i, kind := range []string{"prompt", "template"} {
+		i, kind := i, kind
 		t.Run(kind, func(t *testing.T) {
-			root := inPipelineControlProject(t)
-			prior := pipelineAgentDeliveryCheckpoint(t, root, kind, true)
+			t.Parallel()
+			root := t.TempDir()
+			session := "delivery-accept-" + kind
+			paneID := fmt.Sprintf("%%%d", 170+i)
+			prior := pipelineAgentDeliveryCheckpointIn(t, root, session, paneID, kind, true)
 			receipt := prior.AgentDeliveries["agent"]
-			logPath := pipelineRecoveryTmux(t, root, "2718", receipt.BeforeOutput+"\nFRESH-ANSWER\n")
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
+			logPath := registerKeyedPipelineRecoveryCase(t, sharedRoot, root, session, paneID, "2718", receipt.BeforeOutput+"\nFRESH-ANSWER\n")
 			path := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
 			before, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err := executePipelineRecoveryCommand(t, prior.RunID)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, prior.RunID)
 			if err != nil {
 				t.Fatalf("inspect: %v %s", err, raw)
 			}
@@ -288,7 +389,7 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 				t.Fatalf("invalid inspection: %s %v", raw, err)
 			}
 			entry := inspection.Deliveries[0]
-			if entry.StepID != "agent" || entry.Status != "sending" || entry.PaneID != "%17" || entry.PanePID != 2718 || entry.ReceiptToken == "" {
+			if entry.StepID != "agent" || entry.Status != "sending" || entry.PaneID != paneID || entry.PanePID != 2718 || entry.ReceiptToken == "" {
 				t.Fatalf("inspection lost exact delivery identity: %+v", entry)
 			}
 			if strings.Contains(raw, "OLD-ANSWER") || strings.Contains(raw, "FRESH-ANSWER") || strings.Contains(raw, "Work on this") {
@@ -298,7 +399,7 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 				t.Fatal("inspection changed execution state")
 			}
 			args := []string{prior.RunID, "--step-id", "agent", "--receipt", entry.ReceiptToken, "--accept-delivery", "--reason", "Observed the original agent answer the submitted request"}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil {
 				t.Fatalf("accept: %v %s", err, raw)
 			}
@@ -320,7 +421,7 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 			if got := afterAcceptance.AgentDeliveries["agent"]; got.BeforeOutput != receipt.BeforeOutput || got.Output != receipt.Output || got.StartedAt != receipt.StartedAt {
 				t.Fatalf("acceptance changed original response evidence: %+v", got)
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed {
 				t.Fatalf("same decision did not replay: %v %s", err, raw)
 			}
@@ -329,7 +430,7 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 			cmd.SetArgs([]string{prior.RunID})
 			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, ""), 15*time.Second)
 			defer cancel()
 			err = cmd.ExecuteContext(ctx)
 			raw = resumeOut.String()
@@ -345,7 +446,7 @@ func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *t
 					t.Fatalf("step %s lost original response or reused stale output: %q", step, got)
 				}
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed || accepted.Delivery.Status != "completed" {
 				t.Fatalf("completed decision did not replay: %v %s", err, raw)
 			}
@@ -385,9 +486,14 @@ func TestPipelineRecoverRefusesIncompleteDecisionFlags(t *testing.T) {
 }
 
 func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing.T) {
-	for _, nested := range []bool{false, true} {
+	sharedRoot := installKeyedPipelineRecoveryTmux(t)
+	for i, nested := range []bool{false, true} {
+		i, nested := i, nested
 		t.Run(fmt.Sprintf("nested_branch=%t", nested), func(t *testing.T) {
-			root := inPipelineControlProject(t)
+			t.Parallel()
+			root := t.TempDir()
+			session := fmt.Sprintf("delivery-fallback-%t", nested)
+			paneID := fmt.Sprintf("%%%d", 210+i)
 			template := filepath.Join(root, "fallback.md")
 			if err := os.WriteFile(template, []byte("Recover the original failed request"), 0600); err != nil {
 				t.Fatal(err)
@@ -411,17 +517,17 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: "%17", Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
+			mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: paneID, Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
 			t.Cleanup(mock.Reset)
-			if err := mock.SetPaneOutput("%17", "ORIGINAL-BOUNDARY\n"); err != nil {
+			if err := mock.SetPaneOutput(paneID, "ORIGINAL-BOUNDARY\n"); err != nil {
 				t.Fatal(err)
 			}
 			mock.SetSubmissionVerifier(func(_, _, _ string) error { return errors.New("fallback acknowledgment was lost") })
-			cfg := pipeline.DefaultExecutorConfig("delivery-session")
+			cfg := pipeline.DefaultExecutorConfig(session)
 			cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, snapshot, pipeline.GenerateRunID()
 			executor := pipeline.NewExecutor(cfg)
 			executor.SetTmuxClient(mock)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, ""), 15*time.Second)
 			defer cancel()
 			initial, runErr := executor.Run(ctx, frozen, nil, nil)
 			if runErr == nil || initial == nil || initial.Status != pipeline.StatusFailed {
@@ -436,7 +542,7 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 			if delivery.Status != "sending" || prior.CommandExecutions[commandID].Status != "settled" || prior.CommandExecutions[commandID].Result.Status != pipeline.StatusFailed {
 				t.Fatalf("fixture lacks native failure and ambiguous fallback evidence: command=%+v delivery=%+v", prior.CommandExecutions[commandID], delivery)
 			}
-			history, err := mock.PasteHistory("%17")
+			history, err := mock.PasteHistory(paneID)
 			if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
 				t.Fatalf("fallback was not submitted once: pastes=%+v verifications=%+v error=%v", history, mock.VerificationHistory(), err)
 			}
@@ -448,10 +554,7 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			logPath := pipelineRecoveryTmux(t, root, "2718", delivery.BeforeOutput+"\nRECOVERY-ANSWER\n")
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
+			logPath := registerKeyedPipelineRecoveryCase(t, sharedRoot, root, session, paneID, "2718", delivery.BeforeOutput+"\nRECOVERY-ANSWER\n")
 			statePath := filepath.Join(root, ".ntm", "pipelines", cfg.RunID+".json")
 			before, err := os.ReadFile(statePath)
 			if err != nil {
@@ -473,7 +576,7 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 				effects, _ := os.ReadFile(filepath.Join(root, "work-effects"))
 				t.Fatalf("refused resume changed the original recovery evidence; native effects=%q", effects)
 			}
-			raw, err := executePipelineRecoveryCommand(t, cfg.RunID)
+			raw, err := executePipelineRecoveryCommandIn(t, root, true, cfg.RunID)
 			var inspection struct {
 				Success    bool                                  `json:"success"`
 				Deliveries []pipeline.AgentDeliveryRecoveryEntry `json:"deliveries"`
@@ -483,7 +586,7 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 			}
 			entry := inspection.Deliveries[0]
 			args := []string{cfg.RunID, "--accept-delivery", "--step-id", fallbackID, "--receipt", entry.ReceiptToken, "--reason", "Observed the original fallback request reach its recorded agent"}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			var accepted struct {
 				Success  bool                                `json:"success"`
 				Replayed bool                                `json:"replayed"`
@@ -515,7 +618,7 @@ func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing
 					t.Fatalf("%s was lost or repeated: %q %v", name, data, err)
 				}
 			}
-			raw, err = executePipelineRecoveryCommand(t, args...)
+			raw, err = executePipelineRecoveryCommandIn(t, root, true, args...)
 			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed || accepted.Delivery.Status != "completed" {
 				t.Fatalf("completed fallback decision did not replay: %s %v", raw, err)
 			}
@@ -593,20 +696,22 @@ esac
 }
 
 func TestPipelineResumeRecoversConfirmedAgentDeliveryWithoutResending(t *testing.T) {
-	for _, kind := range []string{"prompt", "template"} {
+	sharedRoot := installKeyedPipelineRecoveryTmux(t)
+	for i, kind := range []string{"prompt", "template"} {
+		i, kind := i, kind
 		t.Run(kind, func(t *testing.T) {
-			root := inPipelineControlProject(t)
-			prior := interruptedPipelineAgentDelivery(t, root, kind)
-			logPath := pipelineRecoveryTmux(t, root, "2718", prior.AgentDeliveries["agent"].BeforeOutput+"\nFRESH-ANSWER\n")
-			oldJSON := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = oldJSON })
+			t.Parallel()
+			root := t.TempDir()
+			session := "delivery-confirmed-" + kind
+			paneID := fmt.Sprintf("%%%d", 190+i)
+			prior := pipelineAgentDeliveryCheckpointIn(t, root, session, paneID, kind, false)
+			logPath := registerKeyedPipelineRecoveryCase(t, sharedRoot, root, session, paneID, "2718", prior.AgentDeliveries["agent"].BeforeOutput+"\nFRESH-ANSWER\n")
 			cmd := newPipelineResumeCmd()
 			var resumeOut bytes.Buffer
 			cmd.SetArgs([]string{prior.RunID})
 			cmd.SetOut(&resumeOut)
 			cmd.SetErr(io.Discard)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(pipelineTestContext(context.Background(), root, true, ""), 15*time.Second)
 			defer cancel()
 			err := cmd.ExecuteContext(ctx)
 			raw := resumeOut.String()

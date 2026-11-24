@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,7 +26,9 @@ func TestContextInjectCobraPackModes(t *testing.T) {
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	for _, scenario := range []string{"build", "stored", "dry_run", "partial_failure", "invalid_flags"} {
+		scenario := scenario
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			deps := packInjectionTestDeps(t)
 			calls := 0
 			deps.send = func(_ context.Context, pane tmux.Pane, _ string) error {
@@ -107,9 +110,13 @@ func TestContextInjectCobraUsesCanonicalTargetsAcrossModes(t *testing.T) {
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	for _, mode := range []string{"files", "build", "pack"} {
+		mode := mode
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			for _, scenario := range []string{"default", "qualified", "pane-id", "ambiguous", "all", "no-agents"} {
+				scenario := scenario
 				t.Run(scenario, func(t *testing.T) {
+					t.Parallel()
 					deps := packInjectionTestDeps(t)
 					projectDir, err := deps.project(t.Context(), "demo")
 					if err != nil {
@@ -356,6 +363,226 @@ func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite st
 	return dir, mutationsPath
 }
 
+// contextMutationTMUXPool multiplexes one fake tmux binary across parallel
+// subtests by keying per-pane state on unique physical pane IDs (%41, %42, ...)
+// and routing load-buffer calls by each pane's unique payload marker.
+type contextMutationTMUXPool struct {
+	root   string
+	nextID atomic.Int32
+}
+
+func installKeyedContextMutationTMUX(t *testing.T) *contextMutationTMUXPool {
+	t.Helper()
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("requires /bin/sh")
+	}
+	root := t.TempDir()
+	for _, sub := range []string{"panes", "buffers"} {
+		if err := os.MkdirAll(filepath.Join(root, sub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `#!/bin/sh
+set -eu
+root="$NTM_CONTEXT_GUARD_ROOT"
+action=$1
+case "$action" in
+  -V) printf 'tmux 3.4\n'; exit 0 ;;
+  has-session) exit 0 ;;
+  list-sessions) printf 'demo_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000\n'; exit 0 ;;
+  delete-buffer|show-options|show-environment) exit 0 ;;
+  load-buffer)
+    buf="buf-$$"
+    prev=
+    for arg in "$@"; do
+      if [ "$prev" = "-b" ]; then
+        buf=$arg
+        break
+      fi
+      prev=$arg
+    done
+    bufpath="$root/buffers/$buf"
+    cat > "$bufpath"
+    matched=0
+    for d in "$root/panes"/*; do
+      [ -d "$d" ] || continue
+      if [ -f "$d/marker" ]; then
+        read -r marker < "$d/marker" || marker=""
+        if [ -n "$marker" ] && grep -Fq -- "$marker" "$bufpath"; then
+          printf '%s\n' "$*" >> "$d/calls"
+          cp "$bufpath" "$d/payload"
+          matched=1
+        fi
+      fi
+    done
+    if [ "$matched" -eq 0 ]; then
+      exit 2
+    fi
+    exit 0
+    ;;
+esac
+pane_id=
+if [ "$action" = "if-shell" ]; then
+  if [ "${2:-}" != "-F" ] || [ "${3:-}" != "-t" ]; then
+    exit 2
+  fi
+  pane_id="${4:-}"
+else
+  prev=
+  for arg in "$@"; do
+    if [ "$prev" = "-t" ]; then
+      pane_id="${arg#=}"
+      break
+    fi
+    prev=$arg
+  done
+fi
+pane_dir="$root/panes/$pane_id"
+if [ -z "$pane_id" ] || [ ! -d "$pane_dir" ]; then
+  exit 2
+fi
+read -r kind < "$pane_dir/kind"
+read -r after_write < "$pane_dir/after_write" || after_write=""
+printf '%s\n' "$*" >> "$pane_dir/calls"
+record_input() {
+  printf '%s\n' "$1" >> "$pane_dir/mutations"
+  if [ ! -f "$pane_dir/first" ]; then
+    : > "$pane_dir/first"
+    case "$after_write" in
+      replace) printf '999\n' > "$pane_dir/pid" ;;
+      shell) printf 'bash\n' > "$pane_dir/command" ;;
+      codex_*) printf '› [Pasted 2 lines]\n' > "$pane_dir/capture" ;;
+    esac
+  fi
+  case "$1" in
+    *"'Enter'")
+      read -r enters < "$pane_dir/enters"
+      enters=$((enters + 1))
+      printf '%s\n' "$enters" > "$pane_dir/enters"
+      if [ "$after_write" = codex_rescue ] && [ "$enters" -ge 3 ]; then
+        printf '› \n' > "$pane_dir/capture"
+      fi
+      ;;
+  esac
+}
+case "$action" in
+  list-panes)
+    read -r current_pid < "$pane_dir/pid"
+    printf '%s_NTM_SEP_1_NTM_SEP_demo__%s_1_NTM_SEP_agent_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$pane_id" "$kind" "$current_pid" "$kind"
+    ;;
+  display-message)
+    case "$*" in
+      *'@ntm_rotation_token'*)
+        read -r rotation < "$pane_dir/rotation" || rotation=""
+        printf '[%s]\n' "$rotation"
+        ;;
+      *'pane_current_path'*) printf '%s\n' "$pane_dir" ;;
+      *) printf '[%s]\n' "$kind" ;;
+    esac
+    ;;
+  capture-pane)
+    read -r enters < "$pane_dir/enters"
+    if [ "$after_write" = codex_rescue_replaced ] && [ "$enters" -ge 2 ]; then
+      printf '999\n' > "$pane_dir/pid"
+    fi
+    cat "$pane_dir/capture"
+    ;;
+  if-shell)
+    read -r current_pid < "$pane_dir/pid"
+    read -r rotation < "$pane_dir/rotation" || rotation=""
+    read -r current_command < "$pane_dir/command"
+    case "$5" in
+      *"#{==:#{pane_pid},$current_pid}"*) ;;
+      *)
+        printf 'ntm_pane_identity_changed\n'
+        exit 0
+        ;;
+    esac
+    case "$5" in
+      *'#{==:#{@ntm_rotation_token},}'*)
+        if [ -n "$rotation" ]; then
+          printf 'ntm_pane_identity_changed\n'
+          exit 0
+        fi
+        ;;
+      *) exit 2 ;;
+    esac
+    case "$5" in
+      *'#{!=:#{pane_current_command},}'*)
+        case "$current_command" in
+          ""|sh|bash|zsh|fish|dash|ksh)
+            printf 'ntm_pane_identity_changed\n'
+            exit 0
+            ;;
+        esac
+        ;;
+    esac
+    record_input "$6"
+    ;;
+  paste-buffer|send-keys)
+    record_input "unguarded: $*"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+`
+	binary := filepath.Join(root, "tmux")
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	t.Setenv("NTM_CONTEXT_GUARD_ROOT", root)
+
+	oldClient := tmux.DefaultClient
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 1 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+
+	pool := &contextMutationTMUXPool{root: root}
+	pool.nextID.Store(40)
+	return pool
+}
+
+func (p *contextMutationTMUXPool) addPane(t *testing.T, kind tmux.AgentType, afterWrite string, customCapture *string) (paneID, marker, dir, mutationsPath string) {
+	t.Helper()
+	paneID = fmt.Sprintf("%%%d", p.nextID.Add(1))
+	marker = "[" + paneID + "]"
+	capture := "❯ \n"
+	if kind == tmux.AgentCodex {
+		capture = "› \n"
+	}
+	if customCapture != nil {
+		capture = *customCapture
+	}
+	staging := filepath.Join(p.root, "staging-"+paneID)
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"pid":         "321\n",
+		"rotation":    "\n",
+		"command":     "agent\n",
+		"capture":     capture,
+		"enters":      "0\n",
+		"calls":       "",
+		"mutations":   "",
+		"kind":        string(kind) + "\n",
+		"after_write": afterWrite + "\n",
+		"marker":      marker + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(staging, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir = filepath.Join(p.root, "panes", paneID)
+	if err := os.Rename(staging, dir); err != nil {
+		t.Fatal(err)
+	}
+	return paneID, marker, dir, filepath.Join(dir, "mutations")
+}
+
 func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = true
@@ -393,15 +620,24 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 		{name: "exited_after_first_write", afterWrite: "shell", fail: true, partial: true},
 	}
 
+	pool := installKeyedContextMutationTMUX(t)
+
 	for _, surface := range []string{"cobra_build", "robot_adapter"} {
 		t.Run(surface, func(t *testing.T) {
+			t.Parallel()
 			for _, protocol := range protocols {
 				t.Run(protocol.name, func(t *testing.T) {
+					t.Parallel()
 					for _, scenario := range scenarios {
 						t.Run(scenario.name, func(t *testing.T) {
-							dir, logPath := installContextMutationTMUX(t, protocol.kind, scenario.afterWrite)
+							t.Parallel()
+							paneID, marker, dir, logPath := pool.addPane(t, protocol.kind, scenario.afterWrite, nil)
+							content := protocol.content
+							if protocol.name == "bracketed_paste" {
+								content = "project context " + marker + "\nsecond line"
+							}
 							pane := tmux.Pane{
-								ID: "%41", Index: 1, PID: 321,
+								ID: paneID, Index: 1, PID: 321,
 								Type: protocol.kind, Command: "agent",
 							}
 							prepared := false
@@ -436,7 +672,7 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 									if err != nil {
 										return nil, err
 									}
-									pack.RenderedPrompt = protocol.content
+									pack.RenderedPrompt = content
 									return pack, nil
 								}
 								deps.send = sendContextToPane
@@ -473,7 +709,7 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 								var result ContextInjectResult
 								result, deliveryErr = injectContextIntoPanes(
 									t.Context(), "demo", []tmux.Pane{pane},
-									protocol.content, 0, false, sendContextToPane,
+									content, 0, false, sendContextToPane,
 								)
 								injected = result.PanesInjected
 								if deliveryErr != nil {
@@ -818,7 +1054,9 @@ func TestContextInjectCobraRechecksWholeStoredPackBatch(t *testing.T) {
 		"filled", "lost", "stale", "session_changed", "model_changed", "window_changed",
 		"accounting_regressed", "newly_known", "replaced", "dead", "service", "rotation", "canceled",
 	} {
+		scenario := scenario
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			deps := packInjectionTestDeps(t)
 			panes := []tmux.Pane{
 				{ID: "%1", Index: 0, PID: 101, Type: tmux.AgentClaude},
@@ -918,9 +1156,11 @@ func TestContextInjectCobraUsesSharedDeliveryGates(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
+	pool := installKeyedContextMutationTMUX(t)
 
 	for _, mode := range []string{"files", "build", "pack"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			for _, tc := range []struct {
 				name      string
 				kind      tmux.AgentType
@@ -959,19 +1199,26 @@ func TestContextInjectCobraUsesSharedDeliveryGates(t *testing.T) {
 				{name: "ready grok", kind: tmux.AgentGrok, capture: "❯ \n"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					dir, mutationsPath := installContextMutationTMUX(t, tc.kind, "")
-					if err := os.WriteFile(filepath.Join(dir, "capture"), []byte(tc.capture), 0600); err != nil {
-						t.Fatal(err)
-					}
-					pane := tmux.Pane{ID: "%41", Index: 1, PID: 321, Type: tc.kind, Command: "agent", Width: 120}
+					t.Parallel()
+					capture := tc.capture
+					paneID, marker, dir, mutationsPath := pool.addPane(t, tc.kind, "", &capture)
+					pane := tmux.Pane{ID: paneID, Index: 1, PID: 321, Type: tc.kind, Command: "agent", Width: 120}
 					deps := packInjectionTestDeps(t)
 					deps.panes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
 					deps.usage = nil
 					deps.send = defaultContextInjectDeps(io.Discard).send
+					baseBuild := deps.build
+					deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+						pack, err := baseBuild(ctx, opts)
+						if err == nil && pack != nil {
+							pack.RenderedPrompt += " " + marker
+						}
+						return pack, err
+					}
 					deps.load = func(id string) (*state.ContextPack, error) {
 						return &state.ContextPack{
 							ID: id, AgentType: state.AgentType(tc.kind.Canonical()),
-							RenderedPrompt: "new project context\nsecond line",
+							RenderedPrompt: "new project context " + marker + "\nsecond line",
 						}, nil
 					}
 					args := []string{"demo"}
@@ -981,7 +1228,7 @@ func TestContextInjectCobraUsesSharedDeliveryGates(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if err := os.WriteFile(filepath.Join(projectDir, "context.txt"), []byte("new project context\nsecond line"), 0600); err != nil {
+						if err := os.WriteFile(filepath.Join(projectDir, "context.txt"), []byte("new project context "+marker+"\nsecond line"), 0600); err != nil {
 							t.Fatal(err)
 						}
 						args = append(args, "--files", "context.txt")
@@ -1048,6 +1295,7 @@ func TestContextInjectCobraVerifiesSubmissionWithPaneGuard(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
+	pool := installKeyedContextMutationTMUX(t)
 
 	for _, tc := range []struct {
 		name       string
@@ -1059,14 +1307,15 @@ func TestContextInjectCobraVerifiesSubmissionWithPaneGuard(t *testing.T) {
 		{name: "codex_stuck", wantError: "submission unconfirmed", wantEnters: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, mutationsPath := installContextMutationTMUX(t, tmux.AgentCodex, tc.name)
-			pane := tmux.Pane{ID: "%41", Index: 1, PID: 321, Type: tmux.AgentCodex, Command: "codex", Width: 120}
+			t.Parallel()
+			paneID, marker, _, mutationsPath := pool.addPane(t, tmux.AgentCodex, tc.name, nil)
+			pane := tmux.Pane{ID: paneID, Index: 1, PID: 321, Type: tmux.AgentCodex, Command: "codex", Width: 120}
 			deps := packInjectionTestDeps(t)
 			deps.panes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
 			deps.usage = nil
 			deps.send = defaultContextInjectDeps(io.Discard).send
 			deps.load = func(id string) (*state.ContextPack, error) {
-				return &state.ContextPack{ID: id, AgentType: "cod", RenderedPrompt: "project context\nsecond line"}, nil
+				return &state.ContextPack{ID: id, AgentType: "cod", RenderedPrompt: "project context " + marker + "\nsecond line"}, nil
 			}
 			cmd := newContextInjectCmdWithDeps(&deps)
 			var stdout bytes.Buffer
