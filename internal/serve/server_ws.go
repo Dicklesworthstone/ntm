@@ -568,13 +568,12 @@ const (
 func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -601,13 +600,12 @@ func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1607,7 +1605,7 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 			// feed callback; an in-flight callback for a replaced subscription
 			// must not stop the new one.
 			c.attentionSubMu.Lock()
-			current := c.attentionSub == expected && expected.Active
+			current := c.attentionSub == expected && expected.Active && matchesAttentionTopics(expected.topics, event)
 			if current {
 				expected.Active = false
 				c.sendError("", "REDACTION_FAILED", "attention event could not be disclosed safely; resynchronize the subscription")

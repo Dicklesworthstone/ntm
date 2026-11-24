@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -223,6 +224,33 @@ func validateSessionParam(w http.ResponseWriter, sessionID, reqID string) bool {
 		return false
 	}
 	return true
+}
+
+// paneSelectorURLParam reads the {paneIdx} path parameter, decoding it only
+// when chi routed against an unescaped RawPath (so normal net/http-decoded
+// "%20" values are never double-unescaped, while RawPath "%2520" or "1%2E2"
+// are decoded once before selector parsing).
+func paneSelectorURLParam(r *http.Request) (string, error) {
+	raw := chi.URLParam(r, "paneIdx")
+	if r != nil && r.URL != nil && r.URL.RawPath != "" {
+		decoded, err := url.PathUnescape(raw)
+		if err != nil {
+			return "", err
+		}
+		return decoded, nil
+	}
+	return raw, nil
+}
+
+// validatePaneSelectorFromRequest extracts and strictly parses the {paneIdx}
+// route parameter (N, W.P, or %N). Writes 400 and returns false on error.
+func validatePaneSelectorFromRequest(w http.ResponseWriter, r *http.Request, reqID string) (tmux.PaneSelector, bool) {
+	paneSelectorStr, err := paneSelectorURLParam(r)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+		return tmux.PaneSelector{}, false
+	}
+	return validatePaneSelector(w, paneSelectorStr, reqID)
 }
 
 // validatePaneSelector parses a pane selector string (N, W.P, or %N) strictly.
@@ -1050,13 +1078,12 @@ func (s *Server) handleListPanesV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetPaneV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1094,13 +1121,12 @@ const defaultPaneInputTimeout = 30 * time.Second
 func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1263,13 +1289,12 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1298,13 +1323,12 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1355,13 +1379,12 @@ func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}
@@ -1392,13 +1415,12 @@ type PaneTitleRequest struct {
 func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
-	paneIdxStr := chi.URLParam(r, "paneIdx")
 
 	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneSelector, ok := validatePaneSelector(w, paneIdxStr, reqID)
+	paneSelector, ok := validatePaneSelectorFromRequest(w, r, reqID)
 	if !ok {
 		return
 	}

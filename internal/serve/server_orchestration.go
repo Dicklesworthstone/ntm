@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
@@ -168,9 +170,20 @@ func (s *Server) registerOrchestrationRoutes(r chi.Router) {
 }
 
 func kernelSessionErrorHTTP(err error) (int, string) {
+	var selectorErr *tmux.PaneSelectorError
+	if errors.As(err, &selectorErr) {
+		switch selectorErr.Kind {
+		case tmux.PaneSelectorAmbiguous:
+			return http.StatusConflict, ErrCodeConflict
+		case tmux.PaneSelectorInvalid, tmux.PaneSelectorMissing:
+			return http.StatusBadRequest, ErrCodeBadRequest
+		case tmux.PaneSelectorNotFound:
+			return http.StatusNotFound, ErrCodeNotFound
+		}
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "not found"), strings.Contains(msg, "does not exist"), strings.Contains(msg, "no session"):
+	case strings.Contains(msg, "not found"), strings.Contains(msg, "does not exist"), strings.Contains(msg, "no session"), strings.Contains(msg, "no panes match"):
 		return http.StatusNotFound, ErrCodeNotFound
 	case strings.Contains(msg, "not registered"):
 		return http.StatusNotImplemented, ErrCodeNotImplemented
