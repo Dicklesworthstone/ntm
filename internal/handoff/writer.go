@@ -439,8 +439,9 @@ func (w *Writer) appendLedgerEntry(h *Handoff, handoffPath string, isAuto bool) 
 		return fmt.Errorf("validate ledger root: %w", err)
 	}
 
-	// Open the parent -> .ntm -> ledgers chain with os.OpenRoot (openat2/O_NOFOLLOW)
-	// so neither directory-swap races nor dangling symlinks can escape the workspace.
+	// Open the parent -> .ntm -> ledgers chain with os.OpenRoot (RESOLVE_IN_ROOT)
+	// plus Lstat checks so directory swaps, symlinks, and non-regular files cannot
+	// escape the workspace or block on FIFOs.
 	parentDir := filepath.Dir(ntmDir)
 	ntmName := filepath.Base(ntmDir)
 	parentRoot, err := os.OpenRoot(parentDir)
@@ -462,13 +463,17 @@ func (w *Writer) appendLedgerEntry(h *Handoff, handoffPath string, isAuto bool) 
 	}
 	defer ntmRoot.Close()
 
-	if linfo, lerr := ntmRoot.Lstat("ledgers"); os.IsNotExist(lerr) {
+	linfo, lerr := ntmRoot.Lstat("ledgers")
+	if os.IsNotExist(lerr) {
 		if mkErr := ntmRoot.Mkdir("ledgers", 0755); mkErr != nil && !os.IsExist(mkErr) {
 			return fmt.Errorf("create ledger dir: %w", mkErr)
 		}
-	} else if lerr != nil {
+		linfo, lerr = ntmRoot.Lstat("ledgers")
+	}
+	if lerr != nil {
 		return fmt.Errorf("lstat ledger dir: %w", lerr)
-	} else if linfo.Mode()&os.ModeSymlink != 0 || !linfo.IsDir() {
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 || !linfo.IsDir() {
 		return fmt.Errorf("ledger dir %s is not a real directory", filepath.Join(ntmDir, "ledgers"))
 	}
 
