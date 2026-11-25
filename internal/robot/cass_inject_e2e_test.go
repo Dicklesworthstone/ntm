@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -79,6 +80,17 @@ esac
 
 func TestGetSendRequestGuardChecksInjectedPayload(t *testing.T) {
 	root, opts := cassCapacitySendFixture(t, false)
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory state store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		store.Close()
+		t.Fatalf("migrate in-memory state store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	opts.Store = store
+	opts.ExplicitStore = true
 	refused := errors.New("project policy rejects retrieved context")
 	opts.IdempotencyKey = "guard-before-operation-claim"
 	calls := 0
@@ -94,6 +106,9 @@ func TestGetSendRequestGuardChecksInjectedPayload(t *testing.T) {
 	}
 	if _, err := GetSend(opts); !errors.Is(err, refused) || calls != 1 {
 		t.Fatalf("injected payload bypassed request guard: calls=%d err=%v", calls, err)
+	}
+	if stored, err := store.GetSendOperation(opts.IdempotencyKey, opts.Session); err != nil || stored != nil {
+		t.Fatalf("guard refusal claimed durable operation: stored=%+v err=%v", stored, err)
 	}
 	if payload, err := os.ReadFile(filepath.Join(root, "payload")); !os.IsNotExist(err) {
 		t.Fatalf("guard refusal reached tmux input: %q, %v", payload, err)
