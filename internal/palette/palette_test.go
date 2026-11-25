@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1597,5 +1598,25 @@ func TestTargetPhaseOffersSelectAgents(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Select agents") {
 		t.Fatalf("expected target phase to offer granular selection, got: %q", view)
+	}
+}
+
+func TestPalettePiParity(t *testing.T) {
+	if !isKnownPaletteAgentCategory(agent.AgentTypePi) {
+		t.Fatal("isKnownPaletteAgentCategory(pi) = false, want true")
+	}
+	counts := countAgentPanes([]tmux.Pane{
+		{ID: "%1", Index: 1, Title: "demo__pi_1", Type: tmux.AgentPi},
+		{ID: "%2", Index: 2, Title: "demo__omp_1", Type: tmux.AgentOmp},
+	})
+	if counts.pi != 1 || counts.omp != 1 || counts.totalAgents != 2 {
+		t.Fatalf("countAgentPanes = %+v, want pi=1 omp=1 total=2", counts)
+	}
+	m := New("demo", testCommands)
+	m.paneCounts = counts
+	m.paneCountsKnown = true
+	badges := stripANSI(m.renderTargetSummaryBadges())
+	if !strings.Contains(badges, "pi 1") {
+		t.Fatalf("renderTargetSummaryBadges() = %q, want pi 1 badge", badges)
 	}
 }

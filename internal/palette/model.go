@@ -70,6 +70,7 @@ type paneCounts struct {
 	gemini      int
 	antigravity int
 	omp         int
+	pi          int
 	grok        int
 	opencode    int
 
@@ -367,6 +368,8 @@ func countAgentPanes(panes []tmux.Pane) paneCounts {
 		case tmux.AgentOmp:
 			counts.omp++
 			addSample(&counts.ompSamples, title, maxTypeSamples)
+		case tmux.AgentPi:
+			counts.pi++
 		case tmux.AgentGrok:
 			counts.grok++
 			addSample(&counts.grokSamples, title, maxTypeSamples)
@@ -1980,6 +1983,7 @@ func isKnownPaletteAgentCategory(category agent.AgentType) bool {
 		agent.AgentTypeAntigravity,
 		agent.AgentTypeGrok,
 		agent.AgentTypeOmp,
+		agent.AgentTypePi,
 		agent.AgentTypeOpencode,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
@@ -2036,6 +2040,9 @@ func (m Model) renderTargetSummaryBadges() string {
 	if m.paneCountsKnown {
 		if m.paneCounts.omp > 0 {
 			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "omp", &m.paneCounts.omp), sem.AgentOmp, t.Base))
+		}
+		if m.paneCounts.pi > 0 {
+			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "pi", &m.paneCounts.pi), sem.AgentColor(string(agent.AgentTypePi)), t.Base))
 		}
 		if m.paneCounts.grok > 0 {
 			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "grok", &m.paneCounts.grok), sem.AgentGrok, t.Base))
