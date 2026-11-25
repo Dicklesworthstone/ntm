@@ -13,6 +13,7 @@ import (
 )
 
 func TestPolicyPrecedence(t *testing.T) {
+	t.Parallel()
 	// Create a temporary policy file with conflicting rules
 	content := `
 version: 1
@@ -170,6 +171,7 @@ exit 0
 // claude-hook` and passes its exit status through; without ntm on PATH it
 // refuses (exit 2) instead of letting the command run unchecked.
 func TestClaudeHookScriptDelegatesStdinAndFailsClosed(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -370,6 +372,7 @@ func TestRecordHookRefusalAttributesSessionAndCountsMetric(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("NTM_CONFIG", filepath.Join(root, "cfg", "config.toml"))
+	seedCLIStateDB(t, filepath.Join(root, "cfg", "state.db"))
 	fakeTmux := filepath.Join(root, "tmux")
 	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\necho hooksess\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -403,6 +406,7 @@ func TestRecordHookRefusalAttributesSessionAndCountsMetric(t *testing.T) {
 }
 
 func TestSafetySimulationCommandsPreserveMalformedStep(t *testing.T) {
+	t.Parallel()
 	got := safetySimulationCommands("git status", []string{"git reset --hard HEAD~1", ""})
 	want := []string{"git status", "git reset --hard HEAD~1", ""}
 	if len(got) != len(want) {
@@ -447,6 +451,7 @@ func TestSafetyInstallationState(t *testing.T) {
 }
 
 func TestSafetyInstallationState_HookOnlyIsNotEffective(t *testing.T) {
+	t.Parallel()
 	installed, effective, state := safetyInstallationState(t.TempDir(), true)
 	if !installed || effective || state != safetyInstalledNotEffective {
 		t.Fatalf("hook-only safetyInstallationState() = (%t, %t, %q), want (true, false, %q)", installed, effective, state, safetyInstalledNotEffective)
