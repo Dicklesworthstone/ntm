@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -353,31 +355,87 @@ func TestCleanValue(t *testing.T) {
 	}
 }
 
-func TestParseNumericPair(t *testing.T) {
+func TestCompareNumericPair(t *testing.T) {
 	tests := []struct {
 		left    string
 		right   string
-		wantL   float64
-		wantR   float64
+		want    int
 		wantErr bool
 	}{
-		{"10", "20", 10, 20, false},
-		{"10.5", "20.5", 10.5, 20.5, false},
-		{"-5", "5", -5, 5, false},
-		{`"10"`, "20", 10, 20, false}, // quoted number
-		{"abc", "20", 0, 0, true},
-		{"10", "xyz", 0, 0, true},
+		{"10", "20", -1, false},
+		{"10.5", "20.5", -1, false},
+		{"-5", "5", -1, false},
+		{`"10"`, "20", -1, false}, // quoted number
+		{"1.0", "1e0", 0, false},
+		{"20", "10", 1, false},
+		{"abc", "20", 0, true},
+		{"10", "xyz", 0, true},
 	}
 
 	for _, tt := range tests {
-		gotL, gotR, err := parseNumericPair(tt.left, tt.right)
+		got, err := compareNumericPair(tt.left, tt.right)
 		if (err != nil) != tt.wantErr {
-			t.Errorf("parseNumericPair(%q, %q) error = %v, wantErr %v", tt.left, tt.right, err, tt.wantErr)
+			t.Errorf("compareNumericPair(%q, %q) error = %v, wantErr %v", tt.left, tt.right, err, tt.wantErr)
 			continue
 		}
-		if !tt.wantErr {
-			if gotL != tt.wantL || gotR != tt.wantR {
-				t.Errorf("parseNumericPair(%q, %q) = (%v, %v), want (%v, %v)", tt.left, tt.right, gotL, gotR, tt.wantL, tt.wantR)
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("compareNumericPair(%q, %q) = %v, want %v", tt.left, tt.right, got, tt.want)
+		}
+	}
+}
+
+func TestConditionEvaluatorExactNumericOrdering(t *testing.T) {
+	// Deliberately ordered values include adjacent integers beyond float64's
+	// precision, decimal significand prefixes, opposite signs and exponents
+	// that cannot be expanded or represented by a machine integer.
+	ordered := []string{
+		"-1e999999999999999999999", "-1e999999", "-9007199254740993", "-9007199254740992",
+		"-120.01", "-120", "-1.01", "-1", "-1e-999999", "0",
+		"1e-999999", "0.0001", "0.1", "1", "1.01", "1.0101", "1.1",
+		"120", "120.01", "9007199254740992", "9007199254740993", "1e999999", "1e999999999999999999999",
+	}
+	state := &ExecutionState{Variables: map[string]interface{}{}}
+	evaluator := NewConditionEvaluator(NewSubstitutor(state, "test-session", "numeric-ordering"))
+	for i, left := range ordered {
+		for j, right := range ordered {
+			state.Variables["left"] = json.Number(left)
+			state.Variables["right"] = json.Number(right)
+			for _, tc := range []struct {
+				op   string
+				want bool
+			}{
+				{"<", i < j}, {">", i > j}, {"<=", i <= j}, {">=", i >= j},
+			} {
+				result, err := evaluator.Evaluate("${vars.left} " + tc.op + " ${vars.right}")
+				if err != nil || result.Value != tc.want || result.Skip == tc.want {
+					t.Fatalf("%s %s %s = %+v, %v; want run=%t", left, tc.op, right, result, err, tc.want)
+				}
+			}
+		}
+	}
+	for _, expr := range []string{
+		"1.00 >= 1e0", "1.00 <= 1e0", "-0.0 >= 0e999999", "-0.0 <= 0e-999999",
+		"1e100000000000000000000 <= 10e99999999999999999999",
+		"1e100000000000000000000 >= 10e99999999999999999999",
+		"1e-100000000000000000000 <= 10e-100000000000000000001",
+		"1e-100000000000000000000 >= 10e-100000000000000000001",
+	} {
+		result, err := evaluator.Evaluate(expr)
+		if err != nil || !result.Value || result.Skip {
+			t.Fatalf("equal decimal ordering %q = %+v, %v; want run", expr, result, err)
+		}
+	}
+}
+
+func TestConditionEvaluatorRejectsInvalidNumericOrdering(t *testing.T) {
+	state := &ExecutionState{Variables: map[string]interface{}{}}
+	evaluator := NewConditionEvaluator(NewSubstitutor(state, "test-session", "numeric-invalid"))
+	for _, value := range []string{"NaN", "Inf", "-Infinity", "1e", "1e+", "1e--1", "1e2x", ".", "1.2.3", "not-a-number", strings.Repeat("9", maxFilterExpressionBytes+1)} {
+		state.Variables["value"] = value
+		for _, expr := range []string{"${vars.value} > 0", "0 < ${vars.value}", "${vars.value} <= 0", "0 >= ${vars.value}"} {
+			result, err := evaluator.Evaluate(expr)
+			if err == nil || result.Value || !strings.Contains(err.Error(), "cannot compare") {
+				t.Fatalf("invalid numeric condition %q = %+v, %v; want error", expr, result, err)
 			}
 		}
 	}

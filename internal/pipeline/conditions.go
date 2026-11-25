@@ -12,7 +12,6 @@ package pipeline
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -496,19 +495,19 @@ func (e *ConditionEvaluator) evalCompareValues(op, left string, leftQuoted bool,
 	case "contains":
 		return strings.Contains(lVal, rVal), nil
 	case ">", "<", ">=", "<=":
-		leftNum, rightNum, err := parseNumericPair(lVal, rVal)
+		order, err := compareNumericPair(lVal, rVal)
 		if err != nil {
 			return false, fmt.Errorf("cannot compare: %w", err)
 		}
 		switch op {
 		case ">":
-			return leftNum > rightNum, nil
+			return order > 0, nil
 		case "<":
-			return leftNum < rightNum, nil
+			return order < 0, nil
 		case ">=":
-			return leftNum >= rightNum, nil
+			return order >= 0, nil
 		case "<=":
-			return leftNum <= rightNum, nil
+			return order <= 0, nil
 		}
 	}
 	return false, fmt.Errorf("unsupported comparison operator %q", op)
@@ -537,22 +536,28 @@ func cleanValue(s string) string {
 	return s
 }
 
-// parseNumericPair parses two values as floats for numeric comparison.
-func parseNumericPair(left, right string) (float64, float64, error) {
+// compareNumericPair uses the same exact decimal semantics as foreach filters.
+// Variable binding remains separate from expression parsing; operand contents
+// are data and cannot introduce new condition operators.
+func compareNumericPair(left, right string) (int, error) {
 	left = cleanValue(left)
 	right = cleanValue(right)
 
-	leftNum, err := strconv.ParseFloat(left, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("left operand '%s' is not a number", left)
+	if len(left) > maxFilterExpressionBytes {
+		return 0, fmt.Errorf("left numeric operand exceeds %d bytes", maxFilterExpressionBytes)
 	}
-
-	rightNum, err := strconv.ParseFloat(right, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("right operand '%s' is not a number", right)
+	if len(right) > maxFilterExpressionBytes {
+		return 0, fmt.Errorf("right numeric operand exceeds %d bytes", maxFilterExpressionBytes)
 	}
-
-	return leftNum, rightNum, nil
+	leftNum, ok := parsePipelineNumber(left)
+	if !ok {
+		return 0, fmt.Errorf("left operand is not a finite decimal number")
+	}
+	rightNum, ok := parsePipelineNumber(right)
+	if !ok {
+		return 0, fmt.Errorf("right operand is not a finite decimal number")
+	}
+	return leftNum.cmp(rightNum), nil
 }
 
 // EvaluateCondition is a convenience function that evaluates a condition string

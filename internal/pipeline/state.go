@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -440,9 +441,15 @@ func decodeState(data []byte, runID string) (*ExecutionState, error) {
 	}
 
 	var state ExecutionState
-	if err := json.Unmarshal(data, &state); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&state); err != nil {
 		return nil, fmt.Errorf("parse pipeline state: %w", err)
 	}
+	// The header unmarshal already validated the complete JSON document.
+	// Preserve exact dynamic values before any recovery validator or filter
+	// can interpret them; typed counters and receipt fields decode normally.
+	normalizeStateJSONNumbers(&state)
 
 	if state.RunID == "" {
 		state.RunID = runID
@@ -464,6 +471,67 @@ func decodeState(data []byte, runID string) (*ExecutionState, error) {
 	}
 
 	return &state, nil
+}
+
+// normalizeStateJSONNumbers keeps the historical float64 representation only
+// when it preserves the exact JSON scalar spelling. Checkpoint receipts can
+// bind those bytes, so equivalent decimal spellings must remain distinct here.
+func normalizeStateJSONNumbers(state *ExecutionState) {
+	if state == nil {
+		return
+	}
+	normalizeCheckpointJSONNumbers(state.Variables)
+	for id, result := range state.Steps {
+		result.ParsedData = normalizeCheckpointJSONNumbers(result.ParsedData)
+		state.Steps[id] = result
+	}
+	for _, iteration := range state.ForeachState {
+		normalizeCheckpointJSONNumbers(iteration.CollectedOutputs)
+	}
+	for _, frame := range state.ScopeStack {
+		normalizeCheckpointJSONNumbers(frame.Variables)
+	}
+	for id, record := range state.CommandExecutions {
+		record.Result.ParsedData = normalizeCheckpointJSONNumbers(record.Result.ParsedData)
+		state.CommandExecutions[id] = record
+	}
+	for id, record := range state.MailSends {
+		record.Result.ParsedData = normalizeCheckpointJSONNumbers(record.Result.ParsedData)
+		state.MailSends[id] = record
+	}
+	for id, record := range state.ReservationSteps {
+		record.Result.ParsedData = normalizeCheckpointJSONNumbers(record.Result.ParsedData)
+		state.ReservationSteps[id] = record
+	}
+	for id, record := range state.SuccessHooks {
+		record.Body.ParsedData = normalizeCheckpointJSONNumbers(record.Body.ParsedData)
+		normalizeCheckpointJSONNumbers(record.Outputs)
+		for _, child := range record.Children {
+			normalizeCheckpointJSONNumbers(child.Outputs)
+		}
+		state.SuccessHooks[id] = record
+	}
+}
+
+func normalizeCheckpointJSONNumbers(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, item := range v {
+			v[key] = normalizeCheckpointJSONNumbers(item)
+		}
+	case []interface{}:
+		for i, item := range v {
+			v[i] = normalizeCheckpointJSONNumbers(item)
+		}
+	case json.Number:
+		if number, ok := losslessJSONFloat(v); ok {
+			encoded, err := json.Marshal(number)
+			if err == nil && string(encoded) == v.String() {
+				return number
+			}
+		}
+	}
+	return value
 }
 
 func marshalStateForDisk(state *ExecutionState) ([]byte, error) {

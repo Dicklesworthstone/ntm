@@ -174,6 +174,91 @@ func TestLoadState(t *testing.T) {
 	}
 }
 
+func TestSaveLoadStatePreservesNumericFilterDecisions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	state := &ExecutionState{
+		RunID: "numeric-recovery", WorkflowID: "numeric-recovery", Status: StatusRunning,
+		Variables: map[string]interface{}{
+			"large": json.Number("9007199254740993"),
+			"huge":  json.Number("1e1000"),
+			"tiny":  json.Number("1e-1000"),
+			"decimal": json.Number("1.00"), "exponent": json.Number("1e0"), "zero": json.Number("-0.00e999999"),
+			"small": 42, "fraction": 0.125, "text": "9007199254740993",
+			"nested": []interface{}{map[string]interface{}{"exact": json.Number("1.0000000000000001")}},
+		},
+		Steps: map[string]StepResult{
+			"parsed": {
+				StepID: "parsed", Status: StatusCompleted, Attempts: 1,
+				ParsedData: map[string]interface{}{"large": json.Number("9007199254740993"), "small": 7},
+			},
+		},
+		ForeachState: map[string]ForeachIterationState{
+			"loop": {
+				StepID: "loop", CurrentIteration: 1, Total: 1,
+				CompletedIterationIDs: []string{"loop_iter0"},
+				CollectedOutputs:      []interface{}{json.Number("1e-1000")},
+			},
+		},
+		ScopeStack: []ScopeFrame{{
+			Kind: "foreach", Name: "loop",
+			Variables: map[string]interface{}{"exact": json.Number("1.0000000000000001"), "small": 9},
+		}},
+	}
+
+	assertNumber := func(name string, value interface{}, want string) {
+		t.Helper()
+		number, ok := value.(json.Number)
+		if !ok || number.String() != want {
+			t.Fatalf("%s = %v (%T), want exact JSON number %s", name, value, value, want)
+		}
+	}
+	// A second save/load catches normalization that is correct in memory but
+	// changes decimal meaning when persisted again.
+	for round := 0; round < 2; round++ {
+		if err := SaveState(dir, state); err != nil {
+			t.Fatalf("SaveState round %d: %v", round, err)
+		}
+		loaded, err := LoadState(dir, state.RunID)
+		if err != nil {
+			t.Fatalf("LoadState round %d: %v", round, err)
+		}
+		assertNumber("large", loaded.Variables["large"], "9007199254740993")
+		assertNumber("huge", loaded.Variables["huge"], "1e1000")
+		assertNumber("tiny", loaded.Variables["tiny"], "1e-1000")
+		assertNumber("decimal", loaded.Variables["decimal"], "1.00")
+		assertNumber("exponent", loaded.Variables["exponent"], "1e0")
+		assertNumber("zero", loaded.Variables["zero"], "-0.00e999999")
+		nested := loaded.Variables["nested"].([]interface{})[0].(map[string]interface{})
+		assertNumber("nested", nested["exact"], "1.0000000000000001")
+		parsed := loaded.Steps["parsed"].ParsedData.(map[string]interface{})
+		assertNumber("parsed", parsed["large"], "9007199254740993")
+		assertNumber("collection", loaded.ForeachState["loop"].CollectedOutputs[0], "1e-1000")
+		assertNumber("scope", loaded.ScopeStack[0].Variables["exact"], "1.0000000000000001")
+		if loaded.Variables["small"] != float64(42) || loaded.Variables["fraction"] != float64(0.125) ||
+			parsed["small"] != float64(7) || loaded.ScopeStack[0].Variables["small"] != float64(9) ||
+			loaded.Variables["text"] != "9007199254740993" || loaded.Steps["parsed"].Attempts != 1 {
+			t.Fatalf("ordinary decoded values changed: %+v", loaded)
+		}
+		for _, test := range []struct {
+			name string
+			expr string
+			want bool
+		}{
+			{"large", "item == 9007199254740993", true},
+			{"large", "item == 9007199254740992", false},
+			{"huge", "item == 1e1000", true},
+			{"tiny", "item", true},
+		} {
+			got, err := EvaluateForeachFilter(test.expr, FilterContext{Item: loaded.Variables[test.name]})
+			if err != nil || got != test.want {
+				t.Fatalf("round %d filter %q = %t, %v; want %t", round, test.expr, got, err, test.want)
+			}
+		}
+		state = loaded
+	}
+}
+
 func TestLoadState_EmptyRunID(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -269,14 +270,19 @@ func normalizeNumberVar(name string, value interface{}) (interface{}, error) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		return value, nil
 	case json.Number:
+		if len(v) > maxFilterExpressionBytes || !json.Valid([]byte(v)) {
+			return nil, fmt.Errorf("variable %s: expected a valid finite JSON number", name)
+		}
+		if _, numeric := parsePipelineNumber(v.String()); !numeric {
+			return nil, fmt.Errorf("variable %s: expected a valid finite JSON number", name)
+		}
 		if i, err := v.Int64(); err == nil {
 			return i, nil
 		}
-		f, err := v.Float64()
-		if err != nil {
-			return nil, fmt.Errorf("variable %s: expected number, got '%s'", name, v.String())
+		if f, ok := losslessJSONFloat(v); ok {
+			return f, nil
 		}
-		return f, nil
+		return v, nil
 	case string:
 		s := strings.TrimSpace(v)
 		if s == "" {
@@ -286,6 +292,11 @@ func normalizeNumberVar(name string, value interface{}) (interface{}, error) {
 			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 				return int(i), nil
 			}
+		}
+		// JSON decimal spelling is shared by API overrides and ordinary CLI
+		// --var values. Keep those values exact through the same path.
+		if (s[0] == '-' || s[0] >= '0' && s[0] <= '9') && json.Valid([]byte(s)) {
+			return normalizeNumberVar(name, json.Number(s))
 		}
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
@@ -1223,16 +1234,56 @@ func (p *OutputParser) parseJSON(output string) (interface{}, error) {
 	// Try to parse starting from found position
 	output = output[start:]
 
-	var result interface{}
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
+	result, err := decodeOutputJSON(output)
+	if err != nil {
 		// Try to find the matching end bracket
 		output = extractJSONBlock(output)
-		if err2 := json.Unmarshal([]byte(output), &result); err2 != nil {
+		var err2 error
+		result, err2 = decodeOutputJSON(output)
+		if err2 != nil {
 			return nil, fmt.Errorf("failed to parse JSON (initial error: %v, fallback error: %w)", err, err2)
 		}
 	}
 
 	return result, nil
+}
+
+func decodeOutputJSON(output string) (interface{}, error) {
+	decoder := json.NewDecoder(strings.NewReader(output))
+	decoder.UseNumber()
+	var result interface{}
+	if err := decoder.Decode(&result); err != nil {
+		return nil, err
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("contains trailing JSON values")
+	}
+	return normalizeDecodedJSONNumbers(result), nil
+}
+
+// normalizeDecodedJSONNumbers preserves the float64 convention of decoded
+// output maps without rounding identifiers, exact decimals or extreme
+// exponents. The shared scalar conversion also checks JSON round trips.
+func normalizeDecodedJSONNumbers(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, item := range v {
+			v[key] = normalizeDecodedJSONNumbers(item)
+		}
+	case []interface{}:
+		for i, item := range v {
+			v[i] = normalizeDecodedJSONNumbers(item)
+		}
+	case json.Number:
+		if number, ok := losslessJSONFloat(v); ok {
+			return number
+		}
+	}
+	return value
 }
 
 // extractJSONBlock attempts to extract a complete JSON block from mixed output.

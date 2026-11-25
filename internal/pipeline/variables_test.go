@@ -68,6 +68,61 @@ func TestPrepareWorkflowVariablesNativeJSONTypes(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowVariablesPreservesJSONNumberDecisions(t *testing.T) {
+	workflow := &Workflow{Vars: map[string]VarDef{"n": {Type: VarTypeNumber}}}
+	for _, tc := range []struct {
+		value     string
+		condition string
+	}{
+		{"9007199254740993.0", "${vars.n} > 9007199254740992"},
+		{"18446744073709551615", "${vars.n} > 18446744073709551614"},
+		{"0.10000000000000000001", "${vars.n} > 0.1"},
+		{"1152921504606846976.0", "${vars.n} < 1152921504606847000"},
+		{"1e-999999", "${vars.n} > 0"},
+		{"1e999999", "${vars.n} > 1e308"},
+		{"-0.0e999999", "${vars.n} <= 0"},
+	} {
+		for _, override := range []interface{}{json.Number(tc.value), tc.value} {
+			values, err := PrepareWorkflowVariables(workflow, map[string]interface{}{"n": override})
+			if err != nil {
+				t.Fatalf("prepare %s from %T: %v", tc.value, override, err)
+			}
+			for round := 0; round < 2; round++ {
+				got, err := EvaluateForeachFilter("item=="+tc.value, FilterContext{Item: values["n"]})
+				if err != nil || !got {
+					t.Fatalf("prepared %s lost equality in round %d: value=%v (%T), filter=%t, error=%v", tc.value, round, values["n"], values["n"], got, err)
+				}
+				state := &ExecutionState{Variables: values}
+				evaluator := NewConditionEvaluator(NewSubstitutor(state, "numeric", "vars"))
+				result, err := evaluator.Evaluate(tc.condition)
+				if err != nil || !result.Value || result.Skip {
+					t.Fatalf("prepared numeric condition %q in round %d = %+v, %v", tc.condition, round, result, err)
+				}
+				if round == 0 {
+					data, err := json.Marshal(values)
+					if err != nil {
+						t.Fatalf("persist prepared values: %v", err)
+					}
+					decoder := json.NewDecoder(strings.NewReader(string(data)))
+					decoder.UseNumber()
+					if err := decoder.Decode(&values); err != nil {
+						t.Fatalf("reload prepared values: %v", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPrepareWorkflowVariablesRejectsMalformedJSONNumbers(t *testing.T) {
+	workflow := &Workflow{Vars: map[string]VarDef{"n": {Type: VarTypeNumber}}}
+	for _, value := range []json.Number{"NaN", "Inf", "1e", "01", "+1", " 1", json.Number(strings.Repeat("9", maxFilterExpressionBytes+1))} {
+		if _, err := PrepareWorkflowVariables(workflow, map[string]interface{}{"n": value}); err == nil || !strings.Contains(err.Error(), "number") {
+			t.Fatalf("malformed JSON numeric override was accepted: %v", err)
+		}
+	}
+}
+
 func TestPrepareWorkflowVariablesDefaultReferences(t *testing.T) {
 	workflow := &Workflow{
 		Vars: map[string]VarDef{
@@ -723,6 +778,43 @@ func TestOutputParser_ParseJSON(t *testing.T) {
 			}
 			if !tt.check(got) {
 				t.Errorf("Parse() = %v, check failed", got)
+			}
+		})
+	}
+}
+
+func TestOutputParser_ParseJSONPreservesNumericPrecision(t *testing.T) {
+	parser := NewOutputParser()
+	body := "{\"large\":9007199254740993,\"tiny\":1e-1000,\"huge\":1e1000,\"small\":42,\"nested\":[{\"exact\":1.0000000000000001}]}"
+	for _, output := range []string{body, "result: " + body + " finished", "[" + body + "] trailing text"} {
+		t.Run(output, func(t *testing.T) {
+			got, err := parser.Parse(output, OutputParse{Type: "json"})
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if array, ok := got.([]interface{}); ok {
+				got = array[0]
+			}
+			record := got.(map[string]interface{})
+			for name, want := range map[string]string{
+				"large": "9007199254740993", "tiny": "1e-1000", "huge": "1e1000",
+			} {
+				number, ok := record[name].(json.Number)
+				if !ok || number.String() != want {
+					t.Fatalf("%s = %v (%T), want exact number %s", name, record[name], record[name], want)
+				}
+			}
+			nested := record["nested"].([]interface{})[0].(map[string]interface{})["exact"]
+			if nested != json.Number("1.0000000000000001") || record["small"] != float64(42) {
+				t.Fatalf("nested or ordinary numbers changed: %#v", record)
+			}
+			matches, err := EvaluateForeachFilter("item == 9007199254740993", FilterContext{Item: record["large"]})
+			if err != nil || !matches {
+				t.Fatalf("exact output filter = %t, %v", matches, err)
+			}
+			matches, err = EvaluateForeachFilter("item == 9007199254740992", FilterContext{Item: record["large"]})
+			if err != nil || matches {
+				t.Fatalf("rounded output filter = %t, %v", matches, err)
 			}
 		})
 	}

@@ -48,6 +48,10 @@ func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
 		{"item==-0.125", "-125e-3", true},
 		{"item==18446744073709551615", "18446744073709551615", true},
 		{"item==18446744073709551614", "18446744073709551615", false},
+		{"item!=0.1", "0.10000000000000000001", true},
+		{"item==1152921504606846976", "1152921504606846976.0", true},
+		{"item!=1152921504606846976", "1152921504606847000.0", true},
+		{"item==1e23", "1e23", true},
 	} {
 		t.Run(tc.expr+"/"+tc.value, func(t *testing.T) {
 			// Exercise the exact number types retained by API and job decoders,
@@ -62,7 +66,68 @@ func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
 			if err != nil || got != tc.want {
 				t.Fatalf("filter %q for JSON %s = %v, %v; want %v", tc.expr, tc.value, got, err, tc.want)
 			}
+
+			// Literal JSON iteration sources have their own normalization path.
+			// It must preserve the same selection as API/job-decoded values.
+			items, err := parseItemsJSONLiteral("[" + tc.value + "]")
+			if err != nil || len(items) != 1 {
+				t.Fatalf("parse iteration source: items=%v, error=%v", items, err)
+			}
+			got, err = EvaluateForeachFilter(tc.expr, FilterContext{Item: items[0]})
+			if err != nil || got != tc.want {
+				t.Fatalf("filter %q for literal-source JSON %s = %v, %v; want %v", tc.expr, tc.value, got, err, tc.want)
+			}
+			persisted, err := json.Marshal(items[0])
+			if err != nil {
+				t.Fatalf("serialize iteration item: %v", err)
+			}
+			decoder = json.NewDecoder(strings.NewReader(string(persisted)))
+			decoder.UseNumber()
+			if err := decoder.Decode(&item); err != nil {
+				t.Fatalf("reload iteration item: %v", err)
+			}
+			got, err = EvaluateForeachFilter(tc.expr, FilterContext{Item: item})
+			if err != nil || got != tc.want {
+				t.Fatalf("filter %q changed after JSON round trip of %s: %v, %v; want %v", tc.expr, tc.value, got, err, tc.want)
+			}
 		})
+	}
+}
+
+func TestEvaluateForeachFilterBeadSourceNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		expr  string
+		want  bool
+	}{
+		{"0e999999", "item.score", false},
+		{"1e-999999", "item.score", true},
+		{"1.00", "item.score==1e0", true},
+		{"9007199254740993", "item.score!=9007199254740992", true},
+		{"0.10000000000000000001", "item.score!=0.1", true},
+		{"1152921504606846976.0", "item.score!=1152921504606847000", true},
+	} {
+		rows := `[{"id":"bd-numeric","score":` + tc.value + `,"ordinary":2}]`
+		for _, source := range []struct {
+			name string
+			data []byte
+			read func([]byte) ([]interface{}, error)
+		}{
+			{"shell", []byte(rows), parseBeadsShellOutput},
+			{"br", []byte(`{"issues":` + rows + `}`), parseBrListJSON},
+		} {
+			items, err := source.read(source.data)
+			if err != nil || len(items) != 1 {
+				t.Fatalf("decode %s numeric source: items=%v, error=%v", source.name, items, err)
+			}
+			if got := items[0].(map[string]interface{})["ordinary"]; got != float64(2) {
+				t.Fatalf("%s source ordinary number = %v (%T); want float64(2)", source.name, got, got)
+			}
+			got, err := EvaluateForeachFilter(tc.expr, FilterContext{Item: items[0]})
+			if err != nil || got != tc.want {
+				t.Fatalf("%s source filter %q for %s = %t, %v; want %t", source.name, tc.expr, tc.value, got, err, tc.want)
+			}
+		}
 	}
 }
 

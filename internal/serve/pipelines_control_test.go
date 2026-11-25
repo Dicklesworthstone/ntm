@@ -1987,6 +1987,169 @@ func TestPipelineResumeRecoveryControlsHTTPAndJobs(t *testing.T) {
 	}
 }
 
+// Exercise the saved numeric values through the public recovery surfaces and
+// real shell effects; a successful response alone cannot prove correct routing.
+func TestPipelineResumePreservesNumericDecisionsHTTPAndJobs(t *testing.T) {
+	t.Parallel()
+	for _, asJob := range []bool{false, true} {
+		t.Run(fmt.Sprintf("job=%t", asJob), func(t *testing.T) {
+			t.Parallel()
+			srv := NewHermeticServer("numeric-recovery")
+			defer srv.Stop()
+			root := t.TempDir()
+			srv.projectDir = root
+			const input = `{
+	"limit": 9007199254740993,
+	"tiny": 1e-1000,
+	"rows": [
+		{"id":"zero","enabled":0,"amount":1.00},
+		{"id":"decimal","enabled":1,"amount":1.00},
+		{"id":"exponent","enabled":1,"amount":1e0},
+		{"id":"lower-large","enabled":1,"amount":9007199254740992},
+		{"id":"higher-large","enabled":1,"amount":9007199254740993},
+		{"id":"near-one","enabled":1,"amount":1.00000000000000000001}
+	]
+}`
+			if err := os.WriteFile(filepath.Join(root, "numeric-input"), []byte(input), 0600); err != nil {
+				t.Fatal(err)
+			}
+			workflow := pipeline.Workflow{
+				SchemaVersion: pipeline.SchemaVersion, Name: "numeric-recovery-decisions",
+				Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+				Steps: []pipeline.Step{
+					{ID: "source", Command: "printf 'source\\n' >> numeric-producer; cat numeric-input", OutputVar: "payload", OutputParse: pipeline.OutputParse{Type: "json"}},
+					{ID: "gate", DependsOn: []string{"source"}, Command: "test -f numeric-ready"},
+					{ID: "saved", DependsOn: []string{"gate"}, Foreach: &pipeline.ForeachConfig{
+						Items: "${vars.payload_parsed.rows}", As: "row",
+						Filter: "item.enabled && (item.amount == 1e0 || item.amount == 9007199254740993)",
+						Steps: []pipeline.Step{{ID: "record", Command: "printf '%s\\n' '${row.id}' >> numeric-saved"}},
+					}},
+					{ID: "live", DependsOn: []string{"saved"}, Foreach: &pipeline.ForeachConfig{
+						Items: "${vars.live_rows}", As: "row", Filter: "item.enabled && item.amount == 1e0",
+						Steps: []pipeline.Step{{ID: "record", Command: "printf '%s\\n' '${row.id}' >> numeric-live"}},
+					}},
+					{ID: "ordered", DependsOn: []string{"live"}, When: "${vars.payload_parsed.limit} > 9007199254740992 && ${vars.payload_parsed.tiny} > 0", Command: "printf 'exact\\n' >> numeric-order"},
+					{ID: "wrong_order", DependsOn: []string{"ordered"}, When: "${vars.payload_parsed.limit} <= 9007199254740992 || ${vars.payload_parsed.tiny} <= 0", Command: "printf 'rounded\\n' >> numeric-order"},
+				},
+			}
+			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{
+				"session": "numeric-recovery", "workflow": workflow,
+				"variables": map[string]interface{}{"live_rows": []interface{}{}},
+			})
+			failed := pollJobTerminal(t, srv, initial.Job.ID)
+			runID, _ := failed.Job.Result["run_id"].(string)
+			if failed.Job.Status != string(JobStatusFailed) || runID == "" {
+				t.Fatalf("fixture did not persist a failed run: %+v", failed.Job)
+			}
+			assertNumbers := func(state *pipeline.ExecutionState) {
+				t.Helper()
+				payload, ok := state.Variables["payload_parsed"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("saved parsed output has type %T", state.Variables["payload_parsed"])
+				}
+				for key, want := range map[string]string{"limit": "9007199254740993", "tiny": "1e-1000"} {
+					got, ok := payload[key].(json.Number)
+					if !ok || got.String() != want {
+						t.Fatalf("saved %s = %v (%T), want exact %s", key, payload[key], payload[key], want)
+					}
+				}
+				rows, ok := payload["rows"].([]interface{})
+				if !ok || len(rows) != 6 {
+					t.Fatalf("saved iteration source changed: %#v", payload["rows"])
+				}
+				for index, want := range map[int]string{4: "9007199254740993", 5: "1.00000000000000000001"} {
+					row, ok := rows[index].(map[string]interface{})
+					if !ok {
+						t.Fatalf("saved row %d has type %T", index, rows[index])
+					}
+					got, ok := row["amount"].(json.Number)
+					if !ok || got.String() != want {
+						t.Fatalf("saved row %d amount = %v (%T), want exact %s", index, row["amount"], row["amount"], want)
+					}
+				}
+			}
+			prior, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior.Steps["source"].Status != pipeline.StatusCompleted || prior.Steps["gate"].Status != pipeline.StatusFailed {
+				t.Fatalf("fixture did not stop after capturing numeric output: %+v", prior.Steps)
+			}
+			assertNumbers(prior)
+			producerReceipt, err := json.Marshal(prior.Steps["source"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := pipeline.SaveState(root, prior); err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNumbers(reloaded)
+			if err := os.WriteFile(filepath.Join(root, "numeric-ready"), []byte("resume"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// Resume overrides are decoded with UseNumber. Unlike safe numbers
+			// normalized by LoadState, these values also exercise json.Number
+			// zero truthiness and equivalent decimal/exponent equality directly.
+			params := map[string]interface{}{
+				"mode": "restart-failed",
+				"variables": map[string]interface{}{"live_rows": []interface{}{
+					map[string]interface{}{"id": "zero", "enabled": json.Number("0"), "amount": json.Number("1e0")},
+					map[string]interface{}{"id": "negative-zero", "enabled": json.Number("-0.00e999999"), "amount": json.Number("1.00")},
+					map[string]interface{}{"id": "tiny", "enabled": json.Number("1e-1000"), "amount": json.Number("1.00")},
+					map[string]interface{}{"id": "one", "enabled": json.Number("1"), "amount": json.Number("1e0")},
+				}},
+			}
+			if asJob {
+				params["run_id"] = runID
+				queued := postPipelineVariantJob(t, srv, JobTypePipelineResume, params)
+				result := pollJobTerminal(t, srv, queued.Job.ID)
+				if result.Job.Status != string(JobStatusCompleted) || result.Job.Result["run_id"] != runID {
+					t.Fatalf("numeric recovery job failed: %+v", result.Job)
+				}
+			} else {
+				body, err := json.Marshal(params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+runID+"/resume", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("numeric HTTP recovery failed: %d %s", rec.Code, rec.Body)
+				}
+			}
+			for name, want := range map[string]string{
+				"numeric-producer": "source\n",
+				"numeric-saved":    "decimal\nexponent\nhigher-large\n",
+				"numeric-live":     "tiny\none\n",
+				"numeric-order":    "exact\n",
+			} {
+				data, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s effects = %q, want %q: %v", name, data, want, err)
+				}
+			}
+			final, err := pipeline.LoadState(root, runID)
+			if err != nil || final.Status != pipeline.StatusCompleted {
+				t.Fatalf("numeric recovery did not durably complete: %+v %v", final, err)
+			}
+			assertNumbers(final)
+			if final.Steps["ordered"].Status != pipeline.StatusCompleted || final.Steps["wrong_order"].Status != pipeline.StatusSkipped {
+				t.Fatalf("numeric ordering chose the wrong branches: ordered=%+v wrong_order=%+v", final.Steps["ordered"], final.Steps["wrong_order"])
+			}
+			retainedProducer, err := json.Marshal(final.Steps["source"])
+			if err != nil || !bytes.Equal(producerReceipt, retainedProducer) {
+				t.Fatalf("recovery changed the completed producer receipt: %s %v", retainedProducer, err)
+			}
+		})
+	}
+}
+
 func TestPipelineResumePoliciesHTTPAndJobsPreserveRejectedCheckpoints(t *testing.T) {
 	t.Parallel()
 	for _, asJob := range []bool{false, true} {

@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -176,9 +177,10 @@ func parseBeadsShellOutput(out []byte) ([]interface{}, error) {
 	}
 
 	if strings.HasPrefix(trimmed, "[") {
-		var arr []interface{}
-		if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
-			return arr, nil
+		if decoded, err := decodeOutputJSON(trimmed); err == nil {
+			if arr, ok := decoded.([]interface{}); ok {
+				return arr, nil
+			}
 		}
 		// fall through to line parse if the [ was just inside a line
 	}
@@ -385,13 +387,35 @@ func normalizeJSONNumbers(value interface{}) interface{} {
 				return n
 			}
 		}
-		if n, err := v.Float64(); err == nil {
+		if n, ok := losslessJSONFloat(v); ok {
 			return n
 		}
-		return s
+		return v
 	default:
 		return value
 	}
+}
+
+// losslessJSONFloat only converts a JSON number when the existing evaluator's
+// decimal semantics and a JSON persistence round trip retain its value. The
+// evaluator compares floats by their shortest round-trip decimal spelling;
+// keeping json.Number when that spelling differs avoids rounding identities,
+// exact decimals, and extreme exponents before a filter can inspect them.
+func losslessJSONFloat(value json.Number) (float64, bool) {
+	text := value.String()
+	if len(text) > maxFilterExpressionBytes || !json.Valid([]byte(text)) {
+		return 0, false
+	}
+	n, err := value.Float64()
+	if err != nil {
+		return 0, false
+	}
+	original, originalOK := parsePipelineNumber(text)
+	converted, convertedOK := filterNumber(n)
+	if !originalOK || !convertedOK || original.cmp(converted) != 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // parseStructuredBeadsQuery turns "label1,label2,key:value,..." into the
@@ -453,12 +477,14 @@ func parseBrListJSON(out []byte) ([]interface{}, error) {
 		return nil, fmt.Errorf("parse br --json output: %w", err)
 	}
 	var issues []map[string]interface{}
-	if err := json.Unmarshal(payload, &issues); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&issues); err != nil {
 		return nil, fmt.Errorf("parse br --json output: %w", err)
 	}
 	items := make([]interface{}, 0, len(issues))
 	for _, issue := range issues {
-		items = append(items, issue)
+		items = append(items, normalizeDecodedJSONNumbers(issue))
 	}
 	return items, nil
 }
