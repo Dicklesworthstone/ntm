@@ -788,6 +788,9 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 	case tmux.AgentOmp:
 		// Empty by default: omp's own config (modelRoles.default) chooses.
 		return defaults.DefaultOmp
+	case tmux.AgentPi:
+		// Empty by default: pi chooses its own model unless models.default_pi is set.
+		return defaults.DefaultPi
 	case tmux.AgentOllama:
 		return defaults.DefaultOllama
 	default:
