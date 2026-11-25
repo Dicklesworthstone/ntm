@@ -35,3 +35,11 @@ func openOutboxLock(path string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+func closeOutboxLock(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return file.Close()
+}

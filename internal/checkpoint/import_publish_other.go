@@ -10,6 +10,13 @@ import (
 
 func openCheckpointImportDirectory(path string) (*os.File, error) { return os.Open(path) }
 
+func closeCheckpointImportDirectory(dir *os.File) error {
+	if dir == nil {
+		return nil
+	}
+	return dir.Close()
+}
+
 // Windows cannot flush directory handles through os.File.Sync. Files themselves
 // are still synced before publication; other systems retain directory syncing.
 func syncCheckpointImportDirectory(dir *os.File) error {

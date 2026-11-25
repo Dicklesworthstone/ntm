@@ -63,3 +63,10 @@ func tryMergeFenceLock(file *os.File) error {
 	}
 	return nil
 }
+
+func closeMergeFenceFile(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	return file.Close()
+}

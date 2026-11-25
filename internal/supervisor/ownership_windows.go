@@ -25,6 +25,8 @@ func lockDaemonOwnership(path string) (*os.File, error) {
 	return os.NewFile(uintptr(h), path), nil
 }
 
+func unlockDaemonOwnership(*os.File) error { return nil }
+
 func daemonProcessMayLive(pid int) (bool, error) {
 	if pid <= 0 {
 		return true, errors.New("invalid daemon PID")

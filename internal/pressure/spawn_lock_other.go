@@ -14,3 +14,5 @@ func openSpawnAdmissionFile(string) (*os.File, error) {
 func trySpawnAdmissionLock(*os.File) (bool, error) {
 	return false, errors.New("cross-process spawn admission is unavailable on this platform")
 }
+
+func unlockSpawnAdmissionLock(*os.File) {}

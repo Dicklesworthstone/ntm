@@ -31,6 +31,13 @@ func lockDaemonOwnership(path string) (*os.File, error) {
 	return f, nil
 }
 
+func unlockDaemonOwnership(f *os.File) error {
+	if f == nil {
+		return nil
+	}
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
 func daemonProcessMayLive(pid int) (bool, error) {
 	if pid <= 0 {
 		return true, errors.New("invalid daemon PID")

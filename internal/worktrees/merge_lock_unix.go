@@ -57,3 +57,11 @@ func tryMergeFenceLock(file *os.File) error {
 	}
 	return nil
 }
+
+func closeMergeFenceFile(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return file.Close()
+}

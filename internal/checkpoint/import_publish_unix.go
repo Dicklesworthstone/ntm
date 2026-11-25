@@ -29,4 +29,16 @@ func openCheckpointImportDirectory(path string) (*os.File, error) {
 	return file, nil
 }
 
+func closeCheckpointImportDirectory(dir *os.File) error {
+	if dir == nil {
+		return nil
+	}
+	// Explicitly unlock before closing: another goroutine calling exec.Command
+	// may have forked while this fd was open, leaving a duplicate open file
+	// description alive until execve closes O_CLOEXEC fds. Closing alone would
+	// leave the flock held until that child calls execve.
+	unlockErr := unix.Flock(int(dir.Fd()), unix.LOCK_UN)
+	return errors.Join(unlockErr, dir.Close())
+}
+
 func syncCheckpointImportDirectory(dir *os.File) error { return dir.Sync() }

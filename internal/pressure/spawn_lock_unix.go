@@ -37,3 +37,9 @@ func trySpawnAdmissionLock(file *os.File) (bool, error) {
 	}
 	return err == nil, err
 }
+
+func unlockSpawnAdmissionLock(file *os.File) {
+	if file != nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	}
+}
