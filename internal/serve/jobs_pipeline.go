@@ -104,18 +104,14 @@ func (s *Server) jobPipelineResume(ctx context.Context, params map[string]interf
 		return nil, err
 	}
 	return executeResumePipelineJob(ctx, s.pipelineProjectDir(), req, pipeline.LoadState,
-		func(runCtx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
-			return s.resumePipelineWithResult(runCtx, runID, session, variables, state, pipeline.ResumeOptions{
-				MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
-				MaxStepCountTotal:           req.MaxStepCountTotal,
-				MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
-			})
+		func(runCtx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState, opts pipeline.ResumeOptions) pipeline.PipelineRunOutput {
+			return s.resumePipelineWithResult(runCtx, runID, session, variables, state, opts)
 		})
 }
 
 func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPipelineResumeParams,
 	load func(string, string) (*pipeline.ExecutionState, error),
-	resume func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState) pipeline.PipelineRunOutput,
+	resume func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState, pipeline.ResumeOptions) pipeline.PipelineRunOutput,
 ) (map[string]interface{}, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -126,14 +122,9 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	if req.Background {
 		return nil, fmt.Errorf("pipeline_resume jobs own their execution lifetime; use the pipeline resume endpoint for background=true")
 	}
-	if req.MaxSelectorOutputBytesTotal < 0 {
-		return nil, fmt.Errorf("max_selector_output_bytes_total must be zero or positive")
-	}
-	if req.MaxStepCountTotal < 0 {
-		return nil, fmt.Errorf("max_step_count_total must be zero or positive")
-	}
-	if req.MaxMaterializedStepNodes < 0 {
-		return nil, fmt.Errorf("max_materialized_step_nodes must be zero or positive")
+	resumeOptions, err := req.resumeOptions()
+	if err != nil {
+		return nil, err
 	}
 	session, err := applyJobResumeTarget(ctx, projectDir, req.RunID, req.Session)
 	if err != nil {
@@ -164,7 +155,7 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	return executePipelineJob(ctx, pipeline.PipelineRunOptions{
 		Session: session, Variables: req.Variables,
 	}, func(runCtx context.Context, opts pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
-		out := resume(runCtx, req.RunID, opts.Session, opts.Variables, prior)
+		out := resume(runCtx, req.RunID, opts.Session, opts.Variables, prior, resumeOptions)
 		// The synchronous resume helper can return an error-only envelope.
 		// Keep the saved identity even on failure so callers can inspect its
 		// checkpoint and partial effects before deciding whether to retry.

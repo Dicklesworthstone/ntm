@@ -300,6 +300,85 @@ type operationClaimResult struct {
 	Info *OperationInfo
 }
 
+// inspectRobotOperation reads an existing receipt before live session discovery
+// or message enrichment. A completed actuation remains replayable after its
+// panes disappear. This read never acquires or takes over ownership: a missing
+// or safely recoverable record must still pass live preflight and the atomic
+// claim protocol before any input can be delivered.
+func inspectRobotOperation(req operationClaimRequest) (operationClaimResult, bool) {
+	if req.Store == nil {
+		return operationClaimResult{
+			Verdict: operationRefused,
+			Response: NewErrorResponse(
+				fmt.Errorf("idempotent %s requires the runtime projection store", req.Kind),
+				ErrCodeNotImplemented,
+				"Re-run without an operation ID, or ensure the runtime state store is available",
+			),
+		}, true
+	}
+	stored, err := req.Store.GetSendOperation(req.OperationID, req.Session)
+	if err != nil {
+		return operationClaimResult{
+			Verdict:  operationRefused,
+			Response: NewErrorResponse(err, ErrCodeInternalError, "Failed to read the durable operation before retrying"),
+		}, true
+	}
+	if stored == nil {
+		return operationClaimResult{}, false
+	}
+	return recordedOperationResult(req, stored, time.Now().UTC().Add(-operationStaleClaimWindow))
+}
+
+// recordedOperationResult is the single decision path for both read-only retry
+// inspection and atomic claiming. False means an unstarted stale claim may be
+// recovered, never that the caller already owns it.
+func recordedOperationResult(req operationClaimRequest, stored *state.SendOperation, staleBefore time.Time) (operationClaimResult, bool) {
+	refuse := func(resp RobotResponse, replayed bool) (operationClaimResult, bool) {
+		return operationClaimResult{
+			Verdict: operationRefused, Response: resp, Info: operationInfoFromRecord(stored, replayed),
+		}, true
+	}
+	if storedKind := operationRecordKind(stored); storedKind != req.Kind {
+		return refuse(NewErrorResponse(
+			fmt.Errorf("operation ID '%s' is already bound to a %s operation in session '%s'", req.OperationID, storedKind, req.Session),
+			ErrCodeIdempotencyConflict,
+			fmt.Sprintf("Use a fresh operation ID for this %s; operation IDs share one namespace per session across actuations", req.Kind),
+		), false)
+	}
+	if stored.BindingHash != req.BindingHash {
+		return refuse(NewErrorResponse(
+			fmt.Errorf("operation ID '%s' is already bound to a different selector or payload in session '%s'", req.OperationID, req.Session),
+			ErrCodeIdempotencyConflict,
+			fmt.Sprintf("Use a fresh operation ID for a different %s, or repeat the original command exactly", req.Kind),
+		), false)
+	}
+	if stored.Status == state.SendOperationCompleted {
+		return operationClaimResult{Verdict: operationReplay, Record: stored}, true
+	}
+	if stored.Status == state.SendOperationCanceled {
+		return refuse(NewErrorResponse(
+			fmt.Errorf("operation '%s' was canceled before dispatch", req.OperationID),
+			"OPERATION_CANCELED",
+			"Use a fresh operation ID if you want to dispatch this actuation now",
+		), false)
+	}
+	if stored.DispatchStartedAt == nil && stored.CreatedAt.Before(staleBefore) {
+		return operationClaimResult{}, false
+	}
+	if stored.DispatchStartedAt != nil && stored.CreatedAt.Before(staleBefore) {
+		return refuse(NewErrorResponse(
+			fmt.Errorf("operation '%s' started dispatch but its outcome is unknown", req.OperationID),
+			ErrCodeOperationOutcomeUnknown,
+			unresolvedOperationHint(req.OperationID),
+		), true)
+	}
+	return refuse(NewErrorResponse(
+		fmt.Errorf("operation '%s' is in progress", req.OperationID),
+		ErrCodeOperationInProgress,
+		fmt.Sprintf("Query the durable receipt with --robot-send-receipt=%s before retrying", req.OperationID),
+	), true)
+}
+
 // claimRobotOperation runs the durable claim protocol shared by every
 // idempotent robot actuation. It must be called after the actuation's
 // preflight validation and BEFORE its first pane mutation.
@@ -335,32 +414,10 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 		return operationClaimResult{Verdict: operationExecute, Owned: &durableOperation{store: store, record: stored}}
 	}
 
-	if storedKind := operationRecordKind(stored); storedKind != req.Kind {
-		return refuse(NewErrorResponse(
-			fmt.Errorf("operation ID '%s' is already bound to a %s operation in session '%s'", req.OperationID, storedKind, req.Session),
-			ErrCodeIdempotencyConflict,
-			fmt.Sprintf("Use a fresh operation ID for this %s; operation IDs share one namespace per session across actuations", req.Kind),
-		), operationInfoFromRecord(stored, false))
-	}
-	if stored.BindingHash != req.BindingHash {
-		return refuse(NewErrorResponse(
-			fmt.Errorf("operation ID '%s' is already bound to a different selector or payload in session '%s'", req.OperationID, req.Session),
-			ErrCodeIdempotencyConflict,
-			fmt.Sprintf("Use a fresh operation ID for a different %s, or repeat the original command exactly", req.Kind),
-		), operationInfoFromRecord(stored, false))
-	}
-	if stored.Status == state.SendOperationCompleted {
-		return operationClaimResult{Verdict: operationReplay, Record: stored}
-	}
-	if stored.Status == state.SendOperationCanceled {
-		return refuse(NewErrorResponse(
-			fmt.Errorf("operation '%s' was canceled before dispatch", req.OperationID),
-			"OPERATION_CANCELED",
-			"Use a fresh operation ID if you want to dispatch this actuation now",
-		), operationInfoFromRecord(stored, false))
-	}
-
 	staleBefore := time.Now().UTC().Add(-operationStaleClaimWindow)
+	if result, resolved := recordedOperationResult(req, stored, staleBefore); resolved {
+		return result
+	}
 	if stored.DispatchStartedAt == nil && stored.CreatedAt.Before(staleBefore) {
 		// A stale claimant that has not started may be recovered. The CAS
 		// rotates its ownership token; a paused original caller can no longer
@@ -384,30 +441,12 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 		}
 		if current != nil {
 			stored = current
-			if operationRecordKind(stored) != req.Kind || stored.BindingHash != req.BindingHash {
-				return refuse(NewErrorResponse(fmt.Errorf("operation '%s' was claimed by a different command", req.OperationID),
-					ErrCodeIdempotencyConflict, "Use the original command or a new operation ID"), operationInfoFromRecord(stored, false))
-			}
-			if stored.Status == state.SendOperationCompleted {
-				return operationClaimResult{Verdict: operationReplay, Record: stored}
-			}
-			if stored.Status == state.SendOperationCanceled {
-				return refuse(NewErrorResponse(
-					fmt.Errorf("operation '%s' was canceled before dispatch", req.OperationID),
-					"OPERATION_CANCELED",
-					"Use a fresh operation ID if you want to dispatch this actuation now",
-				), operationInfoFromRecord(stored, false))
+			if result, resolved := recordedOperationResult(req, stored, staleBefore); resolved {
+				return result
 			}
 		}
 	}
 	info := operationInfoFromRecord(stored, true)
-	if stored.DispatchStartedAt != nil && stored.CreatedAt.Before(staleBefore) {
-		return refuse(NewErrorResponse(
-			fmt.Errorf("operation '%s' started dispatch but its outcome is unknown", req.OperationID),
-			ErrCodeOperationOutcomeUnknown,
-			unresolvedOperationHint(req.OperationID),
-		), info)
-	}
 	return refuse(NewErrorResponse(
 		fmt.Errorf("operation '%s' is in progress", req.OperationID),
 		ErrCodeOperationInProgress,

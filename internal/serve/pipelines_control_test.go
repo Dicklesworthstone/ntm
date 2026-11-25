@@ -1901,3 +1901,303 @@ func TestPipelineRecoverHTTPRejectsUnicodeRepairBeforeDecision(t *testing.T) {
 		}
 	}
 }
+
+func TestPipelineResumeRecoveryControlsHTTPAndJobs(t *testing.T) {
+	t.Parallel()
+	for _, asJob := range []bool{false, true} {
+		for _, tc := range []struct {
+			name       string
+			params     map[string]interface{}
+			wantOnce   string
+			wantRounds string
+		}{
+			{"default preserves work", map[string]interface{}{}, "once\n", "0\n1\n2\n"},
+			{"mode preserves work", map[string]interface{}{"mode": "restart-failed"}, "once\n", "0\n1\n2\n"},
+			{"explicit reset", map[string]interface{}{"reset": true}, "once\nonce\n", "0\n1\n2\n0\n1\n2\n"},
+			{"force suffix", map[string]interface{}{"mode": "force-iter", "step_id": "batch", "iteration": 1}, "once\n", "0\n1\n2\n1\n2\n"},
+			{"force defaults to zero", map[string]interface{}{"mode": "force-iter", "step_id": "batch"}, "once\n", "0\n1\n2\n0\n1\n2\n"},
+			{"reset takes precedence", map[string]interface{}{"reset": true, "mode": "force-iter", "step_id": "batch", "iteration": 1}, "once\nonce\n", "0\n1\n2\n0\n1\n2\n"},
+		} {
+			t.Run(fmt.Sprintf("%s/job=%t", tc.name, asJob), func(t *testing.T) {
+				t.Parallel()
+				srv := NewHermeticServer("test")
+				defer srv.Stop()
+				root := t.TempDir()
+				srv.projectDir = root
+				workflow := pipeline.Workflow{
+					SchemaVersion: pipeline.SchemaVersion, Name: "surface-recovery-controls",
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+					Steps: []pipeline.Step{
+						{ID: "once", Command: "printf 'once\\n' >> recovery-once"},
+						{ID: "batch", Loop: &pipeline.LoopConfig{
+							Items: `["a","b","c"]`,
+							Steps: []pipeline.Step{{ID: "item", Command: "printf '%s\\n' '${loop.index}' >> recovery-rounds"}},
+						}},
+					},
+				}
+				initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{"session": "recovery", "workflow": workflow})
+				completed := pollJobTerminal(t, srv, initial.Job.ID)
+				runID, _ := completed.Job.Result["run_id"].(string)
+				if completed.Job.Status != string(JobStatusCompleted) || runID == "" {
+					t.Fatalf("initial run did not complete: %+v", completed.Job)
+				}
+				prior, err := pipeline.LoadState(root, runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				frozen, err := os.ReadFile(prior.WorkflowFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if asJob {
+					tc.params["run_id"] = runID
+					queued := postPipelineVariantJob(t, srv, JobTypePipelineResume, tc.params)
+					result := pollJobTerminal(t, srv, queued.Job.ID)
+					if result.Job.Status != string(JobStatusCompleted) || result.Job.Result["run_id"] != runID {
+						t.Fatalf("recovery job failed: %+v", result.Job)
+					}
+				} else {
+					body, err := json.Marshal(tc.params)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+runID+"/resume", bytes.NewReader(body))
+					req.Header.Set("Content-Type", "application/json")
+					rec := httptest.NewRecorder()
+					srv.Router().ServeHTTP(rec, req)
+					if rec.Code != http.StatusOK {
+						t.Fatalf("HTTP recovery failed: %d %s", rec.Code, rec.Body)
+					}
+				}
+				for name, want := range map[string]string{"recovery-once": tc.wantOnce, "recovery-rounds": tc.wantRounds} {
+					data, err := os.ReadFile(filepath.Join(root, name))
+					if err != nil || string(data) != want {
+						t.Fatalf("%s effects = %q, want %q: %v", name, data, want, err)
+					}
+				}
+				final, err := pipeline.LoadState(root, runID)
+				if err != nil || final.Status != pipeline.StatusCompleted {
+					t.Fatalf("recovery did not durably complete: %+v %v", final, err)
+				}
+				if after, err := os.ReadFile(prior.WorkflowFile); err != nil || !bytes.Equal(frozen, after) {
+					t.Fatalf("recovery changed the frozen workflow: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestPipelineResumePoliciesHTTPAndJobsPreserveRejectedCheckpoints(t *testing.T) {
+	t.Parallel()
+	for _, asJob := range []bool{false, true} {
+		t.Run(fmt.Sprintf("job=%t", asJob), func(t *testing.T) {
+			t.Parallel()
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			root := t.TempDir()
+			srv.projectDir = root
+			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{
+				"session": "original", "workflow": pipeline.Workflow{
+					SchemaVersion: pipeline.SchemaVersion, Name: "surface-recovery-policy",
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+					Steps: []pipeline.Step{{ID: "once", Command: "printf 'once\\n' >> policy-once"}},
+				},
+			})
+			completed := pollJobTerminal(t, srv, initial.Job.ID)
+			runID, _ := completed.Job.Result["run_id"].(string)
+			if completed.Job.Status != string(JobStatusCompleted) || runID == "" {
+				t.Fatalf("initial run did not complete: %+v", completed.Job)
+			}
+			resume := func(params map[string]interface{}, wantErr string) {
+				t.Helper()
+				if asJob {
+					params["run_id"] = runID
+					queued := postPipelineVariantJob(t, srv, JobTypePipelineResume, params)
+					result := pollJobTerminal(t, srv, queued.Job.ID)
+					if wantErr == "" {
+						if result.Job.Status != string(JobStatusCompleted) {
+							t.Fatalf("valid recovery job failed: %+v", result.Job)
+						}
+					} else if result.Job.Status != string(JobStatusFailed) || !strings.Contains(result.Job.Error, wantErr) {
+						t.Fatalf("recovery job should refuse %q: %+v", wantErr, result.Job)
+					}
+					return
+				}
+				body, err := json.Marshal(params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+runID+"/resume", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				if wantErr == "" {
+					if rec.Code != http.StatusOK {
+						t.Fatalf("valid HTTP recovery failed: %d %s", rec.Code, rec.Body)
+					}
+				} else if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), wantErr) {
+					t.Fatalf("HTTP recovery should refuse %q: %d %s", wantErr, rec.Code, rec.Body)
+				}
+			}
+			before := pipelineRecoveryHTTPJournal(t, root, runID)
+			for _, invalid := range []struct {
+				params map[string]interface{}
+				error  string
+			}{
+				{map[string]interface{}{"mode": "typo"}, "unknown resume mode"},
+				{map[string]interface{}{"mode": "force-iter"}, "requires StepID"},
+				{map[string]interface{}{"mode": "force-iter", "step_id": "once", "iteration": -1}, "non-negative Iteration"},
+				{map[string]interface{}{"max_resume_age": "-1d"}, "max_resume_age"},
+				{map[string]interface{}{"max_resume_age": "106752d"}, "max_resume_age"},
+				{map[string]interface{}{"on_roster_change": "approve"}, "roster-change policy"},
+				{map[string]interface{}{"session": "replacement"}, "OnRosterChange=proceed"},
+				{map[string]interface{}{"max_resume_age": "1ns"}, "older than MaxResumeAge"},
+				{map[string]interface{}{"max_resume_age": "1ns"}, "older than MaxResumeAge"},
+			} {
+				resume(invalid.params, invalid.error)
+				if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, runID)) {
+					t.Fatalf("rejected policy %v changed or refreshed the checkpoint", invalid.params)
+				}
+			}
+			resume(map[string]interface{}{"session": "replacement", "on_roster_change": "proceed", "max_resume_age": "7d"}, "")
+			final, err := pipeline.LoadState(root, runID)
+			if err != nil || final.Session != "replacement" || final.Status != pipeline.StatusCompleted {
+				t.Fatalf("explicit roster approval did not reach recovery: %+v %v", final, err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "policy-once"))
+			if err != nil || string(data) != "once\n" {
+				t.Fatalf("policy-only recovery repeated completed work: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPipelineResumeHTTPRejectsMalformedRecoveryIntent(t *testing.T) {
+	t.Parallel()
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	srv.projectDir = t.TempDir()
+	for _, body := range []string{
+		`null`,
+		`{"reset":true,"mode_typo":"restart-failed"}`,
+		`{"keep_state":false}`,
+		`{"reset":true} {"reset":false}`,
+		`{"max_resume_age":1234}`,
+		`{"mode":"force-iter","step_id":"batch","iteration":1.5}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/missing/resume", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), ErrCodeBadRequest) {
+			t.Fatalf("malformed recovery was ignored or reached missing state: body=%s status=%d response=%s", body, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestPipelineResumeRestartFailedReplaysUncertainCommandHTTPAndJobs(t *testing.T) {
+	t.Parallel()
+	for _, asJob := range []bool{false, true} {
+		t.Run(fmt.Sprintf("job=%t", asJob), func(t *testing.T) {
+			t.Parallel()
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			root := t.TempDir()
+			srv.projectDir = root
+			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{
+				"session": "uncertain-command", "workflow": pipeline.Workflow{
+					SchemaVersion: pipeline.SchemaVersion, Name: "uncertain-command-recovery",
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+					Steps: []pipeline.Step{
+						{ID: "once", Command: "printf 'once\\n' >> recovery-prefix"},
+						{ID: "retry", DependsOn: []string{"once"}, Command: "printf 'attempt\\n' >> recovery-attempts; test -f allow-retry"},
+					},
+				},
+			})
+			failed := pollJobTerminal(t, srv, initial.Job.ID)
+			runID, _ := failed.Job.Result["run_id"].(string)
+			if failed.Job.Status != string(JobStatusFailed) || runID == "" {
+				t.Fatalf("fixture did not save a native failed command: %+v", failed.Job)
+			}
+			prior, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, ok := prior.CommandExecutions["retry"]
+			if !ok || record.Status != "settled" || record.Result.Status != pipeline.StatusFailed ||
+				prior.Steps["once"].Status != pipeline.StatusCompleted {
+				t.Fatalf("fixture did not settle its failed process and preserve completed work: %+v", prior)
+			}
+			prefix, err := json.Marshal(prior.Steps["once"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The real fixture process is settled. Retain its native definition
+			// hash and start time, but model the valid launch-intent boundary a
+			// crash can leave before any terminal outcome is durably recorded.
+			prior.CommandExecutions["retry"] = pipeline.CommandExecutionState{
+				Version: record.Version, StepID: record.StepID, StepHash: record.StepHash,
+				Status: "starting", StartedAt: record.StartedAt,
+			}
+			if err := pipeline.SaveState(root, prior); err != nil {
+				t.Fatal(err)
+			}
+			before := pipelineRecoveryHTTPJournal(t, root, runID)
+			if err := os.WriteFile(filepath.Join(root, "allow-retry"), []byte("approved"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			resume := func(mode string) (bool, string) {
+				t.Helper()
+				params := map[string]interface{}{}
+				if mode != "" {
+					params["mode"] = mode
+				}
+				if asJob {
+					params["run_id"] = runID
+					queued := postPipelineVariantJob(t, srv, JobTypePipelineResume, params)
+					result := pollJobTerminal(t, srv, queued.Job.ID)
+					return result.Job.Status == string(JobStatusCompleted), result.Job.Error
+				}
+				body, err := json.Marshal(params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+runID+"/resume", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				return rec.Code == http.StatusOK, rec.Body.String()
+			}
+			if success, detail := resume(""); success || !strings.Contains(detail, "unresolved launch") {
+				t.Fatalf("ordinary resume failed to fence uncertain effects: success=%v response=%s", success, detail)
+			}
+			if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, runID)) {
+				t.Fatal("refused ordinary resume changed the checkpoint")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "recovery-attempts")); err != nil || string(data) != "attempt\n" {
+				t.Fatalf("ordinary resume repeated uncertain effects: %q %v", data, err)
+			}
+			if success, detail := resume("restart-failed"); !success {
+				t.Fatalf("explicit restart-failed did not reach recovery: %s", detail)
+			}
+			final, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if final.Status != pipeline.StatusCompleted || final.CommandExecutions["retry"].Status != "settled" ||
+				final.CommandExecutions["retry"].Result.Status != pipeline.StatusCompleted {
+				t.Fatalf("explicit recovery did not settle its replacement command: %+v", final)
+			}
+			retainedPrefix, err := json.Marshal(final.Steps["once"])
+			if err != nil || !bytes.Equal(prefix, retainedPrefix) {
+				t.Fatalf("restart-failed replaced the completed prefix receipt: %s %v", retainedPrefix, err)
+			}
+			for name, want := range map[string]string{"recovery-prefix": "once\n", "recovery-attempts": "attempt\nattempt\n"} {
+				data, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s effects = %q, want %q: %v", name, data, want, err)
+				}
+			}
+		})
+	}
+}

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +23,7 @@ import (
 type rotationOrchestrator interface {
 	TerminateSession(paneID string, provider string) error
 	WaitForShellPrompt(paneID string, timeout time.Duration) error
+	PromptBrowserAuth(email string) error
 	StartNewAgentSession(ctx auth.RestartContext) error
 }
 
@@ -329,10 +329,20 @@ func newRotateStatusCmd() *cobra.Command {
 	return cmd
 }
 
-func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun bool, inferred bool) error {
-	// 1. Identify limited panes
+func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun bool, inferred bool) (retErr error) {
+	if ctx == nil {
+		return fmt.Errorf("batch rotation context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// 1. Identify limited panes.
 	fmt.Printf("Scanning session '%s' for rate-limited panes...\n", session)
 	panes, err := rotateGetPanes(session)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	if err != nil {
 		return err
 	}
@@ -340,12 +350,14 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 	var limitedPanes []tmux.Pane
 	fetcher := newRotateQuotaFetcher()
 	for _, p := range panes {
-		// Skip user panes
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Skip user panes.
 		if tmux.AgentType(p.Type).Canonical() == tmux.AgentUser {
 			continue
 		}
 
-		// Check quota
 		provider, ok := quotaProviderForAgentType(p.Type)
 		if !ok {
 			continue
@@ -353,6 +365,9 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 
 		fmt.Printf("  Checking %s (index %d)... ", p.Title, p.Index)
 		info, err := fetcher.FetchQuota(ctx, p.ID, provider)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
@@ -385,9 +400,8 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 
 	fmt.Printf("\nFound %d limited panes to rotate.\n", len(limitedPanes))
 
-	// Suggest account from config if not specified
+	// Suggest account from config if not specified.
 	if targetAccount == "" && cfg != nil {
-		// Use first limited pane to suggest account
 		providerStr := normalizedProviderName(limitedPanes[0].Type)
 		if suggested := cfg.Rotation.SuggestNextAccount(providerStr, ""); suggested != nil {
 			targetAccount = suggested.Email
@@ -400,59 +414,153 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 		targetAccount = "<your other account>"
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if dryRun {
 		fmt.Printf("Dry run: would rotate %d panes to %s\n", len(limitedPanes), targetAccount)
 		return nil
 	}
 
-	// Batch Rotation Flow
-	orchestrator := newRotateOrchestrator(cfg)
-
-	// 1. Terminate all
-	fmt.Println("\nStep 1/3: Terminating sessions...")
+	// Resolve the relaunch workspace and validate the entire target batch
+	// before stopping any agent. A failed lookup must leave sessions running.
+	projectDir, err := resolveRotationProjectDir(ctx, session, inferred)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err != nil {
+		return err
+	}
+	seenPanes := make(map[string]bool, len(limitedPanes))
 	for _, p := range limitedPanes {
+		if strings.TrimSpace(p.ID) == "" || seenPanes[p.ID] {
+			return fmt.Errorf("batch rotation requires distinct physical pane IDs (pane %d: %q)", p.Index, p.ID)
+		}
+		seenPanes[p.ID] = true
+		if p.Dead || p.IsServicePane() || p.RotationToken != "" {
+			return fmt.Errorf("limited pane %d (%s) is dead, a service pane, or owned by a context rotation", p.Index, p.ID)
+		}
+		if err := p.Type.ValidateAutomatedRelaunch(); err != nil {
+			return fmt.Errorf("limited pane %d (%s) cannot be relaunched: %w", p.Index, p.ID, err)
+		}
+		if rotation.GetProvider(normalizedProviderName(p.Type)) == nil {
+			return fmt.Errorf("limited pane %d (%s) has no supported authentication provider", p.Index, p.ID)
+		}
+	}
+
+	// Batch rotation uses the same physical-pane leases as single-pane auth
+	// restart, context rotation and CAAM failover. Claim the whole batch before
+	// the first termination so a conflict cannot leave earlier panes stopped.
+	type batchLifecycle struct {
+		lease      *rotation.LifecycleLease
+		checkpoint string
+		mutated    bool
+		completed  bool
+		failure    error
+	}
+	fsm := rotation.DefaultLifecycleCoordinator()
+	lifecycles := make([]batchLifecycle, len(limitedPanes))
+	defer func() {
+		for i := range lifecycles {
+			lifecycle := &lifecycles[i]
+			if lifecycle.lease == nil || lifecycle.completed {
+				continue
+			}
+			reason := "batch rotation interrupted before completion"
+			if lifecycle.failure != nil {
+				reason = lifecycle.failure.Error()
+			} else if retErr != nil {
+				reason = retErr.Error()
+			}
+			var cleanupErr error
+			if lifecycle.mutated {
+				cleanupErr = fsm.FailRecoverable(lifecycle.lease, lifecycle.checkpoint, reason,
+					"inspect the pane and retry account rotation after verifying its process state")
+			} else {
+				cleanupErr = fsm.Abort(lifecycle.lease, reason)
+			}
+			if cleanupErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("release batch rotation lifecycle for pane %s: %w", limitedPanes[i].ID, cleanupErr))
+			}
+		}
+	}()
+	for i, p := range limitedPanes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lease, err := fsm.Acquire(p.ID, "auth-restart", "", "auth_restart")
+		if err != nil {
+			return fmt.Errorf("acquire batch rotation lifecycle for pane %d (%s): %w", p.Index, p.ID, err)
+		}
+		lifecycles[i] = batchLifecycle{lease: lease, checkpoint: "preflight"}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	activeCfg := cfg
+	if activeCfg == nil {
+		activeCfg = config.Default()
+	}
+	orchestrator := newRotateOrchestrator(activeCfg)
+
+	fmt.Println("\nStep 1/3: Terminating sessions...")
+	for i, p := range limitedPanes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fmt.Printf("  Terminating %s (pane %d)...\n", p.Title, p.Index)
+		lifecycles[i].mutated = true
+		lifecycles[i].checkpoint = "terminate_session"
 		if err := orchestrator.TerminateSession(p.ID, normalizedProviderName(p.Type)); err != nil {
 			return fmt.Errorf("terminate limited pane %d (%s): %w", p.Index, p.ID, err)
 		}
 	}
 
-	// 2. Wait for shells
 	fmt.Println("Step 2/3: Waiting for shell prompts...")
-	for _, p := range limitedPanes {
+	for i, p := range limitedPanes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lifecycles[i].checkpoint = "wait_for_shell"
 		if err := orchestrator.WaitForShellPrompt(p.ID, 5*time.Second); err != nil {
 			return fmt.Errorf("wait for shell prompt in limited pane %d (%s): %w", p.Index, p.ID, err)
 		}
 	}
+	for i := range lifecycles {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fsm.Transition(lifecycles[i].lease, rotation.StateHandingOff, "browser_auth_and_relaunch"); err != nil {
+			return err
+		}
+		lifecycles[i].checkpoint = "browser_auth"
+	}
 
-	projectDir, err := resolveRotationProjectDir(ctx, session, inferred)
-	if err != nil {
+	// Reuse the single-pane confirmation contract: EOF or a read failure is
+	// not approval to relaunch agents under an unconfirmed browser account.
+	fmt.Printf("\nConfirm the browser account before restarting %d agents.\n", len(limitedPanes))
+	if activeCfg.Rotation.AutoOpenBrowser {
+		openAccountsPage()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := orchestrator.PromptBrowserAuth(targetAccount); err != nil {
+		return fmt.Errorf("browser auth prompt: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// 3. Prompt user ONCE
-	fmt.Printf("\n")
-	fmt.Printf("╔════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  👉 ACTION REQUIRED                                    ║\n")
-	fmt.Printf("╠════════════════════════════════════════════════════════╣\n")
-	fmt.Printf("║  Switch your browser to:                               ║\n")
-	fmt.Printf("║    %s\n", targetAccount)
-	fmt.Printf("║                                                        ║\n")
-	fmt.Printf("║  This will authenticate %d agents at once.              ║\n", len(limitedPanes))
-	fmt.Printf("║  Then press ENTER to continue...                       ║\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════╝\n")
-
-	if cfg != nil && cfg.Rotation.AutoOpenBrowser {
-		openAccountsPage()
-	}
-	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
-
-	// 4. Start all
 	fmt.Println("\nStep 3/3: Starting new sessions...")
 	var startErrs []error
-	for _, p := range limitedPanes {
+	for i, p := range limitedPanes {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(startErrs, err)...)
+		}
 		fmt.Printf("  Starting %s...\n", p.Title)
-		ctx := auth.RestartContext{
+		restartCtx := auth.RestartContext{
 			PaneID:      p.ID,
 			Provider:    normalizedProviderName(p.Type),
 			AgentType:   string(p.Type.Canonical()),
@@ -462,10 +570,29 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 			PaneIndex:   p.Index,
 			ProjectDir:  projectDir,
 		}
-		if err := orchestrator.StartNewAgentSession(ctx); err != nil {
+		lifecycle := &lifecycles[i]
+		lifecycle.checkpoint = "start_new_session"
+		if err := orchestrator.StartNewAgentSession(restartCtx); err != nil {
 			fmt.Printf("    Error starting: %v\n", err)
-			startErrs = append(startErrs, fmt.Errorf("start limited pane %d (%s): %w", p.Index, p.ID, err))
+			lifecycle.failure = fmt.Errorf("start limited pane %d (%s): %w", p.Index, p.ID, err)
+			startErrs = append(startErrs, lifecycle.failure)
+			continue
 		}
+		lifecycle.checkpoint = "verifying"
+		if err := fsm.Transition(lifecycle.lease, rotation.StateVerifying, "relaunch_submitted"); err != nil {
+			lifecycle.failure = fmt.Errorf("verify batch rotation lifecycle for pane %s: %w", p.ID, err)
+			startErrs = append(startErrs, lifecycle.failure)
+			continue
+		}
+		if err := fsm.Complete(lifecycle.lease, "auth_restart_completed"); err != nil {
+			lifecycle.failure = fmt.Errorf("complete batch rotation lifecycle for pane %s: %w", p.ID, err)
+			startErrs = append(startErrs, lifecycle.failure)
+			continue
+		}
+		lifecycle.completed = true
+	}
+	if err := ctx.Err(); err != nil {
+		startErrs = append(startErrs, err)
 	}
 	if len(startErrs) > 0 {
 		return fmt.Errorf("batch rotation failed to restart one or more panes: %w", errors.Join(startErrs...))

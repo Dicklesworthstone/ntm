@@ -32,6 +32,7 @@ type fakeCoordinatorReservationClient struct {
 	ensureErr      error
 	reserveResult  *agentmail.ReservationResult
 	reserveErr     error
+	reserveFn      func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
 	reservations   []agentmail.FileReservation
 	listErr        error
 	beforeList     func()
@@ -58,7 +59,10 @@ func (f *fakeCoordinatorReservationClient) EnsureProject(_ context.Context, proj
 	return &agentmail.Project{ID: 9, HumanKey: projectKey}, nil
 }
 
-func (f *fakeCoordinatorReservationClient) ReservePaths(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+func (f *fakeCoordinatorReservationClient) ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+	if f.reserveFn != nil {
+		return f.reserveFn(ctx, opts)
+	}
 	return f.reserveResult, f.reserveErr
 }
 
@@ -1242,6 +1246,12 @@ func TestAttemptAssignmentAtomicSuccessPersistsReceipt(t *testing.T) {
 		t.Fatalf("write repository path: %v", err)
 	}
 	c := New("coordinator-atomic-success", projectDir, &agentmail.Client{}, "CoordinatorAgent")
+	c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+		return &bv.BeadAssignmentDetails{
+			ID: "ntm-success", Title: "Atomic coordinator success", IssueType: "task", Status: "open", Priority: 1,
+			Description: "## Owned outputs\n- internal/coordinator/assign.go\n",
+		}, nil
+	}
 	var order []string
 	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 		claim := assignmentstore.ClaimFunc(func(_ context.Context, beadID, actor string) (assignmentstore.ClaimReceipt, error) {
@@ -1336,6 +1346,12 @@ func TestAttemptAssignmentEnrichesPromptAndRecoveryReplaysRecordedPrompt(t *test
 	projectDir := t.TempDir()
 	c := New("coordinator-prompt-context", projectDir, &agentmail.Client{}, "CoordinatorAgent").
 		WithPromptContext(robot.PromptContextOptions{WithCASS: true, CASSConfig: &query, FilterConfig: &filter})
+	c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+		return &bv.BeadAssignmentDetails{
+			ID: "ntm-context", Title: "Add rate limiting middleware", IssueType: "task", Status: "open", Priority: 1,
+			Labels: []string{"gateway"},
+		}, nil
+	}
 
 	refuseDispatch := true
 	var dispatched []string
@@ -1981,6 +1997,9 @@ func TestAssignWorkReconcilesClosedAssignmentAndReusesPane(t *testing.T) {
 		}
 		return "open", nil
 	}
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		return &bv.BeadAssignmentDetails{ID: beadID, Title: "Fresh work", IssueType: "task", Status: "open", Priority: 1}, nil
+	}
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
 		return []bv.TriageRecommendation{{
 			ID: "ntm-new", Title: "Fresh work", Type: "task", Status: "open", Priority: 1, Score: 1,
@@ -2377,7 +2396,7 @@ func TestAssignWorkUsesPlanOnlyVerifiedRecommendationWithoutReintroducingStaleTr
 	if err != nil || len(results) != 1 || !results[0].Success || results[0].Assignment == nil || results[0].Assignment.BeadID != planOnlyID {
 		t.Fatalf("AssignWork results=%+v error=%v", results, err)
 	}
-	if verificationCalls != 1 || !reflect.DeepEqual(detailLookups, []string{planOnlyID}) {
+	if verificationCalls != 1 || !reflect.DeepEqual(detailLookups, []string{planOnlyID, planOnlyID}) {
 		t.Fatalf("verification calls=%d detail lookups=%v", verificationCalls, detailLookups)
 	}
 }
@@ -3099,6 +3118,9 @@ func TestAssignWorkDoesNotMutateSharedActionableRecommendations(t *testing.T) {
 		c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
 		addEligibleCoordinatorAgent(c, fmt.Sprintf("%%%d", i+1), fmt.Sprintf("BlueLake%d", i+1))
 		c.workItemStatusFn = func(context.Context, string) (string, error) { return "open", nil }
+		c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+			return &bv.BeadAssignmentDetails{ID: shared[0].ID, Title: shared[0].Title, IssueType: "task", Status: "open", Priority: 1}, nil
+		}
 		c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) { return shared, nil }
 		c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory(fmt.Sprintf("mail-cache-%d", i+1))
 
@@ -3131,6 +3153,9 @@ func TestAssignWorkConcurrentCyclesDoNotRaceOnSharedActionableRecommendations(t 
 		c := New(fmt.Sprintf("coordinator-cache-concurrent-%d", i), t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
 		addEligibleCoordinatorAgent(c, fmt.Sprintf("%%%d", i+20), fmt.Sprintf("BlueLake%d", i+20))
 		c.workItemStatusFn = func(context.Context, string) (string, error) { return "open", nil }
+		c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+			return &bv.BeadAssignmentDetails{ID: shared[0].ID, Title: shared[0].Title, IssueType: "task", Status: "open", Priority: 1}, nil
+		}
 		c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) { return shared, nil }
 		c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory(fmt.Sprintf("mail-concurrent-%d", i))
 
@@ -3173,6 +3198,12 @@ func TestAssignWorkSelectsByScoreNotFirstFit(t *testing.T) {
 	c.agents["%2"].PaneIndex = 2
 
 	c.workItemStatusFn = func(context.Context, string) (string, error) { return "open", nil }
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		if beadID == "ntm-chore" {
+			return &bv.BeadAssignmentDetails{ID: beadID, Title: "Tidy workspace", IssueType: "chore", Status: "open", Priority: 2}, nil
+		}
+		return &bv.BeadAssignmentDetails{ID: beadID, Title: "Ship new engine", IssueType: "feature", Status: "open", Priority: 2}, nil
+	}
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
 		return []bv.TriageRecommendation{
 			{ID: "ntm-chore", Title: "Tidy workspace", Type: "chore", Status: "open", Priority: 2, Score: 0.5},

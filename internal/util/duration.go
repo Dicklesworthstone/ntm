@@ -19,32 +19,34 @@ import (
 //   - "1w"   -> 7 days
 //   - "1h30m" -> 1 hour 30 minutes (standard Go format)
 func ParseDuration(s string) (time.Duration, error) {
+	if s == "0" {
+		return 0, nil
+	}
 	if len(s) < 2 {
 		return 0, fmt.Errorf("invalid duration: %s", s)
 	}
 
-	unit := s[len(s)-1]
-	value, err := strconv.Atoi(s[:len(s)-1])
-	if err != nil {
-		// Not a simple unit, try standard Go duration
+	var unit time.Duration
+	switch s[len(s)-1] {
+	case 'd':
+		unit = 24 * time.Hour
+	case 'w':
+		unit = 7 * 24 * time.Hour
+	default:
+		// The standard parser checks overflow as well as compound units.
 		return time.ParseDuration(s)
 	}
 
-	switch unit {
-	case 's':
-		return time.Duration(value) * time.Second, nil
-	case 'm':
-		return time.Duration(value) * time.Minute, nil
-	case 'h':
-		return time.Duration(value) * time.Hour, nil
-	case 'd':
-		return time.Duration(value) * 24 * time.Hour, nil
-	case 'w':
-		return time.Duration(value) * 7 * 24 * time.Hour, nil
-	default:
-		// Try standard Go duration as fallback
-		return time.ParseDuration(s)
+	value, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
 	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	const minDuration = time.Duration(-1 << 63)
+	if value > int64(maxDuration/unit) || value < int64(minDuration/unit) {
+		return 0, fmt.Errorf("duration %q overflows time.Duration", s)
+	}
+	return time.Duration(value) * unit, nil
 }
 
 // ParseDurationWithDefault parses a duration string, handling bare numbers with

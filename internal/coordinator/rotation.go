@@ -42,6 +42,11 @@ import (
 // bounded tails, so a moderate capture is sufficient and cheap.
 const rotationCaptureLines = 100
 
+// Bound the entire attribution pass, including target directory and process
+// lookups before any server-wide fallback. Optional context measurement must
+// not keep a coordinator cycle waiting indefinitely on an unresponsive pane.
+const rotationAttributionTimeout = 2 * time.Second
+
 // rotationDecision records one trigger decision for logging and tests.
 type rotationDecision struct {
 	PaneID        string  // tmux pane ID (%N)
@@ -615,6 +620,8 @@ func (rc *rotationChecker) resolvePaneTranscriptsContext(ctx context.Context, pa
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, rotationAttributionTimeout)
+	defer cancel()
 	refs := make([]ntmctx.PaneTranscriptRef, 0, len(panes))
 	gauges := make(map[string]*ntmctx.TranscriptUsage)
 	remote := tmux.DefaultClient != nil && tmux.DefaultClient.Remote != ""
@@ -723,7 +730,7 @@ func (rc *rotationChecker) resolveServerScopedTranscripts(ctx context.Context, t
 	if len(needed) == 0 {
 		return known
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, rotationAttributionTimeout)
 	defer cancel()
 	list := rc.allPanes
 	if list == nil {

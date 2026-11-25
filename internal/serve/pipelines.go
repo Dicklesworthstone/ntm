@@ -25,6 +25,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Pipeline-specific error codes
@@ -209,12 +210,42 @@ type PipelineCleanupRequest struct {
 
 // PipelineResumeRequest is the request body for POST /api/v1/pipelines/{id}/resume
 type PipelineResumeRequest struct {
-	Session                     string                 `json:"session,omitempty"`
-	Variables                   map[string]interface{} `json:"variables,omitempty"`
-	Background                  bool                   `json:"background,omitempty"`
-	MaxSelectorOutputBytesTotal int64                  `json:"max_selector_output_bytes_total,omitempty"`
-	MaxStepCountTotal           int                    `json:"max_step_count_total,omitempty"`
-	MaxMaterializedStepNodes    int                    `json:"max_materialized_step_nodes,omitempty"`
+	Session                     string                            `json:"session,omitempty"`
+	Variables                   map[string]interface{}            `json:"variables,omitempty"`
+	Background                  bool                              `json:"background,omitempty"`
+	Mode                        pipeline.ResumeMode               `json:"mode,omitempty"`
+	Reset                       bool                              `json:"reset,omitempty"`
+	MaxResumeAge                string                            `json:"max_resume_age,omitempty"`
+	OnRosterChange              pipeline.ResumeRosterChangePolicy `json:"on_roster_change,omitempty"`
+	StepID                      string                            `json:"step_id,omitempty"`
+	Iteration                   int                               `json:"iteration,omitempty"`
+	MaxSelectorOutputBytesTotal int64                             `json:"max_selector_output_bytes_total,omitempty"`
+	MaxStepCountTotal           int                               `json:"max_step_count_total,omitempty"`
+	MaxMaterializedStepNodes    int                               `json:"max_materialized_step_nodes,omitempty"`
+}
+
+// resumeOptions translates the transport representation once for synchronous,
+// detached, and job execution. The engine owns replay and roster semantics;
+// merely supplying another option must never implicitly reset completed work.
+func (req PipelineResumeRequest) resumeOptions() (pipeline.ResumeOptions, error) {
+	opts := pipeline.ResumeOptions{
+		Mode:                        req.Mode,
+		Reset:                       req.Reset,
+		OnRosterChange:              req.OnRosterChange,
+		StepID:                      req.StepID,
+		Iteration:                   req.Iteration,
+		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+		MaxStepCountTotal:           req.MaxStepCountTotal,
+		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
+	}
+	if req.MaxResumeAge != "" {
+		age, err := util.ParseDuration(strings.ToLower(strings.TrimSpace(req.MaxResumeAge)))
+		if err != nil {
+			return opts, fmt.Errorf("max_resume_age: %w", err)
+		}
+		opts.MaxResumeAge = age
+	}
+	return opts.Normalize()
 }
 
 // PipelineRecoverRequest records one explicit acceptance of an uncertain
@@ -306,11 +337,11 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 			WorkflowID: p.WorkflowID,
 			Session:    p.Session,
 			Status:     p.Status,
-			StartedAt:  p.StartedAt.Format(time.RFC3339),
+			StartedAt:  p.StartedAt.Format(time.RFC3339Nano),
 			Progress:   p.Progress,
 		}
 		if p.FinishedAt != nil {
-			summary.FinishedAt = p.FinishedAt.Format(time.RFC3339)
+			summary.FinishedAt = p.FinishedAt.Format(time.RFC3339Nano)
 		}
 		summaries = append(summaries, summary)
 	}
@@ -484,13 +515,13 @@ func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		"workflow_id":  exec.WorkflowID,
 		"session":      exec.Session,
 		"status":       exec.Status,
-		"started_at":   exec.StartedAt.Format(time.RFC3339),
+		"started_at":   exec.StartedAt.Format(time.RFC3339Nano),
 		"current_step": exec.CurrentStep,
 		"progress":     exec.Progress,
 		"steps":        exec.Steps,
 	}
 	if exec.FinishedAt != nil {
-		resp["finished_at"] = exec.FinishedAt.Format(time.RFC3339)
+		resp["finished_at"] = exec.FinishedAt.Format(time.RFC3339Nano)
 		resp["duration_ms"] = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
 	}
 	if exec.Error != "" {
@@ -567,28 +598,22 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req PipelineResumeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	req := &PipelineResumeRequest{}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
 		return
 	}
-	if req.MaxSelectorOutputBytesTotal < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_selector_output_bytes_total must be zero or positive", nil, reqID)
+	if err := decoder.Decode(new(interface{})); err != io.EOF || req == nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pipeline resume requires one JSON object or an empty body", nil, reqID)
 		return
 	}
-	if req.MaxStepCountTotal < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_step_count_total must be zero or positive", nil, reqID)
+	resumeOptions, err := req.resumeOptions()
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
 		return
-	}
-	if req.MaxMaterializedStepNodes < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_materialized_step_nodes must be zero or positive", nil, reqID)
-		return
-	}
-
-	resumeOptions := pipeline.ResumeOptions{
-		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
-		MaxStepCountTotal:           req.MaxStepCountTotal,
-		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
 	}
 	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID, "background", req.Background)
 
@@ -650,22 +675,17 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use session from request or from saved state
-	session := req.Session
-	if session == "" {
-		session = state.Session
-	}
-	if session == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeMissingSession, "session is required for resume", nil, reqID)
-		return
-	}
-	if err := tmux.ValidateSessionName(session); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			fmt.Sprintf("invalid session name: %s", err.Error()), nil, reqID)
-		return
+	if req.Session != "" {
+		if err := tmux.ValidateSessionName(req.Session); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("invalid session name: %s", err.Error()), nil, reqID)
+			return
+		}
 	}
 
-	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, resumeOptions)
+	// Resolve an omitted session only after the helper owns and reloads the run.
+	// A concurrent resume may have changed it since this existence check.
+	result := s.resumePipelineWithResult(r.Context(), runID, req.Session, req.Variables, state, resumeOptions)
 
 	if !result.Success {
 		statusCode := http.StatusBadRequest
@@ -1179,6 +1199,18 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 		return output
 	}
 	output.WorkflowID = state.WorkflowID
+	if session == "" {
+		session = state.Session
+	}
+	if session == "" {
+		output.RobotResponse = pipeline.NewErrorResponse(errors.New("session is required for resume"), ErrCodeMissingSession, "provide a session or restore the saved session")
+		return output
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeBadRequest, "provide a valid resume session")
+		return output
+	}
+	output.Session = session
 
 	// Load workflow from state
 	if state.WorkflowFile == "" {

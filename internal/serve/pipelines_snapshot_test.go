@@ -81,6 +81,49 @@ func TestPipelineSnapshotMakesInlineAndFileRunsResumable(t *testing.T) {
 	}
 }
 
+func TestPipelineResumeSelectsSessionAfterOwnedReload(t *testing.T) {
+	t.Parallel()
+	for _, requested := range []string{"", "approved-session"} {
+		t.Run("session="+requested, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			srv := &Server{projectDir: root}
+			first := srv.execPipelineInline(context.Background(), &pipeline.Workflow{
+				SchemaVersion: pipeline.SchemaVersion, Name: "owned-session",
+				Steps: []pipeline.Step{{ID: "work", Command: "printf once >> effects"}},
+			}, "current-session", nil, false)
+			if !first.Success {
+				t.Fatalf("fixture failed: %+v", first)
+			}
+			stale, err := pipeline.LoadState(root, first.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The caller's existence check may predate another owner's resume.
+			// Only the current checkpoint can supply an omitted destination;
+			// an explicit request (including a bound job target) stays explicit.
+			stale.Session = "old-session"
+			resumed := srv.resumePipelineWithResult(context.Background(), first.RunID, requested, nil, stale,
+				pipeline.ResumeOptions{OnRosterChange: pipeline.ResumeRosterProceed})
+			want := requested
+			if want == "" {
+				want = "current-session"
+			}
+			if !resumed.Success || resumed.Session != want {
+				t.Fatalf("resume selected a stale or empty identity: got=%+v want=%q", resumed, want)
+			}
+			final, err := pipeline.LoadState(root, first.RunID)
+			if err != nil || final.Session != want || final.Status != pipeline.StatusCompleted {
+				t.Fatalf("resume persisted a different target: state=%+v want=%q error=%v", final, want, err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "effects"))
+			if err != nil || string(data) != "once" {
+				t.Fatalf("owned recovery repeated completed work: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestPipelineResumeRejectsDamagedSnapshotWithoutCheckpointMutation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

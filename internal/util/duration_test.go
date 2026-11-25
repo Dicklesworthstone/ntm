@@ -30,13 +30,29 @@ func TestParseDuration(t *testing.T) {
 		{"2h30m15s", 2*time.Hour + 30*time.Minute + 15*time.Second, false},
 
 		// Edge cases
+		{"0", 0, false},
 		{"0s", 0, false},
+		{"106751d", 106751 * 24 * time.Hour, false},
+		{"-106751d", -106751 * 24 * time.Hour, false},
+		{"15250w", 15250 * 7 * 24 * time.Hour, false},
+		{"-15250w", -15250 * 7 * 24 * time.Hour, false},
+		{"9223372036854775807ns", time.Duration(1<<63 - 1), false},
+		{"-9223372036854775808ns", time.Duration(-1 << 63), false},
 		{"1s", time.Second, false},
 
 		// Errors
 		{"", 0, true},
 		{"s", 0, true},
 		{"abc", 0, true},
+		{"106752d", 0, true},
+		{"-106752d", 0, true},
+		{"15251w", 0, true},
+		{"-15251w", 0, true},
+		{"9223372036854775807s", 0, true},
+		{"9223372036854775807m", 0, true},
+		{"9223372036854775807h", 0, true},
+		{"9223372036854775808d", 0, true},
+		{"9223372036854775808ns", 0, true},
 		{"-1s", -time.Second, false}, // Go allows negative durations
 	}
 

@@ -23,6 +23,7 @@ import (
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1261,35 +1262,67 @@ esac
 `
 
 type rotateTestQuotaFetcher struct {
-	info *quota.QuotaInfo
-	err  error
+	info       *quota.QuotaInfo
+	err        error
+	afterFetch func()
 }
 
 func (f rotateTestQuotaFetcher) FetchQuota(context.Context, string, quota.Provider) (*quota.QuotaInfo, error) {
+	if f.afterFetch != nil {
+		f.afterFetch()
+	}
 	return f.info, f.err
 }
 
 type rotateTestOrchestrator struct {
-	terminateErr error
-	waitErr      error
-	startErr     error
-	terminated   int
-	waited       int
-	started      int
+	terminateErr   error
+	waitErr        error
+	startErr       error
+	startErrors    map[string]error
+	prompt         func(string) error
+	afterTerminate func(string)
+	afterWait      func(string)
+	afterStart     func(auth.RestartContext)
+	terminated     int
+	waited         int
+	prompted       int
+	started        int
+	restarts       []auth.RestartContext
 }
 
-func (o *rotateTestOrchestrator) TerminateSession(string, string) error {
+func (o *rotateTestOrchestrator) TerminateSession(paneID, _ string) error {
 	o.terminated++
+	if o.afterTerminate != nil {
+		o.afterTerminate(paneID)
+	}
 	return o.terminateErr
 }
 
-func (o *rotateTestOrchestrator) WaitForShellPrompt(string, time.Duration) error {
+func (o *rotateTestOrchestrator) WaitForShellPrompt(paneID string, _ time.Duration) error {
 	o.waited++
+	if o.afterWait != nil {
+		o.afterWait(paneID)
+	}
 	return o.waitErr
 }
 
-func (o *rotateTestOrchestrator) StartNewAgentSession(auth.RestartContext) error {
+func (o *rotateTestOrchestrator) PromptBrowserAuth(email string) error {
+	o.prompted++
+	if o.prompt != nil {
+		return o.prompt(email)
+	}
+	return nil
+}
+
+func (o *rotateTestOrchestrator) StartNewAgentSession(ctx auth.RestartContext) error {
 	o.started++
+	o.restarts = append(o.restarts, ctx)
+	if o.afterStart != nil {
+		o.afterStart(ctx)
+	}
+	if err := o.startErrors[ctx.PaneID]; err != nil {
+		return err
+	}
 	return o.startErr
 }
 
@@ -1524,70 +1557,14 @@ func TestResolveRotationProjectDirAllowsWorkspaceFallbackForInferredSession(t *t
 	}
 }
 
-func TestRotateAllLimitedStopsBeforePromptWhenTerminationFails(t *testing.T) {
-	previousGetPanes := rotateGetPanes
-	previousQuotaFetcher := newRotateQuotaFetcher
-	previousOrchestrator := newRotateOrchestrator
-	t.Cleanup(func() {
-		rotateGetPanes = previousGetPanes
-		newRotateQuotaFetcher = previousQuotaFetcher
-		newRotateOrchestrator = previousOrchestrator
-	})
-
-	rotateGetPanes = func(string) ([]tmux.Pane, error) {
-		return []tmux.Pane{{ID: "%11", Index: 1, Title: "limited", Type: tmux.AgentClaude}}, nil
-	}
-	newRotateQuotaFetcher = func() quota.Fetcher {
-		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
-	}
-	orch := &rotateTestOrchestrator{terminateErr: errors.New("interrupt failed")}
-	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
-
-	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, false)
-	if err == nil || !strings.Contains(err.Error(), "terminate limited pane 1 (%11)") {
-		t.Fatalf("rotateAllLimited() error = %v, want termination context", err)
-	}
-	if orch.terminated != 1 || orch.waited != 0 || orch.started != 0 {
-		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 1:0:0", orch.terminated, orch.waited, orch.started)
-	}
-}
-
-func TestRotateAllLimitedStopsBeforePromptWhenShellIsNotReady(t *testing.T) {
-	previousGetPanes := rotateGetPanes
-	previousQuotaFetcher := newRotateQuotaFetcher
-	previousOrchestrator := newRotateOrchestrator
-	t.Cleanup(func() {
-		rotateGetPanes = previousGetPanes
-		newRotateQuotaFetcher = previousQuotaFetcher
-		newRotateOrchestrator = previousOrchestrator
-	})
-
-	rotateGetPanes = func(string) ([]tmux.Pane, error) {
-		return []tmux.Pane{{ID: "%12", Index: 2, Title: "limited", Type: tmux.AgentCodex}}, nil
-	}
-	newRotateQuotaFetcher = func() quota.Fetcher {
-		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
-	}
-	orch := &rotateTestOrchestrator{waitErr: errors.New("shell still running")}
-	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
-
-	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, false)
-	if err == nil || !strings.Contains(err.Error(), "wait for shell prompt in limited pane 2 (%12)") {
-		t.Fatalf("rotateAllLimited() error = %v, want shell-readiness context", err)
-	}
-	if orch.terminated != 1 || orch.waited != 1 || orch.started != 0 {
-		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 1:1:0", orch.terminated, orch.waited, orch.started)
-	}
-}
-
-func TestRotateAllLimitedReportsRestartFailure(t *testing.T) {
+func setupRotateAllLimitedTest(t *testing.T, panes []tmux.Pane, orch *rotateTestOrchestrator) string {
+	t.Helper()
 	isolateSessionAgentStorage(t)
 
 	previousGetPanes := rotateGetPanes
 	previousQuotaFetcher := newRotateQuotaFetcher
 	previousOrchestrator := newRotateOrchestrator
 	previousCfg := cfg
-	previousStdin := os.Stdin
 	previousDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -1597,7 +1574,6 @@ func TestRotateAllLimitedReportsRestartFailure(t *testing.T) {
 		newRotateQuotaFetcher = previousQuotaFetcher
 		newRotateOrchestrator = previousOrchestrator
 		cfg = previousCfg
-		os.Stdin = previousStdin
 		if err := os.Chdir(previousDir); err != nil {
 			t.Errorf("restore working directory: %v", err)
 		}
@@ -1610,39 +1586,333 @@ func TestRotateAllLimitedReportsRestartFailure(t *testing.T) {
 	if err := os.Chdir(workspace); err != nil {
 		t.Fatal(err)
 	}
-	cfg = &config.Config{ProjectsBase: canonicalTempDir(t)}
-
-	stdin, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write([]byte("\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	os.Stdin = stdin
-	t.Cleanup(func() { _ = stdin.Close() })
-
-	restartErr := errors.New("relaunch failed")
+	cfg = config.Default()
+	cfg.ProjectsBase = canonicalTempDir(t)
+	// Explicit-session failure probes must never consult a developer's tmux.
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(t.TempDir(), "unavailable-tmux"))
 	rotateGetPanes = func(string) ([]tmux.Pane, error) {
-		return []tmux.Pane{
-			{ID: "%13", Index: 3, Title: "limited claude", Type: tmux.AgentClaude},
-			{ID: "%14", Index: 4, Title: "limited codex", Type: tmux.AgentCodex},
-		}, nil
+		return append([]tmux.Pane(nil), panes...), nil
 	}
 	newRotateQuotaFetcher = func() quota.Fetcher {
 		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
 	}
-	orch := &rotateTestOrchestrator{startErr: restartErr}
 	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
+	return workspace
+}
 
-	err = rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+func TestRotateAllLimitedStopsBeforePromptWhenTerminationFails(t *testing.T) {
+	orch := &rotateTestOrchestrator{terminateErr: errors.New("interrupt failed")}
+	setupRotateAllLimitedTest(t, []tmux.Pane{{ID: "%11", Index: 1, Title: "limited", Type: tmux.AgentClaude}}, orch)
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+	if err == nil || !strings.Contains(err.Error(), "terminate limited pane 1 (%11)") {
+		t.Fatalf("rotateAllLimited() error = %v, want termination context", err)
+	}
+	if orch.terminated != 1 || orch.waited != 0 || orch.prompted != 0 || orch.started != 0 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d prompt:%d start:%d, want 1:0:0:0", orch.terminated, orch.waited, orch.prompted, orch.started)
+	}
+}
+
+func TestRotateAllLimitedStopsBeforePromptWhenShellIsNotReady(t *testing.T) {
+	orch := &rotateTestOrchestrator{waitErr: errors.New("shell still running")}
+	setupRotateAllLimitedTest(t, []tmux.Pane{{ID: "%12", Index: 2, Title: "limited", Type: tmux.AgentCodex}}, orch)
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+	if err == nil || !strings.Contains(err.Error(), "wait for shell prompt in limited pane 2 (%12)") {
+		t.Fatalf("rotateAllLimited() error = %v, want shell-readiness context", err)
+	}
+	if orch.terminated != 1 || orch.waited != 1 || orch.prompted != 0 || orch.started != 0 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d prompt:%d start:%d, want 1:1:0:0", orch.terminated, orch.waited, orch.prompted, orch.started)
+	}
+}
+
+func TestRotateAllLimitedReportsRestartFailure(t *testing.T) {
+	restartErr := errors.New("relaunch failed")
+	orch := &rotateTestOrchestrator{startErr: restartErr}
+	panes := []tmux.Pane{
+		{ID: "%13", Index: 3, Title: "limited claude", Type: tmux.AgentClaude},
+		{ID: "%14", Index: 4, Title: "limited codex", Type: tmux.AgentCodex},
+	}
+	setupRotateAllLimitedTest(t, panes, orch)
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
 	if !errors.Is(err, restartErr) {
 		t.Fatalf("rotateAllLimited() error = %v, want wrapped %v", err, restartErr)
 	}
-	if orch.terminated != 2 || orch.waited != 2 || orch.started != 2 {
-		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 2:2:2", orch.terminated, orch.waited, orch.started)
+	if orch.terminated != 2 || orch.waited != 2 || orch.prompted != 1 || orch.started != 2 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d prompt:%d start:%d, want 2:2:1:2", orch.terminated, orch.waited, orch.prompted, orch.started)
+	}
+	for _, pane := range panes {
+		snapshot, ok := rotation.DefaultLifecycleCoordinator().Snapshot(pane.ID)
+		if !ok || snapshot.State != rotation.StateFailedRecoverable || snapshot.LastCheckpoint != "start_new_session" {
+			t.Fatalf("failed restart for %s lost its recovery checkpoint: %+v", pane.ID, snapshot)
+		}
+	}
+}
+
+func TestRotateAllLimitedResolvesProjectBeforeStoppingAgents(t *testing.T) {
+	orch := &rotateTestOrchestrator{}
+	setupRotateAllLimitedTest(t, []tmux.Pane{{ID: "%7001", Index: 1, Title: "limited", Type: tmux.AgentClaude}}, orch)
+
+	err := rotateAllLimited(t.Context(), "ntm-rotation-missing-project-test", "backup@example.com", false, false)
+	if err == nil || !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("rotateAllLimited() error = %v, want unavailable project", err)
+	}
+	if orch.terminated != 0 || orch.waited != 0 || orch.prompted != 0 || orch.started != 0 {
+		t.Fatalf("unresolved workspace stopped agents: %+v", orch)
+	}
+}
+
+func TestRotateAllLimitedPreflightsEntireTargetBatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func([]tmux.Pane)
+	}{
+		{name: "missing physical identity", change: func(panes []tmux.Pane) { panes[1].ID = "" }},
+		{name: "duplicate physical identity", change: func(panes []tmux.Pane) { panes[1].ID = panes[0].ID }},
+		{name: "dead pane", change: func(panes []tmux.Pane) { panes[1].Dead = true }},
+		{name: "pending context rotation", change: func(panes []tmux.Pane) { panes[1].RotationToken = "rotation-in-flight" }},
+		{name: "unsupported auth provider", change: func(panes []tmux.Pane) { panes[1].Type = tmux.AgentOmp }},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			panes := []tmux.Pane{
+				{ID: "%" + strconv.Itoa(7020+2*i), Index: 1, Title: "first", Type: tmux.AgentClaude},
+				{ID: "%" + strconv.Itoa(7021+2*i), Index: 2, Title: "second", Type: tmux.AgentCodex},
+			}
+			tt.change(panes)
+			orch := &rotateTestOrchestrator{}
+			setupRotateAllLimitedTest(t, panes, orch)
+
+			if err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true); err == nil {
+				t.Fatal("unsafe target batch was accepted")
+			}
+			if orch.terminated != 0 || orch.waited != 0 || orch.prompted != 0 || orch.started != 0 {
+				t.Fatalf("failed preflight partially stopped the batch: %+v", orch)
+			}
+		})
+	}
+}
+
+func TestRotateAllLimitedHonorsCancellationAtActuationBoundaries(t *testing.T) {
+	tests := []struct {
+		stage      string
+		terminated int
+		waited     int
+		prompted   int
+		started    int
+	}{
+		{stage: "before scan"},
+		{stage: "quota"},
+		{stage: "terminate", terminated: 1},
+		{stage: "wait", terminated: 2, waited: 1},
+		{stage: "prompt", terminated: 2, waited: 2, prompted: 1},
+		{stage: "start", terminated: 2, waited: 2, prompted: 1, started: 1},
+	}
+	for i, tt := range tests {
+		t.Run(tt.stage, func(t *testing.T) {
+			panes := []tmux.Pane{
+				{ID: "%" + strconv.Itoa(7100+2*i), Index: 1, Title: "first", Type: tmux.AgentClaude},
+				{ID: "%" + strconv.Itoa(7101+2*i), Index: 2, Title: "second", Type: tmux.AgentCodex},
+			}
+			orch := &rotateTestOrchestrator{}
+			setupRotateAllLimitedTest(t, panes, orch)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch tt.stage {
+			case "before scan":
+				cancel()
+			case "quota":
+				newRotateQuotaFetcher = func() quota.Fetcher {
+					return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}, afterFetch: cancel}
+				}
+			case "terminate":
+				orch.afterTerminate = func(string) { cancel() }
+			case "wait":
+				orch.afterWait = func(string) { cancel() }
+			case "prompt":
+				orch.prompt = func(string) error {
+					cancel()
+					return nil
+				}
+			case "start":
+				orch.afterStart = func(auth.RestartContext) { cancel() }
+			}
+
+			err := rotateAllLimited(ctx, "proj", "backup@example.com", false, true)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("rotateAllLimited() error = %v, want context cancellation", err)
+			}
+			if orch.terminated != tt.terminated || orch.waited != tt.waited || orch.prompted != tt.prompted || orch.started != tt.started {
+				t.Fatalf("orchestrator calls = terminate:%d wait:%d prompt:%d start:%d, want %d:%d:%d:%d", orch.terminated, orch.waited, orch.prompted, orch.started, tt.terminated, tt.waited, tt.prompted, tt.started)
+			}
+			fsm := rotation.DefaultLifecycleCoordinator()
+			for _, pane := range panes {
+				if fsm.IsActive(pane.ID) {
+					t.Fatalf("cancellation left pane %s lifecycle active", pane.ID)
+				}
+			}
+			if tt.stage == "terminate" {
+				started, _ := fsm.Snapshot(panes[0].ID)
+				untouched, _ := fsm.Snapshot(panes[1].ID)
+				if started.State != rotation.StateFailedRecoverable || started.LastCheckpoint != "terminate_session" ||
+					untouched.State != rotation.StateIdle || untouched.LastCheckpoint != "aborted" {
+					t.Fatalf("cancellation confused changed and untouched panes: %+v / %+v", started, untouched)
+				}
+			}
+			if tt.stage == "start" {
+				completed, _ := fsm.Snapshot(panes[0].ID)
+				unstarted, _ := fsm.Snapshot(panes[1].ID)
+				if completed.State != rotation.StateIdle || completed.LastCheckpoint != "completed" ||
+					unstarted.State != rotation.StateFailedRecoverable || unstarted.LastCheckpoint != "browser_auth" {
+					t.Fatalf("cancellation lost completed or pending relaunch evidence: %+v / %+v", completed, unstarted)
+				}
+			}
+		})
+	}
+}
+
+func TestRotateAllLimitedLeaseConflictLeavesOtherOwnerUntouched(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%7201", Index: 1, Title: "first", Type: tmux.AgentClaude},
+		{ID: "%7202", Index: 2, Title: "second", Type: tmux.AgentCodex},
+	}
+	orch := &rotateTestOrchestrator{}
+	setupRotateAllLimitedTest(t, panes, orch)
+	fsm := rotation.DefaultLifecycleCoordinator()
+	held, err := fsm.Acquire(panes[1].ID, "context-rotator-test", t.Name(), "context_rotation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := fsm.Abort(held, "test cleanup"); err != nil {
+			t.Errorf("release test lease: %v", err)
+		}
+	})
+
+	err = rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+	if !errors.Is(err, rotation.ErrLifecycleLeaseHeld) {
+		t.Fatalf("rotateAllLimited() error = %v, want lifecycle ownership conflict", err)
+	}
+	if orch.terminated != 0 || orch.waited != 0 || orch.prompted != 0 || orch.started != 0 {
+		t.Fatalf("ownership conflict partially stopped the batch: %+v", orch)
+	}
+	first, _ := fsm.Snapshot(panes[0].ID)
+	second, _ := fsm.Snapshot(panes[1].ID)
+	if first.State != rotation.StateIdle || first.LastCheckpoint != "aborted" {
+		t.Fatalf("unmutated batch lease was not released: %+v", first)
+	}
+	if second.State != rotation.StateDraining || second.Token != held.Token || second.OwnerID != held.OwnerID {
+		t.Fatalf("batch conflict disturbed another lifecycle owner: %+v", second)
+	}
+}
+
+func TestRotateAllLimitedRequiresExplicitBrowserConfirmation(t *testing.T) {
+	for i, input := range []string{"", "confirmed without newline"} {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			paneID := "%" + strconv.Itoa(7300+i)
+			orch := &rotateTestOrchestrator{}
+			setupRotateAllLimitedTest(t, []tmux.Pane{{ID: paneID, Index: 1, Title: "limited", Type: tmux.AgentClaude}}, orch)
+			// Exercise the production confirmation method with EOF and with a
+			// partial line. Neither is the ENTER required by the auth contract.
+			orch.prompt = auth.NewOrchestrator(config.Default()).PromptBrowserAuth
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousStdin := os.Stdin
+			t.Cleanup(func() {
+				os.Stdin = previousStdin
+				_ = reader.Close()
+				_ = writer.Close()
+			})
+			if _, err := writer.WriteString(input); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			os.Stdin = reader
+
+			err = rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+			if err == nil || !strings.Contains(err.Error(), "confirmation not received") {
+				t.Fatalf("rotateAllLimited() error = %v, want explicit confirmation failure", err)
+			}
+			if orch.terminated != 1 || orch.waited != 1 || orch.prompted != 1 || orch.started != 0 {
+				t.Fatalf("unconfirmed browser account relaunched agents: %+v", orch)
+			}
+			snapshot, _ := rotation.DefaultLifecycleCoordinator().Snapshot(paneID)
+			if snapshot.State != rotation.StateFailedRecoverable || snapshot.LastCheckpoint != "browser_auth" {
+				t.Fatalf("confirmation failure lost recovery state: %+v", snapshot)
+			}
+		})
+	}
+}
+
+func TestRotateAllLimitedSharesLifecycleThroughSuccessfulBatch(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%7401", Index: 1, Title: "first", Type: tmux.AgentClaude},
+		{ID: "%7402", Index: 2, Title: "second", Type: tmux.AgentCodex},
+	}
+	orch := &rotateTestOrchestrator{}
+	workspace := setupRotateAllLimitedTest(t, panes, orch)
+	fsm := rotation.DefaultLifecycleCoordinator()
+	assertStates := func(want rotation.LifecycleState) {
+		t.Helper()
+		for _, pane := range panes {
+			snapshot, ok := fsm.Snapshot(pane.ID)
+			if !ok || snapshot.State != want || snapshot.Kind != "auth_restart" {
+				t.Fatalf("pane %s lifecycle = %+v, want %s auth_restart", pane.ID, snapshot, want)
+			}
+		}
+	}
+	orch.afterTerminate = func(string) { assertStates(rotation.StateDraining) }
+	orch.prompt = func(email string) error {
+		if email != "backup@example.com" {
+			t.Fatalf("confirmation target = %q", email)
+		}
+		assertStates(rotation.StateHandingOff)
+		return nil
+	}
+
+	if err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if orch.terminated != 2 || orch.waited != 2 || orch.prompted != 1 || orch.started != 2 {
+		t.Fatalf("successful batch calls = %+v", orch)
+	}
+	for i, restart := range orch.restarts {
+		if restart.PaneID != panes[i].ID || restart.ProjectDir != workspace ||
+			restart.AgentType != string(panes[i].Type.Canonical()) {
+			t.Fatalf("relaunch changed target or workspace: %+v", restart)
+		}
+		snapshot, _ := fsm.Snapshot(restart.PaneID)
+		if snapshot.State != rotation.StateIdle || snapshot.LastCheckpoint != "completed" {
+			t.Fatalf("successful relaunch retained lifecycle ownership: %+v", snapshot)
+		}
+	}
+}
+
+func TestRotateAllLimitedPreservesMixedRestartOutcomes(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%7501", Index: 1, Title: "first", Type: tmux.AgentClaude},
+		{ID: "%7502", Index: 2, Title: "second", Type: tmux.AgentCodex},
+	}
+	restartErr := errors.New("first pane command failed")
+	orch := &rotateTestOrchestrator{startErrors: map[string]error{panes[0].ID: restartErr}}
+	setupRotateAllLimitedTest(t, panes, orch)
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+	if !errors.Is(err, restartErr) || orch.started != 2 {
+		t.Fatalf("batch did not preserve the first failure and attempt the second restart: err=%v, starts=%d", err, orch.started)
+	}
+	fsm := rotation.DefaultLifecycleCoordinator()
+	failed, _ := fsm.Snapshot(panes[0].ID)
+	completed, _ := fsm.Snapshot(panes[1].ID)
+	if failed.State != rotation.StateFailedRecoverable || failed.LastCheckpoint != "start_new_session" {
+		t.Fatalf("failed restart lost its recovery state: %+v", failed)
+	}
+	if completed.State != rotation.StateIdle || completed.LastCheckpoint != "completed" {
+		t.Fatalf("unrelated restart failure changed the completed pane: %+v", completed)
 	}
 }

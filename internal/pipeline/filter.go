@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -509,6 +510,18 @@ func filterTruthy(value interface{}) bool {
 		return v != 0
 	case float64:
 		return v != 0
+	case json.Number:
+		// Inspect the mantissa so tiny nonzero values stay truthy and large
+		// exponents never require floating-point conversion or expansion.
+		for _, digit := range v {
+			if digit == 'e' || digit == 'E' {
+				break
+			}
+			if digit >= '1' && digit <= '9' {
+				return true
+			}
+		}
+		return false
 	case nil:
 		return false
 	default:

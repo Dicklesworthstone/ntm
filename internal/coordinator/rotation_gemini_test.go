@@ -277,6 +277,120 @@ func TestRotationServerScopedNativeAccounting(t *testing.T) {
 	}
 }
 
+func TestRotationTranscriptAttributionBoundsInitialLookup(t *testing.T) {
+	for _, kind := range []string{"unbounded caller", "earlier caller deadline", "caller cancellation"} {
+		t.Run(kind, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			if kind == "earlier caller deadline" {
+				cancel()
+				parent, cancel = context.WithTimeout(context.Background(), 250*time.Millisecond)
+			}
+			defer cancel()
+			parentDeadline, parentHasDeadline := parent.Deadline()
+			pane := tmux.Pane{ID: "%1", PID: 101, Type: tmux.AgentGemini, Title: "bounded__gmi_1"}
+			lookupCalls := 0
+			var lookupErr error
+			rc := &rotationChecker{
+				session: "bounded", threshold: 80,
+				getPanes: func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil },
+				paneCwdContext: func(ctx context.Context, _ string) (string, bool) {
+					lookupCalls++
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						t.Error("initial directory lookup has no deadline")
+						return "", false
+					}
+					if parentHasDeadline && !deadline.Equal(parentDeadline) {
+						t.Errorf("lookup changed caller deadline: got %s, want %s", deadline, parentDeadline)
+					}
+					if time.Until(deadline) > rotationAttributionTimeout {
+						t.Error("initial directory lookup exceeds the attribution budget")
+					}
+					if kind == "caller cancellation" {
+						cancel()
+					}
+					// Model a wedged display-message without invoking tmux. Its
+					// context must release the pass and prevent further probes.
+					<-ctx.Done()
+					lookupErr = ctx.Err()
+					return "", false
+				},
+				processUsageContext: func(context.Context, string, int) (*ntmctx.TranscriptUsage, bool) {
+					t.Error("expired attribution continued into process discovery")
+					return nil, false
+				},
+				allPanes: func(context.Context) (map[string][]tmux.Pane, error) {
+					t.Error("expired attribution continued into fleet discovery")
+					return nil, errors.New("unexpected fleet discovery")
+				},
+				enqueue: func(string, string, float64) *ntmctx.PendingRotation {
+					t.Error("timed-out attribution authorized rotation")
+					return nil
+				},
+			}
+			if decisions := rc.runOnce(parent); len(decisions) != 0 {
+				t.Fatalf("timed-out attribution produced decisions: %+v", decisions)
+			}
+			wantErr := context.DeadlineExceeded
+			if kind == "caller cancellation" {
+				wantErr = context.Canceled
+			}
+			if lookupCalls != 1 || !errors.Is(lookupErr, wantErr) {
+				t.Fatalf("lookup did not stop at its context boundary: calls=%d err=%v, want %v", lookupCalls, lookupErr, wantErr)
+			}
+			if kind == "unbounded caller" && parent.Err() != nil {
+				t.Fatal("optional attribution canceled the coordinator context")
+			}
+		})
+	}
+}
+
+func TestRotationTranscriptAttributionSharesBudgetWithFleet(t *testing.T) {
+	pane := tmux.Pane{ID: "%1", PID: 101, Type: tmux.AgentGemini, Title: "bounded__gmi_1"}
+	cwd := t.TempDir()
+	var deadline time.Time
+	assertDeadline := func(ctx context.Context) {
+		t.Helper()
+		observed, ok := ctx.Deadline()
+		if !ok {
+			t.Error("attribution probe has no deadline")
+			return
+		}
+		if deadline.IsZero() {
+			deadline = observed
+		} else if !observed.Equal(deadline) {
+			t.Errorf("attribution probe restarted the budget: got %s, want %s", observed, deadline)
+		}
+	}
+	directoryCalls, processCalls, inventoryCalls := 0, 0, 0
+	rc := &rotationChecker{
+		paneCwdContext: func(ctx context.Context, _ string) (string, bool) {
+			directoryCalls++
+			assertDeadline(ctx)
+			if directoryCalls == 1 {
+				return cwd, true
+			}
+			return "", false // Unknown fleet cwd cannot authorize transcript fallback.
+		},
+		processUsageContext: func(ctx context.Context, _ string, _ int) (*ntmctx.TranscriptUsage, bool) {
+			processCalls++
+			assertDeadline(ctx)
+			return nil, false
+		},
+		allPanes: func(ctx context.Context) (map[string][]tmux.Pane, error) {
+			inventoryCalls++
+			assertDeadline(ctx)
+			return map[string][]tmux.Pane{"bounded": {pane}}, nil
+		},
+	}
+	if usages := rc.resolvePaneTranscriptsContext(context.Background(), []tmux.Pane{pane}); len(usages) != 0 {
+		t.Fatalf("incomplete fleet evidence produced usage: %+v", usages)
+	}
+	if directoryCalls != 2 || processCalls != 1 || inventoryCalls != 1 {
+		t.Fatalf("did not exercise the shared attribution pass: directories=%d processes=%d inventories=%d", directoryCalls, processCalls, inventoryCalls)
+	}
+}
+
 func TestRotationRemotePanesNeverReadControllerTranscripts(t *testing.T) {
 	original := tmux.DefaultClient.Remote
 	t.Cleanup(func() { tmux.DefaultClient.Remote = original })

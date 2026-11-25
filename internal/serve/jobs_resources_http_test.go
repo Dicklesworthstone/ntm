@@ -167,7 +167,7 @@ func TestResumeJobUsesBoundTargetAndFreshExecutionState(t *testing.T) {
 			}
 			return prior, nil
 		},
-		func(_ context.Context, runID, session string, _ map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+		func(_ context.Context, runID, session string, _ map[string]interface{}, state *pipeline.ExecutionState, _ pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 			called = true
 			if session != "admitted-session" || state != prior || state.Variables["fresh"] != "latest-checkpoint" {
 				t.Fatalf("resume lost target binding or used an admission-time state copy: %q %+v", session, state)
@@ -201,7 +201,7 @@ func TestResumeJobRejectsStorageDriftBeforeEngineOrStateLoad(t *testing.T) {
 			called = true
 			return &pipeline.ExecutionState{RunID: "saved-run", Session: "wrong-session"}, nil
 		},
-		func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+		func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState, pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 			called = true
 			return pipeline.PipelineRunOutput{}
 		})

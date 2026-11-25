@@ -1096,9 +1096,60 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 	if c.mailClient == nil {
 		return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: "assignment delivery unavailable: agent mail client is not configured"}
 	}
+	if assignment == nil || rec == nil || rec.ID != assignment.BeadID {
+		return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: "assignment has no matching work recommendation"}
+	}
 	if assignment.AgentMailName == "" {
 		return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: "assignment delivery unavailable: agent has no agent-mail identity"}
 	}
+
+	// Triage ranks work but does not carry its description. Resolve the exact
+	// live write set before creating an intent: file ownership commonly appears
+	// only in the bead body, and a title can instead name read-only inputs.
+	// Never let a missing body or a newly added operator gate turn into an
+	// unreserved assignment. Pending recovery keeps its persisted write set.
+	lookup := c.workItemDetailsFn
+	if lookup == nil {
+		lookup = func(ctx context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+			return bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, beadID)
+		}
+	}
+	details, err := bv.ReadForMutationContext(ctx, c.projectKey, func() (*bv.BeadAssignmentDetails, error) {
+		return lookup(ctx, assignment.BeadID)
+	})
+	if err == nil {
+		err = bv.ValidateBeadAssignmentAuthorizationWithOperatorGatedLabels(details, bv.BeadAssignmentAuthorization{
+			BeadID: assignment.BeadID, AllowUnassignedOpen: true,
+		}, c.operatorGatedLabels)
+	}
+	if err != nil {
+		return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: fmt.Sprintf("read live assignment scope: %v", err)}
+	}
+	live := *rec
+	live.Title, live.Type, live.Status, live.Priority = details.Title, liveIssueType(details.IssueType, rec.Type), details.Status, details.Priority
+	live.Labels = append([]string(nil), details.Labels...)
+	live.BlockedBy = append([]string(nil), details.BlockedBy...)
+	if strings.TrimSpace(live.Type) == "" || !recommendationPassesSemanticGatesWithOperatorLabels(live, c.operatorGatedLabels) {
+		return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: "live assignment no longer identifies eligible implementation work"}
+	}
+	requestedPaths := assignpkg.ReservationPathsForBead(details.Title, details.Description)
+	if assignpkg.DeclaresOwnedPaths(details.Description) {
+		if len(requestedPaths) == 0 {
+			return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: assignpkg.ErrOwnedSectionHasNoPaths.Error()}
+		}
+		// Explicit outputs may be new files in new directories. Their declared
+		// scope must not disappear merely because it does not exist yet.
+		requestedPaths, err = validateCoordinatorReservationPaths(requestedPaths)
+		if err != nil {
+			return AssignmentResult{Assignment: safeCoordinatorWorkProjection(assignment), Error: fmt.Sprintf("validate owned assignment paths: %v", err)}
+		}
+	} else {
+		requestedPaths = repositoryReservationPaths(c.projectKey, requestedPaths)
+	}
+	prepared := *assignment
+	prepared.BeadTitle, prepared.Priority = details.Title, details.Priority
+	prepared.FilesToReserve = append([]string(nil), requestedPaths...)
+	assignment, rec = &prepared, &live
 
 	idempotencyKey, err := assignmentstore.NewAssignmentIdempotencyKey()
 	if err != nil {
@@ -1106,7 +1157,6 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 	}
 	claimActor := assignmentstore.StableClaimActor(assignment.AgentMailName, idempotencyKey)
 	body := c.formatAssignmentMessage(assignment, rec, claimActor)
-	requestedPaths := repositoryReservationPaths(c.projectKey, assignment.FilesToReserve)
 
 	store, err := assignmentstore.LoadStoreStrict(c.session)
 	if err != nil {
@@ -1114,8 +1164,7 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 	}
 	// Enrich the fresh intent before Execute records it, so the ledger holds
 	// exactly the prompt the agent receives and recoverPendingAssignment
-	// replays it without querying cass or cm again. The triage record carries
-	// no description, so the retrieval query is the title and labels.
+	// replays it without querying cass or cm again.
 	prompt, cassInjection, memoryInjection := robot.EnrichAssignmentPrompt(ctx, robot.AssignmentPrompt{
 		Prompt: body, Title: assignment.BeadTitle, Labels: rec.Labels, AgentType: assignment.AgentType,
 		Session: c.session, ProjectDir: c.projectKey,
@@ -1713,6 +1762,14 @@ func (c *SessionCoordinator) formatAssignmentMessage(assignment *WorkAssignment,
 		sb.WriteString("\n")
 	}
 
+	if len(assignment.FilesToReserve) > 0 {
+		sb.WriteString("## Reserved Files\n\n")
+		for _, path := range assignment.FilesToReserve {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", path))
+		}
+		sb.WriteString("\n")
+	}
+
 	sb.WriteString("## Instructions\n\n")
 	sb.WriteString("1. Review the bead with `br show " + assignment.BeadID + "`\n")
 	if len(claimActor) > 0 && strings.TrimSpace(claimActor[0]) != "" {
@@ -1720,7 +1777,11 @@ func (c *SessionCoordinator) formatAssignmentMessage(assignment *WorkAssignment,
 	} else {
 		sb.WriteString("2. Verify the bead is assigned to you before editing\n")
 	}
-	sb.WriteString("3. Verify the listed file reservations before editing\n")
+	if len(assignment.FilesToReserve) > 0 {
+		sb.WriteString("3. Verify the listed file reservations before editing\n")
+	} else {
+		sb.WriteString("3. Reserve any files you need to edit before changing them\n")
+	}
 	sb.WriteString("4. Implement and test\n")
 	sb.WriteString("5. Close with `br close " + assignment.BeadID + "`\n")
 	sb.WriteString("6. Commit with `.beads/` changes\n\n")

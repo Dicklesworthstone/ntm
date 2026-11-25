@@ -612,7 +612,7 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	ctx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
 	path := "/api/v1/pipelines/" + prior.RunID + "/resume"
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"background":true,"variables":{},"max_selector_output_bytes_total":12345,"max_step_count_total":40,"max_materialized_step_nodes":50}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"background":true,"variables":{},"mode":"force-iter","step_id":"delay","iteration":0,"max_resume_age":"1w","on_roster_change":"abort","max_selector_output_bytes_total":12345,"max_step_count_total":40,"max_materialized_step_nodes":50}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
@@ -651,6 +651,12 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	if err := json.Unmarshal(data, &launch); err != nil || !launch.Resume || launch.Config.RunID != prior.RunID || launch.Config.Session != "" || len(launch.Variables) != 0 || launch.Config.ResumeOptions.MaxSelectorOutputBytesTotal != 12345 || launch.Config.ResumeOptions.MaxStepCountTotal != 40 || launch.Config.ResumeOptions.MaxMaterializedStepNodes != 50 {
 		t.Fatalf("HTTP resume changed the detached worker inputs: %s error=%v", data, err)
 	}
+	opts := launch.Config.ResumeOptions
+	if opts.Mode != pipeline.ResumeModeForceIter || opts.StepID != "delay" || opts.Iteration != 0 ||
+		opts.MaxResumeAge != 7*24*time.Hour || opts.OnRosterChange != pipeline.ResumeRosterAbort ||
+		!opts.KeepState || opts.Reset {
+		t.Fatalf("detached resume discarded recovery controls or reset completed work: %+v", opts)
+	}
 	// Cancellation is addressed to the same run through a fresh server,
 	// not to the already-ended request or a process-local registry handle.
 	fresh := &Server{projectDir: root}
@@ -665,6 +671,212 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	}
 }
 
+func TestRESTBackgroundResumeResetReexecutesCompletedPrefix(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	prior := interruptedAPIDetachedResume(t, root)
+	prefix := prior.Steps["once"]
+	if prefix.StartedAt.IsZero() || prefix.FinishedAt.IsZero() {
+		t.Fatalf("completed prefix has no execution timestamps: %+v", prefix)
+	}
+	frozen, err := os.ReadFile(prior.WorkflowFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	srv.projectDir = root
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", strings.NewReader(`{"background":true,"reset":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("detached reset was not accepted: %d %s", rec.Code, rec.Body)
+	}
+
+	state := awaitAPIDetachedState(t, root, prior.RunID, pipeline.StatusCompleted)
+	replayed := state.Steps["once"]
+	// A new timestamp from the actual worker proves that reset reached the
+	// engine and replayed the already-completed prefix, not just its envelope.
+	if replayed.Status != pipeline.StatusCompleted || !replayed.StartedAt.After(prefix.FinishedAt) {
+		t.Fatalf("detached reset retained completed work: before=%+v after=%+v", prefix, replayed)
+	}
+	if state.Steps["delay"].Status != pipeline.StatusCompleted || state.Steps["finish"].Status != pipeline.StatusCompleted {
+		t.Fatalf("detached reset did not finish the replayed workflow: %+v", state.Steps)
+	}
+	if state.RunID != prior.RunID || state.Session != prior.Session || state.Variables["saved"] != "keep" || len(state.CommandExecutions) != 0 {
+		t.Fatalf("detached reset lost saved inputs or ran an excluded command: %+v", state)
+	}
+	if after, err := os.ReadFile(prior.WorkflowFile); err != nil || !bytes.Equal(frozen, after) {
+		t.Fatalf("detached reset changed the frozen workflow: %v", err)
+	}
+}
+
+func TestRESTBackgroundResumeCompletedReplayAndRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, wantError      string
+		wantPrefix, wantIterations string
+		consumer                   bool
+	}{
+		{
+			name: "reset", body: `{"background":true,"reset":true}`,
+			wantPrefix: "once\nonce\n", wantIterations: "0\n1\n2\n0\n1\n2\n",
+		},
+		{
+			name: "forced suffix", body: `{"background":true,"mode":"force-iter","step_id":"batch","iteration":1}`,
+			wantPrefix: "once\n", wantIterations: "0\n1\n2\n1\n2\n",
+		},
+		{name: "default", body: `{"background":true}`, wantError: "already completed"},
+		{name: "continue", body: `{"background":true,"mode":"continue"}`, wantError: "already completed"},
+		{name: "restart failed", body: `{"background":true,"mode":"restart-failed"}`, wantError: "already completed"},
+		{
+			name: "consumed loop", body: `{"background":true,"mode":"force-iter","step_id":"batch","iteration":1}`,
+			consumer: true, wantError: "downstream recovery evidence",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflow := &pipeline.Workflow{
+				SchemaVersion: pipeline.SchemaVersion, Name: "completed-detached-replay",
+				Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+				Steps: []pipeline.Step{
+					{ID: "prefix", Command: "printf 'once\\n' >> prefix-effects"},
+					{ID: "batch", DependsOn: []string{"prefix"}, Loop: &pipeline.LoopConfig{
+						Items: "${vars.items}", Steps: []pipeline.Step{
+							{ID: "work", Command: "printf '%s\\n' '${loop.index}' >> iteration-effects"},
+						},
+					}},
+				},
+			}
+			if tc.consumer {
+				workflow.Steps = append(workflow.Steps, pipeline.Step{
+					ID: "consumer", DependsOn: []string{"batch"}, Command: "printf 'consumed\\n' >> consumer-effects",
+				})
+			}
+			cfg := pipeline.DefaultExecutorConfig("detached-replay-session")
+			cfg.ProjectDir = root
+			cfg.DefaultTimeout, cfg.GlobalTimeout = 5*time.Second, 10*time.Second
+			first, err := pipeline.RunControlledPipeline(context.Background(), workflow,
+				map[string]interface{}{"items": []interface{}{"a", "b", "c"}}, cfg, nil)
+			if err != nil || first == nil || first.Status != pipeline.StatusCompleted {
+				t.Fatalf("initial native workflow did not complete: state=%+v error=%v", first, err)
+			}
+			registerAPIDetachedCleanup(t, root, first.RunID)
+			prior, err := pipeline.LoadState(root, first.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior.LastCheckpointAt.IsZero() || prior.FinishedAt.IsZero() {
+				t.Fatalf("completed fixture has no durable completion timestamps: %+v", prior)
+			}
+			for _, id := range []string{"prefix", "batch_iter0_work", "batch_iter1_work", "batch_iter2_work"} {
+				receipt, ok := prior.CommandExecutions[id]
+				if !ok || receipt.Status != "settled" || receipt.Result.Status != pipeline.StatusCompleted {
+					t.Fatalf("fixture has no settled native command receipt for %s: %+v", id, receipt)
+				}
+			}
+			assertEffects := func(prefix, iterations string) {
+				t.Helper()
+				for name, want := range map[string]string{"prefix-effects": prefix, "iteration-effects": iterations} {
+					if got, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(got) != want {
+						t.Fatalf("%s = %q, want %q (read error: %v)", name, got, want, err)
+					}
+				}
+				if tc.consumer {
+					if got, err := os.ReadFile(filepath.Join(root, "consumer-effects")); err != nil || string(got) != "consumed\n" {
+						t.Fatalf("consumer effects changed: %q (%v)", got, err)
+					}
+				}
+			}
+			assertEffects("once\n", "0\n1\n2\n")
+			before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+			frozen, err := os.ReadFile(prior.WorkflowFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := NewHermeticServer("completed-detached-replay")
+			defer srv.Stop()
+			srv.projectDir = root
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+			var response struct {
+				pipeline.PipelineRunOutput
+				Background bool `json:"background"`
+				Resumed    bool `json:"resumed"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode detached resume response: %v; %d %s", err, rec.Code, rec.Body)
+			}
+			if tc.wantError != "" {
+				if rec.Code != http.StatusBadRequest || response.Success || !strings.Contains(response.Error, tc.wantError) {
+					t.Fatalf("unsafe completed resume was not refused: %d %s", rec.Code, rec.Body)
+				}
+			} else if rec.Code != http.StatusAccepted || !response.Success || !response.Background || !response.Resumed ||
+				response.RunID != prior.RunID || response.Session != prior.Session || response.Status != "pending" {
+				t.Fatalf("explicit completed replay was not accepted: %d %s", rec.Code, rec.Body)
+			}
+
+			// The saved checkpoint is already Completed when startup is
+			// acknowledged. Wait for the worker to release its run fence before
+			// reading the result, including refusal paths that must never write it.
+			waitCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			var state *pipeline.ExecutionState
+			for {
+				control, err := pipeline.AcquireRunControl(waitCtx, root, prior.RunID)
+				if err == nil {
+					state, err = pipeline.LoadState(root, prior.RunID)
+					control.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					break
+				}
+				if !errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+					t.Fatalf("wait for completed replay ownership: %v", err)
+				}
+				select {
+				case <-waitCtx.Done():
+					t.Fatalf("completed replay did not release ownership: %v", waitCtx.Err())
+				case <-tick.C:
+				}
+			}
+			if after, err := os.ReadFile(prior.WorkflowFile); err != nil || !bytes.Equal(frozen, after) {
+				t.Fatalf("completed replay changed the frozen workflow: %v", err)
+			}
+			if tc.wantError != "" {
+				if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+					t.Fatal("refused completed replay rewrote its checkpoint")
+				}
+				assertEffects("once\n", "0\n1\n2\n")
+				return
+			}
+			if state.Status != pipeline.StatusCompleted || state.RunID != prior.RunID || state.Session != prior.Session ||
+				!state.LastCheckpointAt.After(prior.LastCheckpointAt) || !state.FinishedAt.After(prior.FinishedAt) {
+				t.Fatalf("worker did not persist a new completed attempt: before=%+v after=%+v", prior, state)
+			}
+			if !state.Steps["batch_iter1_work"].StartedAt.After(prior.FinishedAt) ||
+				!state.Steps["batch_iter2_work"].StartedAt.After(prior.FinishedAt) {
+				t.Fatalf("worker retained the requested iteration suffix: %+v", state.Steps)
+			}
+			if tc.name == "reset" {
+				if !state.Steps["prefix"].StartedAt.After(prior.FinishedAt) ||
+					!state.Steps["batch_iter0_work"].StartedAt.After(prior.FinishedAt) {
+					t.Fatalf("whole reset retained completed prefix work: %+v", state.Steps)
+				}
+			} else if !reflect.DeepEqual(state.Steps["prefix"], prior.Steps["prefix"]) ||
+				!reflect.DeepEqual(state.Steps["batch_iter0_work"], prior.Steps["batch_iter0_work"]) {
+				t.Fatal("forced iteration changed completed work before its selected suffix")
+			}
+			assertEffects(tc.wantPrefix, tc.wantIterations)
+		})
+	}
+}
+
 func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{
@@ -673,6 +885,14 @@ func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
 		`{"background":true,"max_selector_output_bytes_total":-1}`,
 		`{"background":true,"max_step_count_total":-1}`,
 		`{"background":true,"max_materialized_step_nodes":-1}`,
+		`{"background":true,"mode":"typo"}`,
+		`{"background":true,"mode":"force-iter"}`,
+		`{"background":true,"mode":"force-iter","step_id":"delay","iteration":-1}`,
+		`{"background":true,"on_roster_change":"yes"}`,
+		`{"background":true,"max_resume_age":"-1h"}`,
+		`{"background":true,"max_resume_age":"106752d"}`,
+		`{"background":true,"reset":true,"unknown_control":true}`,
+		`{"background":true} {}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()
@@ -802,5 +1022,76 @@ func TestRESTBackgroundResumeKeepsPermissionAndProjectScope(t *testing.T) {
 	final := awaitAPIDetachedState(t, projectA, prior.RunID, pipeline.StatusCompleted)
 	if !reflect.DeepEqual(final.Steps["once"], prior.Steps["once"]) || final.Steps["finish"].Status != pipeline.StatusCompleted {
 		t.Fatalf("project-scoped continuation lost its completed prefix or tail: %+v", final.Steps)
+	}
+}
+
+func TestRESTPipelineInspectionDistinguishesSameSecondCompletions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	srv := NewHermeticServer("pipeline-completion-precision")
+	defer srv.Stop()
+	srv.projectDir = root
+	started := time.Date(2026, time.November, 25, 12, 0, 0, 123456789, time.UTC)
+	finished := started.Add(400 * time.Millisecond)
+	state := &pipeline.ExecutionState{
+		RunID: "same-second-replay", WorkflowID: "completion-precision", Session: "saved-session",
+		Status: pipeline.StatusCompleted, StartedAt: started, FinishedAt: finished, UpdatedAt: finished,
+		Steps: map[string]pipeline.StepResult{"work": {StepID: "work", Status: pipeline.StatusCompleted}},
+	}
+	previous := make(map[string]pipeline.PipelineSummary)
+	for _, completion := range []time.Time{finished, finished.Add(time.Nanosecond)} {
+		// These durable outcomes differ only in FinishedAt. Status, progress,
+		// run identity and even duration_ms stay the same, as a fast replay can.
+		state.FinishedAt = completion
+		if err := pipeline.SaveState(root, state); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/api/v1/pipelines", "/api/v1/pipelines/" + state.RunID} {
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			var response struct {
+				pipeline.PipelineSummary
+				Success    bool                       `json:"success"`
+				Pipelines  []pipeline.PipelineSummary `json:"pipelines"`
+				DurationMs int64                      `json:"duration_ms"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || !response.Success {
+				t.Fatalf("inspect %s: %d %s (decode error: %v)", path, rec.Code, rec.Body, err)
+			}
+			summary := response.PipelineSummary
+			if path == "/api/v1/pipelines" {
+				if len(response.Pipelines) != 1 {
+					t.Fatalf("list did not return the saved run: %+v", response.Pipelines)
+				}
+				summary = response.Pipelines[0]
+			} else if response.DurationMs != 400 {
+				t.Fatalf("same-millisecond completion changed duration_ms: %d", response.DurationMs)
+			}
+			if summary.RunID != state.RunID || summary.WorkflowID != state.WorkflowID || summary.Session != state.Session ||
+				summary.Status != string(pipeline.StatusCompleted) || summary.Progress.Completed != 1 || summary.Progress.Total != 1 {
+				t.Fatalf("inspection changed the saved run identity or progress: %+v", summary)
+			}
+			for _, stamp := range []struct {
+				name, wire string
+				want       time.Time
+			}{
+				{name: "started_at", wire: summary.StartedAt, want: started},
+				{name: "finished_at", wire: summary.FinishedAt, want: completion},
+			} {
+				parsed, err := time.Parse(time.RFC3339Nano, stamp.wire)
+				if err != nil || !parsed.Equal(stamp.want) {
+					t.Fatalf("%s %s lost execution time precision: got %q, want %s (parse error: %v)", path, stamp.name, stamp.wire, stamp.want, err)
+				}
+			}
+			if prior, ok := previous[path]; ok {
+				if summary.FinishedAt == prior.FinishedAt {
+					t.Fatalf("%s hid a new completion within the same second", path)
+				}
+				if summary.StartedAt != prior.StartedAt || !reflect.DeepEqual(summary.Progress, prior.Progress) {
+					t.Fatalf("%s changed evidence unrelated to the completion time: before=%+v after=%+v", path, prior, summary)
+				}
+			}
+			previous[path] = summary
+		}
 	}
 }

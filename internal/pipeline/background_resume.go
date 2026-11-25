@@ -93,7 +93,12 @@ func prepareBackgroundResume(ctx context.Context, root string, req backgroundReq
 	switch prior.Status {
 	case StatusPending, StatusRunning, StatusFailed, StatusCancelled:
 	case StatusCompleted:
-		return fail(fmt.Errorf("pipeline %q already completed; background resume starts no work", cfg.RunID))
+		// A completed run has no work to continue, but an explicit reset or
+		// iteration rewind can reopen it. Keep the normal receipt and replay
+		// scope checks below: authorization to replay is not a preflight bypass.
+		if !opts.Reset && opts.Mode != ResumeModeForceIter {
+			return fail(fmt.Errorf("pipeline %q already completed; background resume starts no work", cfg.RunID))
+		}
 	default:
 		return fail(fmt.Errorf("pipeline %q has unsupported resume status %q", cfg.RunID, prior.Status))
 	}

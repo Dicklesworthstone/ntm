@@ -1560,6 +1560,43 @@ Important surfaces:
 - health check at `/health`
 - generated OpenAPI spec at [`docs/openapi.json`](docs/openapi.json)
 
+#### Pipeline recovery
+
+REST and async jobs expose the same recovery controls as `ntm pipeline resume`.
+Send a recovery body to `POST /api/v1/pipelines/{run-id}/resume`, or submit a
+`pipeline_resume` job to `POST /api/v1/jobs` with the run ID in its parameters:
+
+```json
+{
+  "type": "pipeline_resume",
+  "params": {
+    "run_id": "run-20261125-123456-abcd",
+    "mode": "restart-failed",
+    "max_resume_age": "7d"
+  }
+}
+```
+
+| Control | Recovery behavior |
+|---|---|
+| `mode: "continue"` (default) | Preserve completed work and resume from the checkpoint; uncertain prior effects still require explicit reconciliation or replay. |
+| `mode: "restart-failed"` | Preserve the completed prefix and explicitly retry failed or interrupted work. |
+| `mode: "force-iter"` with `step_id` and optional `iteration` | Replay a loop from the selected zero-based iteration; an omitted iteration starts at zero. |
+| `reset: true` (CLI: `--keep-state=false`) | Explicitly restart the workflow from the beginning. |
+| `on_roster_change: "proceed"` | Approve resuming in a different tmux session; the default is `"abort"`. |
+| `max_resume_age` | Reject a checkpoint older than the supplied duration, such as `"24h"` or `"7d"`; omitted or zero disables the age limit. |
+
+Replay can repeat command or agent side effects. Inspect the run's recovery
+report before choosing a replay mode; the recovery endpoints reconcile uncertain
+dispatch receipts. Raising token, cost, or duration budgets alone preserves
+completed work. REST accepts `background: true` for a detached worker. A completed
+run requires explicit `reset: true` or a valid `mode: "force-iter"` replay;
+ordinary resume and `restart-failed` do not reopen it. Forced iteration replay
+preserves earlier iterations and independent completed work, and refuses when
+downstream work has already consumed the old loop result. Jobs already run
+asynchronously and reject a second background detach. Unknown request fields
+and invalid policy values are rejected.
+
 Generate or refresh the OpenAPI document:
 
 ```bash

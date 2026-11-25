@@ -1127,6 +1127,37 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		}), nil
 	}
 
+	output := SendOutput{
+		RobotResponse:  NewRobotResponse(true), // Will be updated based on results
+		Session:        opts.Session,
+		SentAt:         time.Now().UTC(),
+		Blocked:        false,
+		Redaction:      initialSummary,
+		Warnings:       initialWarnings,
+		Targets:        []string{},
+		Successful:     []string{},
+		Failed:         []SendError{},
+		MessagePreview: initialPreview,
+	}
+	if trace.IdempotencyKey != "" && !opts.DryRun {
+		prior, resolved := inspectRobotOperation(operationClaimRequest{
+			Kind: state.OperationKindSend, OperationID: trace.IdempotencyKey,
+			Session: opts.Session, BindingHash: sendOperationBindingHash(opts), Store: opts.Store,
+		})
+		if resolved {
+			if prior.Verdict == operationReplay {
+				if err := applyReplayedSendOutcome(&output, prior.Record); err != nil {
+					output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Stored send outcome could not be decoded")
+				}
+				output.AgentHints = generateSendHints(output)
+			} else {
+				output.RobotResponse = prior.Response
+				output.Operation = prior.Info
+			}
+			return finalizeTerminalSendActuation(trace, opts, &output), nil
+		}
+	}
+
 	if !tmux.SessionExists(opts.Session) {
 		return finalizeTerminalSendActuation(trace, opts, &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("session '%s' not found", opts.Session), ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions"),
@@ -1156,19 +1187,6 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			Failed:         []SendError{{Pane: "panes", Error: fmt.Sprintf("failed to get panes: %v", err)}},
 			MessagePreview: initialPreview,
 		}), nil
-	}
-
-	output := SendOutput{
-		RobotResponse:  NewRobotResponse(true), // Will be updated based on results
-		Session:        opts.Session,
-		SentAt:         time.Now().UTC(),
-		Blocked:        false,
-		Redaction:      initialSummary,
-		Warnings:       initialWarnings,
-		Targets:        []string{},
-		Successful:     []string{},
-		Failed:         []SendError{},
-		MessagePreview: initialPreview,
 	}
 
 	// Build exclusion map

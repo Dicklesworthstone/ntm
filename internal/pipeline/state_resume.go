@@ -69,6 +69,13 @@ type ResumeOptions struct {
 	MaxMaterializedStepNodes    int   `json:"max_materialized_step_nodes,omitempty"`
 }
 
+// Normalize validates recovery controls and applies the same safe defaults used
+// by Executor.Resume. Transports can reject invalid requests before acquiring
+// ownership or loading saved state without duplicating the recovery policy.
+func (opts ResumeOptions) Normalize() (ResumeOptions, error) {
+	return normalizeResumeOptions(opts)
+}
+
 // ForeachIterationState records durable progress for loop/foreach-style
 // iteration steps. CompletedIterationIDs use the stable "<step>_iter<N>" form.
 //
@@ -2385,6 +2392,9 @@ func resumeAttemptLimits(limits LimitsConfig, opts ResumeOptions) LimitsConfig {
 }
 
 func normalizeResumeOptions(opts ResumeOptions) (ResumeOptions, error) {
+	if opts.MaxResumeAge < 0 {
+		return opts, fmt.Errorf("max_resume_age must not be negative")
+	}
 	if opts.MaxStepCountTotal < 0 || opts.MaxMaterializedStepNodes < 0 {
 		return opts, fmt.Errorf("max_step_count_total and max_materialized_step_nodes must not be negative")
 	}

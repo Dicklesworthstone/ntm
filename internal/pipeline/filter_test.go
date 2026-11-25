@@ -1,9 +1,52 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		expr  string
+		value string
+		want  bool
+	}{
+		{"item", "0", false},
+		{"item", "-0", false},
+		{"item", "0.0", false},
+		{"item", "-0.000", false},
+		{"item", "0e999999", false},
+		{"item", "0e-999999", false},
+		{"item", "-0.0E+999999", false},
+		{"item", "1.0", true},
+		{"item", "-1", true},
+		{"item", "1e999999", true},
+		{"item", "1e-999999", true},
+		{"item", "-0.0001E-999999", true},
+		{"item.enabled", `{"enabled":0}`, false},
+		{"item.enabled", `{"enabled":0e999999}`, false},
+		{"item.enabled", `{"enabled":1e-999999}`, true},
+		{"item==9007199254740992", "9007199254740993", false},
+		{"item!=9007199254740992", "9007199254740993", true},
+		{"item==9007199254740993", "9007199254740993", true},
+	} {
+		t.Run(tc.expr+"/"+tc.value, func(t *testing.T) {
+			// Exercise the exact number types retained by API and job decoders,
+			// including nested values, without rounding their representation.
+			decoder := json.NewDecoder(strings.NewReader(tc.value))
+			decoder.UseNumber()
+			var item interface{}
+			if err := decoder.Decode(&item); err != nil {
+				t.Fatalf("decode JSON fixture: %v", err)
+			}
+			got, err := EvaluateForeachFilter(tc.expr, FilterContext{Item: item})
+			if err != nil || got != tc.want {
+				t.Fatalf("filter %q for JSON %s = %v, %v; want %v", tc.expr, tc.value, got, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestEvaluateForeachFilterPaneRole(t *testing.T) {
 	got, err := EvaluateForeachFilter("role==proposer", FilterContext{

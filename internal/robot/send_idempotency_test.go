@@ -226,7 +226,11 @@ func TestOperationCrashRecoveryTransport(t *testing.T) {
 		t.Skip("recording tmux transport requires a POSIX shell")
 	}
 	for _, kind := range []string{state.OperationKindSend, state.OperationKindInterrupt} {
-		for _, scenario := range []string{"stale-started", "fresh-started", "stale-unstarted", "start-failure", "completion-failure", "message-guard"} {
+		for _, scenario := range []string{
+			"stale-started", "fresh-started", "stale-unstarted", "start-failure", "completion-failure", "message-guard",
+			"replay-missing-session", "replay-missing-pane", "conflict-missing-session", "canceled-missing-session",
+			"stale-unstarted-missing-session", "dry-run-missing-session", "new-missing-session",
+		} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
@@ -235,7 +239,7 @@ set -eu
 printf '%s\n' "$*" >> "$NTM_OPERATION_TEST_ROOT/calls"
 case "$1" in
   -V) printf 'tmux 3.4\n' ;;
-  has-session) ;;
+  has-session) [ "${NTM_OPERATION_SESSION_MISSING:-0}" != 1 ] ;;
   list-panes)
     activity=
     case "$*" in *'#{window_activity}'*) activity=0_NTM_SEP_ ;; esac
@@ -317,6 +321,14 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 		Message: message, IdempotencyKey: operationID, Redaction: redactionConfig,
 		TimeoutMs: 10000, PollMs: 300,
 		Store: store, ExplicitStore: true,
+	}
+	if strings.HasPrefix(scenario, "replay-") {
+		// A physical selector must remain replayable even after it no longer
+		// resolves; testing --all alone can hide the missing-pane preflight.
+		sendOptions.All = false
+		sendOptions.Pane = "%7"
+		interruptOptions.All = false
+		interruptOptions.Panes = []string{"%7"}
 	}
 
 	type actuationResult struct {
@@ -445,6 +457,98 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 	}
 
 	switch scenario {
+	case "replay-missing-session", "replay-missing-pane", "conflict-missing-session", "dry-run-missing-session":
+		original := assertDelivered(invoke(), state.SendOperationCompleted)
+		calls, mutations := readLog("calls"), readLog("mutations")
+		if scenario == "replay-missing-pane" {
+			t.Setenv("NTM_OPERATION_PANE_ID", "%8")
+			t.Setenv("NTM_OPERATION_PANE_INDEX", "2")
+		} else {
+			t.Setenv("NTM_OPERATION_SESSION_MISSING", "1")
+		}
+		// A receipt lookup must not run delivery policy against replacement
+		// targets or call enrichment services. It does not deliver anything.
+		sendOptions.MessageGuard = func(context.Context, string, []tmux.Pane) error {
+			t.Fatal("durable receipt lookup invoked the delivery guard")
+			return nil
+		}
+		interruptOptions.MessageGuard = sendOptions.MessageGuard
+		if scenario == "conflict-missing-session" {
+			sendOptions.Message = "different task"
+			interruptOptions.Message = sendOptions.Message
+		} else if scenario == "dry-run-missing-session" {
+			sendOptions.DryRun, interruptOptions.DryRun = true, true
+		}
+		result := invoke()
+		switch scenario {
+		case "conflict-missing-session":
+			if result.response.Success || result.response.ErrorCode != ErrCodeIdempotencyConflict || result.operation == nil || result.operation.Replayed {
+				t.Fatalf("conflicting retry lost durable identity after teardown: %+v", result)
+			}
+		case "dry-run-missing-session":
+			if result.response.Success || result.response.ErrorCode != ErrCodeSessionNotFound || result.operation != nil {
+				t.Fatalf("dry run replayed history instead of previewing live targets: %+v", result)
+			}
+		default:
+			if !result.response.Success || result.operation == nil || !result.operation.Replayed {
+				t.Fatalf("completed actuation did not replay after target teardown: %+v", result)
+			}
+			assertMetadata(result.operation, original, AdmissionSubmitted)
+		}
+		if scenario != "dry-run-missing-session" && !bytes.Equal(readLog("calls"), calls) {
+			t.Fatalf("durable retry depended on live tmux: before=%q after=%q", calls, readLog("calls"))
+		}
+		if !bytes.Equal(readLog("mutations"), mutations) || readOperation().OutcomeJSON != original.OutcomeJSON {
+			t.Fatal("retry changed pane input or its recorded outcome")
+		}
+	case "canceled-missing-session", "stale-unstarted-missing-session", "new-missing-session":
+		var original *state.SendOperation
+		if scenario != "new-missing-session" {
+			binding := sendOperationBindingHash(sendOptions)
+			if kind == state.OperationKindInterrupt {
+				binding = interruptOperationBindingHash(interruptOptions)
+			}
+			var err error
+			var claimed bool
+			original, claimed, err = store.ClaimSendOperation(&state.SendOperation{
+				OperationID: operationID, SessionName: session, Kind: kind, BindingHash: binding,
+				CreatedAt: time.Now().UTC().Add(-2 * operationStaleClaimWindow),
+			})
+			if err != nil || !claimed {
+				t.Fatalf("seed unstarted claim: claimed=%t err=%v", claimed, err)
+			}
+			if scenario == "canceled-missing-session" {
+				canceled, ok, err := store.CancelSendOperation(original, time.Now().UTC())
+				if err != nil || !ok {
+					t.Fatalf("cancel unstarted operation: (%+v, %t, %v)", canceled, ok, err)
+				}
+				original = canceled
+			}
+		}
+		t.Setenv("NTM_OPERATION_SESSION_MISSING", "1")
+		calls := readLog("calls")
+		result := invoke()
+		wantCode := ErrCodeSessionNotFound
+		if scenario == "canceled-missing-session" {
+			wantCode = "OPERATION_CANCELED"
+			if result.operation == nil || result.operation.Status != state.SendOperationCanceled || !bytes.Equal(readLog("calls"), calls) {
+				t.Fatalf("cancellation receipt required live tmux: result=%+v calls=%q", result, readLog("calls"))
+			}
+		}
+		if result.response.Success || result.response.ErrorCode != wantCode || len(readLog("mutations")) != 0 {
+			t.Fatalf("missing session changed operation policy: result=%+v mutations=%q", result, readLog("mutations"))
+		}
+		current, err := store.GetSendOperation(operationID, session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if original == nil {
+			if current != nil {
+				t.Fatalf("read-only retry lookup claimed a new operation: %+v", current)
+			}
+		} else if current == nil || current.Status != original.Status || current.ClaimToken != original.ClaimToken || !current.CreatedAt.Equal(original.CreatedAt) || current.DispatchStartedAt != nil {
+			t.Fatalf("failed live preflight took over or changed original claim: original=%+v current=%+v", original, current)
+		}
 	case "message-guard":
 		refused := errors.New("selected project's message policy refuses delivery")
 		calls := 0
@@ -526,7 +630,12 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 		// refusal and receipt must still describe the original target.
 		t.Setenv("NTM_OPERATION_PANE_ID", "%8")
 		t.Setenv("NTM_OPERATION_PANE_INDEX", "2")
+		t.Setenv("NTM_OPERATION_SESSION_MISSING", "1")
+		calls := readLog("calls")
 		assertRefusedWithoutInput(original, code, mutations)
+		if !bytes.Equal(readLog("calls"), calls) {
+			t.Fatal("uncertain dispatch receipt depended on live tmux")
+		}
 	case "stale-unstarted":
 		binding := sendOperationBindingHash(sendOptions)
 		if kind == state.OperationKindInterrupt {

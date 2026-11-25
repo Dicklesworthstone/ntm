@@ -109,7 +109,7 @@ func TestAttentionLiveOverflowCannotAdvanceCursor(t *testing.T) {
 func TestAttentionBufferedLiveOverflowRejectsSubscribe(t *testing.T) {
 	t.Parallel()
 	feed := &fakeAttentionStreamFeed{
-		stats: robot.JournalStats{Count: 1, OldestCursor: 1, NewestCursor: 1, RetentionPeriod: time.Hour},
+		stats:        robot.JournalStats{Count: 1, OldestCursor: 1, NewestCursor: 1, RetentionPeriod: time.Hour},
 		replayEvents: []robot.AttentionEvent{{Cursor: 1, Type: "mail.pending"}},
 	}
 	feed.onReplay = func() {

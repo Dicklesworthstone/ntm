@@ -138,6 +138,28 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
 
+	if trace.IdempotencyKey != "" && !opts.DryRun {
+		prior, resolved := inspectRobotOperation(operationClaimRequest{
+			Kind: state.OperationKindInterrupt, OperationID: trace.IdempotencyKey,
+			Session: opts.Session, BindingHash: operationBinding, Store: opts.Store,
+		})
+		if resolved {
+			var targets []string
+			if prior.Verdict == operationReplay {
+				targets = prior.Record.Targets
+				if err := applyReplayedInterruptOutcome(output, prior.Record); err != nil {
+					output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Stored interrupt outcome could not be decoded")
+					output.CompletedAt = time.Now().UTC()
+				}
+			} else {
+				output.RobotResponse = prior.Response
+				output.Operation = prior.Info
+				output.CompletedAt = time.Now().UTC()
+			}
+			return finalizeTerminalInterruptActuation(trace, opts, targets, output), nil
+		}
+	}
+
 	if !tmux.SessionExists(opts.Session) {
 		output.Failed = append(output.Failed, InterruptError{
 			Pane:   "session",
