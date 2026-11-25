@@ -17,9 +17,24 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
+func useFastWebhookOutboxRetryPolicy(t *testing.T) {
+	t.Helper()
+	webhook.ApplyRetryPolicy(5, 10, 50, 2.0, false)
+	t.Cleanup(func() {
+		webhook.ApplyRetryPolicy(
+			webhook.DefaultMaxRetries,
+			int(webhook.DefaultBaseBackoff/time.Millisecond),
+			int(webhook.DefaultMaxBackoff/time.Millisecond),
+			2.0,
+			false,
+		)
+	})
+}
+
 // Exercise the public command, the real project YAML loader, and the existing
 // manager together. No replacement sender or configuration parser is used.
 func TestWebhookOutboxCommandInspectsAndAuthorizesRecovery(t *testing.T) {
+	useFastWebhookOutboxRetryPolicy(t)
 	oldConfig := cfg
 	cfg = config.Default()
 	t.Cleanup(func() { cfg = oldConfig })
@@ -133,6 +148,7 @@ func TestWebhookOutboxCommandIsRegistered(t *testing.T) {
 }
 
 func TestWebhookOutboxArchiveCommandPreservesFailedReceipt(t *testing.T) {
+	useFastWebhookOutboxRetryPolicy(t)
 	oldConfig := cfg
 	cfg = config.Default()
 	t.Cleanup(func() { cfg = oldConfig })
