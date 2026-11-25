@@ -814,3 +814,37 @@ func TestEncryptedSupportBundle_ZipAndTarGzRoundTripAndFailClosed(t *testing.T) 
 		t.Fatalf("expected failed encrypted bundle not to remain on disk, stat err=%v", statErr)
 	}
 }
+
+func TestGenerator_AddFile_RejectsDuplicateArchivePath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "dup.zip")
+	gen := NewGenerator(GeneratorConfig{
+		OutputPath: outPath,
+		Format:     FormatZip,
+		NTMVersion: "1.38.0",
+		RedactionConfig: redaction.Config{
+			Mode: redaction.ModeOff,
+		},
+	})
+	if err := gen.AddFile("panes/same.txt", []byte("first"), ContentTypeScrollback, time.Now()); err != nil {
+		t.Fatalf("first AddFile failed: %v", err)
+	}
+	if err := gen.AddFile("panes/same.txt", []byte("second"), ContentTypeScrollback, time.Now()); err == nil || !strings.Contains(err.Error(), "duplicate archive path") {
+		t.Fatalf("second AddFile = %v, want duplicate archive path error", err)
+	}
+	if err := gen.AddFile(ManifestFileName, []byte("spoof"), ContentTypeMetadata, time.Now()); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("AddFile(%q) = %v, want reserved manifest error", ManifestFileName, err)
+	}
+	res, err := gen.Generate()
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if res.FileCount != 1 {
+		t.Fatalf("FileCount = %d, want 1", res.FileCount)
+	}
+	vres, err := Verify(outPath)
+	if err != nil || !vres.Valid {
+		t.Fatalf("Verify failed: vres=%+v err=%v", vres, err)
+	}
+}
