@@ -717,6 +717,8 @@ func paneOutputPrefixColor(agentType tmux.AgentType, t theme.Theme) lipgloss.Col
 		return t.Gemini
 	case agent.AgentTypeAntigravity:
 		return t.Lavender
+	case agent.AgentTypeGrok:
+		return t.Peach
 	case agent.AgentTypeCursor:
 		return t.Cursor
 	case agent.AgentTypeWindsurf:
@@ -727,6 +729,8 @@ func paneOutputPrefixColor(agentType tmux.AgentType, t theme.Theme) lipgloss.Col
 		return t.Opencode
 	case agent.AgentTypeOmp:
 		return t.Sky
+	case agent.AgentTypePi:
+		return t.Teal
 	case agent.AgentTypeOllama:
 		return t.Ollama
 	case agent.AgentTypeUser:

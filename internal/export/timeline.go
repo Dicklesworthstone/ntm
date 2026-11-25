@@ -454,8 +454,14 @@ func exportAgentTypeString(agentType string) string {
 		return "gemini"
 	case agent.AgentTypeAntigravity:
 		return "antigravity"
+	case agent.AgentTypeGrok:
+		return "grok"
+	case agent.AgentTypeOpencode:
+		return "opencode"
 	case agent.AgentTypeOmp:
 		return "omp"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:
@@ -480,6 +486,16 @@ func exportAgentTypeFromID(agentID string) string {
 		return "codex"
 	case strings.HasPrefix(trimmed, "gmi"), strings.HasPrefix(trimmed, "gemini"), strings.HasPrefix(trimmed, "google"):
 		return "gemini"
+	case strings.HasPrefix(trimmed, "agy"), strings.HasPrefix(trimmed, "antigravity"):
+		return "antigravity"
+	case strings.HasPrefix(trimmed, "grok"):
+		return "grok"
+	case strings.HasPrefix(trimmed, "oc"), strings.HasPrefix(trimmed, "opencode"):
+		return "opencode"
+	case strings.HasPrefix(trimmed, "omp"):
+		return "omp"
+	case strings.HasPrefix(trimmed, "pi"):
+		return "pi"
 	case strings.HasPrefix(trimmed, "cursor"):
 		return "cursor"
 	case strings.HasPrefix(trimmed, "ws"), strings.HasPrefix(trimmed, "windsurf"):
@@ -504,6 +520,12 @@ func (e *TimelineExporter) getAgentColor(agentType string) string {
 		return firstNonEmptyExportColor(t.CodexColor, t.TextColor)
 	case "gemini", "antigravity":
 		return firstNonEmptyExportColor(t.GeminiColor, t.TextColor)
+	case "grok":
+		return firstNonEmptyExportColor(t.CodexColor, t.TextColor)
+	case "opencode":
+		return firstNonEmptyExportColor(t.CursorColor, t.TextColor)
+	case "omp", "pi":
+		return firstNonEmptyExportColor(t.WindsurfColor, t.TextColor)
 	case "cursor":
 		return firstNonEmptyExportColor(t.CursorColor, t.TextColor)
 	case "windsurf":
