@@ -169,6 +169,8 @@ func personaAgentPresentation(agentType string, th theme.Theme, ic icons.IconSet
 		return ic.Robot, th.Opencode, "oc"
 	case "omp":
 		return ic.Robot, th.Sky, "omp"
+	case "pi":
+		return ic.Robot, th.Teal, "pi"
 	case "ollama":
 		return ic.Ollama, th.Ollama, "ollama"
 	case "user":

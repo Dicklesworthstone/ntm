@@ -103,6 +103,7 @@ func init() {
 		"models.aider",
 		"models.opencode",
 		"models.omp",
+		"models.pi",
 	} {
 		config.RegisterReader(key, restartModelVars)
 	}
@@ -113,6 +114,7 @@ func init() {
 	config.RegisterReader("models.default_ollama", modelNameForPane)
 	config.RegisterReader("models.default_opencode", modelNameForPane)
 	config.RegisterReader("models.default_omp", modelNameForPane)
+	config.RegisterReader("models.default_pi", modelNameForPane)
 
 	// DCG status surface (dcg_status.go).
 	config.RegisterReader("integrations.dcg.allow_override", resolveDCGSettings)

@@ -821,6 +821,8 @@ func activityAgentTypeColor(agentType string, t theme.Theme) lipgloss.Color {
 		return t.Pink
 	case agent.AgentTypeOmp:
 		return t.Sky
+	case agent.AgentTypePi:
+		return t.Teal
 	case agent.AgentTypeCursor:
 		return t.Cursor
 	case agent.AgentTypeWindsurf:

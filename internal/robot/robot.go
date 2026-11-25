@@ -752,6 +752,10 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 			if cfg.Models.DefaultOmp != "" {
 				return cfg.Models.DefaultOmp
 			}
+		case tmux.AgentPi:
+			if cfg.Models.DefaultPi != "" {
+				return cfg.Models.DefaultPi
+			}
 		}
 	}
 	// Fall back to compiled-in defaults from config.DefaultModels() so the

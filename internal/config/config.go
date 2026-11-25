@@ -1778,6 +1778,7 @@ type ModelsConfig struct {
 	// selection to OpenCode's own config (ntm#261).
 	DefaultOpencode string            `toml:"default_opencode"`
 	DefaultOmp      string            `toml:"default_omp"`
+	DefaultPi       string            `toml:"default_pi"`
 	Claude          map[string]string `toml:"claude"`   // Claude model aliases
 	Codex           map[string]string `toml:"codex"`    // Codex model aliases
 	Gemini          map[string]string `toml:"gemini"`   // Gemini model aliases
@@ -1788,6 +1789,7 @@ type ModelsConfig struct {
 	Aider           map[string]string `toml:"aider"`    // Aider model aliases
 	Opencode        map[string]string `toml:"opencode"` // Opencode (oc) model aliases — see ntm#116
 	Omp             map[string]string `toml:"omp"`      // Oh My Pi (omp) model aliases; omp fuzzy-matches whatever is passed
+	Pi              map[string]string `toml:"pi"`       // Pi coding agent model aliases
 	// ContextLimits allows overriding built-in context window sizes for models.
 	// Keys are model names (e.g., "claude-opus-4-6"), values are token counts.
 	// These override the built-in defaults in internal/models/registry.go.
@@ -1811,6 +1813,7 @@ func DefaultModels() ModelsConfig {
 		// Empty: omp's own config (modelRoles.default) chooses the model and
 		// no --model is injected.
 		DefaultOmp: "",
+		DefaultPi:  "",
 		// Claude Code resolves its own family aliases to the newest model in
 		// that family, so mapping to them (not to dated IDs) never goes stale.
 		Claude: map[string]string{
@@ -1841,6 +1844,7 @@ func DefaultModels() ModelsConfig {
 		// omp resolves models itself (fuzzy --model matching over every
 		// provider it is logged into), so the alias table starts empty.
 		Omp: map[string]string{},
+		Pi:  map[string]string{},
 	}
 }
 func canonicalModelLookupAgentType(agentType string) string {
@@ -1867,6 +1871,8 @@ func canonicalModelLookupAgentType(agentType string) string {
 		return "opencode"
 	case agent.AgentTypeOmp:
 		return "omp"
+	case agent.AgentTypePi:
+		return "pi"
 	default:
 		return strings.ToLower(strings.TrimSpace(agentType))
 	}
@@ -1908,6 +1914,8 @@ func (m *ModelsConfig) AliasesFor(agentType string) map[string]string {
 		return m.Opencode
 	case "omp":
 		return m.Omp
+	case "pi":
+		return m.Pi
 	}
 	return nil
 }
@@ -1941,6 +1949,8 @@ func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 			return m.DefaultOpencode
 		case "omp":
 			return m.DefaultOmp
+		case "pi":
+			return m.DefaultPi
 		}
 		return ""
 	}
@@ -4122,6 +4132,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "default_grok = %q  # Empty delegates model selection to Grok Build\n", cfg.Models.DefaultGrok)
 	fmt.Fprintf(w, "default_opencode = %q  # Empty delegates model selection to OpenCode's own config\n", cfg.Models.DefaultOpencode)
 	fmt.Fprintf(w, "default_omp = %q  # Empty delegates model selection to omp's own config (modelRoles.default)\n", cfg.Models.DefaultOmp)
+	fmt.Fprintf(w, "default_pi = %q  # Empty delegates model selection to pi's own config\n", cfg.Models.DefaultPi)
 	fmt.Fprintln(w)
 
 	// Write Claude model aliases
@@ -4167,6 +4178,14 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# Oh My Pi model aliases (e.g., --omp=2:opus or --omp=2:MODEL:high)")
 	for _, alias := range sortedStringMapKeys(cfg.Models.Omp) {
 		fullName := cfg.Models.Omp[alias]
+		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
+	}
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[models.pi]")
+	fmt.Fprintln(w, "# Pi coding agent model aliases (e.g., --pi=1:MODEL)")
+	for _, alias := range sortedStringMapKeys(cfg.Models.Pi) {
+		fullName := cfg.Models.Pi[alias]
 		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
 	}
 	fmt.Fprintln(w)
@@ -5042,6 +5061,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.DefaultOpencode, nil
 		case "default_omp":
 			return cfg.Models.DefaultOmp, nil
+		case "default_pi":
+			return cfg.Models.DefaultPi, nil
 		case "claude":
 			return cfg.Models.Claude, nil
 		case "codex":
@@ -5062,6 +5083,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.Opencode, nil
 		case "omp":
 			return cfg.Models.Omp, nil
+		case "pi":
+			return cfg.Models.Pi, nil
 		case "context_limits":
 			return cfg.Models.ContextLimits, nil
 		}
@@ -5947,11 +5970,13 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("models.default_grok", defaults.Models.DefaultGrok, cfg.Models.DefaultGrok)
 	addDiff("models.default_opencode", defaults.Models.DefaultOpencode, cfg.Models.DefaultOpencode)
 	addDiff("models.default_omp", defaults.Models.DefaultOmp, cfg.Models.DefaultOmp)
+	addDiff("models.default_pi", defaults.Models.DefaultPi, cfg.Models.DefaultPi)
 	addDiff("models.claude", defaults.Models.Claude, cfg.Models.Claude)
 	addDiff("models.codex", defaults.Models.Codex, cfg.Models.Codex)
 	addDiff("models.gemini", defaults.Models.Gemini, cfg.Models.Gemini)
 	addDiff("models.grok", defaults.Models.Grok, cfg.Models.Grok)
 	addDiff("models.omp", defaults.Models.Omp, cfg.Models.Omp)
+	addDiff("models.pi", defaults.Models.Pi, cfg.Models.Pi)
 
 	// Alerts
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)

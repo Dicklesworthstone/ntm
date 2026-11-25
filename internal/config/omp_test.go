@@ -168,3 +168,32 @@ func TestSpawnPacing_OmpCap(t *testing.T) {
 		t.Fatalf("negative omp cap must fail validation naming the key, got %v", err)
 	}
 }
+
+func TestPiModelConfigAndAliases(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[models]
+default_pi = "anthropic/claude-sonnet-4"
+
+[models.pi]
+fast = "openai/gpt-4.1-mini"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Models.GetModelName("pi", ""); got != "anthropic/claude-sonnet-4" {
+		t.Fatalf("default_pi = %q", got)
+	}
+	if got := cfg.Models.GetModelName("pi", "fast"); got != "openai/gpt-4.1-mini" {
+		t.Fatalf("pi alias = %q", got)
+	}
+	if got, err := GetValue(cfg, "models.default_pi"); err != nil || got != "anthropic/claude-sonnet-4" {
+		t.Fatalf("GetValue(models.default_pi) = (%v, %v)", got, err)
+	}
+}
