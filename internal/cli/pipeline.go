@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func newPipelineCmd() *cobra.Command {
@@ -1388,26 +1388,7 @@ func parseDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration is empty")
 	}
 
-	normalized := strings.ToLower(trimmed)
-	if strings.HasSuffix(normalized, "d") {
-		value := strings.TrimSuffix(normalized, "d")
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return 0, fmt.Errorf("invalid day count: %s", value)
-		}
-		return time.Duration(n) * 24 * time.Hour, nil
-	}
-
-	if strings.HasSuffix(normalized, "w") {
-		value := strings.TrimSuffix(normalized, "w")
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return 0, fmt.Errorf("invalid week count: %s", value)
-		}
-		return time.Duration(n) * 7 * 24 * time.Hour, nil
-	}
-
-	return time.ParseDuration(normalized)
+	return util.ParseDuration(strings.ToLower(trimmed))
 }
 
 // newPipelineExecCmd creates the backward-compatible "pipeline exec" command
