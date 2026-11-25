@@ -42,6 +42,9 @@ func (p PaneIdentity) String() string {
 	if p.PaneTitle != "" {
 		return p.PaneTitle
 	}
+	if p.WindowIndex > 0 {
+		return fmt.Sprintf("%s:%d.%d", p.Session, p.WindowIndex, p.PaneIndex)
+	}
 	return fmt.Sprintf("%s:%d", p.Session, p.PaneIndex)
 }
 

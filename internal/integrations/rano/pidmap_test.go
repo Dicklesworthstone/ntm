@@ -33,6 +33,16 @@ func TestPaneIdentityString(t *testing.T) {
 			},
 			want: "myproject:2",
 		},
+		{
+			name: "without pane title in non-zero window",
+			identity: PaneIdentity{
+				Session:     "myproject",
+				WindowIndex: 2,
+				PaneIndex:   0,
+				PaneTitle:   "",
+			},
+			want: "myproject:2.0",
+		},
 	}
 
 	for _, tt := range tests {
