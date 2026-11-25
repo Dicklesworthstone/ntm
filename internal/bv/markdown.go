@@ -236,6 +236,7 @@ const (
 	AgentAntigravity AgentType = "antigravity"
 	AgentGrok        AgentType = "grok"
 	AgentOmp         AgentType = "omp"
+	AgentPi          AgentType = "pi"
 	AgentOpencode    AgentType = "opencode"
 )
 
@@ -247,5 +248,6 @@ var AgentContextBudget = map[AgentType]int{
 	AgentAntigravity: 100000, // Antigravity (Gemini successor): mirrors Gemini
 	AgentGrok:        128000, // Grok Build context budget
 	AgentOmp:         150000, // Oh My Pi frontier CLI context budget
+	AgentPi:          150000, // Pi Coding Agent frontier CLI context budget
 	AgentOpencode:    150000, // OpenCode frontier CLI context budget
 }
