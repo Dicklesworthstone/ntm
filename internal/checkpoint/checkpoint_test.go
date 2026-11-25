@@ -13,6 +13,7 @@ import (
 )
 
 func TestGenerateID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -57,6 +58,7 @@ func TestGenerateID(t *testing.T) {
 }
 
 func TestGenerateID_ParallelCollisionFree10000(t *testing.T) {
+	t.Parallel()
 	const total = 10000
 	const workers = 16
 	perWorker := total / workers
@@ -85,6 +87,7 @@ func TestGenerateID_ParallelCollisionFree10000(t *testing.T) {
 }
 
 func TestSanitizeName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  string
@@ -113,6 +116,7 @@ func TestSanitizeName(t *testing.T) {
 }
 
 func TestStorage_SaveAndLoad(t *testing.T) {
+	t.Parallel()
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
@@ -187,6 +191,7 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 }
 
 func TestStorage_List(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -235,6 +240,7 @@ func TestStorage_List(t *testing.T) {
 }
 
 func TestStorage_SaveScrollback(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -283,6 +289,7 @@ func TestStorage_SaveScrollback(t *testing.T) {
 }
 
 func TestStorage_SaveScrollback_RejectsInvalidIdentifiers(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -320,6 +327,7 @@ func TestStorage_SaveScrollback_RejectsInvalidIdentifiers(t *testing.T) {
 }
 
 func TestStorage_ScrollbackWritesRejectPanesSymlink(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		save        func(*Storage, string, string) (string, error)
@@ -378,6 +386,7 @@ func TestStorage_ScrollbackWritesRejectPanesSymlink(t *testing.T) {
 }
 
 func TestStorage_SaveRejectsPanesSymlink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "save-symlink-panes-session"
@@ -413,6 +422,7 @@ func TestStorage_SaveRejectsPanesSymlink(t *testing.T) {
 }
 
 func TestStorage_Save_RejectsInvalidArtifactPaths(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -439,6 +449,7 @@ func TestStorage_Save_RejectsInvalidArtifactPaths(t *testing.T) {
 }
 
 func TestStorage_Save_RejectsMissingArtifactReferences(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -500,6 +511,7 @@ func TestStorage_Save_RejectsMissingArtifactReferences(t *testing.T) {
 }
 
 func TestStorage_Save_RejectsSymlinkArtifactReferences(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -544,6 +556,7 @@ func TestStorage_Save_RejectsSymlinkArtifactReferences(t *testing.T) {
 }
 
 func TestStorage_Save_PrunesRemovedArtifactReferences(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -617,6 +630,7 @@ func TestStorage_Save_PrunesRemovedArtifactReferences(t *testing.T) {
 }
 
 func TestStorage_Save_AllowsRepairingExistingInvalidArtifactMetadata(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -668,6 +682,7 @@ func TestStorage_Save_AllowsRepairingExistingInvalidArtifactMetadata(t *testing.
 }
 
 func TestStorage_LoadRejectsInvalidIdentifiers(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 
 	if _, err := storage.Load("../escape", "valid-id"); err == nil {
@@ -682,6 +697,7 @@ func TestStorage_LoadRejectsInvalidIdentifiers(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsSymlinkCanonicalFiles(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	sessionName := "testproject"
 
@@ -758,6 +774,7 @@ func TestStorage_Load_RejectsSymlinkCanonicalFiles(t *testing.T) {
 }
 
 func TestStorage_Save_RejectsSymlinkDirectories(t *testing.T) {
+	t.Parallel()
 	t.Run("session", func(t *testing.T) {
 		storage := NewStorageWithDir(t.TempDir())
 		sessionName := "testproject"
@@ -814,6 +831,7 @@ func TestStorage_Save_RejectsSymlinkDirectories(t *testing.T) {
 }
 
 func TestStorage_GetLatest(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -870,6 +888,7 @@ func TestStorage_GetLatest(t *testing.T) {
 }
 
 func TestStorage_GetLatest_PrefersCreatedAtOverDirectoryModTime(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	sessionName := "testproject"
 
@@ -915,6 +934,7 @@ func TestStorage_GetLatest_PrefersCreatedAtOverDirectoryModTime(t *testing.T) {
 }
 
 func TestStorage_ListAndGetLatest_AgreeWhenCreatedAtEqual(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	sessionName := "testproject"
 	createdAt := time.Date(2025, 12, 10, 12, 0, 0, 0, time.UTC)
@@ -961,6 +981,7 @@ func TestStorage_ListAndGetLatest_AgreeWhenCreatedAtEqual(t *testing.T) {
 }
 
 func TestStorage_GetLatest_RejectsInvalidNewestCheckpoint(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1181,6 +1202,7 @@ func containsSubstring(s, substr string) bool {
 }
 
 func TestStorage_ListAll(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1225,6 +1247,7 @@ func TestStorage_ListAll(t *testing.T) {
 }
 
 func TestStorage_ListAll_TieBreaksEqualCreatedAtDeterministically(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	createdAt := time.Date(2025, 12, 10, 12, 0, 0, 0, time.UTC)
 
@@ -1274,6 +1297,7 @@ func TestStorage_ListAll_NoDir(t *testing.T) {
 }
 
 func TestStorage_Delete(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1313,6 +1337,7 @@ func TestStorage_Delete(t *testing.T) {
 }
 
 func TestStorage_Exists(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1347,6 +1372,7 @@ func TestStorage_Exists(t *testing.T) {
 }
 
 func TestStorage_SaveGitPatch(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1418,6 +1444,7 @@ func TestStorage_Delete_RemovesNonDirectoryCheckpointPath(t *testing.T) {
 }
 
 func TestStorage_LoadGitPatch(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1465,6 +1492,7 @@ func TestStorage_LoadGitPatch(t *testing.T) {
 }
 
 func TestStorage_LoadGitPatch_RejectsSymlink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1499,6 +1527,7 @@ func TestStorage_LoadGitPatch_RejectsSymlink(t *testing.T) {
 }
 
 func TestStorage_LoadGitPatch_UsesRecordedPath(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1538,6 +1567,7 @@ func TestStorage_LoadGitPatch_UsesRecordedPath(t *testing.T) {
 }
 
 func TestStorage_SaveGitPatch_CreatesCheckpointDir(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1558,6 +1588,7 @@ func TestStorage_SaveGitPatch_CreatesCheckpointDir(t *testing.T) {
 }
 
 func TestStorage_SaveGitStatus(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1598,6 +1629,7 @@ func TestStorage_SaveGitStatus(t *testing.T) {
 }
 
 func TestStorage_SaveGitStatus_CreatesCheckpointDir(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1619,6 +1651,7 @@ func TestStorage_SaveGitStatus_CreatesCheckpointDir(t *testing.T) {
 }
 
 func TestStorage_LoadGitStatus(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1658,6 +1691,7 @@ func TestStorage_LoadGitStatus(t *testing.T) {
 }
 
 func TestStorage_LoadGitStatus_RejectsSymlink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1692,6 +1726,7 @@ func TestStorage_LoadGitStatus_RejectsSymlink(t *testing.T) {
 }
 
 func TestStorage_LoadGitStatus_UsesRecordedPath(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1825,6 +1860,7 @@ func TestCheckpointOptions(t *testing.T) {
 }
 
 func TestStorage_List_NonexistentSession(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1855,6 +1891,7 @@ func TestNewStorage(t *testing.T) {
 }
 
 func TestStorage_SaveScrollback_LargeContent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -1895,6 +1932,7 @@ func TestStorage_SaveScrollback_LargeContent(t *testing.T) {
 }
 
 func TestStorage_SaveScrollback_SpecialCharacters(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -1928,6 +1966,7 @@ func TestStorage_SaveScrollback_SpecialCharacters(t *testing.T) {
 }
 
 func TestStorage_FilePermissions(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -1974,6 +2013,7 @@ func TestStorage_FilePermissions(t *testing.T) {
 }
 
 func TestStorage_LoadCorruptedJSON(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -1998,6 +2038,7 @@ func TestStorage_LoadCorruptedJSON(t *testing.T) {
 }
 
 func TestStorage_MultiplePanes(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -2038,6 +2079,7 @@ func TestStorage_MultiplePanes(t *testing.T) {
 }
 
 func TestStorage_EmptyScrollback(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -2070,6 +2112,7 @@ func TestStorage_EmptyScrollback(t *testing.T) {
 // bd-32ck: Tests for assignment and BV snapshot checkpoint fields
 
 func TestCheckpoint_WithAssignments(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -2149,6 +2192,7 @@ func TestCheckpoint_WithAssignments(t *testing.T) {
 }
 
 func TestCheckpoint_WithBVSnapshot(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -2209,6 +2253,7 @@ func TestCheckpoint_WithBVSnapshot(t *testing.T) {
 }
 
 func TestCheckpoint_BackwardCompatibility_NoAssignments(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -2251,6 +2296,7 @@ func TestCheckpoint_BackwardCompatibility_NoAssignments(t *testing.T) {
 }
 
 func TestCheckpoint_WithBothAssignmentsAndBVSnapshot(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 

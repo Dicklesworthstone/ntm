@@ -3674,6 +3674,7 @@ func TestHandlePatchAutoRotateConfigV1_CooldownTooLow(t *testing.T) {
 }
 
 func TestHandlePatchAutoRotateConfigV1_ValidUpdate(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	rec := httptest.NewRecorder()
@@ -6843,6 +6844,7 @@ func TestHandlePolicyAutomationUpdateV1_NoChanges(t *testing.T) {
 // --- handleAccountHistoryV1: limit truncation + reverse order ---
 
 func TestHandleAccountHistoryV1_LimitTruncation(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
 	// Pre-fill server-local history with 5 events
 	state := s.getAccountsState()

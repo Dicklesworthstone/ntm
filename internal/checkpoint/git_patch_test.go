@@ -141,6 +141,7 @@ func TestCaptureWorkingTreePatchBinaryAndUntrackedRoundTrip(t *testing.T) {
 }
 
 func TestCaptureWorkingTreePatchUntrackedIsOptIn(t *testing.T) {
+	t.Parallel()
 	root, commit := gitSnapshotTestRepo(t)
 	gitSnapshotTestWrite(t, root, "new.txt", []byte("not opted in\n"), 0644)
 	gitSnapshotTestWrite(t, root, "asset.bin", []byte{0, 255, 254}, 0644)
@@ -156,6 +157,7 @@ func TestCaptureWorkingTreePatchUntrackedIsOptIn(t *testing.T) {
 }
 
 func TestCaptureWorkingTreePatchOverridesPresentationConfiguration(t *testing.T) {
+	t.Parallel()
 	root, commit := gitSnapshotTestRepo(t)
 	gitSnapshotTestWrite(t, root, ".gitattributes", []byte("*.bin diff=preview\n"), 0644)
 	gitSnapshotTestCommand(t, root, "add", ".gitattributes")
@@ -185,6 +187,7 @@ func TestCaptureWorkingTreePatchOverridesPresentationConfiguration(t *testing.T)
 }
 
 func TestCaptureWorkingTreePatchLimitsAndCancellation(t *testing.T) {
+	t.Parallel()
 	root, commit := gitSnapshotTestRepo(t)
 	gitSnapshotTestWrite(t, root, "tracked.txt", []byte(strings.Repeat("different content\n", 200)), 0644)
 	result, err := captureWorkingTreePatch(context.Background(), root, commit,
@@ -211,6 +214,7 @@ func TestCaptureWorkingTreePatchLimitsAndCancellation(t *testing.T) {
 }
 
 func TestCaptureWorkingTreePatchRejectsNestedRepository(t *testing.T) {
+	t.Parallel()
 	root, commit := gitSnapshotTestRepo(t)
 	nested := filepath.Join(root, "nested")
 	if err := os.Mkdir(nested, 0755); err != nil {
@@ -226,6 +230,7 @@ func TestCaptureWorkingTreePatchRejectsNestedRepository(t *testing.T) {
 }
 
 func TestInspectUntrackedGitPathRejectsEscapesAndParentSymlinks(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	outside := t.TempDir()
 	gitSnapshotTestWrite(t, outside, "private", []byte("must not read\n"), 0600)
@@ -243,6 +248,7 @@ func TestInspectUntrackedGitPathRejectsEscapesAndParentSymlinks(t *testing.T) {
 }
 
 func TestGitPatchBufferCannotBypassLimitWithReaderFrom(t *testing.T) {
+	t.Parallel()
 	out := &gitPatchBuffer{limit: 3}
 	// Hide the source's WriterTo so io.Copy would prefer the destination's
 	// ReaderFrom, which embedding bytes.Buffer would accidentally promote.

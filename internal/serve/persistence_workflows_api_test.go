@@ -22,6 +22,7 @@ import (
 )
 
 func TestPersistenceWorkflowsOpenAPISchemaContracts(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("1.39.0-wave15", "http://127.0.0.1:7337")
 	if err != nil {
 		t.Fatalf("GenerateOpenAPISpecFromRouter: %v", err)
@@ -1015,7 +1016,9 @@ label = "Done"
 // 5. Server shutdown wakes active SSE /events streams promptly.
 // 6. WS attention subscribe+replay buffers concurrent live events in strict monotonic order.
 func TestWorkflowsPass3ReliabilityContracts(t *testing.T) {
+	t.Parallel()
 	t.Run("stop_prebind_reservation_cancels_immediately_without_stall", func(t *testing.T) {
+		t.Parallel()
 		repoDir := t.TempDir()
 		srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: repoDir})
 		defer srv.Stop()
@@ -1057,6 +1060,7 @@ func TestWorkflowsPass3ReliabilityContracts(t *testing.T) {
 	})
 
 	t.Run("stale_prior_completed_checkpoint_never_clobbers_cancelled_different_workflow", func(t *testing.T) {
+		t.Parallel()
 		repoDir := t.TempDir()
 		srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: repoDir})
 		defer srv.Stop()
@@ -1096,6 +1100,7 @@ func TestWorkflowsPass3ReliabilityContracts(t *testing.T) {
 	})
 
 	t.Run("explicit_project_dir_preserves_idempotency_replay_across_config_patch", func(t *testing.T) {
+		t.Parallel()
 		defaultA := t.TempDir()
 		defaultB := t.TempDir()
 		explicitProj := t.TempDir()
@@ -1155,6 +1160,7 @@ label = "complete"
 	})
 
 	t.Run("sse_stream_exits_promptly_on_server_shutdown", func(t *testing.T) {
+		t.Parallel()
 		srv := New(Config{Host: "127.0.0.1", Port: 0})
 		defer srv.Stop()
 
@@ -1190,6 +1196,7 @@ label = "complete"
 	})
 
 	t.Run("ws_attention_subscribe_buffers_live_events_during_replay_in_order", func(t *testing.T) {
+		t.Parallel()
 		feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
 			JournalSize: 128,
 		})

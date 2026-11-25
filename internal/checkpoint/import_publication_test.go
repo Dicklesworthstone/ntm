@@ -91,8 +91,10 @@ func writePublicationArchive(t *testing.T, format ExportFormat, cp *Checkpoint, 
 }
 
 func TestImportPublishesCompleteArchiveWithOverrides(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			storage := &Storage{BaseDir: t.TempDir()}
 			cp := publicationCheckpoint("new")
 			cp.Session.Panes = []PaneState{{ID: "%7", AgentType: "cc", ScrollbackFile: "panes/window/agent.txt"}}
@@ -134,6 +136,7 @@ func TestImportPublishesCompleteArchiveWithOverrides(t *testing.T) {
 }
 
 func TestImportLateFilesystemFailureDoesNotInstallPartialCheckpoint(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		for _, overwrite := range []bool{false, true} {
 			name := string(format) + "/new"
@@ -141,6 +144,7 @@ func TestImportLateFilesystemFailureDoesNotInstallPartialCheckpoint(t *testing.T
 				name = string(format) + "/overwrite"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				storage := &Storage{BaseDir: t.TempDir()}
 				cp := publicationCheckpoint("old")
 				cpDir := filepath.Join(storage.BaseDir, cp.SessionName, cp.ID)
@@ -183,9 +187,11 @@ func TestImportLateFilesystemFailureDoesNotInstallPartialCheckpoint(t *testing.T
 }
 
 func TestImportOverwriteUsesNewDirectoryGeneration(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			storage := &Storage{BaseDir: t.TempDir()}
 			cp := publicationCheckpoint("old")
 			cp.Git.PatchFile = "git.patch"
@@ -229,6 +235,7 @@ func TestImportOverwriteUsesNewDirectoryGeneration(t *testing.T) {
 }
 
 func TestImportConcurrentArchiveCreateHasOneWinner(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	storage := &Storage{BaseDir: t.TempDir()}
 	cp := publicationCheckpoint("winner")

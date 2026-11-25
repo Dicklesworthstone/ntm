@@ -124,6 +124,7 @@ func TestDaemonOwnershipHelper(t *testing.T) {
 }
 
 func TestDaemonOwnershipConcurrentProjectLaunches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const contenders = 16
 	all := make([]*Supervisor, contenders)
@@ -166,6 +167,7 @@ func TestDaemonOwnershipConcurrentProjectLaunches(t *testing.T) {
 }
 
 func TestDaemonOwnershipAliasesAndIndependentScopes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(dir, alias); err != nil {
@@ -279,6 +281,7 @@ func TestDaemonOwnershipFailedJournalPreventsExec(t *testing.T) {
 }
 
 func TestDaemonOwnershipPreparedCrashRequiresInspection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	exe, err := os.Executable()
 	if err != nil {
@@ -300,6 +303,7 @@ func TestDaemonOwnershipPreparedCrashRequiresInspection(t *testing.T) {
 }
 
 func TestDaemonOwnershipControllerCrashDoesNotDuplicateOrKillOrphan(t *testing.T) {
+	t.Parallel()
 	// Ownership records live under the canonical project path; resolve
 	// macOS's /var -> /private/var temp symlink before comparing paths.
 	dir, err := filepath.EvalSymlinks(t.TempDir())

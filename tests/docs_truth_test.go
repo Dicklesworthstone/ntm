@@ -81,6 +81,7 @@ func docsTruthClaims() []docsTruthClaim {
 // for each enumerated claim, the stale phrasing is gone and the shipped
 // statement is present.
 func TestDocsShippedFeaturesNotDocumentedAsPlanned(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	cache := map[string]string{}
 	for _, c := range docsTruthClaims() {

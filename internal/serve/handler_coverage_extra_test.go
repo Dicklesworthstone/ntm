@@ -33,6 +33,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestIdempotencyStoreStop(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(time.Hour)
 	store.SetWithFingerprint("key1", "", []byte(`{"ok":true}`), 200, nil)
 
@@ -55,6 +56,7 @@ func TestIdempotencyStoreStop(t *testing.T) {
 }
 
 func TestIdempotencyStoreExpiry(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(10 * time.Millisecond)
 	defer store.Stop()
 
@@ -110,8 +112,10 @@ func TestNewServer_DoesNotSpawnIdempotencyCleanupGoroutine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServerValidate(t *testing.T) {
+	t.Parallel()
 
 	t.Run("defaults pass", func(t *testing.T) {
+		t.Parallel()
 		srv := New(Config{})
 		if err := srv.validate(); err != nil {
 			t.Fatalf("validate() = %v", err)
@@ -119,6 +123,7 @@ func TestServerValidate(t *testing.T) {
 	})
 
 	t.Run("api key mode without key", func(t *testing.T) {
+		t.Parallel()
 		srv := New(Config{
 			Auth: AuthConfig{Mode: AuthModeAPIKey},
 		})
@@ -129,6 +134,7 @@ func TestServerValidate(t *testing.T) {
 	})
 
 	t.Run("api key mode with key", func(t *testing.T) {
+		t.Parallel()
 		srv := New(Config{
 			Auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "test-key"},
 		})
@@ -143,6 +149,7 @@ func TestServerValidate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildMTLSConfigMissingFiles(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 	srv.auth.MTLS.CertFile = ""
 	srv.auth.MTLS.KeyFile = ""
@@ -154,6 +161,7 @@ func TestBuildMTLSConfigMissingFiles(t *testing.T) {
 }
 
 func TestBuildMTLSConfigBadCA(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	caFile := filepath.Join(dir, "ca.pem")
 	os.WriteFile(caFile, []byte("not a certificate"), 0644)
@@ -169,6 +177,7 @@ func TestBuildMTLSConfigBadCA(t *testing.T) {
 }
 
 func TestBuildMTLSConfigValid(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Generate a self-signed CA certificate
@@ -208,6 +217,7 @@ func TestBuildMTLSConfigValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIdempotencyMiddlewareReplay(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 
@@ -341,6 +351,7 @@ func TestIdempotencyMiddlewareReplay(t *testing.T) {
 }
 
 func TestIdempotencyMiddlewarePreservesReplayRequestID(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 
@@ -394,6 +405,7 @@ func TestIdempotencyMiddlewarePreservesReplayRequestID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResponseRecorder(t *testing.T) {
+	t.Parallel()
 	inner := httptest.NewRecorder()
 	rec := &responseRecorder{ResponseWriter: inner, statusCode: http.StatusOK}
 
@@ -419,6 +431,7 @@ func TestResponseRecorder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleGetConfigV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.projectDir = "/test/project"
 
@@ -444,6 +457,7 @@ func TestHandleGetConfigV1(t *testing.T) {
 }
 
 func TestHandlePatchConfigV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	t.Run("rejects allowed origins in local auth mode and allows in authenticated mode", func(t *testing.T) {
@@ -599,6 +613,7 @@ func TestHandleDoctorV1(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleSessionV1NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -613,6 +628,7 @@ func TestHandleSessionV1NotFound(t *testing.T) {
 }
 
 func TestHandleSessionV1EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/", nil)
 	rctx := chi.NewRouteContext()
@@ -627,6 +643,7 @@ func TestHandleSessionV1EmptyID(t *testing.T) {
 }
 
 func TestHandleSessionEventsV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test/events", nil)
 	rec := httptest.NewRecorder()
@@ -740,6 +757,7 @@ func TestHandleAddBeadDep_BdUnavailable(t *testing.T) {
 }
 
 func TestHandleAddBeadDep_MissingBlockedBy(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	body := `{"blocked_by":""}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-123/deps", strings.NewReader(body))
@@ -820,9 +838,11 @@ func TestHandleCASSCapabilities(t *testing.T) {
 }
 
 func TestHandleCASSSearch_BadRequest(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	t.Run("invalid body", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/cass/search", strings.NewReader("not json"))
 		rec := httptest.NewRecorder()
 		srv.handleCASSSearch(rec, req)
@@ -833,6 +853,7 @@ func TestHandleCASSSearch_BadRequest(t *testing.T) {
 	})
 
 	t.Run("empty query", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/cass/search", strings.NewReader(`{"query":""}`))
 		rec := httptest.NewRecorder()
 		srv.handleCASSSearch(rec, req)
@@ -867,6 +888,7 @@ func TestHandleCASSTimeline(t *testing.T) {
 }
 
 func TestHandleCASSPreview(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/cass/preview", strings.NewReader(`{"query":"test"}`))
 	rec := httptest.NewRecorder()
@@ -954,6 +976,7 @@ func TestHandleMemoryRules(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleListCheckpoints(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/checkpoints/", nil)
 	rctx := chi.NewRouteContext()
@@ -969,6 +992,7 @@ func TestHandleListCheckpoints(t *testing.T) {
 }
 
 func TestHandleGetCheckpoint_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test/checkpoints/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -984,6 +1008,7 @@ func TestHandleGetCheckpoint_NotFound(t *testing.T) {
 }
 
 func TestHandleDeleteCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/test/checkpoints/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -1021,6 +1046,7 @@ func TestPerformDoctorCheckAPI(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleCreateSessionV1_InvalidBody(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
@@ -1031,6 +1057,7 @@ func TestHandleCreateSessionV1_InvalidBody(t *testing.T) {
 }
 
 func TestHandleCreateSessionV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(`{"session":""}`))
 	rec := httptest.NewRecorder()
@@ -1041,6 +1068,7 @@ func TestHandleCreateSessionV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleSessionStatusV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//status", nil)
 	rctx := chi.NewRouteContext()
@@ -1054,6 +1082,7 @@ func TestHandleSessionStatusV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleSessionAttachV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//attach", nil)
 	rctx := chi.NewRouteContext()
@@ -1067,6 +1096,7 @@ func TestHandleSessionAttachV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleSessionZoomV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//zoom", strings.NewReader(`{"pane":0}`))
 	rctx := chi.NewRouteContext()
@@ -1080,6 +1110,7 @@ func TestHandleSessionZoomV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleSessionZoomV1_InvalidBody(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test/zoom", strings.NewReader("bad json"))
 	rctx := chi.NewRouteContext()
@@ -1093,6 +1124,7 @@ func TestHandleSessionZoomV1_InvalidBody(t *testing.T) {
 }
 
 func TestHandleSessionViewV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//view", nil)
 	rctx := chi.NewRouteContext()
@@ -1110,6 +1142,7 @@ func TestHandleSessionViewV1_EmptyID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleListPanesV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//panes/", nil)
 	rctx := chi.NewRouteContext()
@@ -1123,6 +1156,7 @@ func TestHandleListPanesV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleGetPaneV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//panes/0", nil)
 	rctx := chi.NewRouteContext()
@@ -1137,6 +1171,7 @@ func TestHandleGetPaneV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleGetPaneV1_InvalidIndex(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test/panes/abc", nil)
 	rctx := chi.NewRouteContext()
@@ -1151,6 +1186,7 @@ func TestHandleGetPaneV1_InvalidIndex(t *testing.T) {
 }
 
 func TestHandlePaneInputV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//panes/0/input", strings.NewReader(`{"text":"hello"}`))
 	rctx := chi.NewRouteContext()
@@ -1165,6 +1201,7 @@ func TestHandlePaneInputV1_EmptySession(t *testing.T) {
 }
 
 func TestHandlePaneInterruptV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//panes/0/interrupt", nil)
 	rctx := chi.NewRouteContext()
@@ -1179,6 +1216,7 @@ func TestHandlePaneInterruptV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleGetPaneTitleV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//panes/0/title", nil)
 	rctx := chi.NewRouteContext()
@@ -1193,6 +1231,7 @@ func TestHandleGetPaneTitleV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleSetPaneTitleV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions//panes/0/title", strings.NewReader(`{"title":"new"}`))
 	rctx := chi.NewRouteContext()
@@ -1211,6 +1250,7 @@ func TestHandleSetPaneTitleV1_EmptySession(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleListAgentsV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//agents/", nil)
 	rctx := chi.NewRouteContext()
@@ -1224,6 +1264,7 @@ func TestHandleListAgentsV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleAgentSpawnV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//agents/spawn", strings.NewReader(`{"cc_count":1}`))
 	rctx := chi.NewRouteContext()
@@ -1237,6 +1278,7 @@ func TestHandleAgentSpawnV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleAgentSpawnV1_InvalidBody(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test/agents/spawn", strings.NewReader("bad"))
 	rctx := chi.NewRouteContext()
@@ -1250,6 +1292,7 @@ func TestHandleAgentSpawnV1_InvalidBody(t *testing.T) {
 }
 
 func TestHandleAgentSpawnV1_NoAgents(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test/agents/spawn", strings.NewReader(`{}`))
 	rctx := chi.NewRouteContext()
@@ -1263,6 +1306,7 @@ func TestHandleAgentSpawnV1_NoAgents(t *testing.T) {
 }
 
 func TestHandleAgentSendV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//agents/send", strings.NewReader(`{"message":"hello"}`))
 	rctx := chi.NewRouteContext()
@@ -1276,6 +1320,7 @@ func TestHandleAgentSendV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleAgentInterruptV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//agents/interrupt", nil)
 	rctx := chi.NewRouteContext()
@@ -1289,6 +1334,7 @@ func TestHandleAgentInterruptV1_EmptySession(t *testing.T) {
 }
 
 func TestHandleAgentWaitV1_EmptySession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//agents/wait", nil)
 	rctx := chi.NewRouteContext()
@@ -1306,6 +1352,7 @@ func TestHandleAgentWaitV1_EmptySession(t *testing.T) {
 // ===========================================================================
 
 func TestHandleSafetyStatusV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/safety/status", nil)
 	rec := httptest.NewRecorder()
@@ -1316,6 +1363,7 @@ func TestHandleSafetyStatusV1(t *testing.T) {
 }
 
 func TestHandleSafetyBlockedV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/safety/blocked?hours=1&limit=10", nil)
 	rec := httptest.NewRecorder()
@@ -1327,6 +1375,7 @@ func TestHandleSafetyBlockedV1(t *testing.T) {
 }
 
 func TestHandleSafetyCheckV1_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/check",
 		strings.NewReader(`{bad json`))
@@ -1338,6 +1387,7 @@ func TestHandleSafetyCheckV1_BadJSON(t *testing.T) {
 }
 
 func TestHandleSafetyCheckV1_EmptyCommand(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/check",
 		strings.NewReader(`{"command":""}`))
@@ -1349,6 +1399,7 @@ func TestHandleSafetyCheckV1_EmptyCommand(t *testing.T) {
 }
 
 func TestHandleSafetyCheckV1_ValidCommand(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/check",
 		strings.NewReader(`{"command":"ls -la"}`))
@@ -1360,6 +1411,7 @@ func TestHandleSafetyCheckV1_ValidCommand(t *testing.T) {
 }
 
 func TestHandlePolicyGetV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policy?rules=true", nil)
 	rec := httptest.NewRecorder()
@@ -1396,6 +1448,7 @@ func TestHandlePolicyGetV1_WithContent(t *testing.T) {
 }
 
 func TestHandlePolicyUpdateV1_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy",
 		strings.NewReader(`{bad`))
@@ -1407,6 +1460,7 @@ func TestHandlePolicyUpdateV1_BadJSON(t *testing.T) {
 }
 
 func TestHandlePolicyUpdateV1_EmptyContent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy",
 		strings.NewReader(`{"content":""}`))
@@ -1418,6 +1472,7 @@ func TestHandlePolicyUpdateV1_EmptyContent(t *testing.T) {
 }
 
 func TestHandlePolicyValidateV1_WithContent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	content := `{"content":"version: 1\nblocked:\n  - pattern: 'rm -rf /'\n    reason: dangerous"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/validate",
@@ -1431,6 +1486,7 @@ func TestHandlePolicyValidateV1_WithContent(t *testing.T) {
 }
 
 func TestHandlePolicyValidateV1_WithUnknownField(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	content := `{"content":"version: 1\nblocked:\n  - pattern: 'rm -rf /'\nlegacy: true"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/validate",
@@ -1447,6 +1503,7 @@ func TestHandlePolicyValidateV1_WithUnknownField(t *testing.T) {
 }
 
 func TestHandlePolicyValidateV1_NoContent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	// No body - should validate file-based policy
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/validate", nil)
@@ -1460,6 +1517,7 @@ func TestHandlePolicyValidateV1_NoContent(t *testing.T) {
 }
 
 func TestHandlePolicyUpdateV1_UnknownField(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy",
 		strings.NewReader(`{"content":"version: 1\nblocked:\n  - pattern: 'rm -rf /'\nlegacy: true"}`))
@@ -1483,6 +1541,7 @@ func TestHandlePolicyResetV1(t *testing.T) {
 }
 
 func TestHandlePolicyAutomationGetV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policy/automation", nil)
 	rec := httptest.NewRecorder()
@@ -1493,6 +1552,7 @@ func TestHandlePolicyAutomationGetV1(t *testing.T) {
 }
 
 func TestHandlePolicyAutomationUpdateV1_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/automation",
 		strings.NewReader(`{bad json`))
@@ -1504,6 +1564,7 @@ func TestHandlePolicyAutomationUpdateV1_BadJSON(t *testing.T) {
 }
 
 func TestHandlePolicyAutomationUpdateV1_InvalidForceRelease(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/automation",
 		strings.NewReader(`{"force_release":"bogus"}`))
@@ -1519,6 +1580,7 @@ func TestHandlePolicyAutomationUpdateV1_InvalidForceRelease(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleApprovalsListV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals?status=pending", nil)
 	rec := httptest.NewRecorder()
@@ -1529,6 +1591,7 @@ func TestHandleApprovalsListV1(t *testing.T) {
 }
 
 func TestHandleApprovalsHistoryV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/history?limit=5", nil)
 	rec := httptest.NewRecorder()
@@ -1539,6 +1602,7 @@ func TestHandleApprovalsHistoryV1(t *testing.T) {
 }
 
 func TestHandleApprovalGetV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/", nil)
 	rctx := chi.NewRouteContext()
@@ -1552,6 +1616,7 @@ func TestHandleApprovalGetV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalGetV1_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/apr-999", nil)
 	rctx := chi.NewRouteContext()
@@ -1565,6 +1630,7 @@ func TestHandleApprovalGetV1_NotFound(t *testing.T) {
 }
 
 func TestHandleApprovalApproveV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals//approve", nil)
 	rctx := chi.NewRouteContext()
@@ -1578,6 +1644,7 @@ func TestHandleApprovalApproveV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalApproveV1_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/apr-999/approve", nil)
 	rctx := chi.NewRouteContext()
@@ -1591,6 +1658,7 @@ func TestHandleApprovalApproveV1_NotFound(t *testing.T) {
 }
 
 func TestHandleApprovalDenyV1_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals//deny", nil)
 	rctx := chi.NewRouteContext()
@@ -1604,6 +1672,7 @@ func TestHandleApprovalDenyV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalDenyV1_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/apr-999/deny", nil)
 	rctx := chi.NewRouteContext()
@@ -1617,6 +1686,7 @@ func TestHandleApprovalDenyV1_NotFound(t *testing.T) {
 }
 
 func TestHandleApprovalRequestV1_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/request",
 		strings.NewReader(`{bad`))
@@ -1628,6 +1698,7 @@ func TestHandleApprovalRequestV1_BadJSON(t *testing.T) {
 }
 
 func TestHandleApprovalRequestV1_EmptyAction(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/request",
 		strings.NewReader(`{"action":""}`))
@@ -1639,6 +1710,7 @@ func TestHandleApprovalRequestV1_EmptyAction(t *testing.T) {
 }
 
 func TestHandleApprovalRequestV1_Valid(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/request",
 		strings.NewReader(`{"action":"rm -rf /tmp/test","resource":"/tmp/test","reason":"cleanup","ttl_seconds":60}`))
@@ -1654,6 +1726,7 @@ func TestHandleApprovalRequestV1_Valid(t *testing.T) {
 // ===========================================================================
 
 func TestHandleListPipelines(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines", nil)
 	rec := httptest.NewRecorder()
@@ -1664,6 +1737,7 @@ func TestHandleListPipelines(t *testing.T) {
 }
 
 func TestHandleRunPipeline_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/run",
 		strings.NewReader(`{bad json`))
@@ -1675,6 +1749,7 @@ func TestHandleRunPipeline_BadJSON(t *testing.T) {
 }
 
 func TestHandleRunPipeline_MissingWorkflow(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/run",
 		strings.NewReader(`{"session":"test"}`))
@@ -1686,6 +1761,7 @@ func TestHandleRunPipeline_MissingWorkflow(t *testing.T) {
 }
 
 func TestHandleRunPipeline_MissingSession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/run",
 		strings.NewReader(`{"workflow_file":"test.yaml"}`))
@@ -1697,6 +1773,7 @@ func TestHandleRunPipeline_MissingSession(t *testing.T) {
 }
 
 func TestHandleExecPipeline_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/exec",
 		strings.NewReader(`{bad`))
@@ -1708,6 +1785,7 @@ func TestHandleExecPipeline_BadJSON(t *testing.T) {
 }
 
 func TestHandleExecPipeline_MissingSession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/exec",
 		strings.NewReader(`{"workflow":{"name":"test","steps":[]},"session":""}`))
@@ -1719,6 +1797,7 @@ func TestHandleExecPipeline_MissingSession(t *testing.T) {
 }
 
 func TestHandleGetPipeline_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines/", nil)
 	rctx := chi.NewRouteContext()
@@ -1732,6 +1811,7 @@ func TestHandleGetPipeline_EmptyID(t *testing.T) {
 }
 
 func TestHandleGetPipeline_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -1745,6 +1825,7 @@ func TestHandleGetPipeline_NotFound(t *testing.T) {
 }
 
 func TestHandleCancelPipeline_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pipelines/", nil)
 	rctx := chi.NewRouteContext()
@@ -1758,6 +1839,7 @@ func TestHandleCancelPipeline_EmptyID(t *testing.T) {
 }
 
 func TestHandleCancelPipeline_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pipelines/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -1771,6 +1853,7 @@ func TestHandleCancelPipeline_NotFound(t *testing.T) {
 }
 
 func TestHandleResumePipeline_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines//resume",
 		strings.NewReader(`{}`))
@@ -1785,6 +1868,7 @@ func TestHandleResumePipeline_EmptyID(t *testing.T) {
 }
 
 func TestHandleResumePipeline_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/nonexistent/resume",
 		strings.NewReader(`{}`))
@@ -1799,6 +1883,7 @@ func TestHandleResumePipeline_NotFound(t *testing.T) {
 }
 
 func TestHandleValidatePipeline_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/validate",
 		strings.NewReader(`{bad`))
@@ -1810,6 +1895,7 @@ func TestHandleValidatePipeline_BadJSON(t *testing.T) {
 }
 
 func TestHandleValidatePipeline_MissingBothFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/validate",
 		strings.NewReader(`{}`))
@@ -1821,6 +1907,7 @@ func TestHandleValidatePipeline_MissingBothFields(t *testing.T) {
 }
 
 func TestHandleListPipelineTemplates(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines/templates", nil)
 	rec := httptest.NewRecorder()
@@ -1831,6 +1918,7 @@ func TestHandleListPipelineTemplates(t *testing.T) {
 }
 
 func TestHandleCleanupPipelines(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/cleanup",
 		strings.NewReader(`{"older_than_hours":48}`))
@@ -1842,6 +1930,7 @@ func TestHandleCleanupPipelines(t *testing.T) {
 }
 
 func TestHandleCleanupPipelines_EmptyBody(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/cleanup",
 		strings.NewReader(`{}`))
@@ -1857,6 +1946,7 @@ func TestHandleCleanupPipelines_EmptyBody(t *testing.T) {
 // ===========================================================================
 
 func TestHandleMailHealth(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/health", nil)
 	rec := httptest.NewRecorder()
@@ -1868,6 +1958,7 @@ func TestHandleMailHealth(t *testing.T) {
 }
 
 func TestHandleCreateMailAgent_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/agents",
 		strings.NewReader(`{bad`))
@@ -1879,6 +1970,7 @@ func TestHandleCreateMailAgent_BadJSON(t *testing.T) {
 }
 
 func TestHandleCreateMailAgent_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/agents",
 		strings.NewReader(`{"program":"","model":""}`))
@@ -1890,6 +1982,7 @@ func TestHandleCreateMailAgent_MissingFields(t *testing.T) {
 }
 
 func TestHandleGetMailAgent_EmptyName(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/agents/", nil)
 	rctx := chi.NewRouteContext()
@@ -1903,6 +1996,7 @@ func TestHandleGetMailAgent_EmptyName(t *testing.T) {
 }
 
 func TestHandleMailInbox_MissingAgentName(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/inbox", nil)
 	rec := httptest.NewRecorder()
@@ -1913,6 +2007,7 @@ func TestHandleMailInbox_MissingAgentName(t *testing.T) {
 }
 
 func TestHandleSendMessage_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages",
 		strings.NewReader(`{bad`))
@@ -1924,6 +2019,7 @@ func TestHandleSendMessage_BadJSON(t *testing.T) {
 }
 
 func TestHandleSendMessage_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages",
 		strings.NewReader(`{"sender_name":"","to":[],"subject":"","body_md":""}`))
@@ -1935,6 +2031,7 @@ func TestHandleSendMessage_MissingFields(t *testing.T) {
 }
 
 func TestHandleGetMessage_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/messages/abc", nil)
 	rctx := chi.NewRouteContext()
@@ -1948,6 +2045,7 @@ func TestHandleGetMessage_InvalidID(t *testing.T) {
 }
 
 func TestHandleReplyMessage_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/abc/reply",
 		strings.NewReader(`{"sender_name":"test","body_md":"hello"}`))
@@ -1962,6 +2060,7 @@ func TestHandleReplyMessage_InvalidID(t *testing.T) {
 }
 
 func TestHandleReplyMessage_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/123/reply",
 		strings.NewReader(`{bad`))
@@ -1976,6 +2075,7 @@ func TestHandleReplyMessage_BadJSON(t *testing.T) {
 }
 
 func TestHandleReplyMessage_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/123/reply",
 		strings.NewReader(`{"sender_name":"","body_md":""}`))
@@ -1990,6 +2090,7 @@ func TestHandleReplyMessage_MissingFields(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/abc/read", nil)
 	rctx := chi.NewRouteContext()
@@ -2003,6 +2104,7 @@ func TestHandleMarkMessageRead_InvalidID(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/123/read", nil)
 	rctx := chi.NewRouteContext()
@@ -2016,6 +2118,7 @@ func TestHandleMarkMessageRead_MissingAgent(t *testing.T) {
 }
 
 func TestHandleAckMessage_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/abc/ack", nil)
 	rctx := chi.NewRouteContext()
@@ -2029,6 +2132,7 @@ func TestHandleAckMessage_InvalidID(t *testing.T) {
 }
 
 func TestHandleAckMessage_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/123/ack", nil)
 	rctx := chi.NewRouteContext()
@@ -2042,6 +2146,7 @@ func TestHandleAckMessage_MissingAgent(t *testing.T) {
 }
 
 func TestHandleSearchMessages_MissingQuery(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/search", nil)
 	rec := httptest.NewRecorder()
@@ -2052,6 +2157,7 @@ func TestHandleSearchMessages_MissingQuery(t *testing.T) {
 }
 
 func TestHandleThreadSummary_EmptyID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/threads//summary", nil)
 	rctx := chi.NewRouteContext()
@@ -2065,6 +2171,7 @@ func TestHandleThreadSummary_EmptyID(t *testing.T) {
 }
 
 func TestHandleListContacts_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/contacts", nil)
 	rec := httptest.NewRecorder()
@@ -2075,6 +2182,7 @@ func TestHandleListContacts_MissingAgent(t *testing.T) {
 }
 
 func TestHandleRequestContact_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/contacts/request",
 		strings.NewReader(`{bad`))
@@ -2086,6 +2194,7 @@ func TestHandleRequestContact_BadJSON(t *testing.T) {
 }
 
 func TestHandleRequestContact_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/contacts/request",
 		strings.NewReader(`{"from_agent":"","to_agent":""}`))
@@ -2097,6 +2206,7 @@ func TestHandleRequestContact_MissingFields(t *testing.T) {
 }
 
 func TestHandleRespondContact_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/contacts/respond",
 		strings.NewReader(`{bad`))
@@ -2108,6 +2218,7 @@ func TestHandleRespondContact_BadJSON(t *testing.T) {
 }
 
 func TestHandleRespondContact_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/contacts/respond",
 		strings.NewReader(`{"to_agent":"","from_agent":""}`))
@@ -2119,6 +2230,7 @@ func TestHandleRespondContact_MissingFields(t *testing.T) {
 }
 
 func TestHandleSetContactPolicy_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/mail/contacts/policy",
 		strings.NewReader(`{bad`))
@@ -2130,6 +2242,7 @@ func TestHandleSetContactPolicy_BadJSON(t *testing.T) {
 }
 
 func TestHandleSetContactPolicy_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/mail/contacts/policy",
 		strings.NewReader(`{"agent_name":"","policy":""}`))
@@ -2141,6 +2254,7 @@ func TestHandleSetContactPolicy_MissingFields(t *testing.T) {
 }
 
 func TestHandleSetContactPolicy_InvalidPolicy(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/mail/contacts/policy",
 		strings.NewReader(`{"agent_name":"TestAgent","policy":"bogus"}`))
@@ -2156,6 +2270,7 @@ func TestHandleSetContactPolicy_InvalidPolicy(t *testing.T) {
 // ===========================================================================
 
 func TestHandleReservePaths_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations",
 		strings.NewReader(`{bad`))
@@ -2167,6 +2282,7 @@ func TestHandleReservePaths_BadJSON(t *testing.T) {
 }
 
 func TestHandleReservePaths_MissingFields(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations",
 		strings.NewReader(`{"agent_name":"","paths":[]}`))
@@ -2178,6 +2294,7 @@ func TestHandleReservePaths_MissingFields(t *testing.T) {
 }
 
 func TestHandleReleaseReservations_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/reservations",
 		strings.NewReader(`{bad`))
@@ -2189,6 +2306,7 @@ func TestHandleReleaseReservations_BadJSON(t *testing.T) {
 }
 
 func TestHandleReleaseReservations_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/reservations",
 		strings.NewReader(`{"agent_name":""}`))
@@ -2200,6 +2318,7 @@ func TestHandleReleaseReservations_MissingAgent(t *testing.T) {
 }
 
 func TestHandleReservationConflicts_MissingPaths(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/reservations/conflicts", nil)
 	rec := httptest.NewRecorder()
@@ -2210,6 +2329,7 @@ func TestHandleReservationConflicts_MissingPaths(t *testing.T) {
 }
 
 func TestHandleGetReservation_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/reservations/abc", nil)
 	rctx := chi.NewRouteContext()
@@ -2227,6 +2347,7 @@ func TestHandleGetReservation_InvalidID(t *testing.T) {
 // ===========================================================================
 
 func TestHandleReleaseReservationByID_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/abc/release", nil)
 	rctx := chi.NewRouteContext()
@@ -2240,6 +2361,7 @@ func TestHandleReleaseReservationByID_InvalidID(t *testing.T) {
 }
 
 func TestHandleReleaseReservationByID_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/123/release", nil)
 	rctx := chi.NewRouteContext()
@@ -2253,6 +2375,7 @@ func TestHandleReleaseReservationByID_MissingAgent(t *testing.T) {
 }
 
 func TestHandleRenewReservation_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/abc/renew",
 		strings.NewReader(`{"agent_name":"test"}`))
@@ -2267,6 +2390,7 @@ func TestHandleRenewReservation_InvalidID(t *testing.T) {
 }
 
 func TestHandleRenewReservation_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/123/renew",
 		strings.NewReader(`{bad`))
@@ -2281,6 +2405,7 @@ func TestHandleRenewReservation_BadJSON(t *testing.T) {
 }
 
 func TestHandleRenewReservation_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/123/renew",
 		strings.NewReader(`{"agent_name":""}`))
@@ -2295,6 +2420,7 @@ func TestHandleRenewReservation_MissingAgent(t *testing.T) {
 }
 
 func TestHandleForceReleaseReservation_InvalidID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/abc/force-release",
 		strings.NewReader(`{"agent_name":"test"}`))
@@ -2309,6 +2435,7 @@ func TestHandleForceReleaseReservation_InvalidID(t *testing.T) {
 }
 
 func TestHandleForceReleaseReservation_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/123/force-release",
 		strings.NewReader(`{bad`))
@@ -2323,6 +2450,7 @@ func TestHandleForceReleaseReservation_BadJSON(t *testing.T) {
 }
 
 func TestHandleForceReleaseReservation_MissingAgent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/123/force-release",
 		strings.NewReader(`{"agent_name":""}`))
@@ -2341,6 +2469,7 @@ func TestHandleForceReleaseReservation_MissingAgent(t *testing.T) {
 // ===========================================================================
 
 func TestHandleOpenAPISpec(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
 	rec := httptest.NewRecorder()
@@ -2354,6 +2483,7 @@ func TestHandleOpenAPISpec(t *testing.T) {
 }
 
 func TestHandleSwaggerUI(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/docs", nil)
 	rec := httptest.NewRecorder()
@@ -2368,6 +2498,7 @@ func TestHandleSwaggerUI(t *testing.T) {
 // ===========================================================================
 
 func TestHandleMemoryContext_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/context",
 		strings.NewReader(`{bad`))
@@ -2379,6 +2510,7 @@ func TestHandleMemoryContext_BadJSON(t *testing.T) {
 }
 
 func TestHandleMemoryContext_EmptyTask(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/context",
 		strings.NewReader(`{"task":""}`))
@@ -2390,6 +2522,7 @@ func TestHandleMemoryContext_EmptyTask(t *testing.T) {
 }
 
 func TestHandleMemoryOutcome_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/outcome",
 		strings.NewReader(`{bad`))
@@ -2401,6 +2534,7 @@ func TestHandleMemoryOutcome_BadJSON(t *testing.T) {
 }
 
 func TestHandleMemoryOutcome_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/outcome",
 		strings.NewReader(`{"status":"bogus"}`))
@@ -2416,6 +2550,7 @@ func TestHandleMemoryOutcome_InvalidStatus(t *testing.T) {
 // ===========================================================================
 
 func TestApprovalEndToEnd(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// 1. Create an approval request

@@ -49,6 +49,7 @@ func TestRunCycleDetectsIntersectingReservationGlobs(t *testing.T) {
 }
 
 func TestReservationGlobConflictsRetainOwnershipAndLifetimeRules(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	base := []agentmail.FileReservation{
 		{AgentName: "A", PathPattern: "src/*/main.go", Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: now.Add(time.Hour)}},
@@ -68,6 +69,7 @@ func TestReservationGlobConflictsRetainOwnershipAndLifetimeRules(t *testing.T) {
 		{"disjoint globs", func(r []agentmail.FileReservation) { r[1].PathPattern = "src/service/*.rs" }, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := append([]agentmail.FileReservation(nil), base...)
 			tc.mutate(r)
 			before := append([]agentmail.FileReservation(nil), r...)

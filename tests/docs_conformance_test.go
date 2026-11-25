@@ -719,6 +719,7 @@ func runDocsCheck(t *testing.T, root string, files []string) (violations []strin
 // --robot-events modifier flags, and broken markdown table examples, or the
 // gate is a placebo and this test fails hard.
 func TestDocsExamplesCanary(t *testing.T) {
+	t.Parallel()
 	if !docsWithShippedAgents(t) {
 		return
 	}
@@ -785,6 +786,7 @@ func TestDocsExamplesCanary(t *testing.T) {
 }
 
 func TestCheckExampleShippedPluginsUseProductionFlags(t *testing.T) {
+	t.Parallel()
 	if !docsWithShippedAgents(t) {
 		return
 	}
@@ -865,6 +867,7 @@ func runDocsCheckCountOn(t *testing.T, rel, content string) (violations []string
 // real docs against the real cobra tree, and ratchets the skip budget in both
 // directions against ci/allowlists/docs.txt.
 func TestDocsExamplesConform(t *testing.T) {
+	t.Parallel()
 	if !docsWithShippedAgents(t) {
 		return
 	}
@@ -916,6 +919,7 @@ func TestDocsExamplesConform(t *testing.T) {
 // the README badge (the H7 drift class), ratcheted through the
 // badge-waiver:go-version line in ci/allowlists/docs.txt.
 func TestReadmeGoVersionBadge(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	al := loadDocsAllowlist(t, root)
 
@@ -969,6 +973,7 @@ func TestReadmeGoVersionBadge(t *testing.T) {
 // coordinate is DERIVED (registry from release.yml, owner/repo from go.mod's
 // module path, lowercased per docker naming), never hardcoded.
 func TestReadmeGhcrImageMatchesCI(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 
 	workflow, err := os.ReadFile(filepath.Join(root, ".github/workflows/release.yml"))
@@ -1051,6 +1056,7 @@ func TestReadmeGhcrImageMatchesCI(t *testing.T) {
 // parses cleanly against the real Cobra tree, and (when present) the built
 // .vsix archive contains the compiled extension entrypoints.
 func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 
 	versionBytes, err := os.ReadFile(filepath.Join(root, "VERSION"))
@@ -1263,6 +1269,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 // command_palette.md where two distinct prompt headers accidentally share the
 // exact same prompt text (e.g., improve_readme carrying check_mail's body).
 func TestCommandPaletteNoDuplicatePromptBodies(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "command_palette.md"))
 	if err != nil {
@@ -1346,6 +1353,7 @@ func readGoModVersion(t *testing.T, root string) string {
 // TestGoVersionLockstepAcrossDocsAndWorkflows ensures AGENTS.md, CONTRIBUTING.md,
 // and DSR/act workflow inputs stay lockstep with go.mod's declared Go version.
 func TestGoVersionLockstepAcrossDocsAndWorkflows(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	goVersion := readGoModVersion(t, root)
 
@@ -1373,6 +1381,7 @@ func TestGoVersionLockstepAcrossDocsAndWorkflows(t *testing.T) {
 // TestAllInternalPackagesHaveTests ensures no non-empty Go package under
 // internal/ silently ships with zero unit tests.
 func TestAllInternalPackagesHaveTests(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	cmd := exec.Command("go", "list", "-f", "{{.ImportPath}} {{len .GoFiles}} {{len .TestGoFiles}} {{len .XTestGoFiles}}", "./internal/...")
 	cmd.Dir = root
@@ -1397,6 +1406,7 @@ func TestAllInternalPackagesHaveTests(t *testing.T) {
 // TestArchitectureAndADRsExist ensures ARCHITECTURE.md and the formal
 // HyperSync/ACP disposition ADRs remain present and cross-linked.
 func TestArchitectureAndADRsExist(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	archBytes, err := os.ReadFile(filepath.Join(root, "ARCHITECTURE.md"))
 	if err != nil {

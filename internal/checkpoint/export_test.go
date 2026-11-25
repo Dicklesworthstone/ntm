@@ -42,6 +42,7 @@ func TestGitPatchPath(t *testing.T) {
 // =============================================================================
 
 func TestExport_TarGz(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-export-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -142,6 +143,7 @@ func TestExport_TarGz(t *testing.T) {
 }
 
 func TestExport_Zip(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-export-zip-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -281,6 +283,7 @@ func TestExport_TarGz_RedactsCompressedScrollback(t *testing.T) {
 }
 
 func TestExportImport_DeduplicatesSharedScrollbackArtifact(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		format      ExportFormat
@@ -291,6 +294,7 @@ func TestExportImport_DeduplicatesSharedScrollbackArtifact(t *testing.T) {
 		{name: "tar.gz", format: FormatTarGz, archiveName: "shared-scrollback.tar.gz", readEntry: readTarGzEntry},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tmpDir := t.TempDir()
 			exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
 			importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))
@@ -474,6 +478,7 @@ func assertExportRedactsCompressedScrollback(t *testing.T, format ExportFormat, 
 }
 
 func TestExport_TarGz_FailsWhenReferencedScrollbackMissing(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -519,6 +524,7 @@ func TestExport_TarGz_FailsWhenReferencedScrollbackMissing(t *testing.T) {
 }
 
 func TestExport_Zip_FailsWhenReferencedGitPatchMissing(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -564,6 +570,7 @@ func TestExport_Zip_FailsWhenReferencedGitPatchMissing(t *testing.T) {
 }
 
 func TestExport_TarGz_RejectsSymlinkArtifactReference(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -616,6 +623,7 @@ func TestExport_TarGz_RejectsSymlinkArtifactReference(t *testing.T) {
 }
 
 func TestImport_TarGz(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-import-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -678,6 +686,7 @@ func TestImport_TarGz(t *testing.T) {
 }
 
 func TestImport_Zip(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-import-zip-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -724,10 +733,12 @@ func TestImport_Zip(t *testing.T) {
 }
 
 func TestImport_WritesPrivateCheckpointFiles(t *testing.T) {
+	t.Parallel()
 	testImportWritesPrivateCheckpointFiles(t, FormatTarGz)
 }
 
 func TestImportZip_WritesPrivateCheckpointFiles(t *testing.T) {
+	t.Parallel()
 	testImportWritesPrivateCheckpointFiles(t, FormatZip)
 }
 
@@ -811,6 +822,7 @@ func testImportWritesPrivateCheckpointFiles(t *testing.T, format ExportFormat) {
 }
 
 func TestExportImport_OverwritePreservesGitStatusArtifact(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-export-import-status-overwrite")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -863,6 +875,7 @@ func TestExportImport_OverwritePreservesGitStatusArtifact(t *testing.T) {
 }
 
 func TestImport_WithOverrides(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-import-override-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -924,6 +937,7 @@ func TestImport_WithOverrides(t *testing.T) {
 }
 
 func TestExportImport_RoundTrip(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-roundtrip-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1186,6 +1200,7 @@ func TestRewriteCheckpointForExport(t *testing.T) {
 }
 
 func TestExportImportRebasesEveryPaneDirectory(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
 			t.Parallel()
@@ -1238,6 +1253,7 @@ func TestExportImportRebasesEveryPaneDirectory(t *testing.T) {
 }
 
 func TestImportRefusesUnsafePaneDirectoryBeforeOverwrite(t *testing.T) {
+	t.Parallel()
 	for _, saved := range []string{"${WORKING_DIR}/../escape", "${WORKING_DIR}//escape", "${WORKING_DIR}/nested/../../escape", "relative/worktree", "/outside-checkpoint/agent-worktree"} {
 		t.Run(saved, func(t *testing.T) {
 			t.Parallel()
@@ -1298,6 +1314,7 @@ func TestExportImportRemoteProvenancePreservesRemotePaths(t *testing.T) {
 }
 
 func TestExportImport_OmitsScrollbackMetadataWhenScrollbackExcluded(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
 	importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))
@@ -1362,6 +1379,7 @@ func TestExportImport_OmitsScrollbackMetadataWhenScrollbackExcluded(t *testing.T
 }
 
 func TestExportZip_OmitsScrollbackMetadataFromSessionFileWhenScrollbackExcluded(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "zip-no-scrollback-session"
@@ -1414,6 +1432,7 @@ func TestExportZip_OmitsScrollbackMetadataFromSessionFileWhenScrollbackExcluded(
 }
 
 func TestExportImport_OmitsGitPatchMetadataWhenPatchExcluded(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
 	importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))

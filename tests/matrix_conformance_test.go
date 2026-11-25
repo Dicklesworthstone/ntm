@@ -132,6 +132,7 @@ func TestMatrixCitedGatesResolve(t *testing.T) {
 	if testing.Short() {
 		t.Skip("go test -list subprocesses; skipped in -short (runs in the full CI test job)")
 	}
+	t.Parallel()
 	root, content := matrixDoc(t)
 
 	pkgs := citedPackages(content)
@@ -217,6 +218,7 @@ func envVarExistsInTree(t *testing.T, root, env string) bool {
 // matrix's pane-scale figures are emitted from the harness's own scenario
 // constant, so the number cannot drift from the code again.
 func TestMatrixScaleClaimsMatchHarness(t *testing.T) {
+	t.Parallel()
 	_, content := matrixDoc(t)
 
 	scenario, ok := swarm.FindSyntheticExperimentScenario("load_100_pane")
@@ -247,6 +249,7 @@ func TestMatrixScaleClaimsMatchHarness(t *testing.T) {
 // projection payloads carry a timestamp). Also re-pins the corpus size
 // floor from the matrix's own description (>=50 envelopes, >=8 surfaces).
 func TestMatrixCorpusContractClean(t *testing.T) {
+	t.Parallel()
 	root, _ := matrixDoc(t)
 	corpusDir := filepath.Join(root, "internal", "robot", "testdata", "token_corpus")
 	entries, err := os.ReadDir(corpusDir)

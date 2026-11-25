@@ -24,6 +24,7 @@ import (
 // --- Corrupted State File Tests ---
 
 func TestStorage_Load_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -53,6 +54,7 @@ func TestStorage_Load_MalformedJSON(t *testing.T) {
 }
 
 func TestStorage_Load_EmptyFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -76,6 +78,7 @@ func TestStorage_Load_EmptyFile(t *testing.T) {
 }
 
 func TestStorage_Load_InvalidJSONStructure(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -99,6 +102,7 @@ func TestStorage_Load_InvalidJSONStructure(t *testing.T) {
 }
 
 func TestStorage_Load_MissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -130,6 +134,7 @@ func TestStorage_Load_MissingRequiredFields(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsSessionMetadataMismatch(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -162,6 +167,7 @@ func TestStorage_Load_RejectsSessionMetadataMismatch(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsCheckpointIDMismatch(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -194,6 +200,7 @@ func TestStorage_Load_RejectsCheckpointIDMismatch(t *testing.T) {
 }
 
 func TestStorage_Load_NullValues(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -235,6 +242,7 @@ func TestStorage_Load_NullValues(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsCorruptSessionState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -269,6 +277,7 @@ func TestStorage_Load_RejectsCorruptSessionState(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsMissingSessionState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -301,6 +310,7 @@ func TestStorage_Load_RejectsMissingSessionState(t *testing.T) {
 }
 
 func TestStorage_List_SkipsMetadataOnlyCheckpoint(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "metadata-only-session"
@@ -326,6 +336,7 @@ func TestStorage_List_SkipsMetadataOnlyCheckpoint(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsSessionStateMismatch(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -363,6 +374,7 @@ func TestStorage_Load_RejectsSessionStateMismatch(t *testing.T) {
 }
 
 func TestStorage_Load_RejectsPaneCountMismatch(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -399,6 +411,7 @@ func TestStorage_Load_RejectsPaneCountMismatch(t *testing.T) {
 }
 
 func TestStorage_Load_NormalizesZeroPaneCount(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -435,6 +448,7 @@ func TestStorage_Load_NormalizesZeroPaneCount(t *testing.T) {
 }
 
 func TestStorage_LoadScrollback_FileNotFound(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -459,6 +473,7 @@ func TestStorage_LoadScrollback_FileNotFound(t *testing.T) {
 }
 
 func TestStorage_LoadScrollback_PermissionDenied(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("Skipping permission test when running as root")
 	}
@@ -502,6 +517,7 @@ func TestStorage_LoadScrollback_PermissionDenied(t *testing.T) {
 // --- Restorer Error Tests ---
 
 func TestRestorer_RestoreFromCheckpoint_NilCheckpoint(t *testing.T) {
+	t.Parallel()
 	r := NewRestorer()
 
 	_, err := r.RestoreFromCheckpointContext(t.Context(), nil, RestoreOptions{DryRun: true})
@@ -511,6 +527,7 @@ func TestRestorer_RestoreFromCheckpoint_NilCheckpoint(t *testing.T) {
 }
 
 func TestRestorer_RestoreFromCheckpoint_EmptySessionName(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	r := NewRestorerWithStorage(NewStorageWithDir(tmpDir))
 
@@ -535,6 +552,7 @@ func TestRestorer_RestoreFromCheckpoint_EmptySessionName(t *testing.T) {
 }
 
 func TestRestorer_RestoreFromCheckpoint_WorkingDir_PermissionDenied(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("Skipping permission test when running as root")
 	}
@@ -574,6 +592,7 @@ func TestRestorer_RestoreFromCheckpoint_WorkingDir_PermissionDenied(t *testing.T
 // --- Graceful Degradation Tests ---
 
 func TestRestorer_RestoreFromCheckpoint_DryRun_CollectsWarnings(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	r := NewRestorerWithStorage(storage)
@@ -611,6 +630,7 @@ func TestRestorer_RestoreFromCheckpoint_DryRun_CollectsWarnings(t *testing.T) {
 }
 
 func TestStorage_GetLatest_RejectsInvalidNewestCheckpointAfterTolerantList(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -670,6 +690,7 @@ func TestStorage_GetLatest_RejectsInvalidNewestCheckpointAfterTolerantList(t *te
 // --- State File Edge Cases ---
 
 func TestStorage_Save_DirectoryCreationFailure(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("Skipping permission test when running as root")
 	}
@@ -698,6 +719,7 @@ func TestStorage_Save_DirectoryCreationFailure(t *testing.T) {
 }
 
 func TestStorage_Delete_NonExistent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -709,6 +731,7 @@ func TestStorage_Delete_NonExistent(t *testing.T) {
 }
 
 func TestStorage_List_PartiallyCorruptedDirectory(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "testproject"
@@ -751,6 +774,7 @@ func TestStorage_List_PartiallyCorruptedDirectory(t *testing.T) {
 }
 
 func TestStorage_SaveScrollback_InvalidPaneID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -831,6 +855,7 @@ func TestRestoreResult_WarningMessages_Formatted(t *testing.T) {
 }
 
 func TestRestorer_RestoreFromCheckpoint_DryRun_WarningFormats(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	r := NewRestorerWithStorage(NewStorageWithDir(tmpDir))
 

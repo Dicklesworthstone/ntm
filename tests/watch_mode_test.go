@@ -128,7 +128,9 @@ func TestCompletionEventHandling(t *testing.T) {
 
 // TestExitConditions tests various exit conditions for watch mode
 func TestExitConditions(t *testing.T) {
+	t.Parallel()
 	t.Run("context cancellation triggers exit", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 
 		// Create a channel to track exit
@@ -157,6 +159,7 @@ func TestExitConditions(t *testing.T) {
 	})
 
 	t.Run("stop channel triggers exit", func(t *testing.T) {
+		t.Parallel()
 		stopCh := make(chan struct{})
 		exitCh := make(chan struct{})
 
@@ -221,7 +224,9 @@ func TestShouldStopCondition(t *testing.T) {
 
 // TestStreamingOutput tests log output formatting
 func TestStreamingOutput(t *testing.T) {
+	t.Parallel()
 	t.Run("timestamp format is HH:MM:SS", func(t *testing.T) {
+		t.Parallel()
 		timestamp := time.Now().Format("15:04:05")
 		// Verify format matches expected pattern
 		if len(timestamp) != 8 {
@@ -230,6 +235,7 @@ func TestStreamingOutput(t *testing.T) {
 	})
 
 	t.Run("log messages include timestamps", func(t *testing.T) {
+		t.Parallel()
 		var buf bytes.Buffer
 		timestamp := time.Now().Format("15:04:05")
 		msg := fmt.Sprintf("[%s] Test message", timestamp)
@@ -413,7 +419,9 @@ func TestConcurrentWatchOperations(t *testing.T) {
 
 // TestCompletionDetectorIntegration tests the completion detector
 func TestCompletionDetectorIntegration(t *testing.T) {
+	t.Parallel()
 	t.Run("dedup prevents duplicate events", func(t *testing.T) {
+		t.Parallel()
 		cfg := completion.DetectionConfig{
 			DedupWindow: 100 * time.Millisecond,
 		}

@@ -8,6 +8,7 @@ import (
 )
 
 func TestScoreAndSelectAssignmentsProducesLocalReservationPaths(t *testing.T) {
+	t.Parallel()
 	selected := ScoreAndSelectAssignments(
 		[]*AgentState{{PaneID: "%3", PaneIndex: 3}},
 		[]bv.TriageRecommendation{{

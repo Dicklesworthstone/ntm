@@ -3,6 +3,7 @@ package dcg
 import "testing"
 
 func TestGenerateRCHHookEntry_Basic(t *testing.T) {
+	t.Parallel()
 	opts := RCHHookOptions{
 		Patterns: []string{"^cargo build", "^go build"},
 	}
@@ -39,6 +40,7 @@ func TestGenerateRCHHookEntry_Basic(t *testing.T) {
 }
 
 func TestGenerateRCHHookEntry_CustomBinary(t *testing.T) {
+	t.Parallel()
 	opts := RCHHookOptions{
 		BinaryPath: "/opt/rch",
 		Patterns:   []string{"^go build"},
@@ -61,6 +63,7 @@ func TestGenerateRCHHookEntry_CustomBinary(t *testing.T) {
 }
 
 func TestGenerateRCHHookEntry_EmptyPatterns(t *testing.T) {
+	t.Parallel()
 	_, err := GenerateRCHHookEntry(RCHHookOptions{})
 	if err == nil {
 		t.Fatal("Expected error with empty patterns, got nil")
@@ -68,6 +71,7 @@ func TestGenerateRCHHookEntry_EmptyPatterns(t *testing.T) {
 }
 
 func TestShouldConfigureRCHHooks(t *testing.T) {
+	t.Parallel()
 	if ShouldConfigureRCHHooks(false, []string{"^cargo build"}) {
 		t.Error("Expected hooks disabled when RCH is disabled")
 	}

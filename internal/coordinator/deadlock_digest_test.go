@@ -165,6 +165,7 @@ func fakeAgentMailReservations(t *testing.T, reservations []agentmail.FileReserv
 }
 
 func TestPopulateDeadlockAlerts_DigestNamesCycle(t *testing.T) {
+	t.Parallel()
 	server := fakeAgentMailReservations(t, twoCycleReservations())
 	defer server.Close()
 
@@ -197,6 +198,7 @@ func TestPopulateDeadlockAlerts_DigestNamesCycle(t *testing.T) {
 }
 
 func TestPopulateDeadlockAlerts_AcyclicNoDigestLine(t *testing.T) {
+	t.Parallel()
 	server := fakeAgentMailReservations(t, acyclicReservations())
 	defer server.Close()
 

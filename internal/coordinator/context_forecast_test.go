@@ -84,6 +84,7 @@ func (f *forecastTickFixture) tick(t *testing.T, tokens int) {
 }
 
 func TestRotationCheckerForecastThroughTick(t *testing.T) {
+	t.Parallel()
 	f := newForecastTickFixture()
 	f.tick(t, 70000)
 	f.tick(t, 72000)
@@ -139,6 +140,7 @@ func TestRotationCheckerForecastThroughTick(t *testing.T) {
 }
 
 func TestRotationCheckerForecastAttribution(t *testing.T) {
+	t.Parallel()
 	f := newForecastTickFixture()
 	second := f.panes[0]
 	second.ID, second.PID, second.Index, second.Title = "%2", 102, 2, "forecast__cc_2"
@@ -160,8 +162,10 @@ func TestRotationCheckerForecastAttribution(t *testing.T) {
 }
 
 func TestRotationCheckerForecastInvalidatesHistory(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"list_error", "missing", "dead", "shell", "service", "unknown_pid", "process_change", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			f := newForecastTickFixture()
 			f.tick(t, 70000)
 			f.tick(t, 72000)
@@ -206,6 +210,7 @@ func TestRotationCheckerForecastInvalidatesHistory(t *testing.T) {
 }
 
 func TestRotationCheckerForecastWiringAndDisabled(t *testing.T) {
+	t.Parallel()
 	if got := newRotationChecker("forecast", "/work", CoordinatorConfig{}, nil); got != nil {
 		t.Fatal("disabled checker created forecast observer")
 	}
@@ -224,6 +229,7 @@ func TestRotationCheckerForecastWiringAndDisabled(t *testing.T) {
 }
 
 func TestRotationCheckerForecastRequiresRecognizedOrReportedCapacity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, model string
 		window      int
@@ -236,6 +242,7 @@ func TestRotationCheckerForecastRequiresRecognizedOrReportedCapacity(t *testing.
 		{name: "negative native window is invalid", model: "claude-opus-4", window: -1, start: 140000, step: 4000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newForecastTickFixture()
 			production := newRotationChecker("forecast", "/work", CoordinatorConfig{RotationUsageThreshold: 95}, nil)
 			f.rc.contextLimit = production.contextLimit

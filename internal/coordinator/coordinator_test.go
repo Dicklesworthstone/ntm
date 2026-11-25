@@ -26,6 +26,7 @@ import (
 )
 
 func TestNewSessionCoordinator(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	if c.session != "test-session" {
@@ -43,6 +44,7 @@ func TestNewSessionCoordinator(t *testing.T) {
 }
 
 func TestCoordinatorCycleCancellationIsExpectedShutdown(t *testing.T) {
+	t.Parallel()
 	allCanceled := errors.Join(
 		coordinatorPaneObservationError("%0", context.Canceled.Error()),
 		coordinatorPaneObservationError("%1", context.Canceled.Error()),
@@ -70,6 +72,7 @@ func TestCoordinatorCycleCancellationIsExpectedShutdown(t *testing.T) {
 }
 
 func TestDefaultCoordinatorConfig(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultCoordinatorConfig()
 
 	if cfg.PollInterval != 5*time.Second {
@@ -93,6 +96,7 @@ func TestDefaultCoordinatorConfig(t *testing.T) {
 }
 
 func TestWithConfig(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	cfg := CoordinatorConfig{
 		PollInterval: 10 * time.Second,
@@ -113,6 +117,7 @@ func TestWithConfig(t *testing.T) {
 }
 
 func TestGetAgents(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	// Add some agents directly for testing
@@ -147,6 +152,7 @@ func TestGetAgents(t *testing.T) {
 }
 
 func TestGetIdleAgents(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.IdleThreshold = 0 // Immediate idle for testing
 	now := time.Now()
@@ -187,6 +193,7 @@ func TestGetIdleAgents(t *testing.T) {
 }
 
 func TestMaybeCheckMailNudgeDefaultOffConstructsNothing(t *testing.T) {
+	t.Parallel()
 	// DEFAULT-OFF GUARANTEE (GH#231): with mail_nudge unset the checker is
 	// never constructed — no inbox probing, no pane captures.
 	c := New("mail-nudge", t.TempDir(), nil, "Coordinator")
@@ -1072,6 +1079,7 @@ func TestStop_WaitsForConcurrentStartInitialization(t *testing.T) {
 }
 
 func TestGenerateDigest(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	c.mu.Lock()
@@ -1113,6 +1121,7 @@ func TestGenerateDigest(t *testing.T) {
 }
 
 func TestFormatDuration(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		d        time.Duration
 		expected string
@@ -1282,6 +1291,7 @@ func TestEmitEvent_AgentBusy(t *testing.T) {
 }
 
 func TestEmitEvent_AgentError(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	agent := &AgentState{
@@ -1340,6 +1350,7 @@ func TestEmitEvent_AgentRecovered(t *testing.T) {
 }
 
 func TestEmitEvent_AgentRecoveredTakesPrecedenceOverIdle(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	agent := &AgentState{
@@ -1362,6 +1373,7 @@ func TestEmitEvent_AgentRecoveredTakesPrecedenceOverIdle(t *testing.T) {
 }
 
 func TestEmitEvent_NoEventForSameStatus(t *testing.T) {
+	t.Parallel()
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 
 	agent := &AgentState{
@@ -1407,6 +1419,7 @@ func TestFormatDigestMarkdown_IdleForDash(t *testing.T) {
 // iteration was randomized and two calls returned different
 // AgentStatuses orderings — sibling of bd-aj2qv (evidencebudget).
 func TestGenerateDigest_StableOrderingAcrossCalls(t *testing.T) {
+	t.Parallel()
 	c := New("s", "/tmp/test", nil, "Agent")
 	c.mu.Lock()
 	for i, paneID := range []string{"%0", "%1", "%2", "%3", "%4"} {
@@ -1443,6 +1456,7 @@ func TestGenerateDigest_StableOrderingAcrossCalls(t *testing.T) {
 // sorting by PaneIndex alone still leaves map-order drift across calls.
 // Tie-break by PaneID to keep byte-stable output in collision cases too.
 func TestGenerateDigest_StableOrderingAcrossCalls_PaneIndexCollision(t *testing.T) {
+	t.Parallel()
 	c := New("s", "/tmp/test", nil, "Agent")
 	c.mu.Lock()
 	for paneID, paneIndex := range map[string]int{
@@ -1482,6 +1496,7 @@ func TestGenerateDigest_StableOrderingAcrossCalls_PaneIndexCollision(t *testing.
 // and preserved map-iteration drift. Keep ordering byte-stable with additional
 // tie-breakers.
 func TestGenerateDigest_StableOrderingAcrossCalls_EmptyPaneIDCollision(t *testing.T) {
+	t.Parallel()
 	c := New("s", "/tmp/test", nil, "Agent")
 	c.mu.Lock()
 	for paneKey, payload := range map[string]struct {
@@ -1524,6 +1539,7 @@ func TestGenerateDigest_StableOrderingAcrossCalls_EmptyPaneIDCollision(t *testin
 }
 
 func TestGenerateDigest_StableOrderingAcrossCalls_AllSortFieldsCollide(t *testing.T) {
+	t.Parallel()
 	c := New("s", "/tmp/test", nil, "Agent")
 	c.mu.Lock()
 	for _, paneKey := range []string{"%z", "%a", "%m"} {

@@ -10,6 +10,7 @@ import (
 )
 
 func TestCheckpoint_ValidateSchema(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		checkpoint Checkpoint
@@ -106,6 +107,7 @@ func TestCheckpoint_ValidateSchema(t *testing.T) {
 }
 
 func TestCheckpoint_ValidateConsistency(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		checkpoint Checkpoint
@@ -217,6 +219,7 @@ func TestCheckpoint_ValidateConsistency(t *testing.T) {
 }
 
 func TestCheckpoint_ValidateConsistency_WarnsForLegacyMultiWindowLayout(t *testing.T) {
+	t.Parallel()
 	cp := Checkpoint{
 		Session: SessionState{
 			Panes: []PaneState{
@@ -252,6 +255,7 @@ func TestCheckpoint_ValidateConsistency_WarnsForLegacyMultiWindowLayout(t *testi
 }
 
 func TestCheckpoint_CheckFiles(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-integrity-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -325,6 +329,7 @@ func TestCheckpoint_CheckFiles(t *testing.T) {
 }
 
 func TestCheckpoint_Verify_RejectsSymlinkArtifactReference(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -372,6 +377,7 @@ func TestCheckpoint_Verify_RejectsSymlinkArtifactReference(t *testing.T) {
 }
 
 func TestCheckpoint_Verify_RejectsSymlinkCheckpointDir(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -404,6 +410,7 @@ func TestCheckpoint_Verify_RejectsSymlinkCheckpointDir(t *testing.T) {
 }
 
 func TestVerifyStoredCheckpoint_ReportsSessionStateMismatch(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 	sessionName := "test-session"
@@ -447,6 +454,7 @@ func TestVerifyStoredCheckpoint_ReportsSessionStateMismatch(t *testing.T) {
 }
 
 func TestCheckpoint_FullVerify(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-verify-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -498,11 +506,13 @@ func TestCheckpoint_FullVerify(t *testing.T) {
 // The verify path refuses symlinked canonical files: a checkpoint must not
 // read metadata or session state from outside its own directory.
 func TestVerifyStoredCheckpoint_RejectsSymlinkCanonicalFiles(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	sessionName := "test-session"
 
 	for _, symlinked := range []string{MetadataFile, SessionFile} {
 		t.Run(symlinked, func(t *testing.T) {
+			t.Parallel()
 			checkpointID := "20251210-143052-verify-symlink-" + strings.TrimSuffix(symlinked, ".json")
 			cp := &Checkpoint{
 				Version:     CurrentVersion,
@@ -545,6 +555,7 @@ func TestVerifyStoredCheckpoint_RejectsSymlinkCanonicalFiles(t *testing.T) {
 }
 
 func TestVerifyAll(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-verifyall-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -589,6 +600,7 @@ func TestVerifyAll(t *testing.T) {
 }
 
 func TestVerifyAll_IgnoresIncrementalContainerDirectory(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-verifyall-incremental-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -636,6 +648,7 @@ func TestVerifyAll_IgnoresIncrementalContainerDirectory(t *testing.T) {
 }
 
 func TestVerifyAll_ReportsUnreadableCheckpoint(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-verifyall-invalid-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -707,6 +720,7 @@ func TestVerifyAll_ReportsUnreadableCheckpoint(t *testing.T) {
 }
 
 func TestVerifyAll_ReportsSymlinkCheckpointEntry(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-verifyall-symlink-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)

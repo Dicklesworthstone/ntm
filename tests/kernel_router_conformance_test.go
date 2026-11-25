@@ -30,6 +30,7 @@ func normalizeServedRouteKey(method, pattern string) string {
 // and internal/serve so every explicit kernel.MustRegister RESTBinding across
 // the entire binary is verified against the real chi router in internal/serve.
 func TestKernelRegisteredRESTBindingsMatchServedRouter(t *testing.T) {
+	t.Parallel()
 	serve.EnsureKernelCatalogRegistered()
 	srv := serve.NewHermeticServer("1.38.0-conformance")
 	t.Cleanup(func() { srv.Stop() })

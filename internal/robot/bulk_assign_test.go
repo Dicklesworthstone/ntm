@@ -663,6 +663,7 @@ func TestLoadBulkAssignTemplatePrecedence(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			deps := bulkAssignDeps(nil)
 			if tc.read != nil {
 				deps.ReadFile = tc.read
@@ -805,6 +806,7 @@ func TestBulkAssignAllocationSummaryUsesFilteredPaneCount(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			plan := planBulkAssignFromAllocation(t.Context(), BulkAssignOptions{}, bulkAssignDeps(&BulkAssignDependencies{}), panes, allocation)
 			output := &BulkAssignOutput{}
 
@@ -1448,6 +1450,7 @@ func TestRobotAtomicPaneDispatchRevalidatesFreshIdleBeforeActuation(t *testing.T
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			deliveries := 0
 			port := newRobotAtomicPaneDispatchPort(
 				"dispatch-guard",
@@ -1623,6 +1626,7 @@ func TestBulkAssignDryRunSanitizesTitlesAndBlocksSensitiveReservationPaths(t *te
 	})
 
 	t.Run("title", func(t *testing.T) {
+		t.Parallel()
 		output := &BulkAssignOutput{RobotResponse: NewRobotResponse(true), Session: "dry-title", DryRun: true}
 		plan := bulkAssignPlan{Assignments: []BulkAssignAssignment{{
 			Pane: "1", PaneID: "%31", Bead: "bd-title", BeadTitle: "Fix " + secret, AgentType: "cod", Status: "planned",
@@ -1634,6 +1638,7 @@ func TestBulkAssignDryRunSanitizesTitlesAndBlocksSensitiveReservationPaths(t *te
 	})
 
 	t.Run("reservation path", func(t *testing.T) {
+		t.Parallel()
 		output := &BulkAssignOutput{RobotResponse: NewRobotResponse(true), Session: "dry-path", DryRun: true}
 		plan := bulkAssignPlan{Assignments: []BulkAssignAssignment{{
 			Pane: "1", PaneID: "%31", Bead: "bd-path", BeadTitle: "Safe title", AgentType: "cod", Status: "planned",
@@ -2149,6 +2154,7 @@ func TestRobotAtomicIdempotencyKeyDoesNotReplayTerminalAssignment(t *testing.T) 
 		assignment.StatusReassigned,
 	} {
 		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
 			store := &assignment.AssignmentStore{
 				SessionName: "terminal-key-" + string(status),
 				Assignments: make(map[string]*assignment.Assignment),
@@ -2463,6 +2469,7 @@ func TestBulkAssignLoadsAuthoritativePolicyBeforeParsingPlanningAndMutation(t *t
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			authoritative := t.TempDir()
 			selectedConfig := filepath.Join(t.TempDir(), "selected.toml")
 			calls := make([]string, 0, 3)
@@ -2645,6 +2652,7 @@ func TestBulkAssignActionableVerificationFailureHasZeroMutation(t *testing.T) {
 		{name: "stale work source", err: &worksource.StaleError{Reason: "tracker changed during source capture"}, wantCode: ErrCodeStaleWorkCoordination},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			testBulkAssignActionableVerificationFailure(t, test.err, test.wantCode)
 		})
 	}
@@ -3081,6 +3089,7 @@ func TestRobotReservationRejectsMalformedGrantReceipts(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			row := valid
 			test.mutate(&row)
 			runtime := &robotAgentMailReservationRuntime{
@@ -3128,6 +3137,7 @@ func TestRobotReservationReconciliationDistinguishesAbsentPartialAndReserved(t *
 		{name: "reserved", reservations: []agentmail.FileReservation{base, second}, want: assignment.ReservationReconciliationReserved},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			runtime := &robotAgentMailReservationRuntime{
 				client:     &fakeRobotReservationClient{reservations: test.reservations},
 				projectKey: "/project", projectID: 7,
@@ -3161,6 +3171,7 @@ func TestBulkAssignPaneListMapsMissingSessionAndTimeout(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			startedAt := time.Now().UTC()
 			deps := BulkAssignDependencies{
 				ListPanes: func(context.Context, string) ([]tmux.Pane, error) { return nil, test.err },
@@ -3258,6 +3269,7 @@ func TestBulkAssignNewerInProgressSnapshotOverridesCachedTriageForEveryStrategy(
 	}
 	for _, test := range tests {
 		t.Run(test.strategy, func(t *testing.T) {
+			t.Parallel()
 			selected := selectBulkAssignBeads(test.strategy, candidates)
 			if len(selected) == 0 || selected[0].ID != test.wantID || selected[0].Source != test.want {
 				t.Fatalf("selection=%+v, want first %s via %s", selected, test.wantID, test.want)

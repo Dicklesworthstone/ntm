@@ -25,6 +25,7 @@ func makeTestAssignment(beadID, agentType string, pane int, status assignment.As
 
 // TestFilterAssignmentsNoFilter tests that no filtering returns all assignments
 func TestFilterAssignmentsNoFilter(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusCompleted),
@@ -39,6 +40,7 @@ func TestFilterAssignmentsNoFilter(t *testing.T) {
 }
 
 func TestFilterAssignmentsEmptyInput(t *testing.T) {
+	t.Parallel()
 	var assignments []*assignment.Assignment
 
 	result := filterAssignments(assignments, "working", "", -1)
@@ -53,6 +55,7 @@ func TestFilterAssignmentsEmptyInput(t *testing.T) {
 // ============================================================================
 
 func TestFilterByStatusWorking(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusCompleted),
@@ -73,6 +76,7 @@ func TestFilterByStatusWorking(t *testing.T) {
 }
 
 func TestFilterByStatusFailed(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusFailed),
@@ -92,6 +96,7 @@ func TestFilterByStatusFailed(t *testing.T) {
 }
 
 func TestFilterByStatusCompleted(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusCompleted),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -112,6 +117,7 @@ func TestFilterByStatusCompleted(t *testing.T) {
 }
 
 func TestFilterByStatusAssigned(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusAssigned),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -126,6 +132,7 @@ func TestFilterByStatusAssigned(t *testing.T) {
 }
 
 func TestFilterByStatusReassigned(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusReassigned),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -139,6 +146,7 @@ func TestFilterByStatusReassigned(t *testing.T) {
 }
 
 func TestFilterByStatusInvalid(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusCompleted),
@@ -157,6 +165,7 @@ func TestFilterByStatusInvalid(t *testing.T) {
 // ============================================================================
 
 func TestFilterByAgentClaude(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -177,6 +186,7 @@ func TestFilterByAgentClaude(t *testing.T) {
 }
 
 func TestFilterByAgentCodex(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -197,6 +207,7 @@ func TestFilterByAgentCodex(t *testing.T) {
 }
 
 func TestFilterByAgentGemini(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "gemini", 2, assignment.StatusWorking),
@@ -210,6 +221,7 @@ func TestFilterByAgentGemini(t *testing.T) {
 }
 
 func TestFilterByAgentInvalid(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusCompleted),
@@ -228,6 +240,7 @@ func TestFilterByAgentInvalid(t *testing.T) {
 // ============================================================================
 
 func TestFilterByPane(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -248,6 +261,7 @@ func TestFilterByPane(t *testing.T) {
 }
 
 func TestFilterByPaneZero(t *testing.T) {
+	t.Parallel()
 	// Pane 0 is valid (user pane)
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 0, assignment.StatusWorking),
@@ -263,6 +277,7 @@ func TestFilterByPaneZero(t *testing.T) {
 }
 
 func TestFilterByPaneNonExistent(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
@@ -277,6 +292,7 @@ func TestFilterByPaneNonExistent(t *testing.T) {
 }
 
 func TestFilterByPaneNegativeDisabled(t *testing.T) {
+	t.Parallel()
 	// Negative pane value means "no pane filter"
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
@@ -295,6 +311,7 @@ func TestFilterByPaneNegativeDisabled(t *testing.T) {
 // ============================================================================
 
 func TestFilterStatusAndAgent(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusCompleted),
@@ -316,6 +333,7 @@ func TestFilterStatusAndAgent(t *testing.T) {
 }
 
 func TestFilterPaneAndStatus(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 3, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 3, assignment.StatusFailed),
@@ -337,6 +355,7 @@ func TestFilterPaneAndStatus(t *testing.T) {
 }
 
 func TestFilterAllThreeCriteria(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusWorking),
@@ -358,6 +377,7 @@ func TestFilterAllThreeCriteria(t *testing.T) {
 }
 
 func TestFilterNoMatches(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "codex", 2, assignment.StatusCompleted),
@@ -376,6 +396,7 @@ func TestFilterNoMatches(t *testing.T) {
 // ============================================================================
 
 func TestFilterPreservesOrder(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusWorking),
@@ -398,6 +419,7 @@ func TestFilterPreservesOrder(t *testing.T) {
 }
 
 func TestFilterSingleAssignment(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 	}
@@ -416,6 +438,7 @@ func TestFilterSingleAssignment(t *testing.T) {
 }
 
 func TestFilterWithNilAssignments(t *testing.T) {
+	t.Parallel()
 	// Input with nil pointer
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
@@ -445,6 +468,7 @@ func TestFilterWithNilAssignments(t *testing.T) {
 // ============================================================================
 
 func TestStatusOptionsFilterFlags(t *testing.T) {
+	t.Parallel()
 	// Verify the statusOptions struct has the expected filter fields
 	opts := statusOptions{
 		filterStatus: "working",
@@ -468,6 +492,7 @@ func TestStatusOptionsFilterFlags(t *testing.T) {
 }
 
 func TestStatusOptionsDefaultValues(t *testing.T) {
+	t.Parallel()
 	opts := statusOptions{}
 
 	// Default values should be empty/zero
@@ -492,6 +517,7 @@ func TestStatusOptionsDefaultValues(t *testing.T) {
 // ============================================================================
 
 func TestSummaryStatsCalculation(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusWorking),
@@ -522,6 +548,7 @@ func TestSummaryStatsCalculation(t *testing.T) {
 }
 
 func TestSummaryStatsByAgent(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusCompleted),
@@ -547,6 +574,7 @@ func TestSummaryStatsByAgent(t *testing.T) {
 }
 
 func TestSummaryStatsEmpty(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{} // Use empty slice instead of nil
 
 	// Empty assignments should result in zero counts
@@ -561,6 +589,7 @@ func TestSummaryStatsEmpty(t *testing.T) {
 }
 
 func TestCompletionRateCalculation(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusCompleted),
 		makeTestAssignment("bd-002", "claude", 2, assignment.StatusCompleted),
@@ -585,6 +614,7 @@ func TestCompletionRateCalculation(t *testing.T) {
 }
 
 func TestCompletionRateZeroDivision(t *testing.T) {
+	t.Parallel()
 	assignments := []*assignment.Assignment{} // Use empty slice instead of nil
 
 	total := len(assignments)

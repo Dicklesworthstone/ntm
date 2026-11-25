@@ -7,6 +7,7 @@ import (
 )
 
 func TestAssignmentFileMentionsNormalizeReservationIntent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, title, description string
 		want                     []string
@@ -41,6 +42,7 @@ func TestAssignmentFileMentionsNormalizeReservationIntent(t *testing.T) {
 		{"title and body mixture", "Fix src/main.go:42 using https://example.com/docs", "See [design](docs/design.md#overview), then src/main.go", []string{"src/main.go", "docs/design.md"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := ExtractMentionedFiles(tc.title, tc.description)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("ExtractMentionedFiles(%q, %q) = %q, want %q", tc.title, tc.description, got, tc.want)
@@ -50,6 +52,7 @@ func TestAssignmentFileMentionsNormalizeReservationIntent(t *testing.T) {
 }
 
 func TestAssignmentFileMentionClassifierRejectsRemoteResources(t *testing.T) {
+	t.Parallel()
 	for _, remote := range []string{
 		"https://example.com/src/main.go", "HTTPS://example.com/a.py", "file:///tmp/main.go",
 		"ssh://host/path", "mailto:person@example.com", "custom+v1:src/main.go", "www.example.com/a.go",

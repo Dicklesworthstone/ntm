@@ -10,6 +10,7 @@ import (
 )
 
 func TestMaximumWeightAssignmentBeatsGreedy(t *testing.T) {
+	t.Parallel()
 	edges := []assignmentMatchEdge{
 		{"a", "critical", 0.90}, {"a", "specialist", 0.80},
 		{"b", "critical", 0.85}, {"b", "specialist", 0.10},
@@ -28,6 +29,7 @@ func TestMaximumWeightAssignmentBeatsGreedy(t *testing.T) {
 }
 
 func TestMaximumWeightAssignmentSparseAndRectangular(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		edges []assignmentMatchEdge
@@ -45,12 +47,14 @@ func TestMaximumWeightAssignmentSparseAndRectangular(t *testing.T) {
 		{"nonfinite", []assignmentMatchEdge{{"a", "x", math.NaN()}, {"a", "y", math.Inf(1)}, {"b", "x", math.Inf(-1)}, {"b", "y", 2}}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assertAssignmentMatching(t, tc.edges, maximumWeightAssignment(tc.edges), tc.want)
 		})
 	}
 }
 
 func TestMaximumWeightAssignmentInputOrderDoesNotBreakTies(t *testing.T) {
+	t.Parallel()
 	edges := []assignmentMatchEdge{
 		{"b", "y", 1}, {"a", "y", 1}, {"c", "x", 1},
 		{"b", "x", 1}, {"c", "y", 1}, {"a", "x", 1},
@@ -67,6 +71,7 @@ func TestMaximumWeightAssignmentInputOrderDoesNotBreakTies(t *testing.T) {
 }
 
 func TestMaximumWeightAssignmentPreservesInput(t *testing.T) {
+	t.Parallel()
 	edges := []assignmentMatchEdge{{"b", "x", 2}, {"a", "x", 1}}
 	before := append([]assignmentMatchEdge(nil), edges...)
 	maximumWeightAssignment(edges)
@@ -76,6 +81,7 @@ func TestMaximumWeightAssignmentPreservesInput(t *testing.T) {
 }
 
 func TestMaximumWeightAssignmentFiniteExtremeScores(t *testing.T) {
+	t.Parallel()
 	for _, scale := range []float64{math.SmallestNonzeroFloat64, 1e-200, 1, 1e200, math.MaxFloat64 / 8} {
 		edges := []assignmentMatchEdge{
 			{"a", "x", 4 * scale}, {"a", "y", 3 * scale}, {"b", "x", 3 * scale},
@@ -88,6 +94,7 @@ func TestMaximumWeightAssignmentFiniteExtremeScores(t *testing.T) {
 }
 
 func TestMaximumWeightAssignmentMatchesExhaustiveOracle(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewSource(8247))
 	for trial := 0; trial < 600; trial++ {
 		agents, tasks := 1+rng.Intn(5), 1+rng.Intn(5)

@@ -101,6 +101,7 @@ func readOnlyOutboxRecord(t *testing.T, dir string) (string, outboxRecord, []byt
 // probe runnable against the original manager as well: that manager has no
 // OutboxDir, and the receiver observes that restart lost the accepted retry.
 func TestWebhookRestartPreservesRetryAndFrozenRequest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -191,6 +192,7 @@ func TestWebhookRestartPreservesRetryAndFrozenRequest(t *testing.T) {
 }
 
 func TestWebhookOutboxImmediateStopDrainsAcceptedFirstAttempt(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); w.WriteHeader(204) }))
 	defer server.Close()
@@ -264,6 +266,7 @@ func startOutboxProcess(t *testing.T, mode, dir, url string) *exec.Cmd {
 }
 
 func TestWebhookOutboxCrashRecoveryAndCrossProcessOwnership(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requests := make(chan outboxRequest, 8)
 	cancelled := make(chan struct{})
@@ -318,6 +321,7 @@ func TestWebhookOutboxCrashRecoveryAndCrossProcessOwnership(t *testing.T) {
 }
 
 func TestWebhookOutboxDiskCapacityAndIdempotentAdmission(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(503)
@@ -365,6 +369,7 @@ func TestWebhookOutboxDiskCapacityAndIdempotentAdmission(t *testing.T) {
 }
 
 func TestWebhookOutboxQueuePressureRetainsAcceptedDeliveries(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var once sync.Once
 	defer once.Do(func() { close(release) })
@@ -393,6 +398,7 @@ func TestWebhookOutboxQueuePressureRetainsAcceptedDeliveries(t *testing.T) {
 }
 
 func TestWebhookOutboxPersistsRedactedContentNotCredentials(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(503)
@@ -437,6 +443,7 @@ func TestWebhookOutboxPersistsRedactedContentNotCredentials(t *testing.T) {
 }
 
 func TestWebhookOutboxConfigChangeCannotReroutePendingPayload(t *testing.T) {
+	t.Parallel()
 	var oldCalls, newCalls atomic.Int32
 	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oldCalls.Add(1)
@@ -470,6 +477,7 @@ func TestWebhookOutboxConfigChangeCannotReroutePendingPayload(t *testing.T) {
 }
 
 func TestWebhookOutboxTransientAndPrivacyGateDoNotPersist(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); w.WriteHeader(204) }))
 	defer server.Close()
@@ -504,6 +512,7 @@ func TestWebhookOutboxTransientAndPrivacyGateDoNotPersist(t *testing.T) {
 }
 
 func TestWebhookOutboxPermanentFailuresSurviveRestartWithoutReplay(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); w.WriteHeader(400) }))
 	defer server.Close()
@@ -530,6 +539,7 @@ func TestWebhookOutboxPermanentFailuresSurviveRestartWithoutReplay(t *testing.T)
 }
 
 func TestWebhookOutboxRejectsCorruptReceiptsAndStorageFailure(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); w.WriteHeader(204) }))
 	defer server.Close()
@@ -570,6 +580,7 @@ func TestWebhookOutboxRejectsCorruptReceiptsAndStorageFailure(t *testing.T) {
 }
 
 func TestWebhookOutboxEmptyTemplateAndPrivatePathValidation(t *testing.T) {
+	t.Parallel()
 	bodies := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -654,6 +665,7 @@ func TestWebhookOutboxProjectNamespacesAndSymlinkLockRejection(t *testing.T) {
 }
 
 func TestWebhookOutboxCustomHeadersCannotReplaceDeliveryIdentity(t *testing.T) {
+	t.Parallel()
 	requests := make(chan outboxRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests <- captureOutboxRequest(r); w.WriteHeader(204) }))
 	defer server.Close()
@@ -678,6 +690,7 @@ func TestWebhookOutboxCustomHeadersCannotReplaceDeliveryIdentity(t *testing.T) {
 }
 
 func TestWebhookOutboxReplayRechecksPrivacyPolicy(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	var allowed atomic.Bool
 	allowed.Store(true)
@@ -719,6 +732,7 @@ func TestWebhookOutboxReplayRechecksPrivacyPolicy(t *testing.T) {
 }
 
 func TestWebhookOutboxDirectoryReplacementFencesLiveManager(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); w.WriteHeader(204) }))
 	defer server.Close()
@@ -745,6 +759,7 @@ func TestWebhookOutboxDirectoryReplacementFencesLiveManager(t *testing.T) {
 }
 
 func TestWebhookOutboxRechecksRegistrationBeforeQueuedSend(t *testing.T) {
+	t.Parallel()
 	requests := make(chan outboxRequest, 4)
 	release := make(chan struct{})
 	var unblock sync.Once

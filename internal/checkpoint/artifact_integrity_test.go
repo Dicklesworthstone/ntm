@@ -107,6 +107,7 @@ func TestArtifactIntegrityRejectsIncompleteOrInvalidManifest(t *testing.T) {
 		}, "invalid SHA-256"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			storage, cp := newArtifactIntegrityFixture(t)
 			tc.edit(cp)
 			// Write damaged metadata without invoking Save, which records checksums.

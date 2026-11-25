@@ -13,10 +13,12 @@ import (
 )
 
 func TestImportRejectsCorruptTrailerBeforeWriting(t *testing.T) {
+	t.Parallel()
 	for _, verify := range []bool{false, true} {
 		for _, overwrite := range []bool{false, true} {
 			for _, corruption := range []string{"crc", "size", "truncated", "payload", "padding"} {
 				t.Run(corruption+"/verify="+strconv.FormatBool(verify)+"/overwrite="+strconv.FormatBool(overwrite), func(t *testing.T) {
+					t.Parallel()
 					storage := NewStorageWithDir(t.TempDir())
 					cp := &Checkpoint{
 						Version: CurrentVersion, ID: "20260922-120000-trailer", Name: "original",

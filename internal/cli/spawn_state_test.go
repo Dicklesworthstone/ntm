@@ -164,6 +164,7 @@ func testSpawnSessionObservation(now time.Time, panes ...statuspkg.PaneObservati
 }
 
 func TestNewSpawnState(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-123", 90, 3)
 
 	if state.BatchID != "batch-123" {
@@ -181,6 +182,7 @@ func TestNewSpawnState(t *testing.T) {
 }
 
 func TestSpawnStateAddPrompt(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-123", 90, 3)
 	scheduledAt := time.Now().Add(90 * time.Second)
 
@@ -206,6 +208,7 @@ func TestSpawnStateAddPrompt(t *testing.T) {
 }
 
 func TestSpawnStateMarkSent(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-123", 90, 2)
 	now := time.Now()
 
@@ -237,6 +240,7 @@ func TestSpawnStateMarkSent(t *testing.T) {
 }
 
 func TestSpawnStatePendingCount(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-123", 90, 3)
 	now := time.Now()
 
@@ -261,6 +265,7 @@ func TestSpawnStatePendingCount(t *testing.T) {
 }
 
 func TestSpawnStateIsComplete(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-test", 60, 1)
 	state.AddPrompt("proj__cc_1", "pane-1", 1, time.Now())
 
@@ -276,6 +281,7 @@ func TestSpawnStateIsComplete(t *testing.T) {
 }
 
 func TestSpawnStateMarkComplete(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-test", 60, 2)
 	state.AddPrompt("proj__cc_1", "pane-1", 1, time.Now())
 	state.AddPrompt("proj__cc_2", "pane-2", 2, time.Now())
@@ -292,6 +298,7 @@ func TestSpawnStateMarkComplete(t *testing.T) {
 }
 
 func TestTimeUntilNextPrompt(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-test", 60, 2)
 	now := time.Now()
 
@@ -317,6 +324,7 @@ func TestTimeUntilNextPrompt(t *testing.T) {
 }
 
 func TestGetPromptStatuses(t *testing.T) {
+	t.Parallel()
 	state := NewSpawnState("batch-test", 60, 2)
 	now := time.Now()
 
@@ -337,10 +345,12 @@ func TestGetPromptStatuses(t *testing.T) {
 }
 
 func TestWaitForAgentsReadyWithObserverEvidence(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	pane := tmux.Pane{ID: "%41", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "demo__cc_1"}
 
 	t.Run("fresh idle succeeds", func(t *testing.T) {
+		t.Parallel()
 		observer := &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{
 			testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateIdle)),
 		}}
@@ -351,6 +361,7 @@ func TestWaitForAgentsReadyWithObserverEvidence(t *testing.T) {
 	})
 
 	t.Run("empty capture remains unknown and times out", func(t *testing.T) {
+		t.Parallel()
 		observer := &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{
 			testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateUnknown)),
 		}}
@@ -361,6 +372,7 @@ func TestWaitForAgentsReadyWithObserverEvidence(t *testing.T) {
 	})
 
 	t.Run("capture failure is retained in timeout", func(t *testing.T) {
+		t.Parallel()
 		failed := testSpawnPaneObservation(now, pane, statuspkg.StateUnknown)
 		failed.Current.Freshness = statuspkg.FreshnessUnavailable
 		failed.Current.Confidence = 0
@@ -377,6 +389,7 @@ func TestWaitForAgentsReadyWithObserverEvidence(t *testing.T) {
 }
 
 func TestReadyAgentPanesRejectsIdleShellBeforeAgentProcessStarts(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	pane := tmux.Pane{
 		ID: "%45", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude,
@@ -395,6 +408,7 @@ func TestReadyAgentPanesRejectsIdleShellBeforeAgentProcessStarts(t *testing.T) {
 }
 
 func TestDispatchSpawnPromptSequencePreservesOrderAndCanonicalReceipts(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	pane := tmux.Pane{ID: "%42", WindowIndex: 1, Index: 3, Type: tmux.AgentClaude, Title: "demo__cc_3"}
 	idle := testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateIdle))
@@ -426,6 +440,7 @@ func TestDispatchSpawnPromptSequencePreservesOrderAndCanonicalReceipts(t *testin
 }
 
 func TestDispatchSpawnPromptSequenceStopsAfterFailedRevalidation(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	pane := tmux.Pane{ID: "%43", WindowIndex: 0, Index: 2, Type: tmux.AgentClaude, Title: "demo__cc_2"}
 	idle := testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateIdle))
@@ -453,6 +468,7 @@ func TestDispatchSpawnPromptSequenceStopsAfterFailedRevalidation(t *testing.T) {
 }
 
 func TestDispatchSpawnPromptSequenceCancellationStopsBlockedObserverWithoutDelivery(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	observer := &blockingSpawnObserver{entered: make(chan struct{})}
 	dispatcher := &recordingSpawnDispatcher{}
@@ -488,6 +504,7 @@ func TestDispatchSpawnPromptSequenceCancellationStopsBlockedObserverWithoutDeliv
 }
 
 func TestWaitForAgentsReadyCancellationStopsBlockingObservation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	observer := &blockingSpawnObserver{entered: make(chan struct{})}
 	done := make(chan struct{})
@@ -514,6 +531,7 @@ func TestWaitForAgentsReadyCancellationStopsBlockingObservation(t *testing.T) {
 }
 
 func TestSendInitPromptCancellationStopsBlockingObservationWithoutDelivery(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	observer := &blockingSpawnObserver{entered: make(chan struct{})}
 	dispatcher := &recordingSpawnDispatcher{}
@@ -546,6 +564,7 @@ func TestSendInitPromptCancellationStopsBlockingObservationWithoutDelivery(t *te
 }
 
 func TestWaitForSpawnPromptWorkersCancelsAndJoinsBeforeReturning(t *testing.T) {
+	t.Parallel()
 	setupCtx, cancelSetup := context.WithCancel(t.Context())
 	defer cancelSetup()
 	setupDone := make(chan struct{})
@@ -587,6 +606,7 @@ func TestWaitForSpawnPromptWorkersCancelsAndJoinsBeforeReturning(t *testing.T) {
 }
 
 func TestSpawnPromptWorkerCleanupBlocksUntilWorkerExit(t *testing.T) {
+	t.Parallel()
 	setupCtx, cancelSetup := context.WithCancel(t.Context())
 	defer cancelSetup()
 	workerCanceled := make(chan struct{})

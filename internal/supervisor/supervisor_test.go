@@ -17,6 +17,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	tests := []struct {
@@ -66,6 +67,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestSupervisorCreatesDirectories(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -127,6 +129,7 @@ func TestFindAvailablePort(t *testing.T) {
 }
 
 func TestStartStopDaemon(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -186,6 +189,7 @@ func TestStartStopDaemon(t *testing.T) {
 }
 
 func TestStopDaemonDeliversGracefulTermination(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	markerPath := filepath.Join(tmpDir, "terminated")
 	readyPath := filepath.Join(tmpDir, "ready")
@@ -238,6 +242,7 @@ func TestStopDaemonDeliversGracefulTermination(t *testing.T) {
 }
 
 func TestExitedDaemonClosesSupersededLogFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	s, err := New(Config{
 		SessionID:   "crash-log-close",
@@ -280,6 +285,7 @@ func TestExitedDaemonClosesSupersededLogFile(t *testing.T) {
 }
 
 func TestStartDuplicateDaemon(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -313,6 +319,7 @@ func TestStartDuplicateDaemon(t *testing.T) {
 }
 
 func TestStartRejectsLiveAndRecoveringGenerations(t *testing.T) {
+	t.Parallel()
 	s, err := New(Config{SessionID: "start-admission", ProjectDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -589,6 +596,7 @@ func TestStopDuringBackoffCancelsOldGeneration(t *testing.T) {
 }
 
 func TestRestartBackoffSaturates(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		attempt int
 		cap     time.Duration
@@ -608,6 +616,7 @@ func TestRestartBackoffSaturates(t *testing.T) {
 }
 
 func TestGetDaemonReturnsSnapshot(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -676,6 +685,7 @@ func TestGetDaemonReturnsSnapshot(t *testing.T) {
 }
 
 func TestPIDFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -731,6 +741,7 @@ func TestPIDFile(t *testing.T) {
 }
 
 func TestDefaultSpecs(t *testing.T) {
+	t.Parallel()
 	specs := DefaultSpecs()
 	if len(specs) == 0 {
 		t.Error("DefaultSpecs() returned empty slice")
@@ -757,6 +768,7 @@ func TestDefaultSpecs(t *testing.T) {
 // pane's coordination transport. Pin the canonical args so a future
 // refactor can't silently revert to `serve`.
 func TestDefaultSpecsAgentMailUsesServeHTTP(t *testing.T) {
+	t.Parallel()
 	specs := DefaultSpecs()
 	var amSpec *DaemonSpec
 	for i := range specs {
@@ -797,6 +809,7 @@ func TestDefaultSpecsAgentMailUsesServeHTTP(t *testing.T) {
 }
 
 func TestStartNoPortFallbackRefusesOccupiedPort(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -846,6 +859,7 @@ func probeHealth(t *testing.T, spec DaemonSpec) error {
 
 // TestHealthCheck tests the HTTP health probe
 func TestHealthCheck(t *testing.T) {
+	t.Parallel()
 	// Start a test HTTP server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/liveness", func(w http.ResponseWriter, r *http.Request) {
@@ -878,6 +892,7 @@ func TestHealthCheck(t *testing.T) {
 
 // TestHealthCheckCmd tests the command-based health probe
 func TestHealthCheckCmd(t *testing.T) {
+	t.Parallel()
 	// Test with successful command
 	if err := probeHealth(t, DaemonSpec{HealthCmd: []string{"echo", "ok"}}); err != nil {
 		t.Errorf("command health probe failed for successful command: %v", err)
@@ -890,6 +905,7 @@ func TestHealthCheckCmd(t *testing.T) {
 }
 
 func TestHandleDaemonFailure_IdempotentWhenAlreadyFailed(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -929,6 +945,7 @@ func TestHandleDaemonFailure_IdempotentWhenAlreadyFailed(t *testing.T) {
 }
 
 func TestShutdownPreventsFutureStarts(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -957,6 +974,7 @@ func TestShutdownPreventsFutureStarts(t *testing.T) {
 }
 
 func TestStartWaitsForConcurrentShutdown(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{

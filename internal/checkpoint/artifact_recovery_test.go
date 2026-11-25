@@ -15,10 +15,12 @@ import (
 )
 
 func TestRestoreArtifactIntegrityPrecedesMutation(t *testing.T) {
+	t.Parallel()
 	for _, dryRun := range []bool{false, true} {
 		for _, allowDegraded := range []bool{false, true} {
 			for _, target := range []string{"", "checksum-restore-target"} {
 				t.Run(fmt.Sprintf("dry_run=%t/allow_degraded=%t/target=%s", dryRun, allowDegraded, target), func(t *testing.T) {
+					t.Parallel()
 					storage, cp := newArtifactIntegrityFixture(t)
 					if err := os.WriteFile(storage.GitPatchPath(cp.SessionName, cp.ID), []byte("bad!!"), 0600); err != nil {
 						t.Fatal(err)
@@ -47,6 +49,7 @@ func TestRestoreArtifactIntegrityPrecedesMutation(t *testing.T) {
 }
 
 func TestArtifactPreflightSourceAndLegacy(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	source := cp.SessionName
 	cp.SessionName = "renamed-target"
@@ -64,7 +67,9 @@ func TestArtifactPreflightSourceAndLegacy(t *testing.T) {
 }
 
 func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
+	t.Parallel()
 	t.Run("missing recorded scrollback allowed only with AllowDegradedContext", func(t *testing.T) {
+		t.Parallel()
 		storage, cp := newArtifactIntegrityFixture(t)
 		scrollbackPath := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
 		if err := os.Remove(scrollbackPath); err != nil {
@@ -83,6 +88,7 @@ func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
 	})
 
 	t.Run("tampered existing scrollback fails closed even with AllowDegradedContext", func(t *testing.T) {
+		t.Parallel()
 		storage, cp := newArtifactIntegrityFixture(t)
 		scrollbackPath := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
 		if err := os.WriteFile(scrollbackPath, []byte("tampered scrollback"), 0600); err != nil {
@@ -94,6 +100,7 @@ func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
 	})
 
 	t.Run("existing unrecorded scrollback fails closed even with AllowDegradedContext", func(t *testing.T) {
+		t.Parallel()
 		storage, cp := newArtifactIntegrityFixture(t)
 		unrecorded := "panes/unrecorded.txt"
 		if err := os.WriteFile(filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), unrecorded), []byte("unverified"), 0600); err != nil {
@@ -106,6 +113,7 @@ func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
 	})
 
 	t.Run("missing git patch fails closed even with AllowDegradedContext", func(t *testing.T) {
+		t.Parallel()
 		storage, cp := newArtifactIntegrityFixture(t)
 		if err := os.Remove(storage.GitPatchPath(cp.SessionName, cp.ID)); err != nil {
 			t.Fatal(err)
@@ -116,6 +124,7 @@ func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
 	})
 
 	t.Run("path traversal fails closed even with AllowDegradedContext", func(t *testing.T) {
+		t.Parallel()
 		storage, cp := newArtifactIntegrityFixture(t)
 		cp.Session.Panes[0].ScrollbackFile = "../escape.txt"
 		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true); !errors.Is(err, ErrArtifactIntegrity) {
@@ -125,6 +134,7 @@ func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
 }
 
 func TestArtifactVerificationCancellation(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -156,9 +166,11 @@ func (r *artifactCancellingReader) Read(p []byte) (int, error) {
 }
 
 func TestArtifactIntegrityArchiveRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		for _, selection := range []struct{ scrollback, patch bool }{{true, true}, {false, true}, {true, false}, {false, false}} {
 			t.Run(fmt.Sprintf("%s/scrollback=%t/patch=%t", format, selection.scrollback, selection.patch), func(t *testing.T) {
+				t.Parallel()
 				storage, cp := newArtifactIntegrityFixture(t)
 				archive := filepath.Join(t.TempDir(), "checkpoint."+string(format))
 				opts := DefaultExportOptions()
@@ -194,8 +206,10 @@ func TestArtifactIntegrityArchiveRoundTrip(t *testing.T) {
 }
 
 func TestArtifactIntegrityExportPreparedBytes(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			storage, cp := newArtifactIntegrityFixture(t)
 			opts := DefaultExportOptions()
 			exported := rewriteCheckpointForExport(cp, opts)
@@ -240,6 +254,7 @@ func TestArtifactIntegrityExportPreparedBytes(t *testing.T) {
 }
 
 func TestArtifactIntegrityExportRefusesDamagedSource(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	if err := os.WriteFile(storage.GitPatchPath(cp.SessionName, cp.ID), []byte("bad!!"), 0600); err != nil {
 		t.Fatal(err)
@@ -274,8 +289,10 @@ func TestArtifactIntegrityExportRefusesDamagedSource(t *testing.T) {
 }
 
 func TestArtifactIntegrityImportRejectsCorruptionBeforeOverwrite(t *testing.T) {
+	t.Parallel()
 	for _, verifyOuter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("verify_outer=%t", verifyOuter), func(t *testing.T) {
+			t.Parallel()
 			storage, cp := newArtifactIntegrityFixture(t)
 			files := make(map[string][]byte)
 			for rel := range expectedManifestFiles(cp) {
@@ -324,6 +341,7 @@ func TestArtifactIntegrityImportRejectsCorruptionBeforeOverwrite(t *testing.T) {
 }
 
 func TestArtifactIntegrityRedactionRejectsChangedSource(t *testing.T) {
+	t.Parallel()
 	storage, cp := newArtifactIntegrityFixture(t)
 	dir := storage.CheckpointDir(cp.SessionName, cp.ID)
 	if err := os.WriteFile(filepath.Join(dir, cp.Session.Panes[0].ScrollbackFile), []byte("xyz"), 0600); err != nil {
@@ -339,6 +357,7 @@ func TestArtifactIntegrityRedactionRejectsChangedSource(t *testing.T) {
 }
 
 func TestArtifactIntegrityRejectsReservedPathAliases(t *testing.T) {
+	t.Parallel()
 	for _, legacy := range []bool{false, true} {
 		storage, cp := newArtifactIntegrityFixture(t)
 		cp.Git.PatchFile = MetadataFile

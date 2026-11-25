@@ -914,6 +914,7 @@ func TestRollbackResponseToMap(t *testing.T) {
 	t.Parallel()
 
 	t.Run("basic fields", func(t *testing.T) {
+		t.Parallel()
 		r := RollbackResponse{
 			CheckpointID:   "cp-123",
 			CheckpointName: "before-refactor",
@@ -946,6 +947,7 @@ func TestRollbackResponseToMap(t *testing.T) {
 	})
 
 	t.Run("with stash", func(t *testing.T) {
+		t.Parallel()
 		r := RollbackResponse{
 			CheckpointID:   "cp-456",
 			CheckpointName: "snapshot",
@@ -963,6 +965,7 @@ func TestRollbackResponseToMap(t *testing.T) {
 	})
 
 	t.Run("with warnings", func(t *testing.T) {
+		t.Parallel()
 		r := RollbackResponse{
 			CheckpointID:   "cp-789",
 			CheckpointName: "pre-deploy",
@@ -980,6 +983,7 @@ func TestRollbackResponseToMap(t *testing.T) {
 	})
 
 	t.Run("dry run", func(t *testing.T) {
+		t.Parallel()
 		r := RollbackResponse{
 			CheckpointID:   "cp-dry",
 			CheckpointName: "test",
@@ -999,6 +1003,7 @@ func TestCheckpointToResponse(t *testing.T) {
 	now := time.Now()
 
 	t.Run("basic without details", func(t *testing.T) {
+		t.Parallel()
 		cp := &checkpoint.Checkpoint{
 			ID:          "cp-abc",
 			Name:        "initial",
@@ -1037,6 +1042,7 @@ func TestCheckpointToResponse(t *testing.T) {
 	})
 
 	t.Run("with git info", func(t *testing.T) {
+		t.Parallel()
 		cp := &checkpoint.Checkpoint{
 			ID:          "cp-git",
 			Name:        "with-git",
@@ -1081,6 +1087,7 @@ func TestCheckpointToResponse(t *testing.T) {
 	})
 
 	t.Run("with session details", func(t *testing.T) {
+		t.Parallel()
 		cp := &checkpoint.Checkpoint{
 			ID:          "cp-details",
 			Name:        "detailed",
@@ -1117,6 +1124,7 @@ func TestCheckpointToResponse(t *testing.T) {
 	})
 
 	t.Run("metadata only details preserve stored pane count", func(t *testing.T) {
+		t.Parallel()
 		cp := &checkpoint.Checkpoint{
 			ID:          "cp-metadata-only",
 			Name:        "metadata-only",
@@ -1138,6 +1146,7 @@ func TestCheckpointToResponse(t *testing.T) {
 	})
 
 	t.Run("no details skips session", func(t *testing.T) {
+		t.Parallel()
 		cp := &checkpoint.Checkpoint{
 			ID:          "cp-nodetails",
 			Name:        "bare",
@@ -1173,6 +1182,7 @@ func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
 	outside := t.TempDir()
 
 	t.Run("accepts a directory inside the project", func(t *testing.T) {
+		t.Parallel()
 		got, err := s.resolveCheckpointWorkDir(inside)
 		if err != nil {
 			t.Fatalf("resolveCheckpointWorkDir(inside) = %v, want it accepted", err)
@@ -1183,18 +1193,21 @@ func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
 	})
 
 	t.Run("refuses a directory outside the project", func(t *testing.T) {
+		t.Parallel()
 		if _, err := s.resolveCheckpointWorkDir(outside); err == nil {
 			t.Fatalf("resolveCheckpointWorkDir(%q) was accepted; git would run in an unrelated repository", outside)
 		}
 	})
 
 	t.Run("refuses traversal back out of the project", func(t *testing.T) {
+		t.Parallel()
 		if _, err := s.resolveCheckpointWorkDir(filepath.Join(root, "..")); err == nil {
 			t.Fatal("parent-directory traversal was accepted")
 		}
 	})
 
 	t.Run("refuses a symlink pointing outside the project", func(t *testing.T) {
+		t.Parallel()
 		link := filepath.Join(root, "escape")
 		if err := os.Symlink(outside, link); err != nil {
 			t.Skipf("symlink unsupported: %v", err)
@@ -1205,6 +1218,7 @@ func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
 	})
 
 	t.Run("refuses a missing directory", func(t *testing.T) {
+		t.Parallel()
 		if _, err := s.resolveCheckpointWorkDir(filepath.Join(root, "does-not-exist")); err == nil {
 			t.Fatal("a nonexistent working directory was accepted")
 		}

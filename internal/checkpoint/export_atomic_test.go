@@ -11,6 +11,7 @@ import (
 )
 
 func TestCheckpointExportPublication(t *testing.T) {
+	t.Parallel()
 	for _, existing := range []bool{false, true} {
 		for _, fail := range []bool{false, true} {
 			name := "new"
@@ -21,6 +22,7 @@ func TestCheckpointExportPublication(t *testing.T) {
 				name += "-failure"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				dir, source := t.TempDir(), t.TempDir()
 				dest := filepath.Join(dir, "backup.zip")
 				old := "previous complete backup"
@@ -81,6 +83,7 @@ func TestCheckpointExportPublication(t *testing.T) {
 }
 
 func TestCheckpointExportRejectsUnsafeDestinations(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	source := filepath.Join(root, "checkpoint")
 	if err := os.MkdirAll(filepath.Join(source, "panes"), 0700); err != nil {
@@ -119,6 +122,7 @@ func TestCheckpointExportRejectsUnsafeDestinations(t *testing.T) {
 }
 
 func TestCheckpointExportAllowsSiblingAndHardlink(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	source, sibling := filepath.Join(root, "checkpoint"), filepath.Join(root, "checkpoint-backups")
 	for _, dir := range []string{source, sibling} {
@@ -144,6 +148,7 @@ func TestCheckpointExportAllowsSiblingAndHardlink(t *testing.T) {
 }
 
 func TestCheckpointExportRechecksDestinationBeforePublication(t *testing.T) {
+	t.Parallel()
 	root, source := t.TempDir(), t.TempDir()
 	victim := filepath.Join(root, "other-backup.zip")
 	if err := os.WriteFile(victim, []byte("other backup"), 0600); err != nil {
@@ -167,6 +172,7 @@ func TestCheckpointExportRechecksDestinationBeforePublication(t *testing.T) {
 }
 
 func TestCheckpointExportSyncFailurePreservesBackup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dest := filepath.Join(root, "backup.zip")
 	if err := os.WriteFile(dest, []byte("old"), 0600); err != nil {

@@ -16,6 +16,7 @@ import (
 
 // TestDirectAssignItemStructure tests the DirectAssignItem type has correct fields
 func TestDirectAssignItemStructure(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 	item := DirectAssignItem{
 		BeadID:       "bd-xyz",
@@ -59,6 +60,7 @@ func TestDirectAssignItemStructure(t *testing.T) {
 
 // TestDirectAssignItemWithBusyPane tests the structure with busy pane scenario
 func TestDirectAssignItemWithBusyPane(t *testing.T) {
+	t.Parallel()
 	item := DirectAssignItem{
 		BeadID:      "bd-abc",
 		Pane:        5,
@@ -76,6 +78,7 @@ func TestDirectAssignItemWithBusyPane(t *testing.T) {
 
 // TestDirectAssignItemWithIgnoredDeps tests the structure with ignored dependencies
 func TestDirectAssignItemWithIgnoredDeps(t *testing.T) {
+	t.Parallel()
 	item := DirectAssignItem{
 		BeadID:       "bd-blocked",
 		Pane:         2,
@@ -96,6 +99,7 @@ func TestDirectAssignItemWithIgnoredDeps(t *testing.T) {
 
 // TestDirectAssignDataStructure tests the DirectAssignData container
 func TestDirectAssignDataStructure(t *testing.T) {
+	t.Parallel()
 	data := DirectAssignData{
 		Assignment: &DirectAssignItem{
 			BeadID:     "bd-test",
@@ -133,6 +137,7 @@ func TestDirectAssignDataStructure(t *testing.T) {
 
 // TestDirectAssignDataWithoutReservations tests the data without file reservations
 func TestDirectAssignDataWithoutReservations(t *testing.T) {
+	t.Parallel()
 	data := DirectAssignData{
 		Assignment: &DirectAssignItem{
 			BeadID:     "bd-simple",
@@ -154,6 +159,7 @@ func TestDirectAssignDataWithoutReservations(t *testing.T) {
 
 // TestDirectAssignFileReservationsStructure tests the file reservations type
 func TestDirectAssignFileReservationsStructure(t *testing.T) {
+	t.Parallel()
 	reservations := DirectAssignFileReservations{
 		Requested: []string{"src/*.go", "pkg/*.go", "internal/*.go"},
 		Granted:   []string{"src/*.go", "pkg/*.go"},
@@ -173,6 +179,7 @@ func TestDirectAssignFileReservationsStructure(t *testing.T) {
 
 // TestDirectAssignFileReservationsEmpty tests empty file reservations
 func TestDirectAssignFileReservationsEmpty(t *testing.T) {
+	t.Parallel()
 	reservations := DirectAssignFileReservations{
 		Requested: []string{},
 		Granted:   []string{},
@@ -193,6 +200,7 @@ func TestDirectAssignFileReservationsEmpty(t *testing.T) {
 
 // TestAssignCommandOptionsPaneFields tests the pane-related options fields
 func TestAssignCommandOptionsPaneFields(t *testing.T) {
+	t.Parallel()
 	opts := AssignCommandOptions{
 		Session:      "myproject",
 		BeadIDs:      []string{"bd-xyz"},
@@ -221,6 +229,7 @@ func TestAssignCommandOptionsPaneFields(t *testing.T) {
 
 // TestAssignCommandOptionsForceFlag tests the force flag behavior
 func TestAssignCommandOptionsForceFlag(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		force    bool
@@ -232,6 +241,7 @@ func TestAssignCommandOptionsForceFlag(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := AssignCommandOptions{
 				Session:      "test",
 				PaneSelector: "1",
@@ -246,6 +256,7 @@ func TestAssignCommandOptionsForceFlag(t *testing.T) {
 
 // TestAssignCommandOptionsIgnoreDepsFlag tests the ignore-deps flag behavior
 func TestAssignCommandOptionsIgnoreDepsFlag(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		ignoreDeps bool
@@ -257,6 +268,7 @@ func TestAssignCommandOptionsIgnoreDepsFlag(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := AssignCommandOptions{
 				Session:      "test",
 				PaneSelector: "1",
@@ -271,6 +283,7 @@ func TestAssignCommandOptionsIgnoreDepsFlag(t *testing.T) {
 
 // TestAssignCommandOptionsBothOverrideFlags tests using both force and ignore-deps
 func TestAssignCommandOptionsBothOverrideFlags(t *testing.T) {
+	t.Parallel()
 	opts := AssignCommandOptions{
 		Session:      "test",
 		BeadIDs:      []string{"bd-blocked"},
@@ -289,6 +302,7 @@ func TestAssignCommandOptionsBothOverrideFlags(t *testing.T) {
 
 // TestAssignCommandOptionsPaneDisabledValue tests the empty disabled value.
 func TestAssignCommandOptionsPaneDisabledValue(t *testing.T) {
+	t.Parallel()
 	opts := AssignCommandOptions{
 		Session: "test",
 	}
@@ -304,6 +318,7 @@ func TestAssignCommandOptionsPaneDisabledValue(t *testing.T) {
 
 // TestMakeDirectAssignEnvelopeSuccess tests successful envelope creation
 func TestMakeDirectAssignEnvelopeSuccess(t *testing.T) {
+	t.Parallel()
 	data := &DirectAssignData{
 		Assignment: &DirectAssignItem{
 			BeadID:     "bd-test",
@@ -339,6 +354,7 @@ func TestMakeDirectAssignEnvelopeSuccess(t *testing.T) {
 
 // TestMakeDirectAssignEnvelopeError tests error envelope creation
 func TestMakeDirectAssignEnvelopeError(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("myproject", false, nil, "PANE_NOT_FOUND", "pane 99 not found", nil)
 
 	if envelope.Success {
@@ -360,6 +376,7 @@ func TestMakeDirectAssignEnvelopeError(t *testing.T) {
 
 // TestMakeDirectAssignEnvelopeWithWarnings tests envelope with warnings
 func TestMakeDirectAssignEnvelopeWithWarnings(t *testing.T) {
+	t.Parallel()
 	warnings := []string{"could not check dependencies", "file reservation partial"}
 	envelope := makeDirectAssignEnvelope("test", true, nil, "", "", warnings)
 
@@ -373,6 +390,7 @@ func TestMakeDirectAssignEnvelopeWithWarnings(t *testing.T) {
 
 // TestMakeDirectAssignEnvelopeNilWarningsBecomesEmptySlice tests nil warnings handling
 func TestMakeDirectAssignEnvelopeNilWarningsBecomesEmptySlice(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("test", true, nil, "", "", nil)
 
 	if envelope.Warnings == nil {
@@ -385,6 +403,7 @@ func TestMakeDirectAssignEnvelopeNilWarningsBecomesEmptySlice(t *testing.T) {
 
 // TestMakeDirectAssignEnvelopeHasTimestamp tests that envelope includes timestamp
 func TestMakeDirectAssignEnvelopeHasTimestamp(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("test", true, nil, "", "", nil)
 
 	if envelope.Timestamp == "" {
@@ -403,6 +422,7 @@ func TestMakeDirectAssignEnvelopeHasTimestamp(t *testing.T) {
 
 // TestDirectAssignErrorCodes tests the documented error codes for direct assignment
 func TestDirectAssignErrorCodes(t *testing.T) {
+	t.Parallel()
 	// These are the documented error codes from the bead spec
 	errorCodes := []struct {
 		code    string
@@ -419,6 +439,7 @@ func TestDirectAssignErrorCodes(t *testing.T) {
 
 	for _, ec := range errorCodes {
 		t.Run(ec.code, func(t *testing.T) {
+			t.Parallel()
 			envelope := makeDirectAssignEnvelope("test", false, nil, ec.code, ec.meaning, nil)
 
 			if envelope.Error == nil {
@@ -436,6 +457,7 @@ func TestDirectAssignErrorCodes(t *testing.T) {
 
 // TestPaneNotFoundError tests the PANE_NOT_FOUND error scenario
 func TestPaneNotFoundError(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("myproject", false, nil, "PANE_NOT_FOUND", "pane 99 not found in session myproject", nil)
 
 	if envelope.Error.Code != "PANE_NOT_FOUND" {
@@ -445,6 +467,7 @@ func TestPaneNotFoundError(t *testing.T) {
 
 // TestNotAgentPaneError tests the NOT_AGENT_PANE error scenario
 func TestNotAgentPaneError(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("myproject", false, nil, "NOT_AGENT_PANE", "pane 0 is not an agent pane (type: user)", nil)
 
 	if envelope.Error.Code != "NOT_AGENT_PANE" {
@@ -454,6 +477,7 @@ func TestNotAgentPaneError(t *testing.T) {
 
 // TestPaneBusyError tests the PANE_BUSY error scenario
 func TestPaneBusyError(t *testing.T) {
+	t.Parallel()
 	data := &DirectAssignData{
 		Assignment: &DirectAssignItem{
 			BeadID:      "bd-test",
@@ -474,6 +498,7 @@ func TestPaneBusyError(t *testing.T) {
 
 // TestBlockedError tests the BLOCKED error scenario
 func TestBlockedError(t *testing.T) {
+	t.Parallel()
 	data := &DirectAssignData{
 		Assignment: &DirectAssignItem{
 			BeadID:       "bd-blocked",
@@ -492,6 +517,7 @@ func TestBlockedError(t *testing.T) {
 
 // TestInvalidArgsError tests the INVALID_ARGS error scenario
 func TestInvalidArgsError(t *testing.T) {
+	t.Parallel()
 	envelope := makeDirectAssignEnvelope("myproject", false, nil, "INVALID_ARGS", "--pane requires exactly one bead (use --beads=bd-xxx)", nil)
 
 	if envelope.Error.Code != "INVALID_ARGS" {
@@ -505,6 +531,7 @@ func TestInvalidArgsError(t *testing.T) {
 
 // TestPaneValidationRequiresSingleBead tests that exactly one bead is required
 func TestPaneValidationRequiresSingleBead(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		beadIDs     []string
@@ -518,6 +545,7 @@ func TestPaneValidationRequiresSingleBead(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			opts := AssignCommandOptions{
 				Session:      "test",
 				BeadIDs:      tc.beadIDs,
@@ -535,6 +563,7 @@ func TestPaneValidationRequiresSingleBead(t *testing.T) {
 
 // TestBusyPaneValidation tests the busy pane validation logic
 func TestBusyPaneValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		state       string
@@ -551,6 +580,7 @@ func TestBusyPaneValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Validation: state != "idle" && !force
 			shouldError := tc.state != "idle" && !tc.force
 			if shouldError != tc.expectError {
@@ -563,6 +593,7 @@ func TestBusyPaneValidation(t *testing.T) {
 
 // TestBlockedBeadValidation tests the blocked bead validation logic
 func TestBlockedBeadValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		blockers    []string
@@ -579,6 +610,7 @@ func TestBlockedBeadValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Validation: len(blockers) > 0 && !ignoreDeps
 			hasBlockers := len(tc.blockers) > 0
 			shouldError := hasBlockers && !tc.ignoreDeps
@@ -663,6 +695,7 @@ func TestIgnoreDepsFlagDefaultValue(t *testing.T) {
 
 // TestDirectAssignResultStructure tests the DirectAssignResult type
 func TestDirectAssignResultStructure(t *testing.T) {
+	t.Parallel()
 	result := DirectAssignResult{
 		BeadID:         "bd-xyz",
 		BeadTitle:      "Test task",
@@ -697,6 +730,7 @@ func TestDirectAssignResultStructure(t *testing.T) {
 
 // TestDirectAssignResultWithError tests result with error
 func TestDirectAssignResultWithError(t *testing.T) {
+	t.Parallel()
 	result := DirectAssignResult{
 		BeadID:    "bd-xyz",
 		Pane:      99,
@@ -715,6 +749,7 @@ func TestDirectAssignResultWithError(t *testing.T) {
 
 // TestDirectAssignResultWithBusyPane tests result when pane was busy
 func TestDirectAssignResultWithBusyPane(t *testing.T) {
+	t.Parallel()
 	result := DirectAssignResult{
 		BeadID:      "bd-xyz",
 		Pane:        3,
@@ -731,6 +766,7 @@ func TestDirectAssignResultWithBusyPane(t *testing.T) {
 
 // TestDirectAssignResultWithBlockedBead tests result when bead was blocked
 func TestDirectAssignResultWithBlockedBead(t *testing.T) {
+	t.Parallel()
 	result := DirectAssignResult{
 		BeadID:         "bd-blocked",
 		Pane:           2,
@@ -754,6 +790,7 @@ func TestDirectAssignResultWithBlockedBead(t *testing.T) {
 
 // TestDirectAssignWithEmptyBeadTitle tests handling of empty bead title
 func TestDirectAssignWithEmptyBeadTitle(t *testing.T) {
+	t.Parallel()
 	item := DirectAssignItem{
 		BeadID:     "bd-notitle",
 		BeadTitle:  "", // Empty title
@@ -771,6 +808,7 @@ func TestDirectAssignWithEmptyBeadTitle(t *testing.T) {
 
 // TestDirectAssignWithEmptyPrompt tests handling of empty prompt
 func TestDirectAssignWithEmptyPrompt(t *testing.T) {
+	t.Parallel()
 	item := DirectAssignItem{
 		BeadID:     "bd-test",
 		Pane:       1,
@@ -787,6 +825,7 @@ func TestDirectAssignWithEmptyPrompt(t *testing.T) {
 
 // TestDirectAssignPaneZero tests pane index 0 (valid user pane)
 func TestDirectAssignPaneZero(t *testing.T) {
+	t.Parallel()
 	// Pane 0 is typically the user pane, which should not accept assignments
 	opts := AssignCommandOptions{
 		Session:      "test",
@@ -801,6 +840,7 @@ func TestDirectAssignPaneZero(t *testing.T) {
 
 // TestDirectAssignLargePaneIndex tests large pane index
 func TestDirectAssignLargePaneIndex(t *testing.T) {
+	t.Parallel()
 	// Large pane index should be validated against actual panes
 	opts := AssignCommandOptions{
 		Session:      "test",
@@ -815,6 +855,7 @@ func TestDirectAssignLargePaneIndex(t *testing.T) {
 
 // TestDirectAssignCombinedFlags tests all override flags together
 func TestDirectAssignCombinedFlags(t *testing.T) {
+	t.Parallel()
 	opts := AssignCommandOptions{
 		Session:      "test",
 		BeadIDs:      []string{"bd-xyz"},

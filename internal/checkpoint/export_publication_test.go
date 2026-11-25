@@ -10,8 +10,10 @@ import (
 )
 
 func TestExportFormatsPublishRestorableArchives(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			storage := NewStorageWithDir(t.TempDir())
 			cp := &Checkpoint{
 				Version: CurrentVersion, ID: "20260922-120000-atomic",
@@ -51,8 +53,10 @@ func TestExportFormatsPublishRestorableArchives(t *testing.T) {
 }
 
 func TestExportFormatsPreserveBackupOnLateArtifactFailure(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			dir, source := t.TempDir(), t.TempDir()
 			dest := filepath.Join(dir, "backup."+string(format))
 			if err := os.WriteFile(dest, []byte("previous backup"), 0600); err != nil {
@@ -87,8 +91,10 @@ type failingCheckpointExportWriter struct{ err error }
 func (w failingCheckpointExportWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestExportFormatsPropagateWriterFailure(t *testing.T) {
+	t.Parallel()
 	for _, format := range []ExportFormat{FormatTarGz, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
 			writeErr := errors.New("export device full")
 			writer := failingCheckpointExportWriter{err: writeErr}
 			manifest := &ExportManifest{Checksums: make(map[string]string)}

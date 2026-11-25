@@ -17,6 +17,7 @@ func TestDaemonRestartOnCrash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping chaos test in short mode")
 	}
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -67,6 +68,7 @@ func TestDaemonRestartOnCrash(t *testing.T) {
 
 // TestPortCollisionHandling tests that supervisor handles port collisions gracefully
 func TestPortCollisionHandling(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// First, occupy a port
@@ -119,6 +121,7 @@ func TestMaxRestartBackoff(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping chaos test in short mode")
 	}
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -186,6 +189,7 @@ func TestMaxRestartBackoff(t *testing.T) {
 
 // TestCleanShutdown tests that shutdown properly stops all daemons
 func TestCleanShutdown(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -268,6 +272,7 @@ func TestCleanShutdown(t *testing.T) {
 
 // TestOrphanedPIDFile tests handling of stale PID files from previous runs
 func TestOrphanedPIDFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create a fake orphaned PID file
@@ -325,6 +330,7 @@ func TestOrphanedPIDFile(t *testing.T) {
 
 // TestConcurrentDaemonOperations tests thread-safety of supervisor operations
 func TestConcurrentDaemonOperations(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
@@ -394,6 +400,7 @@ func TestHealthCheckFlapping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping chaos test in short mode")
 	}
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -444,6 +451,7 @@ func TestHealthCheckFlapping(t *testing.T) {
 
 // TestShutdownIsTimely tests that Shutdown() completes in a reasonable time
 func TestShutdownIsTimely(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{

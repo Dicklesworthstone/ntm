@@ -45,6 +45,7 @@ func failedAdminFixture(t *testing.T, url string) (*WebhookManager, string, Webh
 }
 
 func TestOutboxAdministrationListIsReadOnly(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -105,6 +106,7 @@ func TestOutboxAdministrationListIsReadOnly(t *testing.T) {
 }
 
 func TestOutboxAdministrationDoesNotCreateAbsentStorage(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "absent")
 	m := NewManager(ManagerConfig{OutboxDir: dir})
 	result, err := m.ListOutbox()
@@ -121,6 +123,7 @@ func TestOutboxAdministrationDoesNotCreateAbsentStorage(t *testing.T) {
 }
 
 func TestOutboxRecoveryPreservesIdentityBudgetAndFailureEvidence(t *testing.T) {
+	t.Parallel()
 	var healthy atomic.Bool
 	requests := make(chan outboxRequest, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +203,7 @@ func TestOutboxRecoveryPreservesIdentityBudgetAndFailureEvidence(t *testing.T) {
 }
 
 func TestOutboxRecoveryHonorsTerminalRetryAfter(t *testing.T) {
+	t.Parallel()
 	requests := make(chan outboxRequest, 3)
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +250,7 @@ func TestOutboxRecoveryHonorsTerminalRetryAfter(t *testing.T) {
 }
 
 func TestOutboxRecoveryRejectsChangedOrUnsafeStateWithoutWrites(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	_, dir, wh := failedAdminFixture(t, server.URL)
@@ -253,6 +258,7 @@ func TestOutboxRecoveryRejectsChangedOrUnsafeStateWithoutWrites(t *testing.T) {
 	cases := []string{"stale revision", "disabled", "missing endpoint", "changed URL", "changed secret", "privacy", "pending", "invalid record", "busy", "excess recoveries"}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0700); err != nil {
 				t.Fatal(err)
@@ -357,6 +363,7 @@ func TestOutboxRecoveryProcessHelper(t *testing.T) {
 }
 
 func TestOutboxRecoveryIndependentProcessesAuthorizeOnlyOnce(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	m, dir, _ := failedAdminFixture(t, server.URL)
@@ -391,6 +398,7 @@ func TestOutboxRecoveryIndependentProcessesAuthorizeOnlyOnce(t *testing.T) {
 }
 
 func TestOutboxRecoveryRejectsInconsistentHistory(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	m, dir, _ := failedAdminFixture(t, server.URL)
@@ -412,6 +420,7 @@ func TestOutboxRecoveryRejectsInconsistentHistory(t *testing.T) {
 
 // This unchanged-receiver probe also runs against the pre-recovery implementation.
 func TestTerminalWebhookFailureRetainsCooldownEvidence(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
@@ -439,6 +448,7 @@ func TestTerminalWebhookFailureRetainsCooldownEvidence(t *testing.T) {
 }
 
 func TestOutboxArchiveReclaimsCapacityAndPreservesExactEvidence(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	var healthy atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -511,12 +521,14 @@ func TestOutboxArchiveReclaimsCapacityAndPreservesExactEvidence(t *testing.T) {
 }
 
 func TestOutboxArchiveRefusesUnsafeDestinationsWithoutRemovingSource(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	_, dir, wh := failedAdminFixture(t, server.URL)
 	_, fixture, data := readOnlyOutboxRecord(t, dir)
 	for _, name := range []string{"pending", "stale", "malformed", "busy", "archive symlink", "archive file", "public archive", "revision symlink", "conflicting copy", "manifest symlink", "corrupt manifest"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0700); err != nil {
 				t.Fatal(err)
@@ -613,8 +625,10 @@ func TestOutboxArchiveRefusesUnsafeDestinationsWithoutRemovingSource(t *testing.
 }
 
 func TestOutboxArchiveRecoversInterruptedPublication(t *testing.T) {
+	t.Parallel()
 	for _, withManifest := range []bool{false, true} {
 		t.Run(fmt.Sprint(withManifest), func(t *testing.T) {
+			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 			defer server.Close()
 			m, dir, _ := failedAdminFixture(t, server.URL)
@@ -653,6 +667,7 @@ func TestOutboxArchiveRecoversInterruptedPublication(t *testing.T) {
 }
 
 func TestOutboxArchiveRetryDoesNotRemoveReadmittedWork(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	m, dir, _ := failedAdminFixture(t, server.URL)
@@ -681,6 +696,7 @@ func TestOutboxArchiveRetryDoesNotRemoveReadmittedWork(t *testing.T) {
 }
 
 func TestOutboxArchiveRacesRecoveryAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	m, dir, _ := failedAdminFixture(t, server.URL)
@@ -728,6 +744,7 @@ func TestOutboxArchiveRacesRecoveryAcrossProcesses(t *testing.T) {
 }
 
 func TestOutboxArchivePreservesRecoveryHistory(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
 	m, dir, wh := failedAdminFixture(t, server.URL)

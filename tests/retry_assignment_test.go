@@ -421,6 +421,7 @@ func TestRetry_PreservesPreviousInfo(t *testing.T) {
 // =============================================================================
 
 func TestValidTransition_FailedToAssigned(t *testing.T) {
+	t.Parallel()
 	// Failed -> Assigned is the retry transition
 	if !isValidRetryTransition(assignment.StatusFailed, assignment.StatusAssigned) {
 		t.Error("Failed -> Assigned should be valid for retry")
@@ -428,6 +429,7 @@ func TestValidTransition_FailedToAssigned(t *testing.T) {
 }
 
 func TestInvalidTransition_CompletedToAssigned(t *testing.T) {
+	t.Parallel()
 	// Completed is terminal - no retry allowed
 	if isValidRetryTransition(assignment.StatusCompleted, assignment.StatusAssigned) {
 		t.Error("Completed -> Assigned should be invalid")
@@ -435,6 +437,7 @@ func TestInvalidTransition_CompletedToAssigned(t *testing.T) {
 }
 
 func TestInvalidTransition_WorkingToAssigned(t *testing.T) {
+	t.Parallel()
 	// Working cannot directly go to Assigned
 	if isValidRetryTransition(assignment.StatusWorking, assignment.StatusAssigned) {
 		t.Error("Working -> Assigned should be invalid (must fail first)")
@@ -468,6 +471,7 @@ func isValidRetryTransition(from, to assignment.AssignmentStatus) bool {
 // =============================================================================
 
 func TestRetryEnvelope_SuccessFormat(t *testing.T) {
+	t.Parallel()
 	// Test the expected JSON envelope structure
 	type RetryItem struct {
 		BeadID             string `json:"bead_id"`
@@ -571,6 +575,7 @@ func TestRetryEnvelope_SuccessFormat(t *testing.T) {
 }
 
 func TestRetryEnvelope_ErrorFormat(t *testing.T) {
+	t.Parallel()
 	type RetryError struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`

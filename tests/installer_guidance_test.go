@@ -168,6 +168,7 @@ func TestInstallShPathSetupAppendsExistingRc(t *testing.T) {
 // and installation are real; this is an offline regression, not native release
 // qualification through DSR.
 func TestInstallShReleaseResolution(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("installer fixtures exercise supported Unix platforms")
 	}
@@ -285,6 +286,7 @@ esac
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			installDir := filepath.Join(dir, "installed")
 			if err := os.Mkdir(installDir, 0o755); err != nil {
@@ -395,6 +397,7 @@ esac
 //     (e.g. /tmp/ntmbin vs /tmp/ntmbin2).
 //  4. setup_shell_integration receives the resolved release version (not empty $VERSION).
 func TestInstallShRawBinaryPathBoundaryAndResolvedShellVersion(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("installer fixtures exercise supported Unix platforms")
 	}

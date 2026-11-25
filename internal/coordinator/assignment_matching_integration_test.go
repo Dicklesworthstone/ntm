@@ -13,6 +13,7 @@ import (
 // matrix: the first agent has both a file specialization and an implementation
 // persona, so taking its single highest score wastes the latter specialization.
 func TestScoreAndSelectAssignmentsOptimizesWholeBatch(t *testing.T) {
+	t.Parallel()
 	agents := []*AgentState{
 		{PaneID: "%1", PaneIndex: 1, AgentType: "test-provider", AgentMailName: "FirstAgent", Profile: &persona.Persona{
 			Tags: []string{"implementation"}, FocusPatterns: []string{"src/*.go"},
@@ -51,6 +52,7 @@ func TestScoreAndSelectAssignmentsOptimizesWholeBatch(t *testing.T) {
 }
 
 func TestScoreAndSelectAssignmentsMatchingRetainsSemanticGates(t *testing.T) {
+	t.Parallel()
 	agents := []*AgentState{nil, {PaneID: " "}, {PaneID: "%1"}, {PaneID: "%2"}}
 	recommendations := []bv.TriageRecommendation{
 		{ID: "ntm-open", Title: "Implement delivery", Type: "task", Status: "open", Score: 1},

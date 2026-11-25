@@ -503,6 +503,7 @@ func TestRunConflictCycle_FailedSendRetriesNextTick(t *testing.T) {
 // sets Priority) outside the detector's lock, so the tracker's stored copies
 // must not share backing arrays with the returned slice.
 func TestDetectConflicts_StoredConflictsDoNotShareHolderArrays(t *testing.T) {
+	t.Parallel()
 	const pattern = "internal/coordinator/digest.go"
 	client, _ := newConflictWireMailServer(t, conflictingPairReservationsJSON(pattern))
 	d := NewConflictDetector(client, "/test/project")
@@ -536,6 +537,7 @@ func TestDetectConflicts_StoredConflictsDoNotShareHolderArrays(t *testing.T) {
 // earliest reservation wins; ties break by agent name; priorities are
 // mutated so NegotiateConflict targets the reported holder.
 func TestPrioritizeHolders_Deterministic(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	holders := []Holder{
 		{AgentName: "Zeta", ReservedAt: now.Add(-time.Minute)},

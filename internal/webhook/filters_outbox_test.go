@@ -19,6 +19,7 @@ import (
 )
 
 func TestWebhookFiltersExcludeBeforeDurableFanout(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -85,6 +86,7 @@ func TestWebhookFiltersExcludeBeforeDurableFanout(t *testing.T) {
 }
 
 func TestWebhookFilterChangePreservesReceiptUntilPolicyRestored(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var ready atomic.Bool
 	requests := make(chan outboxRequest, 4)
@@ -154,8 +156,10 @@ func TestWebhookFilterChangePreservesReceiptUntilPolicyRestored(t *testing.T) {
 }
 
 func TestWebhookOutboxRechecksFiltersBeyondFingerprint(t *testing.T) {
+	t.Parallel()
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pending", true: "terminal"}[failed], func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			var requests atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,9 +224,11 @@ func TestWebhookOutboxRechecksFiltersBeyondFingerprint(t *testing.T) {
 // A blocked first request pins the single worker so Register definitely replaces
 // the policy before the next delivery is claimed. No timing-based negative probe.
 func TestWebhookQueuedPolicyRevocation(t *testing.T) {
+	t.Parallel()
 	for _, durable := range []bool{false, true} {
 		for _, change := range []string{"disable", "session", "provider", "severity", "subscription", "destination", "credential", "equivalent"} {
 			t.Run(fmt.Sprintf("durable=%v/%s", durable, change), func(t *testing.T) {
+				t.Parallel()
 				started, release := make(chan struct{}), make(chan struct{})
 				var releaseOnce sync.Once
 				unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -334,8 +340,10 @@ func TestWebhookQueuedPolicyRevocation(t *testing.T) {
 }
 
 func TestWebhookVolatileRetryRechecksPolicy(t *testing.T) {
+	t.Parallel()
 	for _, disable := range []bool{false, true} {
 		t.Run(fmt.Sprintf("disable=%v", disable), func(t *testing.T) {
+			t.Parallel()
 			var received atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if received.Add(1) == 1 {

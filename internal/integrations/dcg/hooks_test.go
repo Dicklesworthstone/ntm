@@ -6,6 +6,7 @@ import (
 )
 
 func TestDefaultDCGHookOptions(t *testing.T) {
+	t.Parallel()
 	opts := DefaultDCGHookOptions()
 
 	if opts.Timeout != 5 {
@@ -18,6 +19,7 @@ func TestDefaultDCGHookOptions(t *testing.T) {
 }
 
 func TestGenerateHookConfig_Basic(t *testing.T) {
+	t.Parallel()
 	opts := DefaultDCGHookOptions()
 	config, err := GenerateHookConfig(opts)
 	if err != nil {
@@ -61,6 +63,7 @@ func TestGenerateHookConfig_Basic(t *testing.T) {
 }
 
 func TestGenerateHookConfig_CustomBinaryPath(t *testing.T) {
+	t.Parallel()
 	opts := DCGHookOptions{
 		BinaryPath: "/custom/path/to/dcg",
 		Timeout:    3,
@@ -83,6 +86,7 @@ func TestGenerateHookConfig_CustomBinaryPath(t *testing.T) {
 }
 
 func TestGenerateHookConfig_RejectsUnsupportedInlineOptions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		opts DCGHookOptions
@@ -107,6 +111,7 @@ func TestGenerateHookConfig_RejectsUnsupportedInlineOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := GenerateHookConfig(tt.opts)
 			if err == nil {
 				t.Fatal("GenerateHookConfig succeeded with unsupported inline option")
@@ -133,6 +138,7 @@ func TestCheckDCGAvailable_NotInstalled(t *testing.T) {
 }
 
 func TestShouldConfigureHooks_Disabled(t *testing.T) {
+	t.Parallel()
 	// When DCG is disabled, should not configure hooks
 	result := ShouldConfigureHooks(false, "")
 	if result {
@@ -150,6 +156,7 @@ func TestShouldConfigureHooks_EnabledButNotAvailable(t *testing.T) {
 }
 
 func TestClaudeHookConfig_JSONFormat(t *testing.T) {
+	t.Parallel()
 	// Test that the JSON format matches what Claude Code expects
 	config := ClaudeHookConfig{
 		Hooks: HooksSection{
@@ -248,6 +255,7 @@ func invalidateDCGCacheForTest() {
 }
 
 func TestEvaluateCustomRules_BlocklistWhitelistAndAllowOverride(t *testing.T) {
+	t.Parallel()
 	blocklist := []string{"DROP DATABASE", `^rm\s+-rf\s+/srv/`}
 	whitelist := []string{"rm -rf /srv/tmp-cache", "git status"}
 

@@ -10,6 +10,7 @@ import (
 )
 
 func TestSanitizeForID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string
@@ -29,6 +30,7 @@ func TestSanitizeForID(t *testing.T) {
 }
 
 func TestGenerateConflictID(t *testing.T) {
+	t.Parallel()
 	id1 := generateConflictID("internal/cli/*.go")
 	id2 := generateConflictID("internal/cli/*.go")
 
@@ -72,6 +74,7 @@ func TestGenerateConflictID_ConcurrentUnique(t *testing.T) {
 }
 
 func TestNewConflictDetector(t *testing.T) {
+	t.Parallel()
 	cd := NewConflictDetector(nil, "/tmp/test")
 
 	if cd.mailClient != nil {
@@ -292,6 +295,7 @@ func TestFormatConflictNotification_EmptyHolders(t *testing.T) {
 }
 
 func TestConflictStruct(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	conflict := Conflict{
 		ID:         "conflict-123",
@@ -468,6 +472,7 @@ func TestDetectReservationConflictsAt_IgnoresSameAgentDuplicates(t *testing.T) {
 // zero-valued counts previously masqueraded as facts when the source failed
 // or (worse) was never consulted at all.
 func TestDigestWorkSummaryStatesProvenance(t *testing.T) {
+	t.Parallel()
 	c := New("f7xz-test", t.TempDir(), nil, "NTM-Coordinator")
 	digest := c.GenerateDigest()
 	if digest.WorkSummary.Status == "" {
@@ -488,9 +493,11 @@ func TestDigestWorkSummaryStatesProvenance(t *testing.T) {
 // fail-OPEN in the layer whose whole job is stopping two agents from editing
 // the same file.
 func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	t.Run("zero expiry is treated as active", func(t *testing.T) {
+		t.Parallel()
 		r := agentmail.FileReservation{
 			AgentName:   "BlueLake",
 			PathPattern: "internal/**",
@@ -503,6 +510,7 @@ func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
 	})
 
 	t.Run("a released reservation is still inactive", func(t *testing.T) {
+		t.Parallel()
 		released := agentmail.FlexTime{Time: now.Add(-time.Minute)}
 		r := agentmail.FileReservation{
 			AgentName:   "BlueLake",
@@ -516,6 +524,7 @@ func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
 	})
 
 	t.Run("a genuinely expired reservation is still inactive", func(t *testing.T) {
+		t.Parallel()
 		r := agentmail.FileReservation{
 			AgentName:   "BlueLake",
 			PathPattern: "internal/**",
@@ -528,6 +537,7 @@ func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
 	})
 
 	t.Run("a live reservation is active", func(t *testing.T) {
+		t.Parallel()
 		r := agentmail.FileReservation{
 			AgentName:   "BlueLake",
 			PathPattern: "internal/**",

@@ -12,6 +12,7 @@ import (
 )
 
 func TestOptionalDurationValue_Set(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		input        string
@@ -68,6 +69,7 @@ func TestOptionalDurationValue_Set(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var duration time.Duration
 			var enabled bool
 			v := newOptionalDurationValue(90*time.Second, &duration, &enabled)
@@ -92,6 +94,7 @@ func TestOptionalDurationValue_Set(t *testing.T) {
 }
 
 func TestOptionalDurationValue_String(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -110,6 +113,7 @@ func TestOptionalDurationValue_String(t *testing.T) {
 }
 
 func TestOptionalDurationValue_NoOptDefVal(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -121,6 +125,7 @@ func TestOptionalDurationValue_NoOptDefVal(t *testing.T) {
 }
 
 func TestSpawnStaggerFlagUsesDocumentedDefault(t *testing.T) {
+	t.Parallel()
 	flag := newSpawnCmd().Flags().Lookup("stagger")
 	if flag == nil {
 		t.Fatal("--stagger flag is missing")
@@ -131,6 +136,7 @@ func TestSpawnStaggerFlagUsesDocumentedDefault(t *testing.T) {
 }
 
 func TestValidateSpawnStaggerOptions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		opts    SpawnOptions
@@ -181,6 +187,7 @@ func TestValidateSpawnStaggerOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateSpawnStaggerOptions(tt.opts)
 			if tt.wantErr == "" {
 				if err != nil {
@@ -196,6 +203,7 @@ func TestValidateSpawnStaggerOptions(t *testing.T) {
 }
 
 func TestSpawnRejectsInvalidStaggerBeforeLifecycleValidation(t *testing.T) {
+	t.Parallel()
 	err := spawnSessionLogicComposable(context.Background(), SpawnOptions{
 		Session: "invalid session name",
 		Stagger: config.MaxSpawnStaggerDelay + time.Second,
@@ -206,6 +214,7 @@ func TestSpawnRejectsInvalidStaggerBeforeLifecycleValidation(t *testing.T) {
 }
 
 func TestSpawnRejectsUnsupportedStaggerModeBeforeLifecycleValidation(t *testing.T) {
+	t.Parallel()
 	err := spawnSessionLogicComposable(context.Background(), SpawnOptions{
 		Session:     "invalid session name",
 		StaggerMode: "adaptive",
@@ -216,6 +225,7 @@ func TestSpawnRejectsUnsupportedStaggerModeBeforeLifecycleValidation(t *testing.
 }
 
 func TestOptionalDurationValue_Type(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -227,6 +237,7 @@ func TestOptionalDurationValue_Type(t *testing.T) {
 }
 
 func TestStaggerDelayCalculation(t *testing.T) {
+	t.Parallel()
 	// Test the stagger delay calculation logic
 	stagger := 90 * time.Second
 
@@ -250,6 +261,7 @@ func TestStaggerDelayCalculation(t *testing.T) {
 }
 
 func TestStaggerDelayCalculation_SingleAgent(t *testing.T) {
+	t.Parallel()
 	// Edge case: single agent should have zero delay
 	stagger := 90 * time.Second
 	agentIdx := 0 // Only agent
@@ -261,6 +273,7 @@ func TestStaggerDelayCalculation_SingleAgent(t *testing.T) {
 }
 
 func TestStaggerDelayCalculation_ZeroStagger(t *testing.T) {
+	t.Parallel()
 	// Edge case: zero stagger means all agents start immediately
 	stagger := time.Duration(0)
 
@@ -273,6 +286,7 @@ func TestStaggerDelayCalculation_ZeroStagger(t *testing.T) {
 }
 
 func TestStaggerMaxDelayCalculation(t *testing.T) {
+	t.Parallel()
 	// Test calculation of maximum delay (for progress display)
 	stagger := 90 * time.Second
 
@@ -302,6 +316,7 @@ func TestStaggerMaxDelayCalculation(t *testing.T) {
 }
 
 func TestStaggerDelayCalculation_CustomIntervals(t *testing.T) {
+	t.Parallel()
 	// Test various stagger intervals
 	tests := []struct {
 		stagger  time.Duration
@@ -324,6 +339,7 @@ func TestStaggerDelayCalculation_CustomIntervals(t *testing.T) {
 }
 
 func TestOptionalDurationValue_IsBoolFlag(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -335,6 +351,7 @@ func TestOptionalDurationValue_IsBoolFlag(t *testing.T) {
 }
 
 func TestOptionalDurationValue_SetMultipleTimes(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -366,6 +383,7 @@ func TestOptionalDurationValue_SetMultipleTimes(t *testing.T) {
 }
 
 func TestOptionalDurationValue_StringAfterDisable(t *testing.T) {
+	t.Parallel()
 	var duration time.Duration
 	var enabled bool
 
@@ -382,6 +400,7 @@ func TestOptionalDurationValue_StringAfterDisable(t *testing.T) {
 }
 
 func TestStaggerSpawnOptionsStruct(t *testing.T) {
+	t.Parallel()
 	// Test that SpawnOptions correctly holds stagger configuration
 	opts := SpawnOptions{
 		Session:        "test",
@@ -412,6 +431,7 @@ func TestStaggerSpawnOptionsStruct(t *testing.T) {
 }
 
 func TestStaggerPromptDelayAssignment(t *testing.T) {
+	t.Parallel()
 	// Simulate the prompt delay assignment logic from spawnSessionLogic
 	stagger := 90 * time.Second
 	staggerEnabled := true
@@ -439,6 +459,7 @@ func TestStaggerPromptDelayAssignment(t *testing.T) {
 }
 
 func TestStaggerDisabledNoDelay(t *testing.T) {
+	t.Parallel()
 	// When stagger is disabled, all agents should have zero delay
 	stagger := 90 * time.Second
 	staggerEnabled := false
@@ -460,6 +481,7 @@ func TestStaggerDisabledNoDelay(t *testing.T) {
 // explicit --stagger-mode wins over the legacy --stagger, and the legacy
 // interval only applies when it was actually enabled with a positive value.
 func TestSpawnStaggerRequestResolvesThroughSharedPlanner(t *testing.T) {
+	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
 	tracker.RecordRateLimit("anthropic", "spawn")
 	learned := tracker.GetOptimalDelay("anthropic")
@@ -504,6 +526,7 @@ func TestSpawnStaggerRequestResolvesThroughSharedPlanner(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := robot.ResolveSpawnStagger(spawnStaggerRequest(tt.opts), spawnStaggerAgentTypes(tt.opts.Agents), tracker)
 			if got.Mode != tt.wantMode || got.Interval != tt.wantInterval {
 				t.Fatalf("resolved stagger = %+v, want mode %q interval %v", got, tt.wantMode, tt.wantInterval)
@@ -519,6 +542,7 @@ func TestSpawnStaggerRequestResolvesThroughSharedPlanner(t *testing.T) {
 // hands its concrete agent list to the shared planner, so an omp-only spawn
 // uses omp's own bucket while a mixed cc+omp spawn keeps the strictest one.
 func TestSpawnStaggerAgentTypesFeedSmartProviderSelection(t *testing.T) {
+	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
 	for i := 0; i < 3; i++ {
 		tracker.RecordRateLimit("anthropic", "spawn")
@@ -544,6 +568,7 @@ func TestSpawnStaggerAgentTypesFeedSmartProviderSelection(t *testing.T) {
 // flag wins, [spawn] fills what was not given, and an invalid config value is
 // reported against its config key.
 func TestResolveSpawnStaggerDefaultsFlagsWinOverSpawnConfig(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.Spawn.StaggerMode = config.SpawnStaggerFixed
 	cfg.Spawn.StaggerDelay = 45 * time.Second
@@ -580,6 +605,7 @@ func TestResolveSpawnStaggerDefaultsFlagsWinOverSpawnConfig(t *testing.T) {
 }
 
 func TestCodexCooldownRemaining_Once(t *testing.T) {
+	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
 	tracker.RecordRateLimitWithCooldown("openai", "spawn", 30)
 

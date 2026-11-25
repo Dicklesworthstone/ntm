@@ -47,6 +47,7 @@ func priorityString(p int) string {
 // TestFilterBlockedBeads_NonEmptyBlockedBy verifies that beads with non-empty
 // blocked_by are filtered out and not included in actionable list.
 func TestFilterBlockedBeads_NonEmptyBlockedBy(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestFilterBlockedBeads_NonEmptyBlockedBy ===")
 
 	recommendations := []bv.TriageRecommendation{
@@ -85,6 +86,7 @@ func TestFilterBlockedBeads_NonEmptyBlockedBy(t *testing.T) {
 
 // TestFilterBlockedBeads_IncludeOnlyActionable verifies only actionable beads are included.
 func TestFilterBlockedBeads_IncludeOnlyActionable(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestFilterBlockedBeads_IncludeOnlyActionable ===")
 
 	recommendations := []bv.TriageRecommendation{
@@ -111,6 +113,7 @@ func TestFilterBlockedBeads_IncludeOnlyActionable(t *testing.T) {
 
 // TestFilterBlockedBeads_MultipleBlockers verifies beads with multiple blockers are handled.
 func TestFilterBlockedBeads_MultipleBlockers(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestFilterBlockedBeads_MultipleBlockers ===")
 
 	rec := MockTriageRecommendation("bd-multi", "Multi-blocked bead", 1,
@@ -130,6 +133,7 @@ func TestFilterBlockedBeads_MultipleBlockers(t *testing.T) {
 
 // TestFilterBlockedBeads_SingleBlocker verifies beads with single blocker are handled.
 func TestFilterBlockedBeads_SingleBlocker(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestFilterBlockedBeads_SingleBlocker ===")
 
 	rec := MockTriageRecommendation("bd-single", "Single-blocked bead", 2, []string{"bd-blocker"}, nil)
@@ -152,6 +156,7 @@ func TestFilterBlockedBeads_SingleBlocker(t *testing.T) {
 
 // TestUnblockDetection_BlockerClosed detects when a blocker bead is closed.
 func TestUnblockDetection_BlockerClosed(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestUnblockDetection_BlockerClosed ===")
 
 	// Simulate a dependency graph before completion
@@ -194,6 +199,7 @@ func TestUnblockDetection_BlockerClosed(t *testing.T) {
 
 // TestUnblockDetection_IdentifyAllUnblocked identifies all beads unblocked by completion.
 func TestUnblockDetection_IdentifyAllUnblocked(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestUnblockDetection_IdentifyAllUnblocked ===")
 
 	completedBeadID := "bd-epic"
@@ -233,6 +239,7 @@ func TestUnblockDetection_IdentifyAllUnblocked(t *testing.T) {
 
 // TestUnblockDetection_ChainUnblocking handles chain unblocking (A blocks B blocks C).
 func TestUnblockDetection_ChainUnblocking(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestUnblockDetection_ChainUnblocking ===")
 
 	// Chain: A blocks B blocks C
@@ -279,6 +286,7 @@ func TestUnblockDetection_ChainUnblocking(t *testing.T) {
 
 // TestUnblockDetection_MultipleSimultaneous handles multiple beads unblocked at once.
 func TestUnblockDetection_MultipleSimultaneous(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestUnblockDetection_MultipleSimultaneous ===")
 
 	// One blocker unlocks many tasks simultaneously
@@ -311,6 +319,7 @@ func TestUnblockDetection_MultipleSimultaneous(t *testing.T) {
 
 // TestAutoReassign_QueueNewlyUnblocked tests that newly unblocked beads are queued.
 func TestAutoReassign_QueueNewlyUnblocked(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestAutoReassign_QueueNewlyUnblocked ===")
 
 	// Simulate unblocked beads after completion
@@ -355,6 +364,7 @@ func TestAutoReassign_AssignToFirstIdle(t *testing.T) {
 
 // TestAutoReassign_RespectStrategy tests that strategy is respected during reassignment.
 func TestAutoReassign_RespectStrategy(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestAutoReassign_RespectStrategy ===")
 
 	// Test beads with different priorities and unblock counts
@@ -401,6 +411,7 @@ func TestAutoReassign_RespectStrategy(t *testing.T) {
 
 // TestAutoReassign_NoIdleAgents tests handling when no idle agents available.
 func TestAutoReassign_NoIdleAgents(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestAutoReassign_NoIdleAgents ===")
 
 	// All agents are busy
@@ -441,6 +452,7 @@ func TestAutoReassign_NoIdleAgents(t *testing.T) {
 
 // TestEdgeCase_CircularDependencies tests that circular dependencies are filtered.
 func TestEdgeCase_CircularDependencies(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestEdgeCase_CircularDependencies ===")
 
 	// Cycle: A -> B -> C -> A
@@ -483,6 +495,7 @@ func TestEdgeCase_CircularDependencies(t *testing.T) {
 
 // TestEdgeCase_CompletionNoNewUnblocks tests when completion doesn't unblock anything.
 func TestEdgeCase_CompletionNoNewUnblocks(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestEdgeCase_CompletionNoNewUnblocks ===")
 
 	completedBeadID := "bd-leaf"
@@ -550,6 +563,7 @@ func TestEdgeCase_AllAgentsBusy(t *testing.T) {
 
 // TestEdgeCase_StaleGraph tests handling of stale dependency graph data.
 func TestEdgeCase_StaleGraph(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestEdgeCase_StaleGraph ===")
 
 	completedBeadID := "bd-completed"
@@ -575,6 +589,7 @@ func TestEdgeCase_StaleGraph(t *testing.T) {
 
 // TestEdgeCase_PartialBlockerResolution tests when only some blockers are resolved.
 func TestEdgeCase_PartialBlockerResolution(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestEdgeCase_PartialBlockerResolution ===")
 
 	// Bead blocked by multiple items, only one resolves
@@ -687,6 +702,7 @@ func TestStateTransition_CompletedCannotRetry(t *testing.T) {
 
 // TestJSONEnvelope_UnblockedBeadFields tests UnblockedBead has all required fields.
 func TestJSONEnvelope_UnblockedBeadFields(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestJSONEnvelope_UnblockedBeadFields ===")
 
 	type UnblockedBead struct {
@@ -724,6 +740,7 @@ func TestJSONEnvelope_UnblockedBeadFields(t *testing.T) {
 
 // TestJSONEnvelope_SkippedItemReason tests SkippedItem has correct reason field.
 func TestJSONEnvelope_SkippedItemReason(t *testing.T) {
+	t.Parallel()
 	t.Log("=== TestJSONEnvelope_SkippedItemReason ===")
 
 	type SkippedItem struct {

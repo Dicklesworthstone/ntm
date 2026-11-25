@@ -124,9 +124,11 @@ func TestCheckpointImportStagesBeforeVisibility(t *testing.T) {
 }
 
 func TestCheckpointImportLateWriteFailurePreservesRecovery(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("disk full after earlier staged writes")
 	for _, overwrite := range []bool{false, true} {
 		t.Run(fmt.Sprint(overwrite), func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "session", "cp")
 			if overwrite {
 				seedImportPublication(t, dir, "old")
@@ -160,8 +162,10 @@ func TestCheckpointImportLateWriteFailurePreservesRecovery(t *testing.T) {
 }
 
 func TestCheckpointImportRejectsPathsBeforeCreatingParent(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"../escape", "/absolute", "bad\\path", "C:drive", "panes/../escape", "./alias", ""} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			parent := filepath.Join(t.TempDir(), "not-created")
 			files := importPublicationFiles("new")
 			files[name] = []byte("bad")
@@ -176,6 +180,7 @@ func TestCheckpointImportRejectsPathsBeforeCreatingParent(t *testing.T) {
 }
 
 func TestCheckpointImportStageSyncFailureLeavesOldCheckpoint(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "cp")
 	seedImportPublication(t, dir, "old")
 	cause := errors.New("staging fsync failed")
@@ -190,6 +195,7 @@ func TestCheckpointImportStageSyncFailureLeavesOldCheckpoint(t *testing.T) {
 }
 
 func TestCheckpointImportAtomicSwapRetainsOldOpenFile(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	dir := filepath.Join(t.TempDir(), "cp")
 	seedImportPublication(t, dir, "old")
@@ -229,8 +235,10 @@ func TestCheckpointImportAtomicSwapRetainsOldOpenFile(t *testing.T) {
 }
 
 func TestCheckpointImportPublicationErrorRetainsEvidence(t *testing.T) {
+	t.Parallel()
 	for _, afterRename := range []bool{false, true} {
 		t.Run(fmt.Sprint(afterRename), func(t *testing.T) {
+			t.Parallel()
 			requireNativeImportExchange(t)
 			dir := filepath.Join(t.TempDir(), "cp")
 			seedImportPublication(t, dir, "old")
@@ -260,6 +268,7 @@ func TestCheckpointImportPublicationErrorRetainsEvidence(t *testing.T) {
 }
 
 func TestCheckpointImportPostPublicationSyncFailureKeepsBothVersions(t *testing.T) {
+	t.Parallel()
 	requireNativeImportExchange(t)
 	dir := filepath.Join(t.TempDir(), "cp")
 	seedImportPublication(t, dir, "old")
@@ -292,8 +301,10 @@ func TestCheckpointImportPostPublicationSyncFailureKeepsBothVersions(t *testing.
 }
 
 func TestCheckpointImportRefusesExistingArtifactsAndSymlinks(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"no-overwrite", "stale-file", "artifact-symlink", "destination-symlink"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "cp")
 			seedImportPublication(t, dir, "old")
 			original := dir
@@ -391,6 +402,7 @@ func TestCheckpointImportCrashLeavesWholeGeneration(t *testing.T) {
 	}
 	for _, phase := range []string{"before", "after"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "cp")
 			seedImportPublication(t, dir, "old")
 			cmd := exec.Command(os.Args[0], "-test.run=^TestCheckpointImportCrashLeavesWholeGeneration$")

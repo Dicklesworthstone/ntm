@@ -10,6 +10,7 @@ import (
 )
 
 func TestGzipCompressDecompress(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		data string
@@ -41,6 +42,7 @@ func TestGzipCompressDecompress(t *testing.T) {
 }
 
 func TestGzipDecompressLimited_RejectsOversizedOutput(t *testing.T) {
+	t.Parallel()
 	data := []byte("0123456789")
 	compressed, err := gzipCompress(data)
 	if err != nil {
@@ -65,6 +67,7 @@ func TestGzipDecompressLimited_RejectsOversizedOutput(t *testing.T) {
 }
 
 func TestGzipCompressionRatio(t *testing.T) {
+	t.Parallel()
 	// Highly compressible data (repeated pattern)
 	data := strings.Repeat("hello world this is a test\n", 1000)
 	compressed, err := gzipCompress([]byte(data))
@@ -83,6 +86,7 @@ func TestGzipCompressionRatio(t *testing.T) {
 }
 
 func TestStorage_SaveCompressedScrollback(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-scrollback-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -132,6 +136,7 @@ func TestStorage_SaveCompressedScrollback(t *testing.T) {
 }
 
 func TestStorage_SaveCompressedScrollback_RejectsInvalidIdentifiers(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -174,6 +179,7 @@ func TestStorage_SaveCompressedScrollback_RejectsInvalidIdentifiers(t *testing.T
 }
 
 func TestStorage_LoadCompressedScrollback_FallbackToUncompressed(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-scrollback-fallback-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -211,6 +217,7 @@ func TestStorage_LoadCompressedScrollback_FallbackToUncompressed(t *testing.T) {
 }
 
 func TestStorage_LoadScrollback_RejectsSymlink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -248,6 +255,7 @@ func TestStorage_LoadScrollback_RejectsSymlink(t *testing.T) {
 }
 
 func TestStorage_LoadCompressedScrollback_RejectsSymlink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)
 
@@ -285,6 +293,7 @@ func TestStorage_LoadCompressedScrollback_RejectsSymlink(t *testing.T) {
 }
 
 func TestStorage_LoadPaneScrollback_RejectsInvalidIdentifiers(t *testing.T) {
+	t.Parallel()
 	storage := NewStorageWithDir(t.TempDir())
 	pane := PaneState{
 		ID:             "%0",
@@ -325,6 +334,7 @@ func TestStorage_LoadPaneScrollback_RejectsInvalidIdentifiers(t *testing.T) {
 }
 
 func TestExceedsRawScrollbackLimit(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		rawBytes  int
@@ -346,6 +356,7 @@ func TestExceedsRawScrollbackLimit(t *testing.T) {
 }
 
 func TestScrollbackArtifactSummary_RecordsCompressedArtifact(t *testing.T) {
+	t.Parallel()
 	content := strings.Repeat("agent output line\n", 256)
 	compressed, err := gzipCompress([]byte(content))
 	if err != nil {
@@ -390,6 +401,7 @@ func TestScrollbackArtifactSummary_RecordsCompressedArtifact(t *testing.T) {
 }
 
 func TestScrollbackArtifactSummary_RecordsSkippedCapture(t *testing.T) {
+	t.Parallel()
 	config := ScrollbackConfig{
 		Lines:     2000,
 		Compress:  true,
