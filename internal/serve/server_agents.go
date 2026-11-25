@@ -327,6 +327,7 @@ type AgentSpawnRequest struct {
 	Worktrees     bool     `json:"worktrees,omitempty"`
 	WorktreeName  string   `json:"worktree_name,omitempty"`
 	NoHooks       bool     `json:"no_hooks,omitempty"`
+	NoRecovery    bool     `json:"no_recovery,omitempty"` // Suppress automatic handoff injection; explicit prompts are unaffected.
 	WaitReady     bool     `json:"wait_ready,omitempty"`
 	Label         string   `json:"label,omitempty"` // Goal label for multi-session support
 }
@@ -385,6 +386,7 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 		UseWorktrees:  req.Worktrees,
 		WorktreeName:  req.WorktreeName,
 		NoHooks:       req.NoHooks,
+		NoRecovery:    req.NoRecovery,
 		WaitReady:     req.WaitReady,
 	}
 	if req.PiCount != 0 {
@@ -400,7 +402,11 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.spawnAgents(r.Context(), opts)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		details := map[string]interface{}{}
+		if result != nil {
+			details["spawn"] = result
+		}
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), details, reqID)
 		return
 	}
 	if result == nil {
@@ -408,7 +414,9 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !result.Success {
-		details := map[string]interface{}{}
+		// Keep launched pane identities and per-pane dispatch evidence on
+		// failure so callers can recover without re-sending to successful panes.
+		details := map[string]interface{}{"spawn": result}
 		if result.Hint != "" {
 			details["hint"] = result.Hint
 		}

@@ -437,6 +437,7 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		UseWorktrees:        req.Worktrees,
 		WorktreeName:        req.WorktreeName,
 		NoHooks:             req.NoHooks,
+		NoRecovery:          req.NoRecovery,
 		WaitReady:           req.WaitReady,
 		WorkingDir:          req.WorkingDir,
 		DryRun:              req.DryRun,

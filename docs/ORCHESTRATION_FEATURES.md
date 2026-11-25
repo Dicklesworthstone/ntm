@@ -1419,6 +1419,32 @@ and a `warning` when the rate-limit history is unreadable (the provider's
 built-in delay is used). An unsupported mode or a delay outside 0–5m fails
 with `INVALID_FLAG` before any session is touched.
 
+### Session handoff recovery
+
+Robot spawn, synchronous REST agent spawn, and the `swarm_spawn` job load
+the latest readable handoff for the resolved project and exact session. When
+the global `[recovery]` policy enables automatic injection, the bounded
+handoff prefixes the initial prompt or bead assignment in the same delivery.
+A handoff-only spawn also waits for readiness before dispatch. The loader
+rejects handoffs for a different session, sources outside the resolved project,
+and local handoffs for remote tmux sessions.
+
+Use `--spawn-no-recovery` with `--robot-spawn`, or `"no_recovery": true`
+in the REST spawn body or swarm job parameters, to suppress automatic recovery.
+This leaves an explicit initial prompt and work assignment intact. Global
+`[recovery] enabled = false` or `auto_inject_on_spawn = false` also suppresses
+injection. The handoff uses at most 2,000 UTF-8 bytes (500 estimated tokens);
+a smaller positive `max_recovery_tokens` tightens that budget.
+
+`recovery.injected_text` is the prepared payload. Actual dispatch evidence is
+`recovery.delivered_to`, which lists only panes with a successful current
+delivery. It stays empty for previews, readiness failures, and historical
+assignment replays. Partial sends list only successful panes, alongside the
+per-pane `prompt_deliveries[]` or `assignments[]` receipts. A malformed or
+unavailable optional handoff is reported in `recovery.warning` while the
+explicit task can still proceed. Failed REST spawns retain the full partial
+result in top-level `details.spawn`; failed jobs retain it in their result.
+
 ### Configuration
 
 The `[spawn]` table supplies defaults for both `ntm spawn` and

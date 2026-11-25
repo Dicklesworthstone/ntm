@@ -438,3 +438,26 @@ func TestRobotSpawnPromptStaggerThroughRootCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestRobotSpawnNoRecoveryFlagReachesEngineOptions(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+	flag := rootCmd.Flags().Lookup("spawn-no-recovery")
+	if flag == nil {
+		t.Fatal("robot spawn recovery suppression flag is not registered")
+	}
+	originalChanged := flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(flag.DefValue)
+		flag.Changed = originalChanged
+	})
+	for _, disabled := range []bool{false, true} {
+		if err := rootCmd.Flags().Set("spawn-no-recovery", strconv.FormatBool(disabled)); err != nil {
+			t.Fatal(err)
+		}
+		opts, err := robotSpawnOptionsFromFlags(rootCmd, 30*time.Second, nil, true)
+		if err != nil || opts.NoRecovery != disabled {
+			t.Fatalf("recovery flag lost before engine: disabled=%t opts=%+v err=%v", disabled, opts, err)
+		}
+	}
+}

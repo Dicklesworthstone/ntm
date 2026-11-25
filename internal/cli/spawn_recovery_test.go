@@ -257,7 +257,7 @@ func TestBuildRecoveryContextRejectsLocalHandoffForRemoteTmux(t *testing.T) {
 func TestRecoveryHandoffBudgetPreservesUTF8(t *testing.T) {
 	t.Parallel()
 	prompt := "Resume migration first\n" + strings.Repeat("界", recovery.MaxHandoffTokens*4)
-	bounded := truncateRecoveryHandoff(prompt, recovery.MaxHandoffTokens*4)
+	bounded := recovery.TruncateHandoffPrompt(prompt, recovery.MaxHandoffTokens*4)
 	if !utf8.ValidString(bounded) || len(bounded) > recovery.MaxHandoffTokens*4 || !strings.HasPrefix(bounded, "Resume migration first") {
 		t.Fatalf("handoff budget corrupted content: length=%d valid=%v", len(bounded), utf8.ValidString(bounded))
 	}

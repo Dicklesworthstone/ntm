@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -464,6 +468,149 @@ func staggerAt(offset time.Duration) string {
 	return staggerTestStart.Add(offset).UTC().Format(time.RFC3339Nano)
 }
 
+func writeRobotSpawnHandoff(t *testing.T, dir, session, goal string) string {
+	t.Helper()
+	h := handoff.New(session).WithGoalAndNow(goal, "Continue the interrupted migration")
+	h.Next = []string{"Verify the migrated records before continuing"}
+	path, err := handoff.NewWriter(dir).Write(h, "recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Exercise the real spawn/readiness/dispatch path: prepared handoff text must
+// reach each agent in the same delivery as its first task, never a second turn.
+func TestGetSpawnDeliversHandoffWithInitialPrompt(t *testing.T) {
+	for _, prompt := range []string{"", "Implement the next migration"} {
+		t.Run(fmt.Sprintf("prompt=%t", prompt != ""), func(t *testing.T) {
+			t.Parallel()
+			world := newStaggerSpawnWorld(t, "handoff-prompts", tmux.AgentClaude, tmux.AgentCodex)
+			opts := world.options(t)
+			opts.CCCount, opts.CodCount, opts.Prompt = 1, 1, prompt
+			path := writeRobotSpawnHandoff(t, opts.WorkingDir, opts.Session, "Target project migration")
+			out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+			if err != nil || !out.Success || out.Recovery == nil || out.Recovery.HandoffPath != path {
+				t.Fatalf("spawn lost recovery: %+v, %v", out, err)
+			}
+			if want := []string{"ready", "deliver:%2", "deliver:%3"}; !reflect.DeepEqual(world.events, want) {
+				t.Fatalf("recovery bypassed readiness or sent multiple turns: %v", world.events)
+			}
+			if !reflect.DeepEqual(out.Recovery.DeliveredTo, []string{"0.1", "0.2"}) || len(world.deliveries) != 2 {
+				t.Fatalf("delivery evidence = %+v, actual = %+v", out.Recovery, world.deliveries)
+			}
+			for _, delivered := range world.deliveries {
+				want := out.Recovery.InjectedText
+				if prompt != "" {
+					want += "\n\n" + prompt
+				}
+				if delivered.Message != want || !strings.Contains(delivered.Message, "Target project migration") ||
+					!strings.Contains(delivered.Message, "Continue the interrupted migration") {
+					t.Fatalf("handoff did not precede first task: %q", delivered.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestGetSpawnHandoffHonorsRecoveryPolicy(t *testing.T) {
+	for _, mode := range []string{"no-recovery", "disabled", "no-auto-inject"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			world := newStaggerSpawnWorld(t, "handoff-policy", tmux.AgentClaude)
+			opts := world.options(t)
+			opts.CCCount, opts.Prompt, opts.NoRecovery = 1, "Explicit task", mode == "no-recovery"
+			writeRobotSpawnHandoff(t, opts.WorkingDir, opts.Session, "Must not be injected")
+			cfg := testSpawnConfig()
+			cfg.SessionRecovery.Enabled = mode != "disabled"
+			cfg.SessionRecovery.AutoInjectOnSpawn = mode != "no-auto-inject"
+			out, err := GetSpawn(t.Context(), opts, cfg)
+			if err != nil || !out.Success || out.Recovery != nil || len(world.deliveries) != 1 || world.deliveries[0].Message != opts.Prompt {
+				t.Fatalf("recovery suppression changed explicit task: out=%+v deliveries=%+v err=%v", out, world.deliveries, err)
+			}
+		})
+	}
+}
+
+func TestGetSpawnHandoffReceiptsReflectPartialDelivery(t *testing.T) {
+	for _, failure := range []string{"refused", "cancelled", "not-ready", "preview"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+			world := newStaggerSpawnWorld(t, "handoff-partial", tmux.AgentClaude, tmux.AgentClaude, tmux.AgentClaude)
+			opts := world.options(t)
+			opts.CCCount = 3
+			writeRobotSpawnHandoff(t, opts.WorkingDir, opts.Session, "Resume real work")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var want []string
+			switch failure {
+			case "refused":
+				world.failPane = "%3"
+				want = []string{"0.1", "0.3"}
+			case "cancelled":
+				opts.StaggerMode, opts.StaggerDelay = config.SpawnStaggerFixed, time.Minute
+				world.lifecycle.Wait = func(context.Context, time.Duration) error {
+					cancel()
+					return context.Canceled
+				}
+				want = []string{"0.1"}
+			case "not-ready":
+				world.lifecycle.WaitForReady = func(context.Context, *SpawnOutput, time.Duration) error {
+					return errors.New("agent never became ready")
+				}
+			case "preview":
+				opts.DryRun = true
+			}
+			out, err := GetSpawn(ctx, opts, testSpawnConfig())
+			if err != nil || out.Recovery == nil || out.Recovery.InjectedText == "" {
+				t.Fatalf("missing prepared context: %+v, %v", out, err)
+			}
+			if out.Success != (failure == "preview") || len(out.Recovery.DeliveredTo) != len(want) || len(world.deliveries) != len(want) {
+				t.Fatalf("recovery overclaimed delivery: output=%+v recovery=%+v actual=%+v", out, out.Recovery, world.deliveries)
+			}
+			for i, pane := range want {
+				if out.Recovery.DeliveredTo[i] != pane {
+					t.Fatalf("delivered_to = %v, want %v", out.Recovery.DeliveredTo, want)
+				}
+			}
+			if out.Recovery.DeliveredTo == nil {
+				t.Fatal("prepared-only recovery must encode delivered_to as [], not null")
+			}
+		})
+	}
+}
+
+func TestGetSpawnHandoffBudgetAndHistoricalReceipts(t *testing.T) {
+	t.Parallel()
+	world := newStaggerSpawnWorld(t, "handoff-budget", tmux.AgentClaude)
+	opts := world.options(t)
+	opts.CCCount = 1
+	writeRobotSpawnHandoff(t, opts.WorkingDir, opts.Session, strings.Repeat("恢复项目", 200))
+	cfg := testSpawnConfig()
+	cfg.SessionRecovery.MaxRecoveryTokens = 60
+	out, err := GetSpawn(t.Context(), opts, cfg)
+	if err != nil || !out.Success || out.Recovery == nil || len(world.deliveries) != 1 {
+		t.Fatalf("bounded recovery failed: %+v, %v", out, err)
+	}
+	prompt := world.deliveries[0].Message
+	if !utf8.ValidString(prompt) || len(prompt) > 60*4 || len(prompt) > recovery.MaxHandoffTokens*4 || !strings.Contains(prompt, "Continue the interrupted migration") {
+		t.Fatalf("recovery exceeded budget or lost immediate task: %q", prompt)
+	}
+	// A durable replay confirms an old prompt, not this newly prepared handoff.
+	historical := &SpawnOutput{
+		Recovery:    &SpawnRecovery{InjectedText: "New handoff", DeliveredTo: []string{}},
+		Assignments: []SpawnAssignment{{Pane: "0.1", PromptSent: true}},
+	}
+	recordSpawnRecoveryDeliveries(historical)
+	if len(historical.Recovery.DeliveredTo) != 0 {
+		t.Fatal("historical assignment receipt falsely confirmed a new handoff")
+	}
+}
+
 func TestResolveSpawnStaggerModes(t *testing.T) {
 	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
@@ -712,6 +859,7 @@ func TestGetSpawnAssignWorkPacesWorkPromptsAndCarriesInitialPrompt(t *testing.T)
 	opts.AssignWork, opts.AssignStrategy = true, "top-n"
 	opts.Prompt = "Read AGENTS.md first"
 	opts.StaggerMode, opts.StaggerDelay = config.SpawnStaggerFixed, 15*time.Second
+	writeRobotSpawnHandoff(t, opts.WorkingDir, opts.Session, "Migration checkpoint")
 
 	out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
 	if err != nil || !out.Success {
@@ -728,7 +876,7 @@ func TestGetSpawnAssignWorkPacesWorkPromptsAndCarriesInitialPrompt(t *testing.T)
 	for i, bead := range []string{"bd-one", "bd-two"} {
 		delivery := world.deliveries[i]
 		offset := time.Duration(i) * 15 * time.Second
-		if !strings.HasPrefix(delivery.Message, "Read AGENTS.md first\n\nWork on bead "+bead+":") || !delivery.At.Equal(staggerTestStart.Add(offset)) {
+		if out.Recovery == nil || !strings.HasPrefix(delivery.Message, out.Recovery.InjectedText+"\n\nRead AGENTS.md first\n\nWork on bead "+bead+":") || !delivery.At.Equal(staggerTestStart.Add(offset)) {
 			t.Fatalf("work delivery %d = %+v, want initial prompt + %s at +%v", i, delivery, bead, offset)
 		}
 		got := out.Assignments[i]
@@ -741,6 +889,9 @@ func TestGetSpawnAssignWorkPacesWorkPromptsAndCarriesInitialPrompt(t *testing.T)
 	}
 	if len(out.PromptDeliveries) != 0 {
 		t.Fatalf("assign mode must report outcomes on assignments[], got prompt_deliveries %+v", out.PromptDeliveries)
+	}
+	if out.Recovery == nil || !reflect.DeepEqual(out.Recovery.DeliveredTo, []string{"0.1", "0.2"}) {
+		t.Fatalf("assignment handoff receipts = %+v", out.Recovery)
 	}
 }
 

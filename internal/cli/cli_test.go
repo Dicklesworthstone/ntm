@@ -394,6 +394,7 @@ func resetFlags() {
 	robotSpawnLabel = ""
 	robotSpawnPrompt = ""
 	robotSpawnPromptFile = ""
+	robotSpawnNoRecovery = false
 	robotSpawnStaggerMode = ""
 	robotSpawnStaggerDelay = ""
 	robotInterruptMsg = ""

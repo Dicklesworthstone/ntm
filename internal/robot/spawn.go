@@ -23,7 +23,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
-	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -116,6 +115,7 @@ type SpawnOptions struct {
 	UseWorktrees        bool     // Provision isolated per-agent git worktrees via shared spawn engine
 	WorktreeName        string   // Single-agent worktree directory override
 	NoHooks             bool     // Disable pre-spawn and post-spawn command hooks
+	NoRecovery          bool     // Disable automatic handoff context injection
 	slotPersonas        map[spawnRecipeKey]*persona.Persona
 	NoUserPane          bool          // Don't create user pane
 	WorkingDir          string        // Override working directory
@@ -542,15 +542,19 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 	return deps
 }
 
-// SpawnRecovery contains session recovery context loaded from handoff.
+// SpawnRecovery distinguishes prepared handoff context from confirmed prompt
+// dispatch. DeliveredTo names only panes whose prompt delivery succeeded; it
+// remains empty for previews, readiness failures, and refused deliveries.
 type SpawnRecovery struct {
-	HandoffPath  string `json:"handoff_path,omitempty"`  // Path to handoff file
-	HandoffAge   string `json:"handoff_age,omitempty"`   // Human-readable age
-	Goal         string `json:"goal,omitempty"`          // What previous session achieved
-	Now          string `json:"now,omitempty"`           // What this session should do
-	Status       string `json:"status,omitempty"`        // Previous session status
-	Outcome      string `json:"outcome,omitempty"`       // Previous session outcome
-	InjectedText string `json:"injected_text,omitempty"` // Formatted text injected into agents
+	HandoffPath  string   `json:"handoff_path,omitempty"`  // Path to handoff file
+	HandoffAge   string   `json:"handoff_age,omitempty"`   // Human-readable age
+	Goal         string   `json:"goal,omitempty"`          // What previous session achieved
+	Now          string   `json:"now,omitempty"`           // What this session should do
+	Status       string   `json:"status,omitempty"`        // Previous session status
+	Outcome      string   `json:"outcome,omitempty"`       // Previous session outcome
+	InjectedText string   `json:"injected_text,omitempty"` // Prepared, bounded context; consult delivered_to for dispatch evidence
+	DeliveredTo  []string `json:"delivered_to"`
+	Warning      string   `json:"warning,omitempty"` // Optional recovery failed; spawning can still proceed
 }
 
 // SpawnAssignment represents a work assignment to a spawned agent.
@@ -830,6 +834,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	}
 	startTime := time.Now()
 	output := newSpawnOutput(startTime, opts)
+	defer recordSpawnRecoveryDeliveries(output)
 	correlationID := audit.NewCorrelationID()
 	auditStart := time.Now()
 	auditWorkingDir := ""
@@ -1134,13 +1139,32 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		return output, nil
 	}
 
-	// Load handoff context for session recovery (non-fatal if not found)
-	spawnRecovery, handoffCtx := loadLatestHandoff(dir, opts.Session)
-	if spawnRecovery != nil {
-		output.Recovery = spawnRecovery
+	// Recovery is part of the first prompt, including work assignments, so it
+	// shares readiness, redaction, pacing, and the final idle gate. Sending it
+	// separately would start a turn before the requested work could be sent.
+	recoveryCfg := config.DefaultSessionRecoveryConfig()
+	if cfg != nil {
+		recoveryCfg = cfg.SessionRecovery
 	}
-	// handoffCtx is available for use in work prompts below
-	_ = handoffCtx // silence unused warning when not in orchestrator mode
+	if !opts.NoRecovery && recoveryCfg.Enabled && recoveryCfg.AutoInjectOnSpawn {
+		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, recoveryCfg.GetTimeout())
+		prepared, recoveryErr := loadLatestHandoff(recoveryCtx, dir, opts.Session, recoveryCfg.MaxRecoveryTokens)
+		cancelRecovery()
+		if err := ctx.Err(); err != nil {
+			setSpawnCancellation(output, err)
+			return output, nil
+		}
+		if recoveryErr != nil {
+			output.Recovery = &SpawnRecovery{DeliveredTo: []string{}, Warning: recoveryErr.Error()}
+		} else if prepared != nil {
+			output.Recovery = prepared
+			if opts.hasInitialPrompt() {
+				opts.Prompt = composeSpawnWorkPrompt(prepared.InjectedText, opts.Prompt)
+			} else {
+				opts.Prompt = prepared.InjectedText
+			}
+		}
+	}
 
 	totalAgents := opts.totalAgentCount()
 
@@ -2775,36 +2799,50 @@ func spawnLaunchModels(cfg *config.Config, opts SpawnOptions) map[string]spawnLa
 	return launches
 }
 
-// loadLatestHandoff loads the most recent handoff for a session and returns recovery context.
-// Returns nil if no handoff is found or an error occurs (non-fatal).
-func loadLatestHandoff(workDir, sessionName string) (*SpawnRecovery, *recovery.HandoffContext) {
-	reader := handoff.NewReader(workDir)
-	h, path, err := reader.FindLatest(sessionName)
+// loadLatestHandoff uses the same project/session-bound source as CLI spawn.
+// A positive configured budget can tighten the handoff's built-in ceiling;
+// zero retains the CLI convention of no additional overall recovery cap.
+func loadLatestHandoff(ctx context.Context, workDir, sessionName string, maxTokens int) (*SpawnRecovery, error) {
+	h, err := recovery.LoadHandoff(ctx, sessionName, workDir)
 	if err != nil || h == nil {
+		return nil, err
+	}
+	budget := recovery.MaxHandoffTokens
+	if maxTokens > 0 && maxTokens < budget {
+		budget = maxTokens
+	}
+	prompt := recovery.TruncateHandoffPrompt(recovery.GetInjectionForType(recovery.SessionFreshSpawn, h, nil), budget*4)
+	if prompt == "" {
 		return nil, nil
 	}
+	return &SpawnRecovery{
+		HandoffPath:  h.Path,
+		HandoffAge:   recovery.HumanizeDuration(h.Age),
+		Goal:         h.Goal,
+		Now:          h.Now,
+		Status:       h.Status,
+		Outcome:      h.Outcome,
+		InjectedText: prompt,
+		DeliveredTo:  []string{},
+	}, nil
+}
 
-	// Convert to recovery context
-	ctx := recovery.HandoffContextFromHandoff(h, path)
-	if ctx == nil {
-		return nil, nil
+func recordSpawnRecoveryDeliveries(output *SpawnOutput) {
+	if output.Recovery == nil || output.Recovery.InjectedText == "" {
+		return
 	}
-
-	// Format the injection text for fresh spawn
-	injectedText := recovery.GetInjectionForType(recovery.SessionFreshSpawn, ctx, nil)
-
-	// Build spawn recovery info
-	spawnRecovery := &SpawnRecovery{
-		HandoffPath:  path,
-		HandoffAge:   recovery.HumanizeDuration(ctx.Age),
-		Goal:         ctx.Goal,
-		Now:          ctx.Now,
-		Status:       ctx.Status,
-		Outcome:      ctx.Outcome,
-		InjectedText: injectedText,
+	for _, delivery := range output.PromptDeliveries {
+		if delivery.PromptSent {
+			output.Recovery.DeliveredTo = append(output.Recovery.DeliveredTo, delivery.Pane)
+		}
 	}
-
-	return spawnRecovery, ctx
+	for _, assigned := range output.Assignments {
+		// A replayed ledger row can describe a previous session's delivery.
+		// Only a receipt stamped by this spawn proves its handoff was sent.
+		if assigned.PromptSent && assigned.DeliveredAt != "" {
+			output.Recovery.DeliveredTo = append(output.Recovery.DeliveredTo, assigned.Pane)
+		}
+	}
 }
 
 func normalizeAssignStrategyStrict(strategy string) (string, error) {

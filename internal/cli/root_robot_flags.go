@@ -215,6 +215,7 @@ var (
 	robotSpawnPersonas     []string // persona specs ("name" or "name:count")
 	robotSpawnProfileSet   string   // predefined persona profile set name
 	robotSpawnNoHooks      bool     // disable pre-spawn / post-spawn command hooks
+	robotSpawnNoRecovery   bool     // disable automatic handoff recovery context
 
 	// Robot-agent-names flag for querying agent name mappings
 	robotAgentNames string // session name for --robot-agent-names
@@ -975,6 +976,7 @@ func registerRobotFlags() {
 	rootCmd.Flags().StringSliceVar(&robotSpawnPersonas, "spawn-persona", nil, "Persona-defined agents to spawn (name or name:count, repeatable/comma-separated). Use with --robot-spawn")
 	rootCmd.Flags().StringVar(&robotSpawnProfileSet, "spawn-profile-set", "", "Predefined persona profile set (e.g. backend-team, review-team). Use with --robot-spawn")
 	rootCmd.Flags().BoolVar(&robotSpawnNoHooks, "spawn-no-hooks", false, "Disable pre-spawn and post-spawn command hooks. Use with --robot-spawn")
+	rootCmd.Flags().BoolVar(&robotSpawnNoRecovery, "spawn-no-recovery", false, "Disable automatic session handoff injection without changing the initial prompt or assignment. Use with --robot-spawn")
 
 	// Robot-agent-names flag for querying agent name mappings
 	rootCmd.Flags().StringVar(&robotAgentNames, "robot-agent-names", "", "Get agent name mappings for a session (JSON). Names are generated using NATO phonetic alphabet. Example: ntm --robot-agent-names=myproject")

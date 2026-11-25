@@ -1539,6 +1539,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-worktrees", Flag: "--spawn-worktrees", Type: "bool", Required: false, Description: "Enable isolated git worktree per spawned agent"},
 				{Name: "spawn-worktree-name", Flag: "--spawn-worktree-name", Type: "string", Required: false, Description: "Override worktree directory name (single-agent spawns only)"},
 				{Name: "spawn-no-hooks", Flag: "--spawn-no-hooks", Type: "bool", Required: false, Description: "Disable pre-spawn and post-spawn command hooks"},
+				{Name: "spawn-no-recovery", Flag: "--spawn-no-recovery", Type: "bool", Required: false, Description: "Disable automatic session handoff injection. Otherwise enabled recovery prefixes the initial prompt or assignment after readiness; recovery.delivered_to reports confirmed dispatches"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Max wait for ready state when --spawn-wait is enabled"},

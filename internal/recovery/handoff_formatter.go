@@ -3,13 +3,18 @@
 package recovery
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // MaxHandoffTokens is the token budget for handoff context in agent prompt.
@@ -32,6 +37,75 @@ type HandoffContext struct {
 	ActiveBeads      []string
 	AgentMailThreads []string
 	CMMemories       []string
+}
+
+// LoadHandoff selects the latest readable handoff belonging to the requested
+// local project and session. A missing or empty handoff is optional context,
+// while invalid provenance and cancellation are returned to the caller.
+func LoadHandoff(ctx context.Context, sessionName, workingDir string) (*HandoffContext, error) {
+	if ctx == nil {
+		return nil, errors.New("recovery handoff requires a command context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tmux.DefaultClient != nil && tmux.DefaultClient.Remote != "" {
+		return nil, errors.New("local handoff recovery is unavailable for remote tmux sessions")
+	}
+	if err := tmux.ValidateSessionName(sessionName); err != nil {
+		return nil, fmt.Errorf("invalid handoff session: %w", err)
+	}
+	if !filepath.IsAbs(workingDir) {
+		return nil, errors.New("recovery handoff requires an absolute project directory")
+	}
+	projectDir, err := filepath.EvalSymlinks(workingDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve handoff project: %w", err)
+	}
+	h, path, err := handoff.NewReader(projectDir).FindLatest(sessionName)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil || h == nil {
+		return nil, err
+	}
+	if h.Session != sessionName {
+		return nil, fmt.Errorf("handoff session %q does not match spawn session %q", h.Session, sessionName)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve handoff source: %w", err)
+	}
+	relative, err := filepath.Rel(projectDir, resolvedPath)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, errors.New("handoff source is outside the spawn project")
+	}
+	if strings.TrimSpace(h.Goal) == "" && strings.TrimSpace(h.Now) == "" &&
+		len(h.Next)+len(h.Decisions)+len(h.Findings)+len(h.Blockers) == 0 {
+		return nil, nil
+	}
+	return HandoffContextFromHandoff(h, resolvedPath), nil
+}
+
+// TruncateHandoffPrompt keeps the formatter's immediate-task-first prefix
+// within a byte budget, without splitting a UTF-8 rune. A truncated prompt
+// includes a marker; budgets too small to retain context return no prompt.
+func TruncateHandoffPrompt(prompt string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(prompt) <= maxBytes {
+		return prompt
+	}
+	const suffix = "\n[Handoff truncated to fit recovery budget.]\n"
+	if maxBytes <= len(suffix) {
+		return ""
+	}
+	end := maxBytes - len(suffix)
+	for end > 0 && !utf8.RuneStart(prompt[end]) {
+		end--
+	}
+	return strings.TrimSpace(prompt[:end]) + suffix
 }
 
 // SessionType indicates the type of session start for context injection.

@@ -4746,73 +4746,15 @@ func newRecoverySpawnStatus(enabled bool, rc *RecoveryContext) *output.RecoveryS
 }
 
 func loadRecoveryHandoff(ctx context.Context, sessionName, workingDir string) (*RecoveryHandoff, error) {
-	if ctx == nil {
-		return nil, errors.New("recovery handoff requires a command context")
-	}
-	if err := ctx.Err(); err != nil {
+	handoffContext, err := recovery.LoadHandoff(ctx, sessionName, workingDir)
+	if err != nil || handoffContext == nil {
 		return nil, err
 	}
-	if tmux.DefaultClient != nil && tmux.DefaultClient.Remote != "" {
-		return nil, errors.New("local handoff recovery is unavailable for remote tmux sessions")
-	}
-	if err := tmux.ValidateSessionName(sessionName); err != nil {
-		return nil, fmt.Errorf("invalid handoff session: %w", err)
-	}
-	if !filepath.IsAbs(workingDir) {
-		return nil, errors.New("recovery handoff requires an absolute project directory")
-	}
-	projectDir, err := filepath.EvalSymlinks(workingDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve handoff project: %w", err)
-	}
-	h, path, err := handoff.NewReader(projectDir).FindLatest(sessionName)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	if err != nil || h == nil {
-		return nil, err
-	}
-	if h.Session != sessionName {
-		return nil, fmt.Errorf("handoff session %q does not match spawn session %q", h.Session, sessionName)
-	}
-	resolvedPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, fmt.Errorf("resolve handoff source: %w", err)
-	}
-	relative, err := filepath.Rel(projectDir, resolvedPath)
-	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return nil, errors.New("handoff source is outside the spawn project")
-	}
-	if strings.TrimSpace(h.Goal) == "" && strings.TrimSpace(h.Now) == "" &&
-		len(h.Next)+len(h.Decisions)+len(h.Findings)+len(h.Blockers) == 0 {
-		return nil, nil
-	}
-	handoffContext := recovery.HandoffContextFromHandoff(h, resolvedPath)
 	prompt := recovery.GetInjectionForType(recovery.SessionFreshSpawn, handoffContext, nil)
 	return &RecoveryHandoff{
-		Path:   resolvedPath,
-		Prompt: truncateRecoveryHandoff(prompt, recovery.MaxHandoffTokens*4),
+		Path:   handoffContext.Path,
+		Prompt: recovery.TruncateHandoffPrompt(prompt, recovery.MaxHandoffTokens*4),
 	}, nil
-}
-
-// Keep a prefix so the shared formatter's immediate-task-first ordering also
-// determines which context survives a tight budget. Never split a UTF-8 rune.
-func truncateRecoveryHandoff(prompt string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	if len(prompt) <= maxBytes {
-		return prompt
-	}
-	const suffix = "\n[Handoff truncated to fit recovery budget.]\n"
-	if maxBytes <= len(suffix) {
-		return ""
-	}
-	end := maxBytes - len(suffix)
-	for end > 0 && !utf8.RuneStart(prompt[end]) {
-		end--
-	}
-	return strings.TrimSpace(prompt[:end]) + suffix
 }
 
 // loadRecoveryBeads loads in-progress, completed, and blocked beads from BV.
@@ -5404,7 +5346,7 @@ func truncateRecoveryContext(rc *RecoveryContext, maxTokens int) {
 		rc.Handoff = nil
 		remaining := maxTokens - estimateRecoveryTokens(rc)
 		if remaining > 0 {
-			h.Prompt = truncateRecoveryHandoff(h.Prompt, remaining*4)
+			h.Prompt = recovery.TruncateHandoffPrompt(h.Prompt, remaining*4)
 			if h.Prompt != "" {
 				rc.Handoff = h
 			}

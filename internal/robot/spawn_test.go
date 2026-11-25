@@ -2887,6 +2887,7 @@ func TestSpawnRecovery_SchemaStability(t *testing.T) {
 		Status:       "complete",
 		Outcome:      "SUCCEEDED",
 		InjectedText: "## Previous Session Context\n**Your task:** Write tests",
+		DeliveredTo:  []string{"0.1"},
 	}
 
 	data, err := json.Marshal(recovery)
@@ -2902,7 +2903,7 @@ func TestSpawnRecovery_SchemaStability(t *testing.T) {
 	// Verify all expected fields are present
 	expectedFields := []string{
 		"handoff_path", "handoff_age", "goal", "now",
-		"status", "outcome", "injected_text",
+		"status", "outcome", "injected_text", "delivered_to",
 	}
 
 	for _, field := range expectedFields {
@@ -2998,14 +2999,14 @@ func TestLoadLatestHandoff_NoHandoff(t *testing.T) {
 	// Use a temp directory with no handoffs
 	tmpDir := t.TempDir()
 
-	spawnRecovery, handoffCtx := loadLatestHandoff(tmpDir, "nonexistent_session")
+	spawnRecovery, err := loadLatestHandoff(t.Context(), tmpDir, "nonexistent_session", 0)
 
 	if spawnRecovery != nil {
 		t.Error("Expected nil SpawnRecovery when no handoff exists")
 	}
 
-	if handoffCtx != nil {
-		t.Error("Expected nil HandoffContext when no handoff exists")
+	if err != nil {
+		t.Fatalf("Missing handoff should be optional: %v", err)
 	}
 
 	t.Log("loadLatestHandoff correctly returns nil when no handoff found")

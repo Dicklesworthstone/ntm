@@ -1,12 +1,155 @@
 package recovery
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestLoadHandoffRetainsProjectIdentityAndReadableFallback(t *testing.T) {
+	project, unrelated := t.TempDir(), t.TempDir()
+	const session = "resume-work"
+	var selected string
+	for _, source := range []struct{ dir, goal string }{
+		{project, "Finish the target project migration"},
+		{unrelated, "Unrelated project work"},
+	} {
+		h := handoff.New(session).WithGoalAndNow(source.goal, "Verify the interrupted migration")
+		h.Decisions = map[string]string{"storage": "retain existing data"}
+		path, err := handoff.NewWriter(source.dir).Write(h, "continuity")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if source.dir == project {
+			selected = path
+		}
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(selected), "99999999-unreadable.yaml"), []byte("[invalid YAML"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := LoadHandoff(context.Background(), session, project)
+	if err != nil || h == nil {
+		t.Fatalf("load target handoff: context=%+v error=%v", h, err)
+	}
+	resolved, err := filepath.EvalSymlinks(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Path != resolved || h.Goal != "Finish the target project migration" ||
+		h.Now != "Verify the interrupted migration" || h.Decisions["storage"] != "retain existing data" {
+		t.Fatalf("handoff lost its source identity or recovery context: %+v", h)
+	}
+	prompt := TruncateHandoffPrompt(GetInjectionForType(SessionFreshSpawn, h, nil), MaxHandoffTokens*4)
+	if !strings.Contains(prompt, h.Now) || !strings.Contains(prompt, h.Goal) || strings.Contains(prompt, "Unrelated project work") {
+		t.Fatalf("selected context was not retained in the recovery prompt: %q", prompt)
+	}
+}
+
+func TestLoadHandoffRefusesInvalidSources(t *testing.T) {
+	for _, kind := range []string{"missing", "empty", "malformed", "wrong-session", "outside-project"} {
+		t.Run(kind, func(t *testing.T) {
+			project := t.TempDir()
+			if kind == "outside-project" {
+				external := t.TempDir()
+				h := handoff.New("resume-work").WithGoalAndNow("External project", "Do not inject")
+				if _, err := handoff.NewWriter(external).Write(h, "external"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(external, ".ntm"), filepath.Join(project, ".ntm")); err != nil {
+					t.Skipf("symlinks unsupported: %v", err)
+				}
+			} else if kind != "missing" {
+				dir := filepath.Join(project, ".ntm", "handoffs", "resume-work")
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				content := "session: resume-work\ngoal: ''\nnow: ''\n"
+				switch kind {
+				case "malformed":
+					content = "[invalid YAML"
+				case "wrong-session":
+					content = "session: other-work\ngoal: Another session\nnow: Do not inject\n"
+				}
+				if err := os.WriteFile(filepath.Join(dir, "20260101-context.yaml"), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h, err := LoadHandoff(context.Background(), "resume-work", project)
+			if h != nil {
+				t.Fatalf("unusable source produced recovery context: %+v", h)
+			}
+			wantError := kind != "missing" && kind != "empty"
+			if (err != nil) != wantError {
+				t.Fatalf("source failure=%v, wantError=%t", err, wantError)
+			}
+		})
+	}
+}
+
+func TestLoadHandoffPreflightAndRemoteIsolation(t *testing.T) {
+	project := t.TempDir()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name    string
+		ctx     context.Context
+		session string
+		project string
+	}{
+		{"nil context", nil, "resume-work", project},
+		{"canceled", canceled, "resume-work", project},
+		{"invalid session", context.Background(), "../other", project},
+		{"relative project", context.Background(), "resume-work", "relative"},
+		{"missing project", context.Background(), "resume-work", filepath.Join(project, "missing")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := LoadHandoff(tc.ctx, tc.session, tc.project)
+			if err == nil || h != nil {
+				t.Fatalf("invalid source accepted: handoff=%+v error=%v", h, err)
+			}
+			if tc.name == "canceled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("context cancellation lost: %v", err)
+			}
+		})
+	}
+	oldClient := tmux.DefaultClient
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	tmux.DefaultClient = tmux.NewClient("user@remote")
+	h, err := LoadHandoff(context.Background(), "resume-work", project)
+	if h != nil || err == nil || !strings.Contains(err.Error(), "remote tmux") {
+		t.Fatalf("local context crossed a remote boundary: handoff=%+v error=%v", h, err)
+	}
+}
+
+func TestTruncateHandoffPromptPreservesPrefixAndUTF8(t *testing.T) {
+	prompt := "Resume the migration first\n" + strings.Repeat("界", MaxHandoffTokens*4)
+	for _, budget := range []int{-1, 0, 1, 40, 100, 101, 102, MaxHandoffTokens * 4, len(prompt)} {
+		got := TruncateHandoffPrompt(prompt, budget)
+		if !utf8.ValidString(got) || (budget > 0 && len(got) > budget) {
+			t.Fatalf("budget %d corrupted or exceeded the prompt: length=%d valid=%t", budget, len(got), utf8.ValidString(got))
+		}
+		if budget <= 40 && got != "" {
+			t.Fatalf("budget %d retained unusable context: %q", budget, got)
+		}
+		if budget >= 100 && !strings.HasPrefix(got, "Resume the migration first") {
+			t.Fatalf("budget %d discarded the immediate task: %q", budget, got)
+		}
+		if budget >= 100 && budget < len(prompt) && !strings.Contains(got, "[Handoff truncated to fit recovery budget.]") {
+			t.Fatalf("budget %d silently truncated recovery: %q", budget, got)
+		}
+		if budget == len(prompt) && got != prompt {
+			t.Fatal("a fitting handoff was changed")
+		}
+	}
+}
 
 func TestHandoffContextFromHandoff(t *testing.T) {
 	t.Log("RECOVERY_TEST: HandoffContextFromHandoff | Testing conversion from Handoff to HandoffContext")
