@@ -146,8 +146,10 @@ func TestAttentionCLILifecycle_ListAckSnoozePinDismissRestore(t *testing.T) {
 
 func TestAttentionCLIValidationErrors(t *testing.T) {
 	xdg := t.TempDir()
+	t.Setenv("NTM_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(xdg, "cfg"))
 	t.Setenv("HOME", xdg)
+	seedCLIStateDB(t, "")
 
 	// Snooze without --until fails with INVALID_FLAG JSON envelope.
 	out, err := execAttentionCLI(t, "snooze", "alert:test", "--robot")
@@ -329,8 +331,10 @@ func TestAttentionIncidentsCLILifecycle(t *testing.T) {
 
 func TestAttentionIncidentsCLIValidationAndNotFound(t *testing.T) {
 	xdg := t.TempDir()
+	t.Setenv("NTM_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(xdg, "cfg"))
 	t.Setenv("HOME", xdg)
+	seedCLIStateDB(t, "")
 
 	// Invalid --status returns INVALID_FLAG.
 	out, err := execAttentionCLI(t, "incidents", "list", "--status", "bogus", "--robot")
