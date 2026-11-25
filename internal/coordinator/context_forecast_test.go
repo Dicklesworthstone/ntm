@@ -5,14 +5,54 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func startControlledShellProcess(t *testing.T, args ...string) int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return 101
+	}
+	// Prefer the real /bin/sh binary rather than PATH's "sh", which may be a
+	// user wrapper script whose shebang argv would look non-interactive to
+	// IdleShell before its final exec.
+	shPath := "/bin/sh"
+	if _, err := os.Stat(shPath); err != nil {
+		var lookErr error
+		shPath, lookErr = exec.LookPath("sh")
+		if lookErr != nil {
+			t.Fatalf("locate sh for controlled shell fixture: %v", lookErr)
+		}
+	}
+	cmd := exec.Command(shPath, args...)
+	process.DetachControllingTerminal(cmd)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("shell fixture stdin pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		t.Fatalf("start controlled shell fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
 
 type forecastTickFixture struct {
 	rc          *rotationChecker
@@ -167,6 +207,11 @@ func TestRotationCheckerForecastInvalidatesHistory(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			f := newForecastTickFixture()
+			if kind == "shell" {
+				// Use a controlled idle interactive shell PID rather than host PID 101
+				// so IdleShell's /proc argv + child inspection is deterministic on every host.
+				f.panes[0].PID = startControlledShellProcess(t)
+			}
 			f.tick(t, 70000)
 			f.tick(t, 72000)
 			original := f.panes[0]
@@ -206,6 +251,22 @@ func TestRotationCheckerForecastInvalidatesHistory(t *testing.T) {
 				t.Fatal("reappearing pane reused invalidated history")
 			}
 		})
+	}
+}
+
+func TestRotationCheckerForecastPreservesNonExecShellWrapper(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	f := newForecastTickFixture()
+	f.panes[0].PID = startControlledShellProcess(t, "-c", "sleep 30; :")
+	f.panes[0].Command = "sh"
+	for _, tokens := range []int{70000, 72000, 74000} {
+		f.tick(t, tokens)
+	}
+	if len(f.events) != 1 {
+		t.Fatalf("non-exec shell wrapper should stay eligible for forecasting; got %d events: %+v", len(f.events), f.events)
 	}
 }
 
