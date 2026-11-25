@@ -293,6 +293,9 @@ type AttentionEvent struct {
 	// Pane is the pane index where the event occurred.
 	// -1 or omitted for session-wide or system-wide events.
 	Pane int `json:"pane,omitempty"`
+	// paneRef retains canonical multi-window ("W.P"), physical ("%N"), or zero
+	// pane scope across stored replay without synthesizing extra Details keys.
+	paneRef string
 
 	// Category is the coarse-grained event classification.
 	// Required. One of: session, pane, agent, actuation, file, mail, bead, system, alert.
