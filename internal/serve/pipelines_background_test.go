@@ -612,7 +612,7 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	ctx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
 	path := "/api/v1/pipelines/" + prior.RunID + "/resume"
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"background":true,"variables":{},"max_selector_output_bytes_total":12345,"max_step_count_total":40,"max_materialized_step_nodes":50}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"background":true,"variables":{},"mode":"force-iter","step_id":"delay","iteration":0,"max_resume_age":"1w","on_roster_change":"abort","max_selector_output_bytes_total":12345,"max_step_count_total":40,"max_materialized_step_nodes":50}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
@@ -651,6 +651,12 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	if err := json.Unmarshal(data, &launch); err != nil || !launch.Resume || launch.Config.RunID != prior.RunID || launch.Config.Session != "" || len(launch.Variables) != 0 || launch.Config.ResumeOptions.MaxSelectorOutputBytesTotal != 12345 || launch.Config.ResumeOptions.MaxStepCountTotal != 40 || launch.Config.ResumeOptions.MaxMaterializedStepNodes != 50 {
 		t.Fatalf("HTTP resume changed the detached worker inputs: %s error=%v", data, err)
 	}
+	opts := launch.Config.ResumeOptions
+	if opts.Mode != pipeline.ResumeModeForceIter || opts.StepID != "delay" || opts.Iteration != 0 ||
+		opts.MaxResumeAge != 7*24*time.Hour || opts.OnRosterChange != pipeline.ResumeRosterAbort ||
+		!opts.KeepState || opts.Reset {
+		t.Fatalf("detached resume discarded recovery controls or reset completed work: %+v", opts)
+	}
 	// Cancellation is addressed to the same run through a fresh server,
 	// not to the already-ended request or a process-local registry handle.
 	fresh := &Server{projectDir: root}
@@ -665,6 +671,47 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 	}
 }
 
+func TestRESTBackgroundResumeResetReexecutesCompletedPrefix(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	prior := interruptedAPIDetachedResume(t, root)
+	prefix := prior.Steps["once"]
+	if prefix.StartedAt.IsZero() || prefix.FinishedAt.IsZero() {
+		t.Fatalf("completed prefix has no execution timestamps: %+v", prefix)
+	}
+	frozen, err := os.ReadFile(prior.WorkflowFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	srv.projectDir = root
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", strings.NewReader(`{"background":true,"reset":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("detached reset was not accepted: %d %s", rec.Code, rec.Body)
+	}
+
+	state := awaitAPIDetachedState(t, root, prior.RunID, pipeline.StatusCompleted)
+	replayed := state.Steps["once"]
+	// A new timestamp from the actual worker proves that reset reached the
+	// engine and replayed the already-completed prefix, not just its envelope.
+	if replayed.Status != pipeline.StatusCompleted || !replayed.StartedAt.After(prefix.FinishedAt) {
+		t.Fatalf("detached reset retained completed work: before=%+v after=%+v", prefix, replayed)
+	}
+	if state.Steps["delay"].Status != pipeline.StatusCompleted || state.Steps["finish"].Status != pipeline.StatusCompleted {
+		t.Fatalf("detached reset did not finish the replayed workflow: %+v", state.Steps)
+	}
+	if state.RunID != prior.RunID || state.Session != prior.Session || state.Variables["saved"] != "keep" || len(state.CommandExecutions) != 0 {
+		t.Fatalf("detached reset lost saved inputs or ran an excluded command: %+v", state)
+	}
+	if after, err := os.ReadFile(prior.WorkflowFile); err != nil || !bytes.Equal(frozen, after) {
+		t.Fatalf("detached reset changed the frozen workflow: %v", err)
+	}
+}
+
 func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{
@@ -673,6 +720,14 @@ func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
 		`{"background":true,"max_selector_output_bytes_total":-1}`,
 		`{"background":true,"max_step_count_total":-1}`,
 		`{"background":true,"max_materialized_step_nodes":-1}`,
+		`{"background":true,"mode":"typo"}`,
+		`{"background":true,"mode":"force-iter"}`,
+		`{"background":true,"mode":"force-iter","step_id":"delay","iteration":-1}`,
+		`{"background":true,"on_roster_change":"yes"}`,
+		`{"background":true,"max_resume_age":"-1h"}`,
+		`{"background":true,"max_resume_age":"106752d"}`,
+		`{"background":true,"reset":true,"unknown_control":true}`,
+		`{"background":true} {}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()

@@ -25,6 +25,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Pipeline-specific error codes
@@ -209,12 +210,42 @@ type PipelineCleanupRequest struct {
 
 // PipelineResumeRequest is the request body for POST /api/v1/pipelines/{id}/resume
 type PipelineResumeRequest struct {
-	Session                     string                 `json:"session,omitempty"`
-	Variables                   map[string]interface{} `json:"variables,omitempty"`
-	Background                  bool                   `json:"background,omitempty"`
-	MaxSelectorOutputBytesTotal int64                  `json:"max_selector_output_bytes_total,omitempty"`
-	MaxStepCountTotal           int                    `json:"max_step_count_total,omitempty"`
-	MaxMaterializedStepNodes    int                    `json:"max_materialized_step_nodes,omitempty"`
+	Session                     string                            `json:"session,omitempty"`
+	Variables                   map[string]interface{}            `json:"variables,omitempty"`
+	Background                  bool                              `json:"background,omitempty"`
+	Mode                        pipeline.ResumeMode               `json:"mode,omitempty"`
+	Reset                       bool                              `json:"reset,omitempty"`
+	MaxResumeAge                string                            `json:"max_resume_age,omitempty"`
+	OnRosterChange              pipeline.ResumeRosterChangePolicy `json:"on_roster_change,omitempty"`
+	StepID                      string                            `json:"step_id,omitempty"`
+	Iteration                   int                               `json:"iteration,omitempty"`
+	MaxSelectorOutputBytesTotal int64                             `json:"max_selector_output_bytes_total,omitempty"`
+	MaxStepCountTotal           int                               `json:"max_step_count_total,omitempty"`
+	MaxMaterializedStepNodes    int                               `json:"max_materialized_step_nodes,omitempty"`
+}
+
+// resumeOptions translates the transport representation once for synchronous,
+// detached, and job execution. The engine owns replay and roster semantics;
+// merely supplying another option must never implicitly reset completed work.
+func (req PipelineResumeRequest) resumeOptions() (pipeline.ResumeOptions, error) {
+	opts := pipeline.ResumeOptions{
+		Mode:                        req.Mode,
+		Reset:                       req.Reset,
+		OnRosterChange:              req.OnRosterChange,
+		StepID:                      req.StepID,
+		Iteration:                   req.Iteration,
+		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+		MaxStepCountTotal:           req.MaxStepCountTotal,
+		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
+	}
+	if req.MaxResumeAge != "" {
+		age, err := util.ParseDuration(strings.ToLower(strings.TrimSpace(req.MaxResumeAge)))
+		if err != nil {
+			return opts, fmt.Errorf("max_resume_age: %w", err)
+		}
+		opts.MaxResumeAge = age
+	}
+	return opts.Normalize()
 }
 
 // PipelineRecoverRequest records one explicit acceptance of an uncertain
@@ -567,28 +598,22 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req PipelineResumeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	req := &PipelineResumeRequest{}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
 		return
 	}
-	if req.MaxSelectorOutputBytesTotal < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_selector_output_bytes_total must be zero or positive", nil, reqID)
+	if err := decoder.Decode(new(interface{})); err != io.EOF || req == nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pipeline resume requires one JSON object or an empty body", nil, reqID)
 		return
 	}
-	if req.MaxStepCountTotal < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_step_count_total must be zero or positive", nil, reqID)
+	resumeOptions, err := req.resumeOptions()
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
 		return
-	}
-	if req.MaxMaterializedStepNodes < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_materialized_step_nodes must be zero or positive", nil, reqID)
-		return
-	}
-
-	resumeOptions := pipeline.ResumeOptions{
-		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
-		MaxStepCountTotal:           req.MaxStepCountTotal,
-		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
 	}
 	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID, "background", req.Background)
 

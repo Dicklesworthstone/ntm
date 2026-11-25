@@ -2527,7 +2527,7 @@ export interface paths {
         put?: never;
         /**
          * Resume pipeline
-         * @description Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response shape reflected from Go type `PipelineExecutionEnvelopeResponse`. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue the saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership.
+         * @description Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response shape reflected from Go type `PipelineExecutionEnvelopeResponse`. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue an unfinished saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership. Recovery defaults to mode=continue, preserving completed work, and on_roster_change=abort. Explicit restart-failed, force-iter, or reset controls can repeat external side effects and remain subject to the canonical engine's receipt checks. After option validation, reset takes precedence over mode. max_resume_age optionally rejects stale checkpoints. The same recovery fields are accepted by pipeline_resume jobs; those jobs own their lifetime and reject background=true.
          */
         post: operations["post_api_v1_pipelines_id_resume"];
         delete?: never;
@@ -10581,6 +10581,37 @@ export interface components {
             success: boolean;
             timestamp: string;
             workflow_id: string;
+        };
+        PipelineResumeRequest: {
+            /** @description Start a detached worker for an unfinished saved run and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work. */
+            background?: boolean;
+            /** @description Zero-based iteration index used with mode=force-iter. Defaults to 0 and must be nonnegative in that mode. */
+            iteration?: number;
+            /** @description Zero or a positive transient step-planning limit for this attempt. Zero uses the saved workflow. */
+            max_materialized_step_nodes?: number;
+            /** @description Maximum checkpoint age using Go duration units (for example 24h), or an integer number of days or weeks (7d, 2w). Omitted or zero disables the age limit; negative or overflowing durations are rejected. */
+            max_resume_age?: string;
+            /**
+             * Format: int64
+             * @description Zero or a positive selector-output byte budget for this attempt. Zero uses the saved workflow.
+             */
+            max_selector_output_bytes_total?: number;
+            /** @description Zero or a positive distinct runtime-step admission limit for this attempt. Zero uses the saved workflow. */
+            max_step_count_total?: number;
+            /** @description Recovery mode: continue (default), restart-failed, or force-iter. Explicit replay modes can repeat external side effects; force-iter replays the selected iteration and later ones. */
+            mode?: string;
+            /** @description Session-change policy: abort (default) or proceed. Changing the saved session requires explicit proceed and remains subject to receipt safety checks. */
+            on_roster_change?: string;
+            /** @description Defaults to false, preserving completed work. Set true to restart the workflow and clear completed step outputs and iteration state; external side effects may repeat. After option validation, reset takes precedence over mode. Detached resume requires an unfinished saved run. */
+            reset?: boolean;
+            /** @description Optional session override; omitted keeps the saved session. A different session requires on_roster_change=proceed and remains subject to normal resume identity checks. */
+            session?: string;
+            /** @description Top-level iteration step ID required with mode=force-iter. */
+            step_id?: string;
+            /** @description Variable overrides for synchronous resume and pipeline_resume jobs. A nonempty object is rejected when background=true; detached resume retains saved variables. */
+            variables?: {
+                [key: string]: unknown;
+            };
         };
         PipelineRunRequest: {
             background?: boolean;
@@ -23931,30 +23962,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description Resume the saved run; an empty body preserves synchronous behavior and saved session/variables. */
+        /** @description Resume the saved run; an empty body preserves synchronous behavior, saved session/variables, and completed work. Otherwise supply exactly one JSON object; unknown fields and trailing JSON are rejected. */
         requestBody?: {
             content: {
-                "application/json": {
-                    /** @description Start a detached worker and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work. */
-                    background?: boolean;
-                    /** @description Zero or a positive transient step-planning limit for this attempt. Zero uses the saved workflow. */
-                    max_materialized_step_nodes?: number;
-                    /**
-                     * Format: int64
-                     * @description Zero or a positive selector-output byte budget for this attempt. Zero uses the saved workflow.
-                     */
-                    max_selector_output_bytes_total?: number;
-                    /** @description Zero or a positive distinct runtime-step admission limit for this attempt. Zero uses the saved workflow. */
-                    max_step_count_total?: number;
-                    /** @description Optional session override; omitted keeps the saved session subject to normal resume identity checks. */
-                    session?: string;
-                    /** @description Variable overrides for synchronous resume only. A nonempty object is rejected when background=true; detached resume retains saved variables. */
-                    variables?: {
-                        [key: string]: unknown;
-                    };
-                } & {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["PipelineResumeRequest"];
             };
         };
         responses: {

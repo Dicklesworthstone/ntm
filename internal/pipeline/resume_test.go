@@ -1527,3 +1527,15 @@ func TestApplyResumeStateRebuildsRetainedStepOutputs(t *testing.T) {
 		t.Errorf("producer_out_parsed = %v, want {k:v}", got)
 	}
 }
+
+func TestResumeOptionsNormalizeRejectsNegativeAge(t *testing.T) {
+	t.Parallel()
+	for _, opts := range []ResumeOptions{
+		{MaxResumeAge: -time.Nanosecond},
+		{Mode: ResumeModeRestartFailed, Reset: true, MaxResumeAge: -time.Hour},
+	} {
+		if _, err := opts.Normalize(); err == nil || !strings.Contains(err.Error(), "max_resume_age") {
+			t.Fatalf("negative checkpoint age silently disabled protection: opts=%+v error=%v", opts, err)
+		}
+	}
+}

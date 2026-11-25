@@ -20,7 +20,7 @@ func inlineJobRequest(t *testing.T) PipelineExecRequest {
 	return req
 }
 
-func completedResumeJob(_ context.Context, runID, session string, _ map[string]interface{}, prior *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+func completedResumeJob(_ context.Context, runID, session string, _ map[string]interface{}, prior *pipeline.ExecutionState, _ pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 	return pipeline.PipelineRunOutput{
 		RobotResponse: pipeline.NewRobotResponse(true),
 		RunID:         runID, Session: session, WorkflowID: prior.WorkflowID, Status: "completed",
@@ -112,12 +112,12 @@ func TestResumePipelineJobUsesSavedIdentityAndOverrides(t *testing.T) {
 					}
 					return prior, nil
 				},
-				func(got context.Context, runID, session string, vars map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+				func(got context.Context, runID, session string, vars map[string]interface{}, state *pipeline.ExecutionState, opts pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 					called = true
 					if got != ctx || runID != prior.RunID || session != wantSession || state != prior || state.Variables["existing"] != "keep" || vars["new"] != "override" {
 						t.Fatal("resume lost context, saved state, or requested overrides")
 					}
-					return completedResumeJob(got, runID, session, vars, state)
+					return completedResumeJob(got, runID, session, vars, state, opts)
 				})
 			if err != nil || !called || result["run_id"] != prior.RunID || result["session"] != wantSession || result["status"] != "completed" {
 				t.Fatalf("resume result=%#v error=%v called=%v", result, err, called)
@@ -163,7 +163,7 @@ func TestResumePipelineJobPreflightFailuresNeverExecute(t *testing.T) {
 					}
 					return prior, nil
 				},
-				func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+				func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState, pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 					t.Fatal("invalid resume entered executor")
 					return pipeline.PipelineRunOutput{}
 				})
@@ -188,7 +188,7 @@ func TestResumePipelineJobRetainsIdentityOnFailureAndCancellation(t *testing.T) 
 			prior := &pipeline.ExecutionState{RunID: "saved", WorkflowID: "workflow", Session: "project"}
 			result, err := executeResumePipelineJob(ctx, "/project", jobPipelineResumeParams{RunID: prior.RunID},
 				func(string, string) (*pipeline.ExecutionState, error) { return prior, nil },
-				func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+				func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState, pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 					if outcome == "canceled" {
 						cancel()
 					}
@@ -209,5 +209,76 @@ func TestPipelineJobTypesRegistered(t *testing.T) {
 		if !isImplementedJobType(jobType) {
 			t.Fatalf("job type %q has no public jobs surface", jobType)
 		}
+	}
+}
+
+func TestResumePipelineJobForwardsCanonicalRecoveryControls(t *testing.T) {
+	t.Parallel()
+	for _, reset := range []bool{false, true} {
+		t.Run(map[bool]string{false: "preserve", true: "explicit reset"}[reset], func(t *testing.T) {
+			req := jobPipelineResumeParams{
+				RunID: "saved",
+				PipelineResumeRequest: PipelineResumeRequest{
+					Mode: pipeline.ResumeModeForceIter, Reset: reset,
+					StepID: "batch", Iteration: 2, MaxResumeAge: " 1W ",
+					OnRosterChange: pipeline.ResumeRosterProceed,
+					MaxSelectorOutputBytesTotal: 1234, MaxStepCountTotal: 50, MaxMaterializedStepNodes: 60,
+				},
+			}
+			prior := &pipeline.ExecutionState{RunID: req.RunID, WorkflowID: "workflow", Session: "project"}
+			called := false
+			_, err := executeResumePipelineJob(context.Background(), "/project", req,
+				func(string, string) (*pipeline.ExecutionState, error) { return prior, nil },
+				func(ctx context.Context, runID, session string, vars map[string]interface{}, state *pipeline.ExecutionState, opts pipeline.ResumeOptions) pipeline.PipelineRunOutput {
+					called = true
+					want := pipeline.ResumeOptions{
+						Mode: pipeline.ResumeModeForceIter, Reset: reset, KeepState: !reset,
+						StepID: "batch", Iteration: 2, MaxResumeAge: 7 * 24 * time.Hour,
+						OnRosterChange: pipeline.ResumeRosterProceed,
+						MaxSelectorOutputBytesTotal: 1234, MaxStepCountTotal: 50, MaxMaterializedStepNodes: 60,
+					}
+					if opts != want {
+						t.Fatalf("job discarded recovery controls: got %+v, want %+v", opts, want)
+					}
+					return completedResumeJob(ctx, runID, session, vars, state, opts)
+				})
+			if err != nil || !called {
+				t.Fatalf("valid recovery never reached executor: called=%v error=%v", called, err)
+			}
+		})
+	}
+}
+
+func TestResumePipelineJobRejectsInvalidRecoveryBeforeLoadingState(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{"mode":"restart_everything"}`,
+		`{"mode":"force-iter"}`,
+		`{"mode":"force-iter","step_id":"batch","iteration":-1}`,
+		`{"on_roster_change":"yes"}`,
+		`{"max_resume_age":"-1h"}`,
+		`{"max_resume_age":"106752d"}`,
+		`{"max_resume_age":"9223372036854775807h"}`,
+		`{"max_resume_age":"invalid"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var req jobPipelineResumeParams
+			if err := json.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatal(err)
+			}
+			req.RunID = "saved"
+			_, err := executeResumePipelineJob(context.Background(), "/project", req,
+				func(string, string) (*pipeline.ExecutionState, error) {
+					t.Fatal("invalid recovery controls reached saved state")
+					return nil, nil
+				},
+				func(context.Context, string, string, map[string]interface{}, *pipeline.ExecutionState, pipeline.ResumeOptions) pipeline.PipelineRunOutput {
+					t.Fatal("invalid recovery controls reached execution")
+					return pipeline.PipelineRunOutput{}
+				})
+			if err == nil {
+				t.Fatal("invalid recovery controls were accepted")
+			}
+		})
 	}
 }

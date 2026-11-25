@@ -1058,7 +1058,7 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleRunPipeline":           {Response: PipelineExecutionEnvelopeResponse{}, Envelope: true, Request: PipelineRunRequest{}, RequestReq: true},
 	"handleExecPipeline":          {Response: PipelineExecutionEnvelopeResponse{}, Envelope: true, Request: PipelineExecRequest{}, RequestReq: true},
 	"handleGetPipeline":           {Response: PipelineExecutionEnvelopeResponse{}, Envelope: true},
-	"handleResumePipeline":        {Response: PipelineExecutionEnvelopeResponse{}, Envelope: true},
+	"handleResumePipeline":        {Response: PipelineExecutionEnvelopeResponse{}, Envelope: true, Request: PipelineResumeRequest{}},
 	"handleValidatePipeline":      {Response: PipelineValidateEnvelopeResponse{}, Envelope: true, Request: PipelineValidateRequest{}, RequestReq: true},
 	"handleListPipelineTemplates": {Response: PipelineTemplatesEnvelopeResponse{}, Envelope: true},
 	"handleCleanupPipelines":      {Response: PipelineCleanupEnvelopeResponse{}, Envelope: true, Request: PipelineCleanupRequest{}},
@@ -2110,9 +2110,9 @@ func applyReflectedRouteSchemas(rt RouterRoute, op *Operation, reflector *openap
 		}
 	}
 
-	// Reflect concrete request body type when specified (preserving hand-authored
-	// schemas for handleResumePipeline and handleRecoverPipeline).
-	if spec.Request != nil && rt.Handler != "handleResumePipeline" && rt.Handler != "handleRecoverPipeline" {
+	// Reflect concrete request body type when specified (preserving the
+	// hand-authored recovery-decision schema for handleRecoverPipeline).
+	if spec.Request != nil && rt.Handler != "handleRecoverPipeline" {
 		if rt.Method == http.MethodPost || rt.Method == http.MethodPut || rt.Method == http.MethodPatch || rt.Method == http.MethodDelete {
 			reqName := reflector.registerRootType(spec.Request, "", false)
 			if reqName != "" {

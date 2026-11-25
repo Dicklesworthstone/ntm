@@ -61,16 +61,67 @@ func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
 			t.Errorf("resume contract omits HTTP %s", status)
 		}
 	}
-	request := op.RequestBody.Content["application/json"].Schema
-	if request == nil || request.Properties["background"] == nil || request.Properties["background"].Type != "boolean" {
-		t.Fatal("resume contract does not expose detached startup")
+	if op.RequestBody.Required {
+		t.Fatal("resume contract must retain optional empty-body requests")
 	}
-	if request.Properties["variables"] == nil || !strings.Contains(request.Properties["variables"].Description, "rejected") {
-		t.Fatal("resume contract silently accepts unsupported detached variable overrides")
+	bodySchema := op.RequestBody.Content["application/json"].Schema
+	if bodySchema == nil || bodySchema.Ref != "#/components/schemas/PipelineResumeRequest" {
+		t.Fatal("resume request contract must be reflected from PipelineResumeRequest")
 	}
-	for _, behavior := range []string{"client disconnection", "server exit", "not workflow completion", "poll", "cancel"} {
+	request := spec.Components.Schemas["PipelineResumeRequest"]
+	if request == nil || request.Type != "object" || len(request.Required) != 0 {
+		t.Fatal("resume request component must preserve optional recovery controls")
+	}
+	if allowed, ok := request.AdditionalProperties.(bool); !ok || allowed {
+		t.Fatal("resume contract must reject unknown recovery controls")
+	}
+	for name, wantType := range map[string]string{
+		"background":                      "boolean",
+		"iteration":                       "integer",
+		"max_materialized_step_nodes":     "integer",
+		"max_resume_age":                  "string",
+		"max_selector_output_bytes_total": "integer",
+		"max_step_count_total":            "integer",
+		"mode":                            "string",
+		"on_roster_change":                "string",
+		"reset":                           "boolean",
+		"session":                         "string",
+		"step_id":                         "string",
+		"variables":                       "object",
+	} {
+		if property := request.Properties[name]; property == nil || property.Type != wantType {
+			t.Fatalf("resume contract field %s = %+v, want %s", name, property, wantType)
+		}
+	}
+	if request.Properties["max_selector_output_bytes_total"].Format != "int64" {
+		t.Fatal("resume contract narrowed the selector-output byte budget")
+	}
+	if request.Properties["variables"].AdditionalProperties != true || !strings.Contains(request.Properties["variables"].Description, "rejected") {
+		t.Fatal("resume contract must retain variable maps and reject detached overrides")
+	}
+	for name, guarantees := range map[string][]string{
+		"background":       {"unfinished saved run", "202"},
+		"mode":             {"continue (default)", "restart-failed", "force-iter", "side effects"},
+		"reset":            {"false", "preserving completed work", "takes precedence over mode", "Detached resume requires an unfinished saved run"},
+		"iteration":        {"Zero-based", "Defaults to 0", "nonnegative"},
+		"step_id":          {"required", "force-iter"},
+		"on_roster_change": {"abort (default)", "proceed", "receipt safety"},
+		"max_resume_age":   {"24h", "7d", "2w", "zero", "negative", "overflowing"},
+	} {
+		for _, guarantee := range guarantees {
+			if !strings.Contains(request.Properties[name].Description, guarantee) {
+				t.Errorf("resume contract field %s omits %q", name, guarantee)
+			}
+		}
+	}
+	for _, behavior := range []string{"client disconnection", "server exit", "not workflow completion", "poll", "cancel", "side effects", "pipeline_resume jobs"} {
 		if !strings.Contains(op.Description, behavior) {
 			t.Errorf("resume contract omits %q", behavior)
+		}
+	}
+	for _, behavior := range []string{"empty body", "exactly one JSON object", "unknown fields", "trailing JSON"} {
+		if !strings.Contains(op.RequestBody.Description, behavior) {
+			t.Errorf("resume request contract omits %q", behavior)
 		}
 	}
 }
