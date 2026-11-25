@@ -418,6 +418,7 @@ func openFastRobotStateStore(t testing.TB, dbPath string) *state.Store {
 func TestMain(m *testing.M) {
 	agentmail.AvailabilityProbeBackoff = 5 * time.Millisecond
 	tmux.PaneProcessStartPoll = 5 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	collectSnapshotToolsSummary = func(context.Context, map[tools.ToolName]bool) []ToolInfoOutput {
 		return nil
 	}
