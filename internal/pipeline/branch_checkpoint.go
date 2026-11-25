@@ -83,7 +83,7 @@ func decodeBranchDecision(id string, result StepResult) (branchDecision, error) 
 	if err != nil {
 		return invalid(err.Error())
 	}
-	if err := json.Unmarshal(data, &decision); err != nil {
+	if err := decodeCheckpointJSON(data, &decision); err != nil {
 		return invalid(err.Error())
 	}
 	if decision.Version != branchDecisionVersion || decision.ParentID == "" || branchDecisionID(decision.ParentID) != id || decision.SelectorKey != result.Output {
@@ -94,6 +94,7 @@ func decodeBranchDecision(id string, result StepResult) (branchDecision, error) 
 		return invalid("missing or invalid definition hash")
 	}
 	for childID, child := range decision.Children {
+		normalizeCheckpointJSONNumbers(child.Outputs)
 		digest, err := hex.DecodeString(child.ResultHash)
 		if childID == id || childID == decision.ParentID ||
 			(!strings.HasPrefix(childID, decision.ParentID+"_") && !strings.HasPrefix(childID, decision.ParentID+".")) ||
@@ -105,6 +106,8 @@ func decodeBranchDecision(id string, result StepResult) (branchDecision, error) 
 		if key == "" || (!value.Exists && value.Value != nil) {
 			return invalid("inconsistent saved variable scope")
 		}
+		value.Value = normalizeCheckpointJSONNumbers(value.Value)
+		decision.Scope[key] = value
 	}
 	return decision, nil
 }
@@ -270,9 +273,10 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 			return fail(err)
 		}
 		var metadata map[string]interface{}
-		if err := json.Unmarshal(encoded, &metadata); err != nil {
+		if err := decodeCheckpointJSON(encoded, &metadata); err != nil {
 			return fail(err)
 		}
+		normalizeCheckpointJSONNumbers(metadata)
 		e.stateMu.Lock()
 		e.state.Steps[id] = StepResult{
 			StepID: id, Status: StatusCompleted, AgentType: branchDecisionAgent,
@@ -295,20 +299,9 @@ func branchChildHash(result StepResult, outputs map[string]interface{}) (string,
 		return "", fmt.Errorf("hash branch child result: %w", err)
 	}
 
-	// Hash the representation that can actually survive the ExecutionState
-	// JSON checkpoint. Interface-backed parsed/output values may carry richer
-	// Go types before persistence (for example json.Number("1.0")); LoadState
-	// decodes them into ordinary JSON values, and re-marshalling those values
-	// can otherwise produce different bytes ("1.0" -> "1"). A receipt created
-	// from the live representation would then reject its own durable result.
-	//
-	// Round-tripping here intentionally uses the same encoding/json semantics as
-	// state persistence, so the receipt binds to exactly what resume can recover.
-	var durable interface{}
-	if err := json.Unmarshal(data, &durable); err != nil {
-		return "", fmt.Errorf("canonicalize branch child result: %w", err)
-	}
-	data, err = json.Marshal(durable)
+	// Keep historical finite-value digests unchanged. Numeric overflow has
+	// never had a valid legacy digest, so it can use the lossless fallback.
+	data, err = canonicalCheckpointJSON(data)
 	if err != nil {
 		return "", fmt.Errorf("canonicalize branch child result: %w", err)
 	}
@@ -440,8 +433,9 @@ func (e *Executor) checkpointBranchChild(ctx context.Context, parentID string, c
 			encoded, err = json.Marshal(decision)
 			if err == nil {
 				var metadata map[string]interface{}
-				err = json.Unmarshal(encoded, &metadata)
+				err = decodeCheckpointJSON(encoded, &metadata)
 				if err == nil {
+					normalizeCheckpointJSONNumbers(metadata)
 					evaluation.ParsedData = metadata
 					e.state.Steps[child.ID] = result
 					e.state.Steps[id] = evaluation

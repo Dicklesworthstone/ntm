@@ -259,6 +259,113 @@ func TestSaveLoadStatePreservesNumericFilterDecisions(t *testing.T) {
 	}
 }
 
+func TestCheckpointNumericHashesRetainLegacyDigests(t *testing.T) {
+	t.Parallel()
+	for _, number := range []json.Number{"1.00", "9007199254740993", "1e-1000", "-0.00e999999"} {
+		t.Run(number.String(), func(t *testing.T) {
+			result := StepResult{StepID: "parent_child", Status: StatusCompleted, ParsedData: number}
+			outputs := map[string]interface{}{"value": "answer", "value_parsed": number}
+			payload := map[string]interface{}{"result": result, "outputs": outputs}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Reproduce the previous on-disk digest contract independently of
+			// the new overflow fallback.
+			var legacy interface{}
+			if err := json.Unmarshal(raw, &legacy); err != nil {
+				t.Fatal(err)
+			}
+			raw, err = json.Marshal(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("%x", sha256.Sum256(raw))
+			for name, hash := range map[string]func() (string, error){
+				"branch":   func() (string, error) { return branchChildHash(result, outputs) },
+				"parallel": func() (string, error) { return parallelCheckpointHash(payload) },
+				"hook":     func() (string, error) { return successHookResultHash(result, outputs, false) },
+			} {
+				got, err := hash()
+				if err != nil || got != want {
+					t.Fatalf("%s changed a legacy digest: got %s, want %s: %v", name, got, want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSaveLoadStatePreservesOverflowSuccessHookReceipts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	now := time.Date(2026, time.November, 25, 1, 0, 0, 0, time.UTC)
+	numbers := map[string]interface{}{
+		"huge": json.Number("1e1000"), "tiny": json.Number("1e-1000"),
+		"identifier": json.Number("9007199254740993"), "decimal": json.Number("1.00"),
+	}
+	body := StepResult{
+		StepID: "body", Status: StatusCompleted, StartedAt: now, FinishedAt: now,
+		Output: "answer", ParsedData: numbers,
+	}
+	child := StepResult{
+		StepID: "body_on_success_notice", Status: StatusCompleted, StartedAt: now, FinishedAt: now,
+		Output: "notice", ParsedData: numbers, SuccessHookParent: body.StepID,
+	}
+	record := SuccessHookState{
+		Version: successHookStateVersion, StepID: body.StepID, Kind: StepKindCommand,
+		StepHash: strings.Repeat("a", 64), DefinitionHash: strings.Repeat("b", 64),
+		Body: body, Outputs: map[string]interface{}{"answer": body.Output, "answer_parsed": numbers},
+		HookIDs: []string{child.StepID},
+	}
+	var err error
+	record.BodyHash, err = successHookResultHash(body, record.Outputs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childOutputs := map[string]interface{}{"notice": child.Output, "notice_parsed": numbers}
+	childHash, err := successHookResultHash(child, childOutputs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Children = map[string]SuccessHookChildCheckpoint{
+		child.StepID: {ResultHash: childHash, Outputs: childOutputs},
+	}
+	state := &ExecutionState{
+		RunID: "numeric-hook-checkpoint", Status: StatusRunning,
+		Variables: map[string]interface{}{}, Steps: map[string]StepResult{body.StepID: body, child.StepID: child},
+		SuccessHooks: map[string]SuccessHookState{body.StepID: record},
+	}
+	before, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 2; round++ {
+		if err := SaveState(dir, state); err != nil {
+			t.Fatalf("SaveState round %d: %v", round, err)
+		}
+		state, err = LoadState(dir, state.RunID)
+		if err != nil {
+			t.Fatalf("LoadState round %d: %v", round, err)
+		}
+		after, err := json.Marshal(state.SuccessHooks[body.StepID])
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("hook receipt bytes changed in round %d: %s: %v", round, after, err)
+		}
+		parsed := state.Steps[child.StepID].ParsedData.(map[string]interface{})
+		if parsed["huge"] != json.Number("1e1000") || parsed["decimal"] != json.Number("1.00") {
+			t.Fatalf("consumed hook lost exact numeric values: %#v", parsed)
+		}
+	}
+	// The fallback still binds the exact recovered result; changing a large
+	// numeric value cannot authorize reuse of the prior completion receipt.
+	result := state.Steps[child.StepID]
+	result.ParsedData = map[string]interface{}{"huge": json.Number("2e1000")}
+	state.Steps[child.StepID] = result
+	if err := validateSuccessHooks(state); err == nil {
+		t.Fatal("changed overflow result retained its prior hook receipt")
+	}
+}
+
 func TestLoadState_EmptyRunID(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

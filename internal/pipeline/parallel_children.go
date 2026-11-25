@@ -342,14 +342,9 @@ func parallelCheckpointHash(value interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Use the same generic JSON representation as LoadState. In particular,
-	// nested typed foreach results become maps on disk; struct field order
-	// must not make an unchanged result fail its own recovery check.
-	var canonical interface{}
-	if err := json.Unmarshal(raw, &canonical); err != nil {
-		return "", err
-	}
-	raw, err = json.Marshal(canonical)
+	// Canonicalize struct/map field order without changing a historical
+	// finite-value digest. Overflowing numbers use the lossless fallback.
+	raw, err = canonicalCheckpointJSON(raw)
 	if err != nil {
 		return "", err
 	}
@@ -396,6 +391,7 @@ func decodeParallelChildCheckpoint(parent, child *Step, result StepResult, raw s
 	}
 	var receipt parallelChildCheckpoint
 	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil {
 		return invalid(err.Error())
@@ -403,6 +399,7 @@ func decodeParallelChildCheckpoint(parent, child *Step, result StepResult, raw s
 	if err := decoder.Decode(new(interface{})); err != io.EOF || receipt.Version != parallelChildCheckpointVersion {
 		return invalid("unsupported version or trailing data")
 	}
+	normalizeCheckpointJSONNumbers(receipt.Outputs)
 	if !retainParallelChild(child, result, false) || result.StepID != child.ID {
 		return invalid("result is not the recorded completed lifecycle")
 	}

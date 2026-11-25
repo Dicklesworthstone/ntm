@@ -58,6 +58,49 @@ func TestParallelChildCheckpointRoundTripPreservesCollections(t *testing.T) {
 	}
 }
 
+func TestParallelChildCheckpointPreservesOverflowNumbersAcrossStateReload(t *testing.T) {
+	t.Parallel()
+	parent, child, result, outputs := parallelCheckpointExample(OutputVarModeAggregate)
+	numbers := map[string]interface{}{
+		"huge": json.Number("1e1000"), "tiny": json.Number("1e-1000"),
+		"identifier": json.Number("9007199254740993"), "decimal": json.Number("1.00"),
+	}
+	result.ParsedData = numbers
+	outputs["values_parsed"] = []interface{}{numbers}
+	raw, err := encodeParallelChildCheckpoint(&parent, &child, result, outputs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &ExecutionState{
+		RunID: "numeric-parallel-checkpoint", Status: StatusRunning,
+		Variables: map[string]interface{}{}, Steps: map[string]StepResult{child.ID: result},
+		ParallelState: map[string]ParallelGroupState{
+			parent.ID: {StepID: parent.ID, Total: 1, CompletedStepIDs: []string{child.ID},
+				ChildCheckpoints: map[string]string{child.ID: raw}},
+		},
+	}
+	dir := t.TempDir()
+	for round := 0; round < 2; round++ {
+		if err := SaveState(dir, state); err != nil {
+			t.Fatal(err)
+		}
+		state, err = LoadState(dir, state.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt := state.ParallelState[parent.ID].ChildCheckpoints[child.ID]
+		got, settled, err := decodeParallelChildCheckpoint(&parent, &child, state.Steps[child.ID], receipt)
+		if err != nil || !settled || !reflect.DeepEqual(got, outputs) {
+			t.Fatalf("round %d changed numeric aggregate receipt: %#v, settled=%t: %v", round, got, settled, err)
+		}
+	}
+	changed := state.Steps[child.ID]
+	changed.ParsedData = map[string]interface{}{"huge": json.Number("2e1000")}
+	if _, _, err := decodeParallelChildCheckpoint(&parent, &child, changed, raw); err == nil {
+		t.Fatal("changed overflow result retained its prior parallel receipt")
+	}
+}
+
 func TestParallelChildCheckpointEmptyCollectionsAndAbsentLast(t *testing.T) {
 	for _, mode := range []OutputVarMode{OutputVarModeAggregate, OutputVarModeCollect, OutputVarModeLast} {
 		t.Run(string(mode), func(t *testing.T) {

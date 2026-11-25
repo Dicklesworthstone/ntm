@@ -193,6 +193,55 @@ func TestBranchChildHashMatchesDurableJSONRepresentation(t *testing.T) {
 	}
 }
 
+func TestBranchDecisionPreservesNumericScopeAndChildOutputs(t *testing.T) {
+	t.Parallel()
+	step := Step{ID: "route", Branch: "a", Branches: map[string]interface{}{
+		"a": []Step{{ID: "work", Command: "true", OutputVar: "payload"}},
+	}}
+	e, _, cfg := decisionTestExecutor(t, step)
+	numbers := map[string]interface{}{
+		"huge": json.Number("1e1000"), "tiny": json.Number("1e-1000"),
+		"identifier": json.Number("9007199254740993"), "decimal": json.Number("1.00"),
+	}
+	e.state.Variables["payload_parsed"] = cloneInterfaceValue(numbers)
+	if _, _, err := e.prepareBranchDecision(context.Background(), &step); err != nil {
+		t.Fatal(err)
+	}
+	child := Step{ID: "route_work", Command: "true", OutputVar: "payload"}
+	now := time.Now().UTC()
+	result := StepResult{StepID: child.ID, Status: StatusCompleted, StartedAt: now, FinishedAt: now,
+		Output: "answer", ParsedData: cloneInterfaceValue(numbers)}
+	if err := e.checkpointBranchChild(context.Background(), step.ID, &child, result); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewExecutor(cfg)
+	var err error
+	fresh.state, err = LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, _, err := fresh.prepareBranchDecision(context.Background(), &step)
+	if err != nil {
+		t.Fatalf("branch receipt did not survive reload: %v", err)
+	}
+	if !reflect.DeepEqual(decision.Scope["payload_parsed"].Value, numbers) ||
+		!reflect.DeepEqual(decision.Children[child.ID].Outputs["payload_parsed"], numbers) {
+		t.Fatalf("branch scope or child aliases lost precision: %+v", decision)
+	}
+	if _, adopted, err := fresh.adoptBranchChild(context.Background(), decision, &child, nil); err != nil || !adopted {
+		t.Fatalf("could not adopt exact completed child: adopted=%t error=%v", adopted, err)
+	}
+	if !reflect.DeepEqual(fresh.state.Variables["payload_parsed"], numbers) {
+		t.Fatalf("adopted output lost precision: %#v", fresh.state.Variables["payload_parsed"])
+	}
+	result = fresh.state.Steps[child.ID]
+	result.ParsedData = map[string]interface{}{"huge": json.Number("2e1000")}
+	fresh.state.Steps[child.ID] = result
+	if _, _, err := fresh.prepareBranchDecision(context.Background(), &step); err == nil {
+		t.Fatal("changed overflow result retained its prior branch receipt")
+	}
+}
+
 func TestBranchDecisionReusesSourceSuccessBeforeAdmissionCheckpoint(t *testing.T) {
 	t.Parallel()
 	step := decisionTestStep()

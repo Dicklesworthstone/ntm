@@ -534,6 +534,38 @@ func normalizeCheckpointJSONNumbers(value interface{}) interface{} {
 	return value
 }
 
+// decodeCheckpointJSON preserves interface-backed numeric values while still
+// requiring one complete JSON document. Typed receipt fields decode normally.
+func decodeCheckpointJSON(data []byte, value interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(interface{})); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("unexpected trailing checkpoint JSON")
+	}
+	return nil
+}
+
+// canonicalCheckpointJSON retains every digest that the historical float64
+// projection could produce. Valid JSON numbers outside that projection's range
+// previously could not produce a receipt at all; only for those payloads do we
+// preserve exact numeric spellings while canonicalizing object key order.
+func canonicalCheckpointJSON(raw []byte) ([]byte, error) {
+	var canonical interface{}
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		canonical = nil
+		if err := decodeCheckpointJSON(raw, &canonical); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(canonical)
+}
+
 func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
 	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
 		return nil, err
