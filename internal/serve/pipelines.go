@@ -337,11 +337,11 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 			WorkflowID: p.WorkflowID,
 			Session:    p.Session,
 			Status:     p.Status,
-			StartedAt:  p.StartedAt.Format(time.RFC3339),
+			StartedAt:  p.StartedAt.Format(time.RFC3339Nano),
 			Progress:   p.Progress,
 		}
 		if p.FinishedAt != nil {
-			summary.FinishedAt = p.FinishedAt.Format(time.RFC3339)
+			summary.FinishedAt = p.FinishedAt.Format(time.RFC3339Nano)
 		}
 		summaries = append(summaries, summary)
 	}
@@ -515,13 +515,13 @@ func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		"workflow_id":  exec.WorkflowID,
 		"session":      exec.Session,
 		"status":       exec.Status,
-		"started_at":   exec.StartedAt.Format(time.RFC3339),
+		"started_at":   exec.StartedAt.Format(time.RFC3339Nano),
 		"current_step": exec.CurrentStep,
 		"progress":     exec.Progress,
 		"steps":        exec.Steps,
 	}
 	if exec.FinishedAt != nil {
-		resp["finished_at"] = exec.FinishedAt.Format(time.RFC3339)
+		resp["finished_at"] = exec.FinishedAt.Format(time.RFC3339Nano)
 		resp["duration_ms"] = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
 	}
 	if exec.Error != "" {

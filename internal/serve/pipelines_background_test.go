@@ -1024,3 +1024,74 @@ func TestRESTBackgroundResumeKeepsPermissionAndProjectScope(t *testing.T) {
 		t.Fatalf("project-scoped continuation lost its completed prefix or tail: %+v", final.Steps)
 	}
 }
+
+func TestRESTPipelineInspectionDistinguishesSameSecondCompletions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	srv := NewHermeticServer("pipeline-completion-precision")
+	defer srv.Stop()
+	srv.projectDir = root
+	started := time.Date(2026, time.November, 25, 12, 0, 0, 123456789, time.UTC)
+	finished := started.Add(400 * time.Millisecond)
+	state := &pipeline.ExecutionState{
+		RunID: "same-second-replay", WorkflowID: "completion-precision", Session: "saved-session",
+		Status: pipeline.StatusCompleted, StartedAt: started, FinishedAt: finished, UpdatedAt: finished,
+		Steps: map[string]pipeline.StepResult{"work": {StepID: "work", Status: pipeline.StatusCompleted}},
+	}
+	previous := make(map[string]pipeline.PipelineSummary)
+	for _, completion := range []time.Time{finished, finished.Add(time.Nanosecond)} {
+		// These durable outcomes differ only in FinishedAt. Status, progress,
+		// run identity and even duration_ms stay the same, as a fast replay can.
+		state.FinishedAt = completion
+		if err := pipeline.SaveState(root, state); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/api/v1/pipelines", "/api/v1/pipelines/" + state.RunID} {
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			var response struct {
+				pipeline.PipelineSummary
+				Success    bool                       `json:"success"`
+				Pipelines  []pipeline.PipelineSummary `json:"pipelines"`
+				DurationMs int64                      `json:"duration_ms"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || !response.Success {
+				t.Fatalf("inspect %s: %d %s (decode error: %v)", path, rec.Code, rec.Body, err)
+			}
+			summary := response.PipelineSummary
+			if path == "/api/v1/pipelines" {
+				if len(response.Pipelines) != 1 {
+					t.Fatalf("list did not return the saved run: %+v", response.Pipelines)
+				}
+				summary = response.Pipelines[0]
+			} else if response.DurationMs != 400 {
+				t.Fatalf("same-millisecond completion changed duration_ms: %d", response.DurationMs)
+			}
+			if summary.RunID != state.RunID || summary.WorkflowID != state.WorkflowID || summary.Session != state.Session ||
+				summary.Status != string(pipeline.StatusCompleted) || summary.Progress.Completed != 1 || summary.Progress.Total != 1 {
+				t.Fatalf("inspection changed the saved run identity or progress: %+v", summary)
+			}
+			for _, stamp := range []struct {
+				name, wire string
+				want       time.Time
+			}{
+				{name: "started_at", wire: summary.StartedAt, want: started},
+				{name: "finished_at", wire: summary.FinishedAt, want: completion},
+			} {
+				parsed, err := time.Parse(time.RFC3339Nano, stamp.wire)
+				if err != nil || !parsed.Equal(stamp.want) {
+					t.Fatalf("%s %s lost execution time precision: got %q, want %s (parse error: %v)", path, stamp.name, stamp.wire, stamp.want, err)
+				}
+			}
+			if prior, ok := previous[path]; ok {
+				if summary.FinishedAt == prior.FinishedAt {
+					t.Fatalf("%s hid a new completion within the same second", path)
+				}
+				if summary.StartedAt != prior.StartedAt || !reflect.DeepEqual(summary.Progress, prior.Progress) {
+					t.Fatalf("%s changed evidence unrelated to the completion time: before=%+v after=%+v", path, prior, summary)
+				}
+			}
+			previous[path] = summary
+		}
+	}
+}
