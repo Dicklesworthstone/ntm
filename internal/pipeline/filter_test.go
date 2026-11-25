@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,23 @@ func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
 		{"item==9007199254740992", "9007199254740993", false},
 		{"item!=9007199254740992", "9007199254740993", true},
 		{"item==9007199254740993", "9007199254740993", true},
+		{"item==1", "1.0", true},
+		{"item==1", "1e0", true},
+		{"item==1.0", "1", true},
+		{"item==1e0", "1", true},
+		{"item==10", "1e1", true},
+		{"item==0.1", "1e-1", true},
+		{"item==0.10", "0.1", true},
+		{"item==-0", "0.0", true},
+		{"item==0", "-0.0E+999999", true},
+		{"item==0", "1e-999999", false},
+		{"item==1e-999999", "10e-1000000", true},
+		{"item==1e999999999999999999999", "10e999999999999999999998", true},
+		{"item==1e999999999999999999999", "1e999999999999999999998", false},
+		{"item==1e-999999999999999999999", "10e-1000000000000000000000", true},
+		{"item==-0.125", "-125e-3", true},
+		{"item==18446744073709551615", "18446744073709551615", true},
+		{"item==18446744073709551614", "18446744073709551615", false},
 	} {
 		t.Run(tc.expr+"/"+tc.value, func(t *testing.T) {
 			// Exercise the exact number types retained by API and job decoders,
@@ -45,6 +63,63 @@ func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
 				t.Fatalf("filter %q for JSON %s = %v, %v; want %v", tc.expr, tc.value, got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFilterNumericKindsStayExact(t *testing.T) {
+	type signedID int64
+	type unsignedID uint64
+	for _, tc := range []struct {
+		name        string
+		left, right interface{}
+		want        bool
+	}{
+		{"signed neighbors", int64(9007199254740993), int64(9007199254740992), false},
+		{"unsigned neighbors", uint64(18446744073709551615), uint64(18446744073709551614), false},
+		{"unsigned JSON maximum", uint64(18446744073709551615), json.Number("18446744073709551615"), true},
+		{"signed alias", signedID(9007199254740993), json.Number("9007199254740993"), true},
+		{"unsigned alias", unsignedID(18446744073709551615), json.Number("18446744073709551615"), true},
+		{"numeric strings", "9007199254740993", "9007199254740992", false},
+		{"equivalent decimal strings", "1.00", "10e-1", true},
+		{"float32 decimal", float32(0.1), json.Number("0.1"), true},
+		{"float64 decimal", float64(0.1), json.Number("0.1"), true},
+		{"already rounded float", float64(9007199254740993), json.Number("9007199254740993"), false},
+		{"float NaN", math.NaN(), math.NaN(), false},
+		{"float32 NaN", float32(math.NaN()), "NaN", false},
+		{"text NaN", "NaN", "NaN", false},
+		{"mixed NaN", math.NaN(), "NaN", false},
+		{"positive infinity spelling", "Inf", "+Inf", true},
+		{"positive infinity float32", float32(math.Inf(1)), "Inf", true},
+		{"negative infinity", math.Inf(-1), "-Inf", true},
+		{"opposite infinities", math.Inf(-1), math.Inf(1), false},
+		{"huge finite JSON and infinity", json.Number("1e999999999999"), math.Inf(1), false},
+		{"huge finite string and infinity", "1e999999999999", "Inf", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := filterValuesEqual(tc.left, tc.right); got != tc.want {
+				t.Fatalf("filterValuesEqual(%#v, %#v) = %v, want %v", tc.left, tc.right, got, tc.want)
+			}
+			if got := filterValuesEqual(tc.right, tc.left); got != tc.want {
+				t.Fatalf("reversed filterValuesEqual(%#v, %#v) = %v, want %v", tc.right, tc.left, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFilterNumericZeroKinds(t *testing.T) {
+	type counter uint64
+	for _, value := range []interface{}{
+		int8(0), int16(0), int32(0), uint(0), uint8(0), uint16(0),
+		uint32(0), uint64(0), uintptr(0), float32(0), counter(0),
+	} {
+		if filterTruthy(value) {
+			t.Errorf("filterTruthy(%T(0)) = true", value)
+		}
+	}
+	for _, value := range []interface{}{int8(-1), uint64(1), float32(0.1), counter(1)} {
+		if !filterTruthy(value) {
+			t.Errorf("filterTruthy(%#v) = false", value)
+		}
 	}
 }
 

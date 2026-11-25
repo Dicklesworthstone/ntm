@@ -3,6 +3,8 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -366,7 +368,7 @@ func parseFilterLiteral(value string) (interface{}, bool) {
 	case "false":
 		return false, true
 	}
-	if n, err := strconv.Atoi(value); err == nil {
+	if n, ok := parsePipelineNumber(value); ok {
 		return n, true
 	}
 	return nil, false
@@ -474,28 +476,150 @@ func normalizeFilterField(name string) string {
 func filterValuesEqual(left, right interface{}) bool {
 	if lf, ok := filterNumber(left); ok {
 		if rf, ok := filterNumber(right); ok {
+			return lf.cmp(rf) == 0
+		}
+	}
+	if lf, ok := parseFilterSpecialNumber(left); ok {
+		if rf, ok := parseFilterSpecialNumber(right); ok {
 			return lf == rf
 		}
 	}
 	return fmt.Sprint(left) == fmt.Sprint(right)
 }
 
-func filterNumber(value interface{}) (float64, bool) {
+// parseFilterSpecialNumber preserves legacy NaN/Inf equality for native floats
+// and numeric strings. Finite values never use this floating-point fallback.
+func parseFilterSpecialNumber(value interface{}) (float64, bool) {
+	var number float64
 	switch v := value.(type) {
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case float64:
-		return v, true
 	case float32:
-		return float64(v), true
+		number = float64(v)
+	case float64:
+		number = v
 	case string:
-		n, err := strconv.ParseFloat(v, 64)
-		return n, err == nil
+		var err error
+		number, err = strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, false
+		}
 	default:
 		return 0, false
 	}
+	return number, math.IsNaN(number) || math.IsInf(number, 0)
+}
+
+// pipelineNumber represents sign * 0.digits * 10^magnitude. Significant digits
+// have no leading or trailing zeros. Keeping the exponent separate preserves
+// decimal input exactly without allocating space proportional to its value:
+// even 1e999999999999999999999 uses only its input-sized exponent and mantissa.
+// Float inputs use their shortest round-trip decimal spelling, matching the
+// value exposed by workflow substitution and JSON serialization.
+type pipelineNumber struct {
+	sign      int
+	digits    string
+	magnitude big.Int
+}
+
+func (n pipelineNumber) cmp(other pipelineNumber) int {
+	if n.sign < other.sign {
+		return -1
+	}
+	if n.sign > other.sign {
+		return 1
+	}
+	if n.sign == 0 {
+		return 0
+	}
+	order := n.magnitude.Cmp(&other.magnitude)
+	if order == 0 {
+		// With trailing zeros removed, lexicographic ordering is equivalent
+		// to right-padding either significand with zeros, without expansion.
+		order = strings.Compare(n.digits, other.digits)
+	}
+	return n.sign * order
+}
+
+func parsePipelineNumber(value string) (pipelineNumber, bool) {
+	var number pipelineNumber
+	if value == "" {
+		return number, false
+	}
+	i, sign := 0, 1
+	if value[i] == '-' || value[i] == '+' {
+		if value[i] == '-' {
+			sign = -1
+		}
+		i++
+	}
+	start := i
+	for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+		i++
+	}
+	integerEnd := i
+	fractionStart := i
+	if i < len(value) && value[i] == '.' {
+		i++
+		fractionStart = i
+		for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			i++
+		}
+	}
+	mantissaEnd := i
+	if integerEnd == start && mantissaEnd == fractionStart {
+		return number, false
+	}
+	if i < len(value) && (value[i] == 'e' || value[i] == 'E') {
+		i++
+		exponentStart := i
+		if i < len(value) && (value[i] == '-' || value[i] == '+') {
+			i++
+		}
+		digitsStart := i
+		for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			i++
+		}
+		if i == digitsStart || i != len(value) {
+			return number, false
+		}
+		if _, ok := number.magnitude.SetString(value[exponentStart:i], 10); !ok {
+			return pipelineNumber{}, false
+		}
+	}
+	if i != len(value) {
+		return pipelineNumber{}, false
+	}
+	digits := strings.TrimLeft(value[start:integerEnd]+value[fractionStart:mantissaEnd], "0")
+	if digits == "" {
+		return pipelineNumber{}, true // All signed/exponent forms of zero agree.
+	}
+	decimalPlaces := mantissaEnd - fractionStart
+	number.magnitude.Add(&number.magnitude, big.NewInt(int64(len(digits)-decimalPlaces)))
+	number.sign = sign
+	number.digits = strings.TrimRight(digits, "0")
+	return number, true
+}
+
+func filterNumber(value interface{}) (pipelineNumber, bool) {
+	switch v := value.(type) {
+	case pipelineNumber:
+		return v, true
+	case json.Number:
+		return parsePipelineNumber(v.String())
+	case string:
+		return parsePipelineNumber(v)
+	}
+	// Include every numeric kind, including aliases and unsigned YAML values;
+	// coercing an integer through float64 can merge adjacent workflow targets.
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return parsePipelineNumber(strconv.FormatInt(v.Int(), 10))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return parsePipelineNumber(strconv.FormatUint(v.Uint(), 10))
+	case reflect.Float32, reflect.Float64:
+		return parsePipelineNumber(strconv.FormatFloat(v.Float(), 'g', -1, v.Type().Bits()))
+	}
+	return pipelineNumber{}, false
 }
 
 func filterTruthy(value interface{}) bool {
@@ -510,6 +634,8 @@ func filterTruthy(value interface{}) bool {
 		return v != 0
 	case float64:
 		return v != 0
+	case pipelineNumber:
+		return v.sign != 0
 	case json.Number:
 		// Inspect the mantissa so tiny nonzero values stay truthy and large
 		// exponents never require floating-point conversion or expansion.
@@ -525,6 +651,9 @@ func filterTruthy(value interface{}) bool {
 	case nil:
 		return false
 	default:
+		if number, ok := filterNumber(value); ok {
+			return number.sign != 0
+		}
 		return true
 	}
 }

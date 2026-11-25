@@ -408,7 +408,8 @@ func TestCoverageFilterPrimitiveHelpers(t *testing.T) {
 		{value: true, ok: false},
 	} {
 		got, ok := filterNumber(tt.value)
-		if ok != tt.ok || got != tt.want {
+		want, _ := filterNumber(tt.want)
+		if ok != tt.ok || got.cmp(want) != 0 {
 			t.Fatalf("filterNumber(%#v) = %v/%v, want %v/%v", tt.value, got, ok, tt.want, tt.ok)
 		}
 	}
