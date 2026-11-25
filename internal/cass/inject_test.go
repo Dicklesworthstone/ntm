@@ -821,6 +821,25 @@ func TestFormatForAgent(t *testing.T) {
 	}
 }
 
+func TestAgentCanonicalLongName_PiAndGrok(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"pi", "pi"},
+		{"pi-agent", "pi"},
+		{"pi_agent", "pi"},
+		{"grok", "grok"},
+		{"grok-build", "grok"},
+		{"opencode", "oc"},
+	} {
+		if got := agentCanonicalLongName(tc.in); got != tc.want {
+			t.Errorf("agentCanonicalLongName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // =============================================================================
 // FormatContext
 // =============================================================================

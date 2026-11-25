@@ -921,6 +921,8 @@ func agentCanonicalLongName(agentType string) string {
 		return "gemini"
 	case agentpkg.AgentTypeAntigravity:
 		return "antigravity"
+	case agentpkg.AgentTypeGrok:
+		return "grok"
 	case agentpkg.AgentTypeCursor:
 		return "cursor"
 	case agentpkg.AgentTypeWindsurf:
@@ -931,6 +933,8 @@ func agentCanonicalLongName(agentType string) string {
 		return "oc"
 	case agentpkg.AgentTypeOmp:
 		return "omp"
+	case agentpkg.AgentTypePi:
+		return "pi"
 	case agentpkg.AgentTypeOllama:
 		return "ollama"
 	case agentpkg.AgentTypeUser:
