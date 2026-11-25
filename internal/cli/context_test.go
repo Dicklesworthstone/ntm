@@ -246,4 +246,13 @@ esac
 	if !thirdResult.Success || len(thirdResult.Outcomes) != 1 || !thirdResult.Outcomes[0].Sent {
 		t.Fatalf("expected index recover sent=true, got: %+v", thirdResult)
 	}
+
+	// Explicit empty --pane="" or --pane-id="" must fail closed rather than broadcast to all panes.
+	var emptyOut bytes.Buffer
+	cmd4 := newContextRecoverCmdWithDeps(indexDeps)
+	cmd4.SetOut(&emptyOut)
+	cmd4.SetArgs([]string{"demo", "--pane=", "--no-beads"})
+	if err := cmd4.Execute(); err == nil {
+		t.Fatalf("expected error for empty --pane=, got output: %s", emptyOut.String())
+	}
 }
