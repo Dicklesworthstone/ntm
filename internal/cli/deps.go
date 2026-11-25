@@ -206,6 +206,30 @@ func builtinDepChecks() []depCheck {
 			Category:    "AI Agents",
 			InstallHint: "bun install -g @oh-my-pi/pi-coding-agent (see https://omp.sh), then run `omp setup` once interactively before the first spawn",
 		},
+		{
+			Name:        "Pi Agent",
+			Command:     "pi",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "npm install -g @mariozechner/pi-coding-agent",
+		},
+		{
+			Name:        "Aider",
+			Command:     "aider",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "pip install aider-chat",
+		},
+		{
+			Name:        "Ollama",
+			Command:     "ollama",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "curl -fsSL https://ollama.com/install.sh | sh (or brew install ollama)",
+		},
 
 		// Recommended
 		{
