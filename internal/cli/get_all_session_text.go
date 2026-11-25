@@ -188,6 +188,8 @@ func getAgentTypeShort(agentType tmux.AgentType) string {
 		return "oc"
 	case tmux.AgentOmp:
 		return "omp"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentOllama:
 		return "ollama"
 	default:
