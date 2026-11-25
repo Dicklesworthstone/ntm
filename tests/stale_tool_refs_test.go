@@ -10,6 +10,7 @@
 package tests
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -25,6 +26,7 @@ import (
 var staleBdRefRE = regexp.MustCompile(`\bbd (list|sync|init|ready|show|close|create|update|dep|doctor|quickstart)\b`)
 
 func TestNoStaleBdToolReferences(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 
 	var offenders []string
@@ -39,6 +41,9 @@ func TestNoStaleBdToolReferences(t *testing.T) {
 			data, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return rerr
+			}
+			if !bytes.Contains(data, []byte("bd ")) {
+				return nil
 			}
 			for i, line := range strings.Split(string(data), "\n") {
 				if m := staleBdRefRE.FindString(line); m != "" {
@@ -77,6 +82,7 @@ var allowedStdoutFiles = map[string]bool{
 }
 
 func TestNoLibraryStdoutPrints(t *testing.T) {
+	t.Parallel()
 	root := docsRepoRoot(t)
 	internalRoot := filepath.Join(root, "internal")
 	fset := token.NewFileSet()
