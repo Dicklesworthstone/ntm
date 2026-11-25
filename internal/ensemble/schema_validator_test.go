@@ -8,6 +8,7 @@ import (
 )
 
 func TestSchemaValidator_NewSchemaValidator(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 	if v == nil {
 		t.Fatal("NewSchemaValidator returned nil")
@@ -21,6 +22,7 @@ func TestSchemaValidator_NewSchemaValidator(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_ValidOutput(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 	output := &ModeOutput{
 		ModeID: "test-mode",
@@ -43,6 +45,7 @@ func TestSchemaValidator_Validate_ValidOutput(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_MissingModeID(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 	output := &ModeOutput{
 		Thesis: "Some thesis",
@@ -70,6 +73,7 @@ func TestSchemaValidator_Validate_MissingModeID(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_MissingThesis(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 	output := &ModeOutput{
 		ModeID: "test",
@@ -94,6 +98,7 @@ func TestSchemaValidator_Validate_MissingThesis(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_NoFindings(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 	output := &ModeOutput{
 		ModeID:      "test",
@@ -117,6 +122,7 @@ func TestSchemaValidator_Validate_NoFindings(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_InvalidConfidence(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	tests := []struct {
@@ -155,6 +161,7 @@ func TestSchemaValidator_Validate_InvalidConfidence(t *testing.T) {
 }
 
 func TestSchemaValidator_ValidateFindings(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid findings", func(t *testing.T) {
@@ -216,6 +223,7 @@ func TestSchemaValidator_ValidateFindings(t *testing.T) {
 }
 
 func TestSchemaValidator_ValidateEvidencePointers(t *testing.T) {
+	t.Parallel()
 	// Create a temp file for testing
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.go")
@@ -270,6 +278,7 @@ func TestSchemaValidator_ValidateEvidencePointers(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_Risks(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid risks", func(t *testing.T) {
@@ -310,6 +319,7 @@ func TestSchemaValidator_Validate_Risks(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_Recommendations(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid recommendations", func(t *testing.T) {
@@ -384,6 +394,7 @@ func TestSchemaValidator_Validate_Recommendations(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_Questions(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid questions", func(t *testing.T) {
@@ -432,6 +443,7 @@ func TestSchemaValidator_Validate_Questions(t *testing.T) {
 }
 
 func TestSchemaValidator_Validate_FailureModes(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid failure modes", func(t *testing.T) {
@@ -506,6 +518,7 @@ func TestSchemaValidator_Validate_FailureModes(t *testing.T) {
 }
 
 func TestSchemaValidator_ParseYAML(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("valid YAML", func(t *testing.T) {
@@ -546,6 +559,7 @@ confidence: 0.8
 }
 
 func TestValidationError_Error(t *testing.T) {
+	t.Parallel()
 	t.Run("with value", func(t *testing.T) {
 		e := ValidationError{
 			Field:   "confidence",
@@ -573,6 +587,7 @@ func TestValidationError_Error(t *testing.T) {
 }
 
 func TestParseConfidenceString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input   string
 		want    Confidence
@@ -623,6 +638,7 @@ func TestParseConfidenceString(t *testing.T) {
 }
 
 func TestImpactLevel_Critical(t *testing.T) {
+	t.Parallel()
 	if !ImpactCritical.IsValid() {
 		t.Error("ImpactCritical should be valid")
 	}
@@ -642,6 +658,7 @@ func TestImpactLevel_Critical(t *testing.T) {
 }
 
 func TestSchemaValidator_Normalize(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("injects missing mode_id", func(t *testing.T) {
@@ -712,6 +729,7 @@ func TestSchemaValidator_Normalize(t *testing.T) {
 }
 
 func TestSchemaValidator_ParseNormalizeAndValidate(t *testing.T) {
+	t.Parallel()
 	v := NewSchemaValidator()
 
 	t.Run("injects mode_id and validates", func(t *testing.T) {

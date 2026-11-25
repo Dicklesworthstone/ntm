@@ -8,6 +8,7 @@ import (
 )
 
 func TestPublishRuntimeWorkSnapshotHonorsWaitingWriterCancellation(t *testing.T) {
+	t.Parallel()
 	store, _ := workSnapshotTestStore(t)
 	snapshot := snapshotForTest(t, t.TempDir(), "payload", time.Now())
 	store.mu.Lock()
@@ -32,6 +33,7 @@ func TestPublishRuntimeWorkSnapshotHonorsWaitingWriterCancellation(t *testing.T)
 }
 
 func TestPublishRuntimeWorkSnapshotRollsBackRejectedMutation(t *testing.T) {
+	t.Parallel()
 	store, _ := workSnapshotTestStore(t)
 	project := t.TempDir()
 	now := time.Now().UTC()

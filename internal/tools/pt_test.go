@@ -21,6 +21,7 @@ func (a *PTAdapter) ClassifyProcess(ctx context.Context, pid int) (*PTProcessRes
 }
 
 func TestNewPTAdapter(t *testing.T) {
+	t.Parallel()
 	adapter := NewPTAdapter()
 	if adapter == nil {
 		t.Fatal("NewPTAdapter returned nil")
@@ -36,11 +37,13 @@ func TestNewPTAdapter(t *testing.T) {
 }
 
 func TestPTAdapterImplementsInterface(t *testing.T) {
+	t.Parallel()
 	// Ensure PTAdapter implements the Adapter interface
 	var _ Adapter = (*PTAdapter)(nil)
 }
 
 func TestPTAdapterDetect(t *testing.T) {
+	t.Parallel()
 	adapter := NewPTAdapter()
 
 	// Test detection - result depends on whether pt is installed
@@ -58,6 +61,7 @@ func TestPTAdapterDetect(t *testing.T) {
 }
 
 func TestPTStatusStruct(t *testing.T) {
+	t.Parallel()
 	status := PTStatus{
 		Available:   true,
 		Compatible:  true,
@@ -80,6 +84,7 @@ func TestPTStatusStruct(t *testing.T) {
 }
 
 func TestPTClassificationConstants(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		class    PTClassification
 		expected string
@@ -98,6 +103,7 @@ func TestPTClassificationConstants(t *testing.T) {
 }
 
 func TestPTProcessResultStruct(t *testing.T) {
+	t.Parallel()
 	result := PTProcessResult{
 		PID:            12345,
 		Name:           "claude-agent",
@@ -232,6 +238,7 @@ func TestPTAdapterGetStatusCaching(t *testing.T) {
 }
 
 func TestToolPTInAllTools(t *testing.T) {
+	t.Parallel()
 	tools := AllTools()
 	found := false
 	for _, tool := range tools {
@@ -247,6 +254,7 @@ func TestToolPTInAllTools(t *testing.T) {
 }
 
 func TestPTMinVersionCompatibility(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		version  Version
@@ -290,6 +298,7 @@ func TestPTMinVersionCompatibility(t *testing.T) {
 }
 
 func TestPTStatusTTL(t *testing.T) {
+	t.Parallel()
 	// Verify that the TTL is set to 5 minutes
 	if ptStatusTTL != 5*time.Minute {
 		t.Errorf("Expected pt status TTL of 5m, got %v", ptStatusTTL)
@@ -297,6 +306,7 @@ func TestPTStatusTTL(t *testing.T) {
 }
 
 func TestPTAdapterInfo(t *testing.T) {
+	t.Parallel()
 	adapter := NewPTAdapter()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -323,6 +333,7 @@ func TestPTAdapterInfo(t *testing.T) {
 }
 
 func TestPTAdapterCapabilities(t *testing.T) {
+	t.Parallel()
 	adapter := NewPTAdapter()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -377,6 +388,7 @@ func TestPTClassifyProcessesWhenNotInstalled(t *testing.T) {
 }
 
 func TestPTToolNameConstant(t *testing.T) {
+	t.Parallel()
 	if ToolPT != "pt" {
 		t.Errorf("Expected ToolPT to be 'pt', got %s", ToolPT)
 	}
@@ -387,6 +399,7 @@ func TestPTToolNameConstant(t *testing.T) {
 // candidate's recommendation intact, and once through ClassifyProcesses, which
 // must answer for exactly the PIDs it was asked about.
 func TestPTClassifyProcessesReadsInstalledPT(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("pt"); err != nil {
 		t.Skip("pt not installed")
 	}

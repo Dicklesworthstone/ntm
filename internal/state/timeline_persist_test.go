@@ -18,6 +18,7 @@ import (
 )
 
 func TestNewTimelinePersister(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{
 		BaseDir:      tmpDir,
@@ -44,6 +45,7 @@ func TestNewTimelinePersister(t *testing.T) {
 }
 
 func TestSaveAndLoadTimeline(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -119,6 +121,7 @@ func TestSaveAndLoadTimeline(t *testing.T) {
 }
 
 func TestSaveTimelineHeaderUsesMinMaxTimestamps(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -158,6 +161,7 @@ func TestSaveTimelineHeaderUsesMinMaxTimestamps(t *testing.T) {
 }
 
 func TestLoadNonExistentTimeline(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -179,6 +183,7 @@ func TestLoadNonExistentTimeline(t *testing.T) {
 }
 
 func TestListTimelines(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -222,6 +227,7 @@ func TestListTimelines(t *testing.T) {
 }
 
 func TestDeleteTimeline(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -264,6 +270,7 @@ func TestDeleteTimeline(t *testing.T) {
 }
 
 func TestCleanupOldTimelines(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{
 		BaseDir:      tmpDir,
@@ -321,6 +328,7 @@ func TestCleanupOldTimelines(t *testing.T) {
 }
 
 func TestEmptySessionIDError(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -351,6 +359,7 @@ func TestEmptySessionIDError(t *testing.T) {
 }
 
 func TestSaveTimelineOverwrite(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -394,6 +403,7 @@ func TestSaveTimelineOverwrite(t *testing.T) {
 }
 
 func TestTimelineWithMultipleAgents(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -439,6 +449,7 @@ func TestTimelineWithMultipleAgents(t *testing.T) {
 }
 
 func TestGetTimelineInfo(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -1147,6 +1158,7 @@ func TestListTimelines_IgnoresNonJSONL(t *testing.T) {
 }
 
 func TestStartCheckpointAndStop(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{
 		BaseDir:            tmpDir,
@@ -1705,6 +1717,7 @@ func TestGetTimelinePath(t *testing.T) {
 // events outright, so for a long-lived session the file is the only copy of
 // earlier history — a replacing write destroyed it on every tick.
 func TestCheckpointTimelinePreservesHistoryOutsideRetentionWindow(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
 	if err != nil {
@@ -1759,6 +1772,7 @@ func TestCheckpointTimelinePreservesHistoryOutsideRetentionWindow(t *testing.T) 
 }
 
 func TestCheckpointTimelinePreservesDamagedHistory(t *testing.T) {
+	t.Parallel()
 	for _, compressed := range []bool{false, true} {
 		for _, damage := range []string{"empty", "header", "session", "version", "truncated", "malformed", "null", "missing-event"} {
 			t.Run(fmt.Sprintf("%s/compressed=%t", damage, compressed), func(t *testing.T) {
@@ -1831,6 +1845,7 @@ func TestCheckpointTimelinePreservesDamagedHistory(t *testing.T) {
 }
 
 func TestCheckpointTimelineRejectsDamagedCompressedTrailer(t *testing.T) {
+	t.Parallel()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -1860,8 +1875,10 @@ func TestCheckpointTimelineRejectsDamagedCompressedTrailer(t *testing.T) {
 }
 
 func TestCheckpointTimelineRejectsInvalidFreshEvents(t *testing.T) {
+	t.Parallel()
 	for _, invalid := range []string{"agent", "timestamp", "state", "session"} {
 		t.Run(invalid, func(t *testing.T) {
+			t.Parallel()
 			persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
@@ -1897,8 +1914,10 @@ func TestCheckpointTimelineRejectsInvalidFreshEvents(t *testing.T) {
 }
 
 func TestTimelineCleanupPreservesRefreshedSnapshot(t *testing.T) {
+	t.Parallel()
 	for _, transition := range []string{"replace-plain", "compress", "replace-compressed"} {
 		t.Run(transition, func(t *testing.T) {
+			t.Parallel()
 			first, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir(), MaxTimelines: 1})
 			if err != nil {
 				t.Fatal(err)
@@ -1972,8 +1991,10 @@ func TestTimelineCleanupPreservesRefreshedSnapshot(t *testing.T) {
 }
 
 func TestTimelineMutationsShareFenceAcrossPersisters(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"checkpoint", "replace", "compress", "delete"} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			first, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
@@ -2122,6 +2143,7 @@ func TestTimelineCheckpointProcessHelper(t *testing.T) {
 // GetAllEventsForSession must ignore the retention window that
 // GetEventsForSession applies to a zero `since`.
 func TestGetAllEventsForSessionIgnoresRetentionWindow(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{
 		MaxEventsPerAgent: 100,
 		RetentionDuration: time.Hour,
@@ -2148,6 +2170,7 @@ func TestGetAllEventsForSessionIgnoresRetentionWindow(t *testing.T) {
 // but not unlinkable, Cleanup previously reported (0, nil) — indistinguishable
 // from "nothing to do" — so MaxTimelines was never enforced and nobody knew.
 func TestCleanupReportsDeleteFailures(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory write permissions")
 	}

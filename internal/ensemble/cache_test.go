@@ -8,6 +8,7 @@ import (
 )
 
 func TestCache_HitMiss(t *testing.T) {
+	t.Parallel()
 	input := map[string]any{"mode": "deductive"}
 	logTestStartCache(t, input)
 
@@ -31,6 +32,7 @@ func TestCache_HitMiss(t *testing.T) {
 }
 
 func TestCache_DiskPersistence(t *testing.T) {
+	t.Parallel()
 	input := map[string]any{"mode": "deductive"}
 	logTestStartCache(t, input)
 

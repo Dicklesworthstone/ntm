@@ -100,6 +100,7 @@ func newAgentSynthesizer(t *testing.T, strategy SynthesisStrategy, lead *LeadAge
 }
 
 func TestAgentSynthesisComposesPromptAndParsesResponse(t *testing.T) {
+	t.Parallel()
 	dispatcher := &fakeDispatcher{}
 	collector := &fakeCollector{response: leadAgentResponse}
 	lead := &LeadAgentConfig{
@@ -160,6 +161,7 @@ func TestAgentSynthesisComposesPromptAndParsesResponse(t *testing.T) {
 }
 
 func TestAgentStrategyWithoutLeadRecordsExplicitFallback(t *testing.T) {
+	t.Parallel()
 	synth, err := NewSynthesizer(SynthesisConfig{Strategy: StrategyConsensus})
 	if err != nil {
 		t.Fatalf("NewSynthesizer: %v", err)
@@ -184,6 +186,7 @@ func TestAgentStrategyWithoutLeadRecordsExplicitFallback(t *testing.T) {
 }
 
 func TestAgentDispatchFailureFallsBackWithReason(t *testing.T) {
+	t.Parallel()
 	dispatcher := &fakeDispatcher{err: errors.New("pane vanished")}
 	lead := &LeadAgentConfig{
 		PaneTarget: "%1",
@@ -211,6 +214,7 @@ func TestAgentDispatchFailureFallsBackWithReason(t *testing.T) {
 }
 
 func TestAgentCollectFailureFallsBackWithReason(t *testing.T) {
+	t.Parallel()
 	lead := &LeadAgentConfig{
 		PaneTarget: "%1",
 		AgentType:  "cod",
@@ -232,6 +236,7 @@ func TestAgentCollectFailureFallsBackWithReason(t *testing.T) {
 }
 
 func TestAgentUnparseableResponseFallsBackWithReason(t *testing.T) {
+	t.Parallel()
 	lead := &LeadAgentConfig{
 		PaneTarget: "%1",
 		AgentType:  "cc",
@@ -253,6 +258,7 @@ func TestAgentUnparseableResponseFallsBackWithReason(t *testing.T) {
 }
 
 func TestManualStrategyMechanicalPathUnchanged(t *testing.T) {
+	t.Parallel()
 	synth, err := NewSynthesizer(SynthesisConfig{Strategy: StrategyManual})
 	if err != nil {
 		t.Fatalf("NewSynthesizer: %v", err)
@@ -273,6 +279,7 @@ func TestManualStrategyMechanicalPathUnchanged(t *testing.T) {
 }
 
 func TestSynthesisCanceledBeforeStartNeverDispatchesOrFallsBack(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []SynthesisStrategy{StrategyManual, StrategyConsensus} {
 		t.Run(string(strategy), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -297,6 +304,7 @@ func TestSynthesisCanceledBeforeStartNeverDispatchesOrFallsBack(t *testing.T) {
 }
 
 func TestAgentSynthesisCancellationDuringDispatchStopsCollection(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dispatcher := &fakeDispatcher{onDispatch: func(deliveryCtx context.Context) error {
@@ -323,6 +331,7 @@ func TestAgentSynthesisCancellationDuringDispatchStopsCollection(t *testing.T) {
 }
 
 func TestAgentSynthesisCallerCancellationDuringCollectionNeverFallsBack(t *testing.T) {
+	t.Parallel()
 	for _, returnResponse := range []bool{false, true} {
 		t.Run(fmt.Sprint("response_after_cancel=", returnResponse), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -349,6 +358,7 @@ func TestAgentSynthesisCallerCancellationDuringCollectionNeverFallsBack(t *testi
 }
 
 func TestAgentSynthesisLeadTimeoutBoundsDispatchAndReportsFallback(t *testing.T) {
+	t.Parallel()
 	dispatcher := &fakeDispatcher{onDispatch: func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -376,6 +386,7 @@ func TestAgentSynthesisLeadTimeoutBoundsDispatchAndReportsFallback(t *testing.T)
 }
 
 func TestParseLeadSynthesisResponseAcceptsYAML(t *testing.T) {
+	t.Parallel()
 	raw := "noise before\n```yaml\nsummary: A real synthesis of the ensemble.\nconfidence: 0.7\n```\nnoise after"
 	result, err := ParseLeadSynthesisResponse(raw)
 	if err != nil {
@@ -390,6 +401,7 @@ func TestParseLeadSynthesisResponseAcceptsYAML(t *testing.T) {
 }
 
 func TestParseLeadSynthesisResponseRejectsPromptEcho(t *testing.T) {
+	t.Parallel()
 	// A pane echoing the prompt contains the unfenced schema example with the
 	// sentinel summary; it must not be parsed as a real synthesis.
 	synth, err := NewSynthesizer(SynthesisConfig{Strategy: StrategyConsensus})

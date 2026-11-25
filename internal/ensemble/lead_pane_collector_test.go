@@ -31,6 +31,7 @@ func (f *fakeCapturer) CapturePaneOutputContext(ctx context.Context, _ string, _
 }
 
 func TestPaneSynthesisCollectorPollsUntilParseable(t *testing.T) {
+	t.Parallel()
 	capturer := &fakeCapturer{captures: []string{
 		"still thinking...",
 		"still thinking...",
@@ -57,6 +58,7 @@ func TestPaneSynthesisCollectorPollsUntilParseable(t *testing.T) {
 }
 
 func TestPaneSynthesisCollectorTimesOut(t *testing.T) {
+	t.Parallel()
 	collector := &PaneSynthesisCollector{
 		Client:       &fakeCapturer{captures: []string{"never a synthesis"}},
 		PollInterval: time.Millisecond,
@@ -74,6 +76,7 @@ func TestPaneSynthesisCollectorTimesOut(t *testing.T) {
 }
 
 func TestPaneSynthesisCollectorPreCanceledNeverCaptures(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	capturer := &fakeCapturer{captures: []string{leadAgentResponse}}
@@ -85,6 +88,7 @@ func TestPaneSynthesisCollectorPreCanceledNeverCaptures(t *testing.T) {
 }
 
 func TestPaneSynthesisCollectorCancelsBlockedCapture(t *testing.T) {
+	t.Parallel()
 	capturer := &fakeCapturer{onCapture: func(ctx context.Context) (string, error) {
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -99,6 +103,7 @@ func TestPaneSynthesisCollectorCancelsBlockedCapture(t *testing.T) {
 }
 
 func TestPaneSynthesisCollectorIgnoresOutputReturnedAfterCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	collector := &PaneSynthesisCollector{Client: &fakeCapturer{onCapture: func(context.Context) (string, error) {

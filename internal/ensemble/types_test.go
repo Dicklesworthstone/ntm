@@ -10,6 +10,7 @@ import (
 )
 
 func TestModeCategory_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		cat   ModeCategory
 		valid bool
@@ -38,6 +39,7 @@ func TestModeCategory_IsValid(t *testing.T) {
 }
 
 func TestModeCategory_String(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		cat  ModeCategory
 		want string
@@ -65,6 +67,7 @@ func TestModeCategory_String(t *testing.T) {
 }
 
 func TestValidateModeID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		id      string
 		wantErr bool
@@ -92,6 +95,7 @@ func TestValidateModeID(t *testing.T) {
 }
 
 func TestReasoningMode_Validate(t *testing.T) {
+	t.Parallel()
 	validMode := ReasoningMode{
 		ID:        "deductive",
 		Name:      "Deductive Logic",
@@ -140,6 +144,7 @@ func TestReasoningMode_Validate(t *testing.T) {
 }
 
 func TestAssignmentStatus_IsTerminal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		status   AssignmentStatus
 		terminal bool
@@ -159,6 +164,7 @@ func TestAssignmentStatus_IsTerminal(t *testing.T) {
 }
 
 func TestEnsembleStatus_IsTerminal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		status   EnsembleStatus
 		terminal bool
@@ -180,6 +186,7 @@ func TestEnsembleStatus_IsTerminal(t *testing.T) {
 }
 
 func TestSynthesisStrategy_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		strategy SynthesisStrategy
 		valid    bool
@@ -211,6 +218,7 @@ func TestSynthesisStrategy_IsValid(t *testing.T) {
 }
 
 func TestEnsemblePreset_Validate(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Tier: TierCore},
 		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Tier: TierCore, Code: "C1"},
@@ -291,6 +299,7 @@ func TestEnsemblePreset_Validate(t *testing.T) {
 }
 
 func TestModeCatalog(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive Logic", Category: CategoryFormal, ShortDesc: "Derive conclusions", BestFor: []string{"proofs"}},
 		{ID: "bayesian", Name: "Bayesian Inference", Category: CategoryUncertainty, ShortDesc: "Probabilistic reasoning", BestFor: []string{"prediction"}},
@@ -351,6 +360,7 @@ func TestModeCatalog(t *testing.T) {
 }
 
 func TestModeCatalog_DuplicateID(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive Logic", Category: CategoryFormal, ShortDesc: "Test"},
 		{ID: "deductive", Name: "Duplicate", Category: CategoryFormal, ShortDesc: "Test"},
@@ -363,6 +373,7 @@ func TestModeCatalog_DuplicateID(t *testing.T) {
 }
 
 func TestModeCatalog_InvalidMode(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "INVALID", Name: "Invalid", Category: CategoryFormal, ShortDesc: "Test"},
 	}
@@ -374,6 +385,7 @@ func TestModeCatalog_InvalidMode(t *testing.T) {
 }
 
 func TestModeAssignment_Fields(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	completed := now.Add(time.Hour)
 
@@ -397,6 +409,7 @@ func TestModeAssignment_Fields(t *testing.T) {
 }
 
 func TestEnsembleSession_Fields(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 
 	session := EnsembleSession{
@@ -418,6 +431,7 @@ func TestEnsembleSession_Fields(t *testing.T) {
 }
 
 func TestAllCategories(t *testing.T) {
+	t.Parallel()
 	cats := AllCategories()
 	if len(cats) != 12 {
 		t.Errorf("AllCategories() returned %d categories, want 12", len(cats))
@@ -436,6 +450,7 @@ func TestAllCategories(t *testing.T) {
 // =============================================================================
 
 func TestImpactLevel_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		level ImpactLevel
 		valid bool
@@ -455,6 +470,7 @@ func TestImpactLevel_IsValid(t *testing.T) {
 }
 
 func TestConfidence_Validate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		conf    Confidence
 		wantErr bool
@@ -477,6 +493,7 @@ func TestConfidence_Validate(t *testing.T) {
 }
 
 func TestConfidence_String(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		conf Confidence
 		want string
@@ -495,6 +512,7 @@ func TestConfidence_String(t *testing.T) {
 }
 
 func TestFinding_Validate(t *testing.T) {
+	t.Parallel()
 	validFinding := Finding{
 		Finding:    "Test finding",
 		Impact:     ImpactHigh,
@@ -528,6 +546,7 @@ func TestFinding_Validate(t *testing.T) {
 }
 
 func TestRisk_Validate(t *testing.T) {
+	t.Parallel()
 	validRisk := Risk{
 		Risk:       "Test risk",
 		Impact:     ImpactMedium,
@@ -561,6 +580,7 @@ func TestRisk_Validate(t *testing.T) {
 }
 
 func TestRecommendation_Validate(t *testing.T) {
+	t.Parallel()
 	validRec := Recommendation{
 		Recommendation: "Test recommendation",
 		Priority:       ImpactHigh,
@@ -586,6 +606,7 @@ func TestRecommendation_Validate(t *testing.T) {
 }
 
 func TestQuestion_Validate(t *testing.T) {
+	t.Parallel()
 	validQuestion := Question{
 		Question: "What is the requirement?",
 	}
@@ -603,6 +624,7 @@ func TestQuestion_Validate(t *testing.T) {
 }
 
 func TestFailureModeWarning_Validate(t *testing.T) {
+	t.Parallel()
 	validWarning := FailureModeWarning{
 		Mode:        "confirmation-bias",
 		Description: "Seeking evidence that confirms existing beliefs",
@@ -628,6 +650,7 @@ func TestFailureModeWarning_Validate(t *testing.T) {
 }
 
 func TestModeOutput_Validate(t *testing.T) {
+	t.Parallel()
 	validOutput := ModeOutput{
 		ModeID: "deductive",
 		Thesis: "The system has a critical bug in the auth module",
@@ -683,6 +706,7 @@ func TestModeOutput_Validate(t *testing.T) {
 }
 
 func TestModeOutput_ValidateNestedTypes(t *testing.T) {
+	t.Parallel()
 	validOutput := ModeOutput{
 		ModeID:     "test",
 		Thesis:     "Test thesis",
@@ -739,6 +763,7 @@ func TestModeOutput_ValidateNestedTypes(t *testing.T) {
 }
 
 func TestDefaultBudgetConfig(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultBudgetConfig()
 
 	if cfg.MaxTokensPerMode <= 0 {
@@ -756,6 +781,7 @@ func TestDefaultBudgetConfig(t *testing.T) {
 }
 
 func TestEstimateModeOutputTokens_UsesRawOutput(t *testing.T) {
+	t.Parallel()
 	output := ModeOutput{
 		ModeID:      "test-mode",
 		Thesis:      "short thesis",
@@ -772,6 +798,7 @@ func TestEstimateModeOutputTokens_UsesRawOutput(t *testing.T) {
 }
 
 func TestEstimateModeOutputTokens_Fallback(t *testing.T) {
+	t.Parallel()
 	output := ModeOutput{
 		ModeID:      "test-mode",
 		Thesis:      "short thesis",
@@ -786,6 +813,7 @@ func TestEstimateModeOutputTokens_Fallback(t *testing.T) {
 }
 
 func TestEstimateModeOutputsTokens_Sums(t *testing.T) {
+	t.Parallel()
 	outputs := []ModeOutput{
 		{
 			ModeID:      "mode-a",
@@ -811,6 +839,7 @@ func TestEstimateModeOutputsTokens_Sums(t *testing.T) {
 }
 
 func TestDefaultSynthesisConfig(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultSynthesisConfig()
 
 	if !cfg.Strategy.IsValid() {
@@ -825,6 +854,7 @@ func TestDefaultSynthesisConfig(t *testing.T) {
 }
 
 func TestModeTier_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		tier  ModeTier
 		valid bool
@@ -845,6 +875,7 @@ func TestModeTier_IsValid(t *testing.T) {
 }
 
 func TestModeTier_String(t *testing.T) {
+	t.Parallel()
 	if got := TierCore.String(); got != "core" {
 		t.Errorf("TierCore.String() = %q, want %q", got, "core")
 	}
@@ -854,6 +885,7 @@ func TestModeTier_String(t *testing.T) {
 }
 
 func TestModeCategory_CategoryLetter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		cat    ModeCategory
 		letter string
@@ -881,6 +913,7 @@ func TestModeCategory_CategoryLetter(t *testing.T) {
 }
 
 func TestCategoryFromLetter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		letter string
 		cat    ModeCategory
@@ -915,6 +948,7 @@ func TestCategoryFromLetter(t *testing.T) {
 }
 
 func TestValidateModeCode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		code    string
 		cat     ModeCategory
@@ -946,6 +980,7 @@ func TestValidateModeCode(t *testing.T) {
 }
 
 func TestReasoningMode_Validate_CodeAndTier(t *testing.T) {
+	t.Parallel()
 	base := ReasoningMode{
 		ID:        "deductive",
 		Name:      "Deductive Logic",
@@ -989,6 +1024,7 @@ func TestReasoningMode_Validate_CodeAndTier(t *testing.T) {
 }
 
 func TestModeCatalog_DuplicateCode(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "mode-a", Name: "Mode A", Category: CategoryFormal, ShortDesc: "Test A", Code: "A1", Tier: TierCore},
 		{ID: "mode-b", Name: "Mode B", Category: CategoryFormal, ShortDesc: "Test B", Code: "A1", Tier: TierAdvanced},
@@ -1004,6 +1040,7 @@ func TestModeCatalog_DuplicateCode(t *testing.T) {
 }
 
 func TestModeCatalog_GetModeByCode(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
 		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1", Tier: TierAdvanced},
@@ -1044,6 +1081,7 @@ func TestModeCatalog_GetModeByCode(t *testing.T) {
 }
 
 func TestModeCatalog_ListByTier(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
 		{ID: "core2", Name: "Core 2", Category: CategoryAmpliative, ShortDesc: "Test", Code: "B1", Tier: TierCore},
@@ -1080,12 +1118,14 @@ func TestModeCatalog_ListByTier(t *testing.T) {
 }
 
 func TestAssignmentStatus_String(t *testing.T) {
+	t.Parallel()
 	if AssignmentActive.String() != "active" {
 		t.Fatalf("AssignmentActive.String() = %q", AssignmentActive.String())
 	}
 }
 
 func TestModeCatalog_ListDefault(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
 		{ID: "core2", Name: "Core 2", Category: CategoryAmpliative, ShortDesc: "Test", Code: "B1", Tier: TierCore},
@@ -1113,6 +1153,7 @@ func TestModeCatalog_ListDefault(t *testing.T) {
 // =============================================================================
 
 func TestModeRef_Resolve_ByID(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
 	}
@@ -1129,6 +1170,7 @@ func TestModeRef_Resolve_ByID(t *testing.T) {
 }
 
 func TestModeRef_Resolve_ByCode(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
 	}
@@ -1145,6 +1187,7 @@ func TestModeRef_Resolve_ByCode(t *testing.T) {
 }
 
 func TestModeRef_Resolve_BothSet(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
 	}
@@ -1158,6 +1201,7 @@ func TestModeRef_Resolve_BothSet(t *testing.T) {
 }
 
 func TestModeRef_Resolve_NeitherSet(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
 	}
@@ -1171,6 +1215,7 @@ func TestModeRef_Resolve_NeitherSet(t *testing.T) {
 }
 
 func TestModeRef_Resolve_NotFound(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
 	}
@@ -1192,6 +1237,7 @@ func TestModeRef_Resolve_NotFound(t *testing.T) {
 }
 
 func TestModeRef_String(t *testing.T) {
+	t.Parallel()
 	if got := ModeRefFromID("deductive").String(); got != "deductive" {
 		t.Errorf("ModeRefFromID.String() = %q, want %q", got, "deductive")
 	}
@@ -1201,6 +1247,7 @@ func TestModeRef_String(t *testing.T) {
 }
 
 func TestResolveModeRefs(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
 		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
@@ -1225,6 +1272,7 @@ func TestResolveModeRefs(t *testing.T) {
 }
 
 func TestResolveModeRefs_Duplicate(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
 	}
@@ -1244,6 +1292,7 @@ func TestResolveModeRefs_Duplicate(t *testing.T) {
 }
 
 func TestResolveModeRefs_Empty(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
 	}
@@ -1263,6 +1312,7 @@ func TestResolveModeRefs_Empty(t *testing.T) {
 // =============================================================================
 
 func TestDefaultCacheConfig(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultCacheConfig()
 	if !cfg.Enabled {
 		t.Error("default cache should be enabled")
@@ -1279,6 +1329,7 @@ func TestDefaultCacheConfig(t *testing.T) {
 }
 
 func TestCacheConfig_ZeroValue(t *testing.T) {
+	t.Parallel()
 	var cfg CacheConfig
 	if cfg.Enabled {
 		t.Error("zero-value cache should not be enabled")
@@ -1296,6 +1347,7 @@ func TestCacheConfig_ZeroValue(t *testing.T) {
 // =============================================================================
 
 func TestAgentDistribution_ZeroValue(t *testing.T) {
+	t.Parallel()
 	var dist AgentDistribution
 	if dist.Strategy != "" {
 		t.Errorf("zero-value Strategy = %q, want empty", dist.Strategy)
@@ -1307,6 +1359,7 @@ func TestAgentDistribution_ZeroValue(t *testing.T) {
 // =============================================================================
 
 func TestEnsemblePreset_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	preset := EnsemblePreset{
 		Name:          "test-preset",
 		Extends:       "base-preset",
@@ -1368,6 +1421,7 @@ func TestEnsemblePreset_JSONRoundTrip(t *testing.T) {
 }
 
 func TestEnsemblePreset_ZeroValues(t *testing.T) {
+	t.Parallel()
 	// Zero-value preset should serialize cleanly
 	var preset EnsemblePreset
 	data, err := json.Marshal(preset)
@@ -1395,6 +1449,7 @@ func TestEnsemblePreset_ZeroValues(t *testing.T) {
 }
 
 func TestEnsemblePreset_ResolveIDs(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
 		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
@@ -1422,6 +1477,7 @@ func TestEnsemblePreset_ResolveIDs(t *testing.T) {
 }
 
 func TestModeRef_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	refs := []ModeRef{
 		ModeRefFromID("deductive"),
 		ModeRefFromCode("C1"),
@@ -1453,6 +1509,7 @@ func TestModeRef_JSONRoundTrip(t *testing.T) {
 }
 
 func TestCacheConfig_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultCacheConfig()
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -1483,6 +1540,7 @@ func TestCacheConfig_JSONRoundTrip(t *testing.T) {
 // =============================================================================
 
 func TestDefaultCatalog_AllModesValidate(t *testing.T) {
+	t.Parallel()
 	for i, m := range EmbeddedModes {
 		if err := m.Validate(); err != nil {
 			t.Errorf("EmbeddedModes[%d] (%q) validation failed: %v", i, m.ID, err)
@@ -1491,6 +1549,7 @@ func TestDefaultCatalog_AllModesValidate(t *testing.T) {
 }
 
 func TestDefaultCatalog_UniqueIDs(t *testing.T) {
+	t.Parallel()
 	seen := make(map[string]bool)
 	for _, m := range EmbeddedModes {
 		if seen[m.ID] {
@@ -1501,6 +1560,7 @@ func TestDefaultCatalog_UniqueIDs(t *testing.T) {
 }
 
 func TestDefaultCatalog_UniqueCodes(t *testing.T) {
+	t.Parallel()
 	seen := make(map[string]string) // code -> ID
 	for _, m := range EmbeddedModes {
 		if m.Code == "" {
@@ -1515,6 +1575,7 @@ func TestDefaultCatalog_UniqueCodes(t *testing.T) {
 }
 
 func TestDefaultCatalog_CategoryLetterConsistency(t *testing.T) {
+	t.Parallel()
 	for _, m := range EmbeddedModes {
 		if m.Code == "" {
 			continue
@@ -1530,6 +1591,7 @@ func TestDefaultCatalog_CategoryLetterConsistency(t *testing.T) {
 }
 
 func TestDefaultCatalog_AllCategoriesPresent(t *testing.T) {
+	t.Parallel()
 	categories := make(map[ModeCategory]int)
 	for _, m := range EmbeddedModes {
 		categories[m.Category]++

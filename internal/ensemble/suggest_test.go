@@ -6,6 +6,7 @@ import (
 )
 
 func TestNewSuggestionEngine(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	if engine == nil {
 		t.Fatal("NewSuggestionEngine returned nil")
@@ -24,6 +25,7 @@ func TestNewSuggestionEngine(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_EmptyQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	result := engine.Suggest("")
@@ -37,6 +39,7 @@ func TestSuggestionEngine_Suggest_EmptyQuestion(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_StopWordsOnly(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	result := engine.Suggest("the a an is are was were")
@@ -47,6 +50,7 @@ func TestSuggestionEngine_Suggest_StopWordsOnly(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_SecurityQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	questions := []string{
@@ -76,6 +80,7 @@ func TestSuggestionEngine_Suggest_SecurityQuestion(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_BugQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	questions := []string{
@@ -102,6 +107,7 @@ func TestSuggestionEngine_Suggest_BugQuestion(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_IdeaQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	questions := []string{
@@ -127,6 +133,7 @@ func TestSuggestionEngine_Suggest_IdeaQuestion(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_ArchitectureQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	questions := []string{
@@ -149,6 +156,7 @@ func TestSuggestionEngine_Suggest_ArchitectureQuestion(t *testing.T) {
 }
 
 func TestSuggestionEngine_Suggest_RootCauseQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	questions := []string{
@@ -171,6 +179,7 @@ func TestSuggestionEngine_Suggest_RootCauseQuestion(t *testing.T) {
 }
 
 func TestSuggest_SecurityKeywords(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := "Check for security vulnerabilities and XSS risk"
 	logTestStartSuggest(t, input)
@@ -182,6 +191,7 @@ func TestSuggest_SecurityKeywords(t *testing.T) {
 }
 
 func TestSuggest_BugKeywords(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := "Debug the crash and fix the bug"
 	logTestStartSuggest(t, input)
@@ -193,6 +203,7 @@ func TestSuggest_BugKeywords(t *testing.T) {
 }
 
 func TestSuggest_ArchitectureKeywords(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := "Review the architecture and system design"
 	logTestStartSuggest(t, input)
@@ -204,6 +215,7 @@ func TestSuggest_ArchitectureKeywords(t *testing.T) {
 }
 
 func TestSuggest_AmbiguousQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := "We need a security review and architecture assessment"
 	logTestStartSuggest(t, input)
@@ -215,6 +227,7 @@ func TestSuggest_AmbiguousQuestion(t *testing.T) {
 }
 
 func TestSuggest_EmptyQuestion(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := ""
 	logTestStartSuggest(t, input)
@@ -225,6 +238,7 @@ func TestSuggest_EmptyQuestion(t *testing.T) {
 }
 
 func TestSuggest_IDOnly(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 	input := "safety-risk"
 	logTestStartSuggest(t, input)
@@ -262,6 +276,7 @@ func assertEqualSuggest(t *testing.T, desc string, got, want any) {
 }
 
 func TestSuggestionEngine_GetPreset(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	preset := engine.GetPreset("safety-risk")
@@ -281,6 +296,7 @@ func TestSuggestionEngine_GetPreset(t *testing.T) {
 }
 
 func TestSuggestionEngine_MultipleSuggestions(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	// A question that could match multiple presets
@@ -305,6 +321,7 @@ func TestSuggestionEngine_MultipleSuggestions(t *testing.T) {
 }
 
 func TestSuggestionEngine_TieBreaker(t *testing.T) {
+	t.Parallel()
 	engine := NewSuggestionEngine()
 
 	// Questions with potentially equal scores should still produce a deterministic result
@@ -322,6 +339,7 @@ func TestSuggestionEngine_TieBreaker(t *testing.T) {
 }
 
 func TestGlobalSuggestionEngine(t *testing.T) {
+	t.Parallel()
 	engine1 := GlobalSuggestionEngine()
 	engine2 := GlobalSuggestionEngine()
 

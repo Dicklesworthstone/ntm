@@ -17,6 +17,7 @@ import (
 // "not recently switched", both pass every gate, and both rotate the same
 // pane seconds apart, breaking the one-hour cooldown the gate documents.
 func TestClaimWatermarkRejectsConcurrentClaim(t *testing.T) {
+	t.Parallel()
 	store := testStore(t)
 
 	const wmType, scope = "caam_failover", "sess:cc_1"
@@ -71,6 +72,7 @@ func TestClaimWatermarkRejectsConcurrentClaim(t *testing.T) {
 // TestClaimWatermarkFirstClaimantWinsEmptySlot covers the no-row case: two
 // processes that both saw no watermark must not both believe they claimed it.
 func TestClaimWatermarkFirstClaimantWinsEmptySlot(t *testing.T) {
+	t.Parallel()
 	store := testStore(t)
 
 	const wmType, scope = "caam_failover", "sess:cc_2"
@@ -100,6 +102,7 @@ func TestClaimWatermarkFirstClaimantWinsEmptySlot(t *testing.T) {
 }
 
 func TestRuntimeAgentContextPercentRoundTripsUnknownAndZero(t *testing.T) {
+	t.Parallel()
 	store := testStore(t)
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
@@ -166,6 +169,7 @@ func TestRuntimeAgentContextPercentRoundTripsUnknownAndZero(t *testing.T) {
 }
 
 func TestRunGCCompactsAuditDecisionLogAndGetDecisionHistoryFilters(t *testing.T) {
+	t.Parallel()
 	store := testStore(t)
 
 	empty, err := store.GetDecisionHistory("nonexistent", "", 10)
@@ -236,6 +240,7 @@ func TestRunGCCompactsAuditDecisionLogAndGetDecisionHistoryFilters(t *testing.T)
 }
 
 func TestRuntimeStore_GetRecentAttentionEventsAndDedupLookup(t *testing.T) {
+	t.Parallel()
 	store := testStore(t)
 
 	now := time.Now().UTC()

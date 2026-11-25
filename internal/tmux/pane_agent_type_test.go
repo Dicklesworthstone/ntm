@@ -31,6 +31,7 @@ func waitGuardedTestPane(t *testing.T, session string, accept func(Pane) bool) P
 }
 
 func TestGuardedPaneMutationsRejectInvalidInputs(t *testing.T) {
+	t.Parallel()
 	client := NewClient("")
 	spec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex"}
 	for _, target := range []string{"", "session:0.1", "%7;kill-server", "%7\n"} {
@@ -67,6 +68,7 @@ func TestGuardedPaneMutationsRejectInvalidInputs(t *testing.T) {
 }
 
 func TestRealGuardedPaneMutationsRefuseChangedIdentityAndOwners(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 	spec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex --model retained-model"}
@@ -143,6 +145,7 @@ func TestRealGuardedPaneMutationsRefuseChangedIdentityAndOwners(t *testing.T) {
 }
 
 func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 	// A pane restored with an explicit provider command retains that argv.
@@ -301,6 +304,7 @@ func TestRealGuardedSendRechecksPIDBeforeEnter(t *testing.T) {
 }
 
 func TestPaneMutationGuardRejectsUnboundTargetsAndCancellation(t *testing.T) {
+	t.Parallel()
 	guarded, err := WithPaneMutationGuard(t.Context(), "%7", 123)
 	if err != nil {
 		t.Fatal(err)
@@ -429,6 +433,7 @@ func TestPaneMutationGuardBeforeInput(t *testing.T) {
 }
 
 func TestRealPaneMutationGuardProtectsSharedSendAndRescueKeys(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 	if err := DefaultClient.SendKeysContext(t.Context(), pane.ID, "/bin/cat", true); err != nil {
@@ -487,6 +492,7 @@ func TestRealPaneMutationGuardProtectsSharedSendAndRescueKeys(t *testing.T) {
 }
 
 func TestRealLaunchEnvironmentGuardRefusesChangedPane(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 	launch, err := NewLaunchEnvironment(t.Context(), map[string]string{"API_TOKEN": "private-never-delivered"})
@@ -507,6 +513,7 @@ func TestRealLaunchEnvironmentGuardRefusesChangedPane(t *testing.T) {
 }
 
 func TestRealPaneRotationQuarantineOwnershipAndTopology(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	session := createTestSession(t)
 	panes, err := GetPanes(session)
@@ -752,6 +759,7 @@ func TestSetPaneAgentTypeRejectsUnknownType(t *testing.T) {
 // knowledge must survive both a wrapper becoming pane_current_command and a
 // TUI replacing the visible title.
 func TestRealSetPaneAgentIdentitySurvivesWrapperAndTitleRewrite(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 
 	session := createTestSession(t)
@@ -784,6 +792,7 @@ func TestRealSetPaneAgentIdentitySurvivesWrapperAndTitleRewrite(t *testing.T) {
 // recorded type must be reported by GetPanes even after the pane title is
 // rewritten to OpenCode's own shape, which is exactly the ntm#266 scenario.
 func TestRealSetPaneAgentTypeSurvivesTitleRewrite(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 
 	session := createTestSession(t)
@@ -846,6 +855,7 @@ func TestRealSetPaneAgentTypeSurvivesTitleRewrite(t *testing.T) {
 }
 
 func TestRealSetPaneAgentTypeIfCurrentRefusesMismatchedClaimAndConflictingNestedPin(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 
@@ -882,6 +892,7 @@ func TestRealSetPaneAgentTypeIfCurrentRefusesMismatchedClaimAndConflictingNested
 }
 
 func TestRealWithObservedPaneAgentTypeHandlesUnlabeledAndLabeledPanes(t *testing.T) {
+	t.Parallel()
 	session := createTestSession(t)
 	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
 

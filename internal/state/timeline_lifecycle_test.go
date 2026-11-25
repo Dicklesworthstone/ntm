@@ -9,6 +9,7 @@ import (
 )
 
 func TestNewTimelineLifecycle(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -36,6 +37,7 @@ func TestNewTimelineLifecycle(t *testing.T) {
 }
 
 func TestTimelineLifecycleStartSession(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{
 		BaseDir:            tmpDir,
@@ -80,6 +82,7 @@ func TestTimelineLifecycleStartSession(t *testing.T) {
 }
 
 func TestTimelineLifecycleStartSession_IgnoresInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
 	if err != nil {
@@ -104,6 +107,7 @@ func TestTimelineLifecycleStartSession_IgnoresInvalidSessionID(t *testing.T) {
 }
 
 func TestTimelineLifecycleEndSession(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 
@@ -167,6 +171,7 @@ func TestTimelineLifecycleEndSession(t *testing.T) {
 }
 
 func TestTimelineLifecycleEndSession_RejectsInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
 	if err != nil {
@@ -190,6 +195,7 @@ func TestTimelineLifecycleEndSession_RejectsInvalidSessionID(t *testing.T) {
 }
 
 func TestTimelineLifecycleMultipleSessions(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	config := &TimelinePersistConfig{BaseDir: tmpDir}
 

@@ -9,6 +9,7 @@ import (
 )
 
 func TestContextCache_GetPut_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewContextPackCacheWithDir(dir, CacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 5}, nil)
 	if err != nil {
@@ -43,6 +44,7 @@ func TestContextCache_GetPut_RoundTrip(t *testing.T) {
 }
 
 func TestContextCache_Get_CacheMiss(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewContextPackCacheWithDir(dir, CacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 5}, nil)
 	if err != nil {
@@ -55,6 +57,7 @@ func TestContextCache_Get_CacheMiss(t *testing.T) {
 }
 
 func TestContextCache_Get_Expired(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewContextPackCacheWithDir(dir, CacheConfig{Enabled: true, TTL: 10 * time.Millisecond, MaxEntries: 5}, nil)
 	if err != nil {
@@ -79,6 +82,7 @@ func TestContextCache_Get_Expired(t *testing.T) {
 }
 
 func TestContextCache_Prune(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewContextPackCacheWithDir(dir, CacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 2}, nil)
 	if err != nil {
@@ -117,6 +121,7 @@ func TestContextCache_Prune(t *testing.T) {
 }
 
 func TestContextFingerprint_CacheKey_Deterministic(t *testing.T) {
+	t.Parallel()
 	fp := ContextFingerprint{
 		ProjectRoot:  "/tmp/demo",
 		GitHead:      "deadbeef",
@@ -139,6 +144,7 @@ func TestContextFingerprint_CacheKey_Deterministic(t *testing.T) {
 }
 
 func TestContextFingerprint_FallbackCacheKeyMaterial_UsesAllFields(t *testing.T) {
+	t.Parallel()
 	fp := ContextFingerprint{
 		ProjectRoot:  "/tmp/demo",
 		GitHead:      "deadbeef",

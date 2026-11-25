@@ -15,6 +15,7 @@ import (
 // healthy xf (installed, responds to --version) must pass whether or not an
 // archive is indexed. Runs only where a real xf is installed.
 func TestXFHealthWhenInstalled(t *testing.T) {
+	t.Parallel()
 	adapter := NewXFAdapter()
 	if _, installed := adapter.Detect(); !installed {
 		t.Skip("xf not installed")

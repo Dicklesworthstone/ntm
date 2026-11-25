@@ -9,6 +9,7 @@ import (
 )
 
 func TestModeLoader_EmbeddedOnly(t *testing.T) {
+	t.Parallel()
 	loader := &ModeLoader{
 		UserConfigDir: "/nonexistent/path",
 		ProjectDir:    "/nonexistent/path",
@@ -25,6 +26,7 @@ func TestModeLoader_EmbeddedOnly(t *testing.T) {
 }
 
 func TestModeLoader_UserOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Write a user modes file that overrides the "deductive" mode
@@ -65,6 +67,7 @@ tier = "core"
 }
 
 func TestModeLoader_ProjectOverridesUser(t *testing.T) {
+	t.Parallel()
 	userDir := t.TempDir()
 	projectDir := t.TempDir()
 
@@ -124,6 +127,7 @@ tier = "core"
 }
 
 func TestModeLoader_NewCustomMode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	modesContent := `
@@ -167,6 +171,7 @@ code = "K8"
 }
 
 func TestModeLoader_DefaultTierAdvanced(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Mode without explicit tier
@@ -203,6 +208,7 @@ code = "L8"
 }
 
 func TestModeLoader_InvalidTOML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	if err := os.WriteFile(filepath.Join(dir, "modes.toml"), []byte("not valid [toml [["), 0644); err != nil {
@@ -221,6 +227,7 @@ func TestModeLoader_InvalidTOML(t *testing.T) {
 }
 
 func TestModeLoader_RejectsUnknownFields(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	modesContent := `
@@ -252,6 +259,7 @@ legacy = true
 }
 
 func TestModeLoader_MissingID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	modesContent := `
@@ -276,6 +284,7 @@ short_desc = "Missing ID"
 }
 
 func TestModeLoader_EmptyProjectDir(t *testing.T) {
+	t.Parallel()
 	loader := &ModeLoader{
 		UserConfigDir: "/nonexistent",
 		ProjectDir:    "",
@@ -315,6 +324,7 @@ func TestNewModeLoader(t *testing.T) {
 }
 
 func TestModeCatalog_LoadEmbedded(t *testing.T) {
+	t.Parallel()
 	loader := &ModeLoader{
 		UserConfigDir: "/nonexistent/path",
 		ProjectDir:    "/nonexistent/path",
@@ -331,6 +341,7 @@ func TestModeCatalog_LoadEmbedded(t *testing.T) {
 }
 
 func TestModeCatalog_LoadUser(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	modesContent := `
@@ -368,6 +379,7 @@ code = "K9"
 }
 
 func TestModeCatalog_LoadProject(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	ntmDir := filepath.Join(projectDir, ".ntm")
 	if err := os.MkdirAll(ntmDir, 0755); err != nil {
@@ -409,6 +421,7 @@ code = "L9"
 }
 
 func TestModeCatalog_Precedence(t *testing.T) {
+	t.Parallel()
 	userDir := t.TempDir()
 	projectDir := t.TempDir()
 
@@ -465,6 +478,7 @@ tier = "core"
 }
 
 func TestModeCatalog_InvalidTOML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "modes.toml"), []byte("not valid [toml [["), 0644); err != nil {
 		t.Fatal(err)
@@ -481,6 +495,7 @@ func TestModeCatalog_InvalidTOML(t *testing.T) {
 }
 
 func TestModeCatalog_MissingFiles(t *testing.T) {
+	t.Parallel()
 	loader := &ModeLoader{
 		UserConfigDir: "/nonexistent/path",
 		ProjectDir:    "/nonexistent/path",

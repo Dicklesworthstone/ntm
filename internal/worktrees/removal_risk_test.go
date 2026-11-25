@@ -32,6 +32,7 @@ func newRiskFixture(t *testing.T) (*WorktreeManager, *WorktreeInfo) {
 }
 
 func TestAssessRemovalRiskCleanWorktree(t *testing.T) {
+	t.Parallel()
 	m, _ := newRiskFixture(t)
 
 	risk, err := m.AssessRemovalRisk(t.Context(), "cc-1")
@@ -44,6 +45,7 @@ func TestAssessRemovalRiskCleanWorktree(t *testing.T) {
 }
 
 func TestAssessRemovalRiskCountsUncommittedFiles(t *testing.T) {
+	t.Parallel()
 	m, info := newRiskFixture(t)
 
 	for _, name := range []string{"untracked.txt", "second.txt"} {
@@ -67,6 +69,7 @@ func TestAssessRemovalRiskCountsUncommittedFiles(t *testing.T) {
 // Ignored files are not work the operator would mourn, and counting them would
 // make the prompt cry wolf on any repo with build output.
 func TestAssessRemovalRiskIgnoresIgnoredFiles(t *testing.T) {
+	t.Parallel()
 	m, info := newRiskFixture(t)
 
 	if err := os.WriteFile(filepath.Join(info.Path, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
@@ -95,6 +98,7 @@ func TestAssessRemovalRiskIgnoresIgnoredFiles(t *testing.T) {
 // single entry, which would announce a worktree holding many new files as "1
 // file with uncommitted changes" right before destroying all of them.
 func TestAssessRemovalRiskCountsFilesInsideUntrackedDirectories(t *testing.T) {
+	t.Parallel()
 	m, info := newRiskFixture(t)
 
 	nested := filepath.Join(info.Path, "newpkg", "deep")
@@ -118,6 +122,7 @@ func TestAssessRemovalRiskCountsFilesInsideUntrackedDirectories(t *testing.T) {
 }
 
 func TestAssessRemovalRiskCountsUnmergedCommits(t *testing.T) {
+	t.Parallel()
 	m, info := newRiskFixture(t)
 
 	for _, name := range []string{"a.txt", "b.txt"} {
@@ -145,6 +150,7 @@ func TestAssessRemovalRiskCountsUnmergedCommits(t *testing.T) {
 }
 
 func TestAssessRemovalRiskNilContext(t *testing.T) {
+	t.Parallel()
 	m := NewManager(t.TempDir(), "risk-session")
 	//nolint:staticcheck // deliberately passing a nil context to assert the guard
 	if _, err := m.AssessRemovalRisk(nil, "cc-1"); err == nil {
@@ -155,6 +161,7 @@ func TestAssessRemovalRiskNilContext(t *testing.T) {
 // A missing worktree must surface an error, never a zero RemovalRisk that a
 // caller would render as "nothing at risk".
 func TestAssessRemovalRiskMissingWorktreeErrors(t *testing.T) {
+	t.Parallel()
 	repo := setupWorktreeGitRepo(t)
 	m := NewManager(repo, "risk-session")
 

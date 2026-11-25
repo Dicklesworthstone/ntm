@@ -169,8 +169,10 @@ func (f *globalBindingFixture) observe(t *testing.T) (GlobalCredentialBinding, e
 }
 
 func TestGlobalCredentialBindingRequiresOpenedMainConversation(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, provider)
 			binding, err := f.observe(t)
 			if err != nil {
@@ -206,6 +208,7 @@ func TestGlobalCredentialBindingRequiresOpenedMainConversation(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingNodeLauncherAndSubagentFiles(t *testing.T) {
+	t.Parallel()
 	f := newGlobalBindingFixture(t, "codex")
 	child := f.processes[101]
 	child.pid, child.parent = 102, 101
@@ -222,6 +225,7 @@ func TestGlobalCredentialBindingNodeLauncherAndSubagentFiles(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingRejectsAmbiguousOrChangedProcesses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		edit func(*testing.T, *globalBindingFixture)
@@ -330,6 +334,7 @@ func TestGlobalCredentialBindingRejectsAmbiguousOrChangedProcesses(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, "codex")
 			tc.edit(t, f)
 			if _, err := f.observe(t); err == nil {
@@ -342,6 +347,7 @@ func TestGlobalCredentialBindingRejectsAmbiguousOrChangedProcesses(t *testing.T)
 }
 
 func TestGlobalCredentialBindingRejectsAccountOverrides(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, provider, env string
 		args                []string
@@ -363,6 +369,7 @@ func TestGlobalCredentialBindingRejectsAccountOverrides(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, tc.provider)
 			p := f.processes[101]
 			if tc.env != "" {
@@ -380,8 +387,10 @@ func TestGlobalCredentialBindingRejectsAccountOverrides(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingDefaultHomesAndModelOverrides(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, provider)
 			p := f.processes[101]
 			key := "CODEX_HOME"
@@ -405,8 +414,10 @@ func TestGlobalCredentialBindingDefaultHomesAndModelOverrides(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingRejectsSharedExternalCredentialHome(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, provider)
 			credentials := filepath.Join(f.home, "."+provider)
 			shared := filepath.Join(filepath.Dir(f.home), "shared-credentials")
@@ -427,6 +438,7 @@ func TestGlobalCredentialBindingRejectsSharedExternalCredentialHome(t *testing.T
 }
 
 func TestGlobalCredentialBindingRejectsNestedHomeCredentialAlias(t *testing.T) {
+	t.Parallel()
 	f := newGlobalBindingFixture(t, "codex")
 	credentials := filepath.Join(f.home, ".codex")
 	nestedHome := filepath.Join(f.home, "nested-user")
@@ -449,10 +461,12 @@ func TestGlobalCredentialBindingRejectsNestedHomeCredentialAlias(t *testing.T) {
 }
 
 func TestValidateGlobalCredentialDefaultLaunchTemplates(t *testing.T) {
+	t.Parallel()
 	templates := config.DefaultAgentTemplates()
 	for _, tc := range []struct{ agentType, template string }{{"cc", templates.Claude}, {"cod", templates.Codex}} {
 		for _, prompt := range []string{"", "/work/persona.md"} {
 			t.Run(tc.agentType+"/"+filepath.Base(prompt), func(t *testing.T) {
+				t.Parallel()
 				command, err := config.GenerateAgentCommand(tc.template, config.AgentTemplateVars{
 					AgentType: tc.agentType, ProjectDir: "/work", SessionName: "swarm", SystemPromptFile: prompt,
 				})
@@ -468,6 +482,7 @@ func TestValidateGlobalCredentialDefaultLaunchTemplates(t *testing.T) {
 }
 
 func TestValidateGlobalCredentialLaunchCommand(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, provider, command, prompt string
 		wantError                       bool
@@ -507,6 +522,7 @@ func TestValidateGlobalCredentialLaunchCommand(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingClaudeAccountLoginPolicy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, settings string
 		wantError      bool
@@ -524,8 +540,10 @@ func TestGlobalCredentialBindingClaudeAccountLoginPolicy(t *testing.T) {
 		{"account login with API credentials", `{"forceLoginMethod":"claudeai","env":{"ANTHROPIC_API_KEY":"external"}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			for _, source := range []string{"user", "project", "managed"} {
 				t.Run(source, func(t *testing.T) {
+					t.Parallel()
 					f := newGlobalBindingFixture(t, "claude")
 					path := filepath.Join(f.home, ".claude", "settings.json")
 					if source == "project" {
@@ -547,6 +565,7 @@ func TestGlobalCredentialBindingClaudeAccountLoginPolicy(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingConfigSources(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, provider, source, data string
 	}{
@@ -568,6 +587,7 @@ func TestGlobalCredentialBindingConfigSources(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, tc.provider)
 			base, filename := f.home, "settings.json"
 			if tc.provider == "codex" {
@@ -601,6 +621,7 @@ func TestGlobalCredentialBindingConfigSources(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingClaudeLinkedWorktreeLocalSettings(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required to exercise native linked-worktree settings")
 	}
@@ -626,6 +647,7 @@ func TestGlobalCredentialBindingClaudeLinkedWorktreeLocalSettings(t *testing.T) 
 }
 
 func TestGlobalCredentialBindingTranscriptIdentity(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, provider string
 		edit           func(string, string) string
@@ -653,6 +675,7 @@ func TestGlobalCredentialBindingTranscriptIdentity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newGlobalBindingFixture(t, tc.provider)
 			data, err := os.ReadFile(f.transcript)
 			if err != nil {
@@ -667,6 +690,7 @@ func TestGlobalCredentialBindingTranscriptIdentity(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingConfigIsRechecked(t *testing.T) {
+	t.Parallel()
 	f := newGlobalBindingFixture(t, "claude")
 	path := filepath.Join(f.home, ".claude", "settings.json")
 	writeGlobalBindingTestFile(t, path, `{"model":"custom-model","permissions":{"allow":["Read"]}}`)
@@ -683,6 +707,7 @@ func TestGlobalCredentialBindingConfigIsRechecked(t *testing.T) {
 }
 
 func TestGlobalCredentialBindingCancellationAndBounds(t *testing.T) {
+	t.Parallel()
 	f := newGlobalBindingFixture(t, "codex")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

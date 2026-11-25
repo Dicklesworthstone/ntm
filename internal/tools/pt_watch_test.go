@@ -155,6 +155,7 @@ func TestPTPassiveWatchEmptyInvalidAndCancelled(t *testing.T) {
 }
 
 func TestPTPassiveWatchSchema(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	valid := fmt.Sprintf(`{"event":"candidate_detected","timestamp":%q,"pid":42,"classification":"kill","confidence":0.95}`, now.Format(time.RFC3339Nano))
 	cases := map[string]string{
@@ -204,6 +205,7 @@ const ptWatchRecordedShape = `{"event":"candidate_detected","timestamp":"2026-01
 `
 
 func TestPTWatchRecordedUpstreamShape(t *testing.T) {
+	t.Parallel()
 	sampled := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
 	wanted := map[int]struct{}{4242: {}, 4243: {}, 5151: {}, 6000: {}}
 	results, err := parsePTWatch([]byte(ptWatchRecordedShape), wanted, sampled, sampled.Add(time.Second))

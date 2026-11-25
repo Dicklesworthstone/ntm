@@ -99,6 +99,7 @@ func TestInspectRiskInput_DetectsSymlinkedRepo(t *testing.T) {
 }
 
 func TestInspectRiskInputRejectsCanceledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 

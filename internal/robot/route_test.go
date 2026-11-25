@@ -556,6 +556,7 @@ func TestGetRoute_AffinityRequiresMessage(t *testing.T) {
 }
 
 func TestGetRoute_SessionNotFound(t *testing.T) {
+	t.Parallel()
 	session := fmt.Sprintf("ntm-missing-%d", time.Now().UnixNano())
 	out, code := GetRoute(RouteOptions{
 		Session:  session,
@@ -576,6 +577,7 @@ func TestGetRoute_SessionNotFound(t *testing.T) {
 }
 
 func TestGetRouteRecommendation_Errors(t *testing.T) {
+	t.Parallel()
 	if _, err := GetRouteRecommendation(RouteOptions{}); err == nil {
 		t.Fatal("expected error for missing session")
 	}

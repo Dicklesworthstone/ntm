@@ -53,6 +53,7 @@ func withFakeTools(t *testing.T) {
 
 // TestJFPAdapterVersionParsing tests JFP version string parsing
 func TestJFPAdapterVersionParsing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input   string
 		want    Version
@@ -92,6 +93,7 @@ func TestJFPAdapterVersionParsing(t *testing.T) {
 
 // TestSLBAdapterVersionParsing tests SLB version string parsing
 func TestSLBAdapterVersionParsing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input   string
 		want    Version
@@ -131,6 +133,7 @@ func TestSLBAdapterVersionParsing(t *testing.T) {
 
 // TestMSAdapterVersionParsing tests MS version string parsing
 func TestMSAdapterVersionParsing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input   string
 		want    Version
@@ -399,6 +402,7 @@ func TestJFPAdapterMethods(t *testing.T) {
 
 // TestVersionCompare tests Version.Compare
 func TestVersionCompare(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		a, b Version
 		want int
@@ -422,6 +426,7 @@ func TestVersionCompare(t *testing.T) {
 
 // TestVersionAtLeast tests Version.AtLeast
 func TestVersionAtLeast(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		v, min Version
 		want   bool

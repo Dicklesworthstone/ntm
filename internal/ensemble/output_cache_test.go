@@ -7,6 +7,7 @@ import (
 )
 
 func TestModeOutputCache_PutGet(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewModeOutputCacheWithDir(dir, ModeOutputCacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 5}, nil)
 	if err != nil {
@@ -46,6 +47,7 @@ func TestModeOutputCache_PutGet(t *testing.T) {
 }
 
 func TestModeOutputCache_PersistsAcrossRuns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mode := sampleMode(t)
 	cfg := ModeOutputConfig{Question: "persist", AgentType: "cc", SchemaVersion: SchemaVersion}
@@ -85,6 +87,7 @@ func TestModeOutputCache_PersistsAcrossRuns(t *testing.T) {
 }
 
 func TestModeOutputCache_Expires(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewModeOutputCacheWithDir(dir, ModeOutputCacheConfig{Enabled: true, TTL: 10 * time.Millisecond, MaxEntries: 5}, nil)
 	if err != nil {
@@ -124,6 +127,7 @@ func TestModeOutputCache_Expires(t *testing.T) {
 }
 
 func TestModeOutputCache_InvalidationReason_ConfigMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := NewModeOutputCacheWithDir(dir, ModeOutputCacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 5}, nil)
 	if err != nil {

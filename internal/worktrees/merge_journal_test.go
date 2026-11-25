@@ -41,6 +41,7 @@ func prepareJournalFixture(t *testing.T, plan *MergePreview) *MergeRecovery {
 }
 
 func TestMergeRecoveryPublishesVerifiedReceiptThroughMergeBack(t *testing.T) {
+	t.Parallel()
 	manager, plan := journalFixture(t)
 	if err := manager.MergeBack(context.Background(), plan.AgentName); err != nil {
 		t.Fatal(err)
@@ -63,6 +64,7 @@ func TestMergeRecoveryPublishesVerifiedReceiptThroughMergeBack(t *testing.T) {
 }
 
 func TestMergeRecoveryCrashBarrierAndExplicitAbandonment(t *testing.T) {
+	t.Parallel()
 	manager, plan := journalFixture(t)
 	child, path := startFenceChild(t, plan, "prepare")
 	awaitFenceMarker(t, path+".ready")
@@ -101,6 +103,7 @@ func TestMergeRecoveryCrashBarrierAndExplicitAbandonment(t *testing.T) {
 }
 
 func TestMergeRecoveryAcknowledgesLostCompletionWithoutRerunningGit(t *testing.T) {
+	t.Parallel()
 	manager, plan := journalFixture(t)
 	record := prepareJournalFixture(t, plan)
 	// Model the crash window after Git commits but before NTM saves completion.
@@ -126,8 +129,10 @@ func TestMergeRecoveryAcknowledgesLostCompletionWithoutRerunningGit(t *testing.T
 }
 
 func TestMergeRecoveryRefusesAmbiguousOrDirtyEvidence(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"dirty", "pending", "other_commit", "wrong_tree", "other_checkout", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			manager, plan := journalFixture(t)
 			record := prepareJournalFixture(t, plan)
 			ctx := context.Background()
@@ -166,7 +171,9 @@ func TestMergeRecoveryRefusesAmbiguousOrDirtyEvidence(t *testing.T) {
 }
 
 func TestMergeRecoveryCorruptionAndFailedFinalSaveRetainBarrier(t *testing.T) {
+	t.Parallel()
 	t.Run("corrupt", func(t *testing.T) {
+		t.Parallel()
 		manager, plan := journalFixture(t)
 		if err := os.WriteFile(filepath.Join(plan.TargetPath, ".git", "ntm-merge.json"), []byte(`{"version":1,"state":"committed"`), 0o600); err != nil {
 			t.Fatal(err)
@@ -179,6 +186,7 @@ func TestMergeRecoveryCorruptionAndFailedFinalSaveRetainBarrier(t *testing.T) {
 		}
 	})
 	t.Run("completion write failed", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" {
 			t.Skip("fixture uses a POSIX Git hook")
 		}

@@ -11,6 +11,7 @@ import (
 )
 
 func TestNewOutputCollector(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -26,6 +27,7 @@ func TestNewOutputCollector(t *testing.T) {
 }
 
 func TestOutputCollector_Add_ValidOutput(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -56,6 +58,7 @@ func TestOutputCollector_Add_ValidOutput(t *testing.T) {
 }
 
 func TestOutputCollector_Add_InvalidOutput_MissingFields(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -81,6 +84,7 @@ func TestOutputCollector_Add_InvalidOutput_MissingFields(t *testing.T) {
 }
 
 func TestOutputCollector_Add_RequireAll(t *testing.T) {
+	t.Parallel()
 	cfg := OutputCollectorConfig{
 		RequireAll: true,
 		MinOutputs: 1,
@@ -99,6 +103,7 @@ func TestOutputCollector_Add_RequireAll(t *testing.T) {
 }
 
 func TestOutputCollector_AddRaw_ValidJSON(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -120,6 +125,7 @@ func TestOutputCollector_AddRaw_ValidJSON(t *testing.T) {
 }
 
 func TestOutputCollector_AddRaw_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -140,6 +146,7 @@ func TestOutputCollector_AddRaw_InvalidJSON(t *testing.T) {
 }
 
 func TestOutputCollector_CollectFromSavedOutputs(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -184,6 +191,7 @@ func TestOutputCollector_CollectFromSavedOutputs(t *testing.T) {
 }
 
 func TestOutputCollector_CollectFromSavedOutputs_MissingOutputPath(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -206,6 +214,7 @@ func TestOutputCollector_CollectFromSavedOutputs_MissingOutputPath(t *testing.T)
 }
 
 func TestCollectModeOutputs_MergesCapturedAndSavedOutputs(t *testing.T) {
+	t.Parallel()
 	captured := []CapturedOutput{
 		{
 			ModeID: "captured-mode",
@@ -258,6 +267,7 @@ confidence: 0.9
 }
 
 func TestCollectModeOutputs_PrefersCapturedOutputOverSavedOutput(t *testing.T) {
+	t.Parallel()
 	savedOutput := strings.TrimSpace(`
 mode_id: duplicate-mode
 thesis: Saved thesis
@@ -308,6 +318,7 @@ confidence: 0.6
 }
 
 func TestOutputCollector_AddRaw_EmptyJSON(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -325,6 +336,7 @@ func TestOutputCollector_AddRaw_EmptyJSON(t *testing.T) {
 }
 
 func TestOutputCollector_Collect(t *testing.T) {
+	t.Parallel()
 	cfg := OutputCollectorConfig{
 		MinOutputs: 2,
 	}
@@ -358,6 +370,7 @@ func TestOutputCollector_Collect(t *testing.T) {
 }
 
 func TestOutputCollector_Collect_InsufficientOutputs(t *testing.T) {
+	t.Parallel()
 	cfg := OutputCollectorConfig{
 		MinOutputs: 3,
 	}
@@ -385,6 +398,7 @@ func TestOutputCollector_Collect_InsufficientOutputs(t *testing.T) {
 }
 
 func TestOutputCollector_BuildSynthesisInput(t *testing.T) {
+	t.Parallel()
 	cfg := OutputCollectorConfig{MinOutputs: 1}
 	collector := NewOutputCollector(cfg)
 
@@ -421,6 +435,7 @@ func TestOutputCollector_BuildSynthesisInput(t *testing.T) {
 }
 
 func TestOutputCollector_BuildSynthesisInput_NoOutputs(t *testing.T) {
+	t.Parallel()
 	cfg := OutputCollectorConfig{MinOutputs: 0} // Allow 0 for this test
 	collector := NewOutputCollector(cfg)
 
@@ -431,6 +446,7 @@ func TestOutputCollector_BuildSynthesisInput_NoOutputs(t *testing.T) {
 }
 
 func TestOutputCollector_Validate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		output     ModeOutput
@@ -517,6 +533,7 @@ func TestOutputCollector_Validate(t *testing.T) {
 }
 
 func TestCollectorResult_Stats(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultOutputCollectorConfig()
 	collector := NewOutputCollector(cfg)
 
@@ -550,6 +567,7 @@ func TestCollectorResult_Stats(t *testing.T) {
 }
 
 func TestCollectModeOutputsRejectsUnfinishedCaptureAndRetainsSavedResult(t *testing.T) {
+	t.Parallel()
 	output := ModeOutput{
 		ModeID:      "deductive",
 		Thesis:      "A durable completed analysis.",
@@ -587,6 +605,7 @@ func TestCollectModeOutputsRejectsUnfinishedCaptureAndRetainsSavedResult(t *test
 }
 
 func TestCollectModeOutputsRejectsMismatchedModeAndInvalidSavedSchema(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{
 		"{\"mode_id\":\"inductive\",\"thesis\":\"Other mode\",\"confidence\":0.8,\"top_findings\":[{\"finding\":\"Wrong assignment\",\"impact\":\"high\",\"confidence\":0.8}]}",
 		"{\"mode_id\":\"deductive\",\"thesis\":\"Invalid risk\",\"confidence\":0.8,\"top_findings\":[{\"finding\":\"A finding\",\"impact\":\"high\",\"confidence\":0.8}],\"risks\":[{\"risk\":\"Risk\",\"impact\":\"invalid\",\"likelihood\":0.4}]}",

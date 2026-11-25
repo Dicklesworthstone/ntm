@@ -10,6 +10,7 @@ import (
 )
 
 func TestNewCheckpointStore(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -31,6 +32,7 @@ func TestNewCheckpointStore(t *testing.T) {
 }
 
 func TestCheckpointStore_SaveAndLoadMetadata(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -75,6 +77,7 @@ func TestCheckpointStore_SaveAndLoadMetadata(t *testing.T) {
 }
 
 func TestCheckpointStore_LoadMetadata_RejectsRunIDMismatch(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -169,6 +172,7 @@ func TestNormalizeCheckpointRunID_RejectsTraversalAndPathSeparators(t *testing.T
 }
 
 func TestCheckpointStore_RejectsInvalidRunID(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -197,6 +201,7 @@ func TestCheckpointStore_RejectsInvalidRunID(t *testing.T) {
 }
 
 func TestCheckpointStore_SaveAndLoadSynthesisCheckpoint(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -237,6 +242,7 @@ func TestCheckpointStore_SaveAndLoadSynthesisCheckpoint(t *testing.T) {
 }
 
 func TestCheckpointStore_LoadSynthesisCheckpoint_RejectsRunIDMismatch(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -269,6 +275,7 @@ func TestCheckpointStore_LoadSynthesisCheckpoint_RejectsRunIDMismatch(t *testing
 }
 
 func TestCheckpointStore_SaveMetadata_RejectsSymlinkedRunDir(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -298,6 +305,7 @@ func TestCheckpointStore_SaveMetadata_RejectsSymlinkedRunDir(t *testing.T) {
 }
 
 func TestCheckpointStore_LoadMetadata_RejectsSymlinkedMetadataFile(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -332,6 +340,7 @@ func TestCheckpointStore_LoadMetadata_RejectsSymlinkedMetadataFile(t *testing.T)
 }
 
 func TestCheckpointStore_LoadCheckpoint_RejectsSymlinkedCheckpointFile(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -366,6 +375,7 @@ func TestCheckpointStore_LoadCheckpoint_RejectsSymlinkedCheckpointFile(t *testin
 }
 
 func TestCheckpointStore_LoadCheckpoint_RejectsModeIDMismatch(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -398,6 +408,7 @@ func TestCheckpointStore_LoadCheckpoint_RejectsModeIDMismatch(t *testing.T) {
 }
 
 func TestCheckpointStore_LoadCheckpoint_RejectsOutputModeIDMismatch(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -468,6 +479,7 @@ func assertEqualCheckpoint(t *testing.T, desc string, got, want any) {
 }
 
 func TestCheckpointStore_LoadCheckpoint_NotFound(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -488,6 +500,7 @@ func TestCheckpointStore_LoadCheckpoint_NotFound(t *testing.T) {
 }
 
 func TestCheckpointStore_ListRuns(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -522,6 +535,7 @@ func TestCheckpointStore_ListRuns(t *testing.T) {
 }
 
 func TestCheckpointStore_DeleteRun(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -558,6 +572,7 @@ func TestCheckpointStore_DeleteRun(t *testing.T) {
 }
 
 func TestCheckpointStore_RunExists(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -584,6 +599,7 @@ func TestCheckpointStore_RunExists(t *testing.T) {
 }
 
 func TestCheckpointStore_RunExists_RejectsSymlinkedRunDir(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	tmpDir := t.TempDir()
@@ -609,6 +625,7 @@ func TestCheckpointStore_RunExists_RejectsSymlinkedRunDir(t *testing.T) {
 }
 
 func TestCheckpointStore_CleanOld(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := NewCheckpointStore(tmpDir)
 	if err != nil {
@@ -664,6 +681,7 @@ func TestCheckpointStore_CleanOld(t *testing.T) {
 }
 
 func TestCheckpointStore_CleanOld_NilStore(t *testing.T) {
+	t.Parallel()
 	var store *CheckpointStore
 	_, err := store.CleanOld(24 * time.Hour)
 	if err == nil {

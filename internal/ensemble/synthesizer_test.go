@@ -9,6 +9,7 @@ import (
 )
 
 func TestNewSynthesizer(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{
 		Strategy: StrategyManual,
 	}
@@ -29,6 +30,7 @@ func TestNewSynthesizer(t *testing.T) {
 }
 
 func TestNewSynthesizer_DefaultStrategy(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{} // No strategy specified
 
 	synth, err := NewSynthesizer(cfg)
@@ -43,6 +45,7 @@ func TestNewSynthesizer_DefaultStrategy(t *testing.T) {
 }
 
 func TestNewSynthesizer_InvalidStrategy(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{
 		Strategy: SynthesisStrategy("nonexistent"),
 	}
@@ -54,6 +57,7 @@ func TestNewSynthesizer_InvalidStrategy(t *testing.T) {
 }
 
 func TestSynthesizer_Synthesize_ManualStrategy(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{
 		Strategy: StrategyManual,
 	}
@@ -109,6 +113,7 @@ func TestSynthesizer_Synthesize_ManualStrategy(t *testing.T) {
 }
 
 func TestSynthesizer_StreamSynthesize_EmitsChunks(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, err := NewSynthesizer(cfg)
 	if err != nil {
@@ -174,6 +179,7 @@ func TestSynthesizer_StreamSynthesize_EmitsChunks(t *testing.T) {
 }
 
 func TestSynthesizer_StreamSynthesize_Canceled(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, err := NewSynthesizer(cfg)
 	if err != nil {
@@ -207,6 +213,7 @@ func TestSynthesizer_StreamSynthesize_Canceled(t *testing.T) {
 }
 
 func TestSynthesizer_Synthesize_NilInput(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
 
@@ -217,6 +224,7 @@ func TestSynthesizer_Synthesize_NilInput(t *testing.T) {
 }
 
 func TestSynthesizer_Synthesize_EmptyOutputs(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
 
@@ -232,6 +240,7 @@ func TestSynthesizer_Synthesize_EmptyOutputs(t *testing.T) {
 }
 
 func TestSynthesizer_Synthesize_NilReceiver(t *testing.T) {
+	t.Parallel()
 	var synth *Synthesizer
 
 	_, err := synth.Synthesize(&SynthesisInput{})
@@ -241,6 +250,7 @@ func TestSynthesizer_Synthesize_NilReceiver(t *testing.T) {
 }
 
 func TestSynthesizer_Synthesize_ConfigOverrides(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{
 		Strategy:      StrategyManual,
 		MaxFindings:   2,
@@ -278,6 +288,7 @@ func TestSynthesizer_Synthesize_ConfigOverrides(t *testing.T) {
 }
 
 func TestSynthesisResult_Fields(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
 
@@ -331,6 +342,7 @@ func TestSynthesisResult_Fields(t *testing.T) {
 }
 
 func TestFormatModeOutputs_Empty(t *testing.T) {
+	t.Parallel()
 	result := formatModeOutputs(nil)
 	if result != "[]" {
 		t.Errorf("formatModeOutputs(nil) = %q, want []", result)
@@ -343,6 +355,7 @@ func TestFormatModeOutputs_Empty(t *testing.T) {
 }
 
 func TestFormatModeOutputs_Content(t *testing.T) {
+	t.Parallel()
 	outputs := []ModeOutput{
 		{
 			ModeID:     "test-mode",
@@ -368,6 +381,7 @@ func TestFormatModeOutputs_Content(t *testing.T) {
 }
 
 func TestFormatAuditSummary_Nil(t *testing.T) {
+	t.Parallel()
 	result := formatAuditSummary(nil)
 	if result != "No disagreement analysis available." {
 		t.Errorf("formatAuditSummary(nil) = %q", result)
@@ -375,6 +389,7 @@ func TestFormatAuditSummary_Nil(t *testing.T) {
 }
 
 func TestFormatAuditSummary_NoConflicts(t *testing.T) {
+	t.Parallel()
 	report := &AuditReport{Conflicts: nil}
 	result := formatAuditSummary(report)
 	if result != "No significant disagreements detected." {
@@ -383,6 +398,7 @@ func TestFormatAuditSummary_NoConflicts(t *testing.T) {
 }
 
 func TestFormatAuditSummary_WithConflicts(t *testing.T) {
+	t.Parallel()
 	report := &AuditReport{
 		Conflicts: []DetailedConflict{
 			{Topic: "Architecture choice", Severity: ConflictHigh},
@@ -411,6 +427,7 @@ func TestFormatAuditSummary_WithConflicts(t *testing.T) {
 }
 
 func TestSynthesisSchemaJSON(t *testing.T) {
+	t.Parallel()
 	schema := synthesisSchemaJSON()
 
 	if schema == "" || schema == "{}" {
@@ -431,6 +448,7 @@ func TestSynthesisSchemaJSON(t *testing.T) {
 }
 
 func TestSynthesizer_Contributions_Populated(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	cfg := SynthesisConfig{Strategy: StrategyManual}
@@ -515,6 +533,7 @@ func TestSynthesizer_Contributions_Populated(t *testing.T) {
 }
 
 func TestSynthesizer_Contributions_UniqueInsights(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	cfg := SynthesisConfig{Strategy: StrategyManual}
@@ -571,6 +590,7 @@ func TestSynthesizer_Contributions_UniqueInsights(t *testing.T) {
 }
 
 func TestSynthesizer_GeneratePrompt(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{
 		Strategy:    StrategyConsensus,
 		MaxFindings: 10,
@@ -619,6 +639,7 @@ func TestSynthesizer_GeneratePrompt(t *testing.T) {
 }
 
 func TestSynthesizer_GeneratePrompt_NilInputs(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
 
@@ -635,6 +656,7 @@ func TestSynthesizer_GeneratePrompt_NilInputs(t *testing.T) {
 }
 
 func TestSynthesizer_GeneratePrompt_NoAudit(t *testing.T) {
+	t.Parallel()
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
 
@@ -654,6 +676,7 @@ func TestSynthesizer_GeneratePrompt_NoAudit(t *testing.T) {
 }
 
 func TestSynthesizerZeroLimitsPreserveAllFindings(t *testing.T) {
+	t.Parallel()
 	findingTexts := []string{
 		"Authentication refresh abandons credentials",
 		"Backups omit symlink contents",
@@ -729,6 +752,7 @@ func TestSynthesizerZeroLimitsPreserveAllFindings(t *testing.T) {
 }
 
 func TestSynthesizerGeneratePromptFindingLimit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		maxFindings int

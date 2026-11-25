@@ -795,6 +795,7 @@ func TestGetSpawnSmartStaggerUsesLearnedRateLimitDelay(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			world := newStaggerSpawnWorld(t, "smart-prompts", tmux.AgentClaude, tmux.AgentCodex)
 			opts := world.options(t)
 			var loadedFrom string

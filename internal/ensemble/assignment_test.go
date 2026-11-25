@@ -11,6 +11,7 @@ import (
 )
 
 func TestAssignRoundRobin_Success(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-b", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
 		{Title: "pane-a", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -46,6 +47,7 @@ func TestAssignRoundRobin_Success(t *testing.T) {
 }
 
 func TestAssignRoundRobin_EvenDistribution(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-3", Type: tmux.AgentGemini, Index: 3, NTMIndex: 3},
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -73,6 +75,7 @@ func TestAssignRoundRobin_EvenDistribution(t *testing.T) {
 }
 
 func TestAssignRoundRobin_TooManyModes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-a", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -85,6 +88,7 @@ func TestAssignRoundRobin_TooManyModes(t *testing.T) {
 }
 
 func TestAssignRoundRobin_MoreModesThanPanes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-a", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -97,6 +101,7 @@ func TestAssignRoundRobin_MoreModesThanPanes(t *testing.T) {
 }
 
 func TestAssignRoundRobin_MorePanesThanModes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -116,6 +121,7 @@ func TestAssignRoundRobin_MorePanesThanModes(t *testing.T) {
 }
 
 func TestAssignRoundRobin_SinglePane(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -134,6 +140,7 @@ func TestAssignRoundRobin_SinglePane(t *testing.T) {
 }
 
 func TestAssignRoundRobin_Determinism(t *testing.T) {
+	t.Parallel()
 	panesA := []tmux.Pane{
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -152,6 +159,7 @@ func TestAssignRoundRobin_Determinism(t *testing.T) {
 }
 
 func TestAssignByCategory_PrefersAffinities(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	panes := []tmux.Pane{
 		{Title: "pane-claude", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -181,6 +189,7 @@ func TestAssignByCategory_PrefersAffinities(t *testing.T) {
 }
 
 func TestAssignByCategory_FallbackToAlternate(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	panes := []tmux.Pane{
 		{Title: "pane-codex", Type: tmux.AgentCodex, Index: 1, NTMIndex: 1},
@@ -200,6 +209,7 @@ func TestAssignByCategory_FallbackToAlternate(t *testing.T) {
 }
 
 func TestAssignByCategory_NoPreferredAvailable(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalogForCategory(t, CategoryDialectical)
 	panes := []tmux.Pane{
 		{Title: "pane-codex", Type: tmux.AgentCodex, Index: 1, NTMIndex: 1},
@@ -216,6 +226,7 @@ func TestAssignByCategory_NoPreferredAvailable(t *testing.T) {
 }
 
 func TestAssignByCategory_AllCategories(t *testing.T) {
+	t.Parallel()
 	catalog, modes := testModeCatalogAllCategories(t)
 	panes := make([]tmux.Pane, 0, len(modes))
 	for i := 0; i < len(modes); i++ {
@@ -240,6 +251,7 @@ func TestAssignByCategory_AllCategories(t *testing.T) {
 }
 
 func TestAssignByCategory_Determinism(t *testing.T) {
+	t.Parallel()
 	catalog, modes := testModeCatalogAllCategories(t)
 	panesA := []tmux.Pane{
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -262,6 +274,7 @@ func TestAssignByCategory_Determinism(t *testing.T) {
 }
 
 func TestAssignExplicit_Success(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -293,6 +306,7 @@ func TestAssignExplicit_Success(t *testing.T) {
 }
 
 func TestAssignExplicit_NotEnoughPanes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -305,6 +319,7 @@ func TestAssignExplicit_NotEnoughPanes(t *testing.T) {
 }
 
 func TestAssignExplicit_InvalidModeID(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -315,6 +330,7 @@ func TestAssignExplicit_InvalidModeID(t *testing.T) {
 }
 
 func TestAssignExplicit_InvalidSpec(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -328,6 +344,7 @@ func TestAssignExplicit_InvalidSpec(t *testing.T) {
 }
 
 func TestAssignExplicit_InvalidPaneType(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -338,6 +355,7 @@ func TestAssignExplicit_InvalidPaneType(t *testing.T) {
 }
 
 func TestAssignExplicit_MixedIDAndCode(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -360,6 +378,7 @@ func TestAssignExplicit_MixedIDAndCode(t *testing.T) {
 }
 
 func TestValidateAssignments_DuplicatePane(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -373,6 +392,7 @@ func TestValidateAssignments_DuplicatePane(t *testing.T) {
 }
 
 func TestValidateAssignments_Valid(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -385,6 +405,7 @@ func TestValidateAssignments_Valid(t *testing.T) {
 }
 
 func TestValidateAssignments_MissingModes(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -396,6 +417,7 @@ func TestValidateAssignments_MissingModes(t *testing.T) {
 }
 
 func TestValidateAssignments_InvalidAgentType(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: "", Status: AssignmentPending, AssignedAt: now},
@@ -407,12 +429,14 @@ func TestValidateAssignments_InvalidAgentType(t *testing.T) {
 }
 
 func TestNormalizeModeKeys_Empty(t *testing.T) {
+	t.Parallel()
 	if _, err := normalizeModeKeys([]string{"", "deductive"}); err == nil {
 		t.Fatal("expected error for empty mode key")
 	}
 }
 
 func TestPickAvailablePaneWithReason_Fallback(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-cc", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "pane-cod", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -433,6 +457,7 @@ func TestPickAvailablePaneWithReason_Fallback(t *testing.T) {
 }
 
 func TestResolveMode_WithNilCatalog(t *testing.T) {
+	t.Parallel()
 	modeID, mode, err := resolveMode("Deductive", nil)
 	if err != nil {
 		t.Fatalf("resolveMode error: %v", err)
@@ -446,6 +471,7 @@ func TestResolveMode_WithNilCatalog(t *testing.T) {
 }
 
 func TestResolveMode_ByCode(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	modeID, mode, err := resolveMode("A1", catalog)
 	if err != nil {
@@ -457,6 +483,7 @@ func TestResolveMode_ByCode(t *testing.T) {
 }
 
 func TestPaneHelpers(t *testing.T) {
+	t.Parallel()
 	paneA := tmux.Pane{Title: "pane-a", Index: 2, NTMIndex: 2, Type: tmux.AgentClaude}
 	paneB := tmux.Pane{Title: "pane-b", Index: 1, NTMIndex: 1, Type: tmux.AgentCodex}
 
@@ -570,6 +597,7 @@ func assignmentKeys(assignments []ModeAssignment) []string {
 }
 
 func TestPaneLess_AllBranches(t *testing.T) {
+	t.Parallel()
 	// Test NTMIndex comparison
 	paneA := tmux.Pane{Title: "a", Index: 1, NTMIndex: 1, Type: tmux.AgentClaude}
 	paneB := tmux.Pane{Title: "b", Index: 2, NTMIndex: 2, Type: tmux.AgentClaude}
@@ -600,6 +628,7 @@ func TestPaneLess_AllBranches(t *testing.T) {
 }
 
 func TestPaneIndex_Branches(t *testing.T) {
+	t.Parallel()
 	// NTMIndex > 0 should be returned
 	pane1 := tmux.Pane{Index: 5, NTMIndex: 3}
 	if paneIndex(pane1) != 3 {
@@ -620,6 +649,7 @@ func TestPaneIndex_Branches(t *testing.T) {
 }
 
 func TestAssignByCategory_NilCatalog(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -630,6 +660,7 @@ func TestAssignByCategory_NilCatalog(t *testing.T) {
 }
 
 func TestAssignByCategory_TooManyModes(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -643,6 +674,7 @@ func TestAssignByCategory_TooManyModes(t *testing.T) {
 }
 
 func TestAssignByCategory_DefaultPreferred(t *testing.T) {
+	t.Parallel()
 	// Test that when no specific affinity exists for a category, defaults are used
 	// CategoryAmpliative has affinities [gemini, claude], but we only have codex
 	catalog := testModeCatalogForCategory(t, CategoryAmpliative)
@@ -664,6 +696,7 @@ func TestAssignByCategory_DefaultPreferred(t *testing.T) {
 }
 
 func TestAssignRoundRobin_EmptyModes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -675,6 +708,7 @@ func TestAssignRoundRobin_EmptyModes(t *testing.T) {
 }
 
 func TestAssignRoundRobin_EmptyPanes(t *testing.T) {
+	t.Parallel()
 	modes := []string{"deductive"}
 	assignments := AssignRoundRobin(modes, nil)
 	if assignments != nil {
@@ -683,6 +717,7 @@ func TestAssignRoundRobin_EmptyPanes(t *testing.T) {
 }
 
 func TestAssignExplicit_DuplicateMode(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -696,6 +731,7 @@ func TestAssignExplicit_DuplicateMode(t *testing.T) {
 }
 
 func TestAssignExplicit_FallbackPaneType(t *testing.T) {
+	t.Parallel()
 	// Request codex but only claude available - should fall back
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
@@ -716,6 +752,7 @@ func TestAssignExplicit_FallbackPaneType(t *testing.T) {
 }
 
 func TestAssignExplicit_EmptySpecs(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 	}
@@ -727,6 +764,7 @@ func TestAssignExplicit_EmptySpecs(t *testing.T) {
 }
 
 func TestAssignExplicit_CommaExpansion(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
@@ -744,6 +782,7 @@ func TestAssignExplicit_CommaExpansion(t *testing.T) {
 }
 
 func TestGroupPanesByType_SkipsUserPanes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
 		{Title: "user", Type: tmux.AgentUser, Index: 2, NTMIndex: 2},
@@ -763,6 +802,7 @@ func TestGroupPanesByType_SkipsUserPanes(t *testing.T) {
 }
 
 func TestValidateAssignments_EmptyModeID(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -775,6 +815,7 @@ func TestValidateAssignments_EmptyModeID(t *testing.T) {
 }
 
 func TestValidateAssignments_EmptyPaneName(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -787,6 +828,7 @@ func TestValidateAssignments_EmptyPaneName(t *testing.T) {
 }
 
 func TestValidateAssignments_EmptyStatus(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: "", AssignedAt: now},
@@ -799,6 +841,7 @@ func TestValidateAssignments_EmptyStatus(t *testing.T) {
 }
 
 func TestValidateAssignments_UnknownMode(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "unknown", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -811,6 +854,7 @@ func TestValidateAssignments_UnknownMode(t *testing.T) {
 }
 
 func TestValidateAssignments_CountMismatch(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	assignments := []ModeAssignment{
 		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
@@ -823,6 +867,7 @@ func TestValidateAssignments_CountMismatch(t *testing.T) {
 }
 
 func TestResolveMode_EmptyKey(t *testing.T) {
+	t.Parallel()
 	_, _, err := resolveMode("", nil)
 	if err == nil {
 		t.Fatal("expected error for empty key")
@@ -830,6 +875,7 @@ func TestResolveMode_EmptyKey(t *testing.T) {
 }
 
 func TestResolveMode_NotFound(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	_, _, err := resolveMode("nonexistent", catalog)
 	if err == nil {
@@ -838,6 +884,7 @@ func TestResolveMode_NotFound(t *testing.T) {
 }
 
 func TestResolveModeByCode_InvalidCode(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	mode, err := resolveModeByCode("invalid", catalog)
 	if err != nil {
@@ -849,6 +896,7 @@ func TestResolveModeByCode_InvalidCode(t *testing.T) {
 }
 
 func TestResolveModeByCode_OutOfRange(t *testing.T) {
+	t.Parallel()
 	catalog := testModeCatalog(t)
 	_, err := resolveModeByCode("A99", catalog)
 	if err == nil {
@@ -857,6 +905,7 @@ func TestResolveModeByCode_OutOfRange(t *testing.T) {
 }
 
 func TestParseModeCode_TooShort(t *testing.T) {
+	t.Parallel()
 	_, _, ok := parseModeCode("A")
 	if ok {
 		t.Fatal("expected false for too short code")
@@ -864,6 +913,7 @@ func TestParseModeCode_TooShort(t *testing.T) {
 }
 
 func TestParseModeCode_InvalidCategory(t *testing.T) {
+	t.Parallel()
 	_, _, ok := parseModeCode("Z1")
 	if ok {
 		t.Fatal("expected false for invalid category letter")
@@ -871,6 +921,7 @@ func TestParseModeCode_InvalidCategory(t *testing.T) {
 }
 
 func TestParseModeCode_InvalidNumber(t *testing.T) {
+	t.Parallel()
 	_, _, ok := parseModeCode("Ax")
 	if ok {
 		t.Fatal("expected false for non-numeric index")
@@ -878,6 +929,7 @@ func TestParseModeCode_InvalidNumber(t *testing.T) {
 }
 
 func TestExpandSpecs_EmptyParts(t *testing.T) {
+	t.Parallel()
 	specs := []string{"deductive:cc,,abductive:cod", ""}
 	expanded := expandSpecs(specs)
 	if len(expanded) != 2 {
@@ -886,6 +938,7 @@ func TestExpandSpecs_EmptyParts(t *testing.T) {
 }
 
 func TestSortAssignablePanes_FiltersAndSorts(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-3", Type: tmux.AgentGemini, Index: 3, NTMIndex: 3},
 		{Title: "user", Type: tmux.AgentUser, Index: 1, NTMIndex: 1},
@@ -906,6 +959,7 @@ func TestSortAssignablePanes_FiltersAndSorts(t *testing.T) {
 }
 
 func TestPickAvailablePaneWithReason_NoPanes(t *testing.T) {
+	t.Parallel()
 	byType := make(map[string][]tmux.Pane)
 	choice, fallback, reason := pickAvailablePaneWithReason(byType, []string{string(tmux.AgentClaude)}, nil)
 	if choice.Title != "" {
@@ -920,6 +974,7 @@ func TestPickAvailablePaneWithReason_NoPanes(t *testing.T) {
 }
 
 func TestIsAssignableAgentType_Various(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		agentType string
 		expected  bool
@@ -941,6 +996,7 @@ func TestIsAssignableAgentType_Various(t *testing.T) {
 }
 
 func TestCategoryAffinities_IncludesModernHarnesses(t *testing.T) {
+	t.Parallel()
 	modern := []string{
 		string(tmux.AgentAntigravity),
 		string(tmux.AgentOmp),
@@ -987,6 +1043,7 @@ func TestCategoryAffinities_IncludesModernHarnesses(t *testing.T) {
 }
 
 func TestAssignByCategory_MultiHarnessSession(t *testing.T) {
+	t.Parallel()
 	modes := []ReasoningMode{
 		{ID: "ampliative-mode", Code: CategoryAmpliative.CategoryLetter() + "1", Name: "Ampliative", Category: CategoryAmpliative, Tier: TierCore, ShortDesc: "amp"},
 		{ID: "formal-mode", Code: CategoryFormal.CategoryLetter() + "1", Name: "Formal", Category: CategoryFormal, Tier: TierCore, ShortDesc: "formal"},
@@ -1030,6 +1087,7 @@ func TestAssignByCategory_MultiHarnessSession(t *testing.T) {
 }
 
 func TestAssignExplicit_MultiHarnessAndAliases(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Title: "pane-agy", Type: tmux.AgentAntigravity, Index: 1, NTMIndex: 1},
 		{Title: "pane-omp", Type: tmux.AgentOmp, Index: 2, NTMIndex: 2},

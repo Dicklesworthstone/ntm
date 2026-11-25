@@ -44,6 +44,7 @@ func (a *RanoAdapter) GetProcessStatsWithWindow(ctx context.Context, pid int, wi
 }
 
 func TestNewRanoAdapter(t *testing.T) {
+	t.Parallel()
 	adapter := NewRanoAdapter()
 	if adapter == nil {
 		t.Fatal("NewRanoAdapter returned nil")
@@ -59,11 +60,13 @@ func TestNewRanoAdapter(t *testing.T) {
 }
 
 func TestRanoAdapterImplementsInterface(t *testing.T) {
+	t.Parallel()
 	// Ensure RanoAdapter implements the Adapter interface
 	var _ Adapter = (*RanoAdapter)(nil)
 }
 
 func TestRanoAdapterDetect(t *testing.T) {
+	t.Parallel()
 	adapter := NewRanoAdapter()
 
 	// Test detection - result depends on whether rano is installed
@@ -81,6 +84,7 @@ func TestRanoAdapterDetect(t *testing.T) {
 }
 
 func TestRanoAvailabilityStruct(t *testing.T) {
+	t.Parallel()
 	availability := RanoAvailability{
 		Available:   true,
 		Compatible:  true,
@@ -175,6 +179,7 @@ func TestRanoAdapterHealthWhenNotInstalled(t *testing.T) {
 // (whose `rano status` exits 0) must now report healthy. Runs only where rano
 // is installed.
 func TestRanoHealthWhenInstalled(t *testing.T) {
+	t.Parallel()
 	adapter := NewRanoAdapter()
 	if _, installed := adapter.Detect(); !installed {
 		t.Skip("rano not installed")
@@ -261,6 +266,7 @@ func TestRanoAdapterGetAvailabilityCaching(t *testing.T) {
 }
 
 func TestToolRanoInAllTools(t *testing.T) {
+	t.Parallel()
 	tools := AllTools()
 	found := false
 	for _, tool := range tools {
@@ -276,6 +282,7 @@ func TestToolRanoInAllTools(t *testing.T) {
 }
 
 func TestRanoMinVersionCompatibility(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		version  Version
@@ -319,6 +326,7 @@ func TestRanoMinVersionCompatibility(t *testing.T) {
 }
 
 func TestRanoAvailabilityTTL(t *testing.T) {
+	t.Parallel()
 	// Verify that the TTL is set to 2 minutes (shorter due to permission changes)
 	if ranoAvailabilityTTL != 2*time.Minute {
 		t.Errorf("Expected rano availability TTL of 2m, got %v", ranoAvailabilityTTL)
@@ -326,6 +334,7 @@ func TestRanoAvailabilityTTL(t *testing.T) {
 }
 
 func TestRanoAdapterCheckProcAccess(t *testing.T) {
+	t.Parallel()
 	adapter := NewRanoAdapter()
 
 	// checkProcAccess should work on Linux systems
@@ -341,6 +350,7 @@ func TestRanoAdapterCheckProcAccess(t *testing.T) {
 // reads it back through the adapter's export path. rano's own export of the
 // same database is the oracle for the count.
 func TestRanoStatsReadInstalledRanoObservation(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("rano"); err != nil {
 		t.Skip("rano not installed")
 	}

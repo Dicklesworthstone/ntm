@@ -10,6 +10,7 @@ import (
 )
 
 func TestNewTimelineTracker(t *testing.T) {
+	t.Parallel()
 	t.Run("default config", func(t *testing.T) {
 		tracker := NewTimelineTracker(nil)
 		defer stopTrackerForTest(tracker)
@@ -41,6 +42,7 @@ func TestNewTimelineTracker(t *testing.T) {
 }
 
 func TestRecordEvent(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -84,6 +86,7 @@ func TestRecordEvent(t *testing.T) {
 }
 
 func TestGetEventsForSession(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -103,6 +106,7 @@ func TestGetEventsForSession(t *testing.T) {
 }
 
 func TestGetCurrentState(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -121,6 +125,7 @@ func TestGetCurrentState(t *testing.T) {
 }
 
 func TestOnStateChange(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -146,6 +151,7 @@ func TestOnStateChange(t *testing.T) {
 }
 
 func TestStats(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -172,6 +178,7 @@ func TestStats(t *testing.T) {
 }
 
 func TestTimelineStateIsTerminal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		state    TimelineState
 		terminal bool
@@ -217,6 +224,7 @@ func TestTimelineStateString(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -273,6 +281,7 @@ func TestConcurrentAccess(t *testing.T) {
 // TestRecordEvent_StateTransitionDetails verifies that state transitions are recorded
 // with proper details and triggers.
 func TestRecordEvent_StateTransitionDetails(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -310,6 +319,7 @@ func TestRecordEvent_StateTransitionDetails(t *testing.T) {
 
 // TestConcurrentCallbackSafety verifies that callbacks are called safely without deadlock.
 func TestConcurrentCallbackSafety(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -375,6 +385,7 @@ func BenchmarkRecordEvent(b *testing.B) {
 // ============================================================================
 
 func TestMarkerTypeSymbol(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		markerType MarkerType
 		expected   string
@@ -396,6 +407,7 @@ func TestMarkerTypeSymbol(t *testing.T) {
 }
 
 func TestMarkerTypeString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		markerType MarkerType
 		expected   string
@@ -416,6 +428,7 @@ func TestMarkerTypeString(t *testing.T) {
 }
 
 func TestAddMarker(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -471,6 +484,7 @@ func TestAddMarker(t *testing.T) {
 }
 
 func TestGetMarkersForSession(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -492,6 +506,7 @@ func TestGetMarkersForSession(t *testing.T) {
 }
 
 func TestMarkerIDSequence(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -518,12 +533,14 @@ func TestMarkerIDSequence(t *testing.T) {
 }
 
 func TestTimelineTrackerStopIdempotent(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	stopTrackerForTest(tracker)
 	stopTrackerForTest(tracker)
 }
 
 func TestOnStateChange_PanicRecovery(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -547,6 +564,7 @@ func TestOnStateChange_PanicRecovery(t *testing.T) {
 }
 
 func TestStatsOldestNewest(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 
@@ -566,6 +584,7 @@ func TestStatsOldestNewest(t *testing.T) {
 // RecordAgentStatus is the one pane-status-to-timeline mapping, shared by the
 // dashboard and the session's internal monitor.
 func TestRecordAgentStatusRecordsTransitionsAndMarkers(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 	pane := tmux.Pane{ID: "%3", Title: "proj__cc_2", Type: tmux.AgentClaude}
@@ -601,6 +620,7 @@ func TestRecordAgentStatusRecordsTransitionsAndMarkers(t *testing.T) {
 }
 
 func TestTimelineAgentIDUsesFinalSeparator(t *testing.T) {
+	t.Parallel()
 	pane := tmux.Pane{Title: "my__project__cc_2"}
 	if got := timelineAgentID(pane, "", ""); got != "cc_2" {
 		t.Fatalf("timelineAgentID() = %q, want %q", got, "cc_2")
@@ -608,6 +628,7 @@ func TestTimelineAgentIDUsesFinalSeparator(t *testing.T) {
 }
 
 func TestStatsEmpty(t *testing.T) {
+	t.Parallel()
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer stopTrackerForTest(tracker)
 

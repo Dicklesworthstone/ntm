@@ -10,6 +10,7 @@ import (
 )
 
 func TestMatchesNTMPattern(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -74,6 +75,7 @@ func TestMatchesNTMPattern(t *testing.T) {
 }
 
 func TestFormatCleanupDuration(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -115,6 +117,7 @@ func TestFormatCleanupDuration(t *testing.T) {
 }
 
 func TestGetFileType(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string

@@ -8,6 +8,7 @@ import (
 )
 
 func TestEnsembleLoader_MergePrecedence(t *testing.T) {
+	t.Parallel()
 	userDir := t.TempDir()
 	projectDir := t.TempDir()
 
@@ -109,6 +110,7 @@ description = "project override"
 }
 
 func TestEnsembleLoader_MissingFilesOk(t *testing.T) {
+	t.Parallel()
 	loader := &EnsembleLoader{
 		UserConfigDir: t.TempDir(),
 		ProjectDir:    t.TempDir(),
@@ -121,6 +123,7 @@ func TestEnsembleLoader_MissingFilesOk(t *testing.T) {
 }
 
 func TestEnsembleLoader_SortsNonEmbeddedPresets(t *testing.T) {
+	t.Parallel()
 	userDir := t.TempDir()
 	content := `[[ensembles]]
 name = "zeta"

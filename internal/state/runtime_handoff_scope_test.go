@@ -37,6 +37,7 @@ func openMigratedStore(t *testing.T) *Store {
 }
 
 func TestRuntimeHandoff_MultipleSessionWorkdirPairs(t *testing.T) {
+	t.Parallel()
 	store := openMigratedStore(t)
 
 	now := time.Now()
@@ -79,6 +80,7 @@ func TestRuntimeHandoff_MultipleSessionWorkdirPairs(t *testing.T) {
 }
 
 func TestRuntimeHandoff_UpsertSameScopeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := openMigratedStore(t)
 
 	now := time.Now()
@@ -109,6 +111,7 @@ func TestRuntimeHandoff_UpsertSameScopeIsIdempotent(t *testing.T) {
 }
 
 func TestRuntimeHandoff_LegacyGetReturnsLatest(t *testing.T) {
+	t.Parallel()
 	store := openMigratedStore(t)
 
 	now := time.Now()

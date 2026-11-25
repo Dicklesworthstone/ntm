@@ -12,6 +12,7 @@ import (
 )
 
 func TestMergeBackAppliesPinnedTreeAndParents(t *testing.T) {
+	t.Parallel()
 	manager, root, source := newMergePreviewFixture(t)
 	mergePreviewCommit(t, source, "agent.txt", "agent work\n")
 	mergePreviewCommit(t, root, "primary.txt", "primary work\n")
@@ -48,8 +49,10 @@ func TestMergeBackAppliesPinnedTreeAndParents(t *testing.T) {
 }
 
 func TestMergeBackRefusesUnsafeCheckoutsWithoutSwitching(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"source draft", "target draft", "target branch", "pending merge"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			manager, root, source := newMergePreviewFixture(t)
 			mergePreviewCommit(t, source, "agent.txt", "agent work\n")
 			switch kind {
@@ -74,8 +77,10 @@ func TestMergeBackRefusesUnsafeCheckoutsWithoutSwitching(t *testing.T) {
 }
 
 func TestMergeBackRejectsStaleExpectations(t *testing.T) {
+	t.Parallel()
 	for _, which := range []string{"source", "target"} {
 		t.Run(which, func(t *testing.T) {
+			t.Parallel()
 			manager, root, source := newMergePreviewFixture(t)
 			mergePreviewCommit(t, source, "agent.txt", "agent work\n")
 			plan, err := manager.PreviewMerge(context.Background(), "agent")
@@ -97,6 +102,7 @@ func TestMergeBackRejectsStaleExpectations(t *testing.T) {
 }
 
 func TestMergeBackPreservesIgnoredLocalFiles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, incoming, local, exclude string }{
 		{"file", "local.data", "local.data", "local.data\n"},
 		{"directory replaced by file", "cache", "cache/private.data", "cache\n"},
@@ -104,6 +110,7 @@ func TestMergeBackPreservesIgnoredLocalFiles(t *testing.T) {
 		{"case-insensitive Git policy", "LOCAL.DATA", "local.data", "local.data\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			manager, root, source := newMergePreviewFixture(t)
 			if err := os.MkdirAll(filepath.Dir(filepath.Join(source, tc.incoming)), 0o700); err != nil {
 				t.Fatal(err)
@@ -134,6 +141,7 @@ func TestMergeBackPreservesIgnoredLocalFiles(t *testing.T) {
 }
 
 func TestMergeBackIgnoredCollisionRecheckAndUnrelatedCache(t *testing.T) {
+	t.Parallel()
 	manager, root, source := newMergePreviewFixture(t)
 	mergePreviewCommit(t, source, "incoming.data", "agent file")
 	mergePreviewWrite(t, root, filepath.Join(".git", "info", "exclude"), "*.data\n")
@@ -155,6 +163,7 @@ func TestMergeBackIgnoredCollisionRecheckAndUnrelatedCache(t *testing.T) {
 }
 
 func TestMergeBackHookRefusalRetainsRecoveryState(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Git hook fixture")
 	}
@@ -181,6 +190,7 @@ func TestMergeBackHookRefusalRetainsRecoveryState(t *testing.T) {
 }
 
 func TestMergeBackDoesNotAcknowledgeHookChangedTree(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Git hook fixture")
 	}
@@ -218,6 +228,7 @@ git update-ref HEAD "$new" "$old"
 }
 
 func TestMergeExpectationsRequireCompleteIdentities(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	for _, input := range [][]MergeOptions{
 		{{ExpectedSource: sha}}, {{ExpectedTarget: sha}},

@@ -14,6 +14,7 @@ import (
 )
 
 func TestContextPackGenerator_Generate_FullProject(t *testing.T) {
+	t.Parallel()
 	root := copyFixture(t, "full-project")
 	gen := NewContextPackGenerator(root, nil, nil)
 
@@ -60,6 +61,7 @@ func TestContextPackGenerator_Generate_FullProject(t *testing.T) {
 }
 
 func TestContextPackGenerator_Generate_MinimalProject(t *testing.T) {
+	t.Parallel()
 	root := copyFixture(t, "minimal-project")
 	gen := NewContextPackGenerator(root, nil, nil)
 
@@ -79,6 +81,7 @@ func TestContextPackGenerator_Generate_MinimalProject(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectLanguages_Go(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "main.go"), "package main\n")
 	_, languages, _ := scanProjectStructure(t.Context(), root)
@@ -88,6 +91,7 @@ func TestContextPackGenerator_DetectLanguages_Go(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectLanguages_TypeScript(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "app.ts"), "export const ok = true\n")
 	_, languages, _ := scanProjectStructure(t.Context(), root)
@@ -97,6 +101,7 @@ func TestContextPackGenerator_DetectLanguages_TypeScript(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectLanguages_Mixed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "main.go"), "package main\n")
 	writeFile(t, filepath.Join(root, "web", "app.tsx"), "export const App = () => null\n")
@@ -107,6 +112,7 @@ func TestContextPackGenerator_DetectLanguages_Mixed(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectFrameworks_GoMod(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	goMod := "module example.com/test\n\ngo 1.25\n\nrequire github.com/spf13/cobra v1.8.0\n"
 	writeFile(t, filepath.Join(root, "go.mod"), goMod)
@@ -117,6 +123,7 @@ func TestContextPackGenerator_DetectFrameworks_GoMod(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectFrameworks_PackageJSON(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	packageJSON := `{"dependencies":{"react":"18.2.0","next":"14.1.0"}}`
 	writeFile(t, filepath.Join(root, "package.json"), packageJSON)
@@ -127,6 +134,7 @@ func TestContextPackGenerator_DetectFrameworks_PackageJSON(t *testing.T) {
 }
 
 func TestContextPackGenerator_DetectFrameworks_CargoToml(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cargoToml := `
 [package]
@@ -144,6 +152,7 @@ axum = "0.7"
 }
 
 func TestContextPackGenerator_DetectFrameworks_PythonRequirements(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	requirements := "Django==4.2\nfastapi==0.110\n"
 	writeFile(t, filepath.Join(root, "requirements.txt"), requirements)
@@ -154,6 +163,7 @@ func TestContextPackGenerator_DetectFrameworks_PythonRequirements(t *testing.T) 
 }
 
 func TestContextPackGenerator_ParseReadme_Full(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	readme := "# My Project\nA short description for testing the parser.\n"
 	writeFile(t, filepath.Join(root, "README.md"), readme)
@@ -167,6 +177,7 @@ func TestContextPackGenerator_ParseReadme_Full(t *testing.T) {
 }
 
 func TestContextPackGenerator_ParseReadme_Missing(t *testing.T) {
+	t.Parallel()
 	root := fixturePath(t, "no-readme")
 	name, desc := readProjectOverview(root)
 	if name != "no-readme" {
@@ -178,6 +189,7 @@ func TestContextPackGenerator_ParseReadme_Missing(t *testing.T) {
 }
 
 func TestContextPackGenerator_GetRecentCommits(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -197,6 +209,7 @@ func TestContextPackGenerator_GetRecentCommits(t *testing.T) {
 }
 
 func TestContextPackGenerator_CountOpenIssues(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	issuesDir := filepath.Join(root, ".beads")
 	if err := os.MkdirAll(issuesDir, 0755); err != nil {

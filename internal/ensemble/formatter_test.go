@@ -11,6 +11,7 @@ import (
 )
 
 func TestNewSynthesisFormatter(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	if f == nil {
@@ -31,6 +32,7 @@ func TestNewSynthesisFormatter(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_Markdown(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	result := &SynthesisResult{
@@ -119,6 +121,7 @@ func TestSynthesisFormatter_FormatResult_Markdown(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_JSON(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatJSON)
 	f.IncludeAudit = true
 
@@ -158,6 +161,7 @@ func TestSynthesisFormatter_FormatResult_JSON(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_JSON_NoAudit(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatJSON)
 	f.IncludeAudit = false
 
@@ -184,6 +188,7 @@ func TestSynthesisFormatter_FormatResult_JSON_NoAudit(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_YAML(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatYAML)
 
 	result := &SynthesisResult{
@@ -213,6 +218,7 @@ func TestSynthesisFormatter_FormatResult_YAML(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_DefaultFormat(t *testing.T) {
+	t.Parallel()
 	f := &SynthesisFormatter{Format: OutputFormat("unknown")}
 
 	result := &SynthesisResult{
@@ -234,6 +240,7 @@ func TestSynthesisFormatter_FormatResult_DefaultFormat(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_NilFormatter(t *testing.T) {
+	t.Parallel()
 	var f *SynthesisFormatter
 
 	var buf bytes.Buffer
@@ -244,6 +251,7 @@ func TestSynthesisFormatter_FormatResult_NilFormatter(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_NilWriter(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	err := f.FormatResult(nil, &SynthesisResult{}, nil)
@@ -253,6 +261,7 @@ func TestSynthesisFormatter_FormatResult_NilWriter(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_NilResult(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	var buf bytes.Buffer
@@ -263,6 +272,7 @@ func TestSynthesisFormatter_FormatResult_NilResult(t *testing.T) {
 }
 
 func TestSynthesisFormatter_FormatResult_Verbose(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 	f.Verbose = true
 
@@ -295,6 +305,7 @@ func TestSynthesisFormatter_FormatResult_Verbose(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input  string
 		maxLen int
@@ -316,6 +327,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestPriorityEmoji(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		priority ImpactLevel
 		want     string
@@ -336,6 +348,7 @@ func TestPriorityEmoji(t *testing.T) {
 }
 
 func TestFormatResult_EmptyCollections(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	result := &SynthesisResult{
@@ -373,6 +386,7 @@ func TestFormatResult_EmptyCollections(t *testing.T) {
 }
 
 func TestFormatResult_RiskTable(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 
 	result := &SynthesisResult{
@@ -411,6 +425,7 @@ func TestFormatResult_RiskTable(t *testing.T) {
 }
 
 func TestFormatResult_DisagreementsSection(t *testing.T) {
+	t.Parallel()
 	f := NewSynthesisFormatter(FormatMarkdown)
 	f.IncludeAudit = true
 
@@ -470,6 +485,7 @@ func TestFormatResult_DisagreementsSection(t *testing.T) {
 }
 
 func TestOutputFormat_Constants(t *testing.T) {
+	t.Parallel()
 	if FormatMarkdown != "markdown" {
 		t.Errorf("FormatMarkdown = %q, want markdown", FormatMarkdown)
 	}
@@ -482,6 +498,7 @@ func TestOutputFormat_Constants(t *testing.T) {
 }
 
 func TestFormatResult_ContributionsSection(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	f := NewSynthesisFormatter(FormatMarkdown)
@@ -575,6 +592,7 @@ func TestFormatResult_ContributionsSection(t *testing.T) {
 }
 
 func TestFormatResult_ContributionsSection_Verbose(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	f := NewSynthesisFormatter(FormatMarkdown)
@@ -625,6 +643,7 @@ func TestFormatResult_ContributionsSection_Verbose(t *testing.T) {
 }
 
 func TestFormatResult_ContributionsSection_JSON(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	f := NewSynthesisFormatter(FormatJSON)
