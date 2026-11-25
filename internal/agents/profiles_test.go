@@ -318,6 +318,12 @@ func TestNormalizeAgentType(t *testing.T) {
 		{"google-gemini", "gemini"},
 		{"gemini-3-pro-preview", "gemini"},
 		{" ws ", "windsurf"},
+		{"grok", "grok"},
+		{"grok-build", "grok"},
+		{"opencode", "oc"},
+		{"oc", "oc"},
+		{"pi", "pi"},
+		{"pi-agent", "pi"},
 		{"unknown", "unknown"},
 	}
 
