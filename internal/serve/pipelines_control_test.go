@@ -1926,7 +1926,7 @@ func TestPipelineResumeRecoveryControlsHTTPAndJobs(t *testing.T) {
 				srv.projectDir = root
 				workflow := pipeline.Workflow{
 					SchemaVersion: pipeline.SchemaVersion, Name: "surface-recovery-controls",
-					Settings: pipeline.DefaultWorkflowSettings(),
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
 					Steps: []pipeline.Step{
 						{ID: "once", Command: "printf 'once\\n' >> recovery-once"},
 						{ID: "batch", Loop: &pipeline.LoopConfig{
@@ -1999,7 +1999,7 @@ func TestPipelineResumePoliciesHTTPAndJobsPreserveRejectedCheckpoints(t *testing
 			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{
 				"session": "original", "workflow": pipeline.Workflow{
 					SchemaVersion: pipeline.SchemaVersion, Name: "surface-recovery-policy",
-					Settings: pipeline.DefaultWorkflowSettings(),
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
 					Steps: []pipeline.Step{{ID: "once", Command: "printf 'once\\n' >> policy-once"}},
 				},
 			})
@@ -2092,5 +2092,112 @@ func TestPipelineResumeHTTPRejectsMalformedRecoveryIntent(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), ErrCodeBadRequest) {
 			t.Fatalf("malformed recovery was ignored or reached missing state: body=%s status=%d response=%s", body, rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestPipelineResumeRestartFailedReplaysUncertainCommandHTTPAndJobs(t *testing.T) {
+	t.Parallel()
+	for _, asJob := range []bool{false, true} {
+		t.Run(fmt.Sprintf("job=%t", asJob), func(t *testing.T) {
+			t.Parallel()
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			root := t.TempDir()
+			srv.projectDir = root
+			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, map[string]interface{}{
+				"session": "uncertain-command", "workflow": pipeline.Workflow{
+					SchemaVersion: pipeline.SchemaVersion, Name: "uncertain-command-recovery",
+					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+					Steps: []pipeline.Step{
+						{ID: "once", Command: "printf 'once\\n' >> recovery-prefix"},
+						{ID: "retry", DependsOn: []string{"once"}, Command: "printf 'attempt\\n' >> recovery-attempts; test -f allow-retry"},
+					},
+				},
+			})
+			failed := pollJobTerminal(t, srv, initial.Job.ID)
+			runID, _ := failed.Job.Result["run_id"].(string)
+			if failed.Job.Status != string(JobStatusFailed) || runID == "" {
+				t.Fatalf("fixture did not save a native failed command: %+v", failed.Job)
+			}
+			prior, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, ok := prior.CommandExecutions["retry"]
+			if !ok || record.Status != "settled" || record.Result.Status != pipeline.StatusFailed ||
+				prior.Steps["once"].Status != pipeline.StatusCompleted {
+				t.Fatalf("fixture did not settle its failed process and preserve completed work: %+v", prior)
+			}
+			prefix, err := json.Marshal(prior.Steps["once"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The real fixture process is settled. Retain its native definition
+			// hash and start time, but model the valid launch-intent boundary a
+			// crash can leave before any terminal outcome is durably recorded.
+			prior.CommandExecutions["retry"] = pipeline.CommandExecutionState{
+				Version: record.Version, StepID: record.StepID, StepHash: record.StepHash,
+				Status: "starting", StartedAt: record.StartedAt,
+			}
+			if err := pipeline.SaveState(root, prior); err != nil {
+				t.Fatal(err)
+			}
+			before := pipelineRecoveryHTTPJournal(t, root, runID)
+			if err := os.WriteFile(filepath.Join(root, "allow-retry"), []byte("approved"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			resume := func(mode string) (bool, string) {
+				t.Helper()
+				params := map[string]interface{}{}
+				if mode != "" {
+					params["mode"] = mode
+				}
+				if asJob {
+					params["run_id"] = runID
+					queued := postPipelineVariantJob(t, srv, JobTypePipelineResume, params)
+					result := pollJobTerminal(t, srv, queued.Job.ID)
+					return result.Job.Status == string(JobStatusCompleted), result.Job.Error
+				}
+				body, err := json.Marshal(params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+runID+"/resume", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				return rec.Code == http.StatusOK, rec.Body.String()
+			}
+			if success, detail := resume(""); success || !strings.Contains(detail, "unresolved launch") {
+				t.Fatalf("ordinary resume failed to fence uncertain effects: success=%v response=%s", success, detail)
+			}
+			if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, runID)) {
+				t.Fatal("refused ordinary resume changed the checkpoint")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "recovery-attempts")); err != nil || string(data) != "attempt\n" {
+				t.Fatalf("ordinary resume repeated uncertain effects: %q %v", data, err)
+			}
+			if success, detail := resume("restart-failed"); !success {
+				t.Fatalf("explicit restart-failed did not reach recovery: %s", detail)
+			}
+			final, err := pipeline.LoadState(root, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if final.Status != pipeline.StatusCompleted || final.CommandExecutions["retry"].Status != "settled" ||
+				final.CommandExecutions["retry"].Result.Status != pipeline.StatusCompleted {
+				t.Fatalf("explicit recovery did not settle its replacement command: %+v", final)
+			}
+			retainedPrefix, err := json.Marshal(final.Steps["once"])
+			if err != nil || !bytes.Equal(prefix, retainedPrefix) {
+				t.Fatalf("restart-failed replaced the completed prefix receipt: %s %v", retainedPrefix, err)
+			}
+			for name, want := range map[string]string{"recovery-prefix": "once\n", "recovery-attempts": "attempt\nattempt\n"} {
+				data, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s effects = %q, want %q: %v", name, data, want, err)
+				}
+			}
+		})
 	}
 }
