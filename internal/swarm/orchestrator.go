@@ -930,6 +930,10 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 			}
 
 			for _, pane := range panes {
+				if err := ctx.Err(); err != nil {
+					result.Duration = time.Since(start)
+					return result, err
+				}
 				// Skip user shell and managed service control panes.
 				if isSwarmControlPane(pane) {
 					continue
@@ -937,6 +941,10 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 
 				// Send graceful exit signal based on agent type
 				if err := sendGracefulExit(ctx, client, pane); err != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						result.Duration = time.Since(start)
+						return result, ctxErr
+					}
 					logger.Warn("[SwarmOrchestrator] graceful_exit_failed",
 						"pane", pane.ID,
 						"agent", pane.Type,
