@@ -718,3 +718,27 @@ func TestSavePromptHistory_EmptySession_SkipsPrivacyCheck(t *testing.T) {
 		t.Fatalf("savePromptHistory with empty session: %v", err)
 	}
 }
+
+func TestSessionDir_RejectsDotTraversalAndLockUses0600(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	for _, bad := range []string{"..", ".", " .. "} {
+		if _, err := SessionDir(bad); err == nil {
+			t.Fatalf("SessionDir(%q) succeeded, want traversal rejection", bad)
+		}
+	}
+
+	unlock, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer unlock()
+	info, err := os.Stat(filepath.Join(StorageDir(), "session.lock"))
+	if err != nil {
+		t.Fatalf("stat session.lock: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("session.lock perm = %04o, want 0600", perm)
+	}
+}
