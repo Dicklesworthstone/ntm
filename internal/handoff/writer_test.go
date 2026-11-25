@@ -687,6 +687,30 @@ func TestAppendLedgerEntry_RejectsSymlinkDirAndFile(t *testing.T) {
 	if _, err := os.Stat(danglingTarget); !os.IsNotExist(err) {
 		t.Fatalf("dangling symlink created external file: stat err=%v", err)
 	}
+
+	// Case 4: relative baseDir (when expressible relative to cwd) and appending
+	// to an existing regular ledger file.
+	absBase := testTempDir(t)
+	baseForWriter := absBase
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if rel, relErr := filepath.Rel(cwd, absBase); relErr == nil && !filepath.IsAbs(rel) {
+			baseForWriter = rel
+		}
+	}
+	w4 := NewWriter(baseForWriter)
+	if err := w4.appendLedgerEntry(&Handoff{Session: "proj", Goal: "first", Now: "step1"}, "/tmp/h1.yaml", false); err != nil {
+		t.Fatalf("first appendLedgerEntry failed: %v", err)
+	}
+	if err := w4.appendLedgerEntry(&Handoff{Session: "proj", Goal: "second", Now: "step2"}, "/tmp/h2.yaml", false); err != nil {
+		t.Fatalf("second appendLedgerEntry failed: %v", err)
+	}
+	ledgerBytes, err := os.ReadFile(filepath.Join(absBase, ".ntm", "ledgers", "CONTINUITY_proj.md"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if !strings.Contains(string(ledgerBytes), "first") || !strings.Contains(string(ledgerBytes), "second") {
+		t.Fatalf("expected both appended entries in ledger, got:\n%s", string(ledgerBytes))
+	}
 }
 
 // =============================================================================
