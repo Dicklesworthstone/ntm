@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -289,6 +290,12 @@ func scanFileForPlaceholders(t *testing.T, absPath, relPath string) []placeholde
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", relPath, err)
+	}
+	lower := bytes.ToLower(data)
+	if !bytes.Contains(lower, []byte("implemented")) &&
+		!bytes.Contains(lower, []byte("placeholder")) &&
+		!bytes.Contains(lower, []byte("todo:")) {
+		return nil
 	}
 	if !placeholderPrefilter.Match(data) {
 		return nil

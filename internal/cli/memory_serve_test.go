@@ -406,6 +406,9 @@ func TestNoFalseSpawnAutoStartAdvice(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			if !bytes.Contains(bytes.ToLower(data), []byte("auto")) {
+				return nil
+			}
 			if falseAdvice.Match(data) {
 				rel, _ := filepath.Rel(root, path)
 				offenders = append(offenders, rel)
