@@ -434,7 +434,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 		okResp.Content["text/plain"] = MediaType{Schema: &Schema{Type: "string"}}
 		op.Responses["200"] = okResp
 	case "handleResumePipeline":
-		op.Description += " By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue an unfinished saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership."
+		op.Description += " By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to resume a saved run in a detached worker that survives client disconnection and server exit. Completed runs require an explicit reset or force-iter replay that passes the canonical engine's safety checks. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership."
 		op.Description += " Recovery defaults to mode=continue, preserving completed work, and on_roster_change=abort. Explicit restart-failed, force-iter, or reset controls can repeat external side effects and remain subject to the canonical engine's receipt checks. After option validation, reset takes precedence over mode. max_resume_age optionally rejects stale checkpoints. The same recovery fields are accepted by pipeline_resume jobs; those jobs own their lifetime and reject background=true."
 		synchronous := op.Responses["200"]
 		synchronous.Description = "Synchronous resume completed"
@@ -493,7 +493,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 		if request := components.Schemas["PipelineResumeRequest"]; request != nil {
 			request.AdditionalProperties = false
 			for name, description := range map[string]string{
-				"background":                      "Start a detached worker for an unfinished saved run and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work.",
+				"background":                      "Start a detached worker for a saved run and return 202 after startup is accepted. Defaults to false; completed runs require an explicit reset or force-iter replay that passes the canonical safety checks.",
 				"iteration":                       "Zero-based iteration index used with mode=force-iter. Defaults to 0 and must be nonnegative in that mode.",
 				"max_materialized_step_nodes":     "Zero or a positive transient step-planning limit for this attempt. Zero uses the saved workflow.",
 				"max_resume_age":                  "Maximum checkpoint age using Go duration units (for example 24h), or an integer number of days or weeks (7d, 2w). Omitted or zero disables the age limit; negative or overflowing durations are rejected.",
@@ -501,7 +501,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 				"max_step_count_total":            "Zero or a positive distinct runtime-step admission limit for this attempt. Zero uses the saved workflow.",
 				"mode":                            "Recovery mode: continue (default), restart-failed, or force-iter. Explicit replay modes can repeat external side effects; force-iter replays the selected iteration and later ones.",
 				"on_roster_change":                "Session-change policy: abort (default) or proceed. Changing the saved session requires explicit proceed and remains subject to receipt safety checks.",
-				"reset":                           "Defaults to false, preserving completed work. Set true to restart the workflow and clear completed step outputs and iteration state; external side effects may repeat. After option validation, reset takes precedence over mode. Detached resume requires an unfinished saved run.",
+				"reset":                           "Defaults to false, preserving completed work. Set true to restart the workflow and clear completed step outputs and iteration state; external side effects may repeat. After option validation, reset takes precedence over mode. This also permits detached replay of a completed run, subject to canonical safety checks.",
 				"session":                         "Optional session override; omitted keeps the saved session. A different session requires on_roster_change=proceed and remains subject to normal resume identity checks.",
 				"step_id":                         "Top-level iteration step ID required with mode=force-iter.",
 				"variables":                       "Variable overrides for synchronous resume and pipeline_resume jobs. A nonempty object is rejected when background=true; detached resume retains saved variables.",

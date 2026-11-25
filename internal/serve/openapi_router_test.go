@@ -100,9 +100,9 @@ func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
 		t.Fatal("resume contract must retain variable maps and reject detached overrides")
 	}
 	for name, guarantees := range map[string][]string{
-		"background":       {"unfinished saved run", "202"},
+		"background":       {"saved run", "202", "completed runs require an explicit reset or force-iter", "safety checks"},
 		"mode":             {"continue (default)", "restart-failed", "force-iter", "side effects"},
-		"reset":            {"false", "preserving completed work", "takes precedence over mode", "Detached resume requires an unfinished saved run"},
+		"reset":            {"false", "preserving completed work", "takes precedence over mode", "detached replay of a completed run", "safety checks"},
 		"iteration":        {"Zero-based", "Defaults to 0", "nonnegative"},
 		"step_id":          {"required", "force-iter"},
 		"on_roster_change": {"abort (default)", "proceed", "receipt safety"},
@@ -114,7 +114,7 @@ func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
 			}
 		}
 	}
-	for _, behavior := range []string{"client disconnection", "server exit", "not workflow completion", "poll", "cancel", "side effects", "pipeline_resume jobs"} {
+	for _, behavior := range []string{"client disconnection", "server exit", "not workflow completion", "poll", "cancel", "side effects", "pipeline_resume jobs", "Completed runs require an explicit reset or force-iter"} {
 		if !strings.Contains(op.Description, behavior) {
 			t.Errorf("resume contract omits %q", behavior)
 		}

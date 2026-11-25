@@ -2527,7 +2527,7 @@ export interface paths {
         put?: never;
         /**
          * Resume pipeline
-         * @description Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response shape reflected from Go type `PipelineExecutionEnvelopeResponse`. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue an unfinished saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership. Recovery defaults to mode=continue, preserving completed work, and on_roster_change=abort. Explicit restart-failed, force-iter, or reset controls can repeat external side effects and remain subject to the canonical engine's receipt checks. After option validation, reset takes precedence over mode. max_resume_age optionally rejects stale checkpoints. The same recovery fields are accepted by pipeline_resume jobs; those jobs own their lifetime and reject background=true.
+         * @description Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response shape reflected from Go type `PipelineExecutionEnvelopeResponse`. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to resume a saved run in a detached worker that survives client disconnection and server exit. Completed runs require an explicit reset or force-iter replay that passes the canonical engine's safety checks. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership. Recovery defaults to mode=continue, preserving completed work, and on_roster_change=abort. Explicit restart-failed, force-iter, or reset controls can repeat external side effects and remain subject to the canonical engine's receipt checks. After option validation, reset takes precedence over mode. max_resume_age optionally rejects stale checkpoints. The same recovery fields are accepted by pipeline_resume jobs; those jobs own their lifetime and reject background=true.
          */
         post: operations["post_api_v1_pipelines_id_resume"];
         delete?: never;
@@ -10583,7 +10583,7 @@ export interface components {
             workflow_id: string;
         };
         PipelineResumeRequest: {
-            /** @description Start a detached worker for an unfinished saved run and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work. */
+            /** @description Start a detached worker for a saved run and return 202 after startup is accepted. Defaults to false; completed runs require an explicit reset or force-iter replay that passes the canonical safety checks. */
             background?: boolean;
             /** @description Zero-based iteration index used with mode=force-iter. Defaults to 0 and must be nonnegative in that mode. */
             iteration?: number;
@@ -10602,7 +10602,7 @@ export interface components {
             mode?: string;
             /** @description Session-change policy: abort (default) or proceed. Changing the saved session requires explicit proceed and remains subject to receipt safety checks. */
             on_roster_change?: string;
-            /** @description Defaults to false, preserving completed work. Set true to restart the workflow and clear completed step outputs and iteration state; external side effects may repeat. After option validation, reset takes precedence over mode. Detached resume requires an unfinished saved run. */
+            /** @description Defaults to false, preserving completed work. Set true to restart the workflow and clear completed step outputs and iteration state; external side effects may repeat. After option validation, reset takes precedence over mode. This also permits detached replay of a completed run, subject to canonical safety checks. */
             reset?: boolean;
             /** @description Optional session override; omitted keeps the saved session. A different session requires on_roster_change=proceed and remains subject to normal resume identity checks. */
             session?: string;
