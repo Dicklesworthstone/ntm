@@ -675,22 +675,17 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use session from request or from saved state
-	session := req.Session
-	if session == "" {
-		session = state.Session
-	}
-	if session == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeMissingSession, "session is required for resume", nil, reqID)
-		return
-	}
-	if err := tmux.ValidateSessionName(session); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			fmt.Sprintf("invalid session name: %s", err.Error()), nil, reqID)
-		return
+	if req.Session != "" {
+		if err := tmux.ValidateSessionName(req.Session); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("invalid session name: %s", err.Error()), nil, reqID)
+			return
+		}
 	}
 
-	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, resumeOptions)
+	// Resolve an omitted session only after the helper owns and reloads the run.
+	// A concurrent resume may have changed it since this existence check.
+	result := s.resumePipelineWithResult(r.Context(), runID, req.Session, req.Variables, state, resumeOptions)
 
 	if !result.Success {
 		statusCode := http.StatusBadRequest
@@ -1204,6 +1199,18 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 		return output
 	}
 	output.WorkflowID = state.WorkflowID
+	if session == "" {
+		session = state.Session
+	}
+	if session == "" {
+		output.RobotResponse = pipeline.NewErrorResponse(errors.New("session is required for resume"), ErrCodeMissingSession, "provide a session or restore the saved session")
+		return output
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeBadRequest, "provide a valid resume session")
+		return output
+	}
+	output.Session = session
 
 	// Load workflow from state
 	if state.WorkflowFile == "" {
