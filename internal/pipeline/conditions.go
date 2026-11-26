@@ -461,7 +461,7 @@ func (e *ConditionEvaluator) evalNode(node condNode) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return e.evalTruthyValue(val, n.quoted), nil
+		return e.evalTruthyValue(val, n.quoted)
 	case condCompareNode:
 		left, err := e.resolveAtom(n.left)
 		if err != nil {
@@ -513,15 +513,54 @@ func (e *ConditionEvaluator) evalCompareValues(op, left string, leftQuoted bool,
 	return false, fmt.Errorf("unsupported comparison operator %q", op)
 }
 
-func (e *ConditionEvaluator) evalTruthyValue(value string, quoted bool) bool {
+func (e *ConditionEvaluator) evalTruthyValue(value string, quoted bool) (bool, error) {
 	if !quoted {
 		value = strings.TrimSpace(value)
+		if len(value) > maxFilterExpressionBytes {
+			if isDecimalConditionValue(value) {
+				return false, fmt.Errorf("numeric boolean operand exceeds %d bytes", maxFilterExpressionBytes)
+			}
+		} else if number, ok := parsePipelineNumber(value); ok {
+			return number.sign != 0, nil
+		}
 	}
 	switch strings.ToLower(value) {
 	case "", "false", "0", "no", "null", "nil", "none", "undefined":
+		return false, nil
+	}
+	return true, nil
+}
+
+// isDecimalConditionValue recognizes the same decimal syntax as
+// parsePipelineNumber without constructing a big exponent. It is only needed
+// for the size guard so large nonnumeric strings keep their usual truthiness.
+func isDecimalConditionValue(value string) bool {
+	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+		value = value[1:]
+	}
+	integer := value
+	value = strings.TrimLeft(value, "0123456789")
+	hasDigits := len(value) < len(integer)
+	if strings.HasPrefix(value, ".") {
+		value = value[1:]
+		fraction := value
+		value = strings.TrimLeft(value, "0123456789")
+		hasDigits = hasDigits || len(value) < len(fraction)
+	}
+	if !hasDigits {
 		return false
 	}
-	return true
+	if strings.HasPrefix(value, "e") || strings.HasPrefix(value, "E") {
+		value = value[1:]
+		if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+			value = value[1:]
+		}
+		if value == "" {
+			return false
+		}
+		value = strings.TrimLeft(value, "0123456789")
+	}
+	return value == ""
 }
 
 // cleanValue removes surrounding quotes and trims whitespace.
