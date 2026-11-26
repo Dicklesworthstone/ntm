@@ -883,6 +883,7 @@ func (p *TimelinePersister) readHeader(path string, compressed bool) (*TimelineH
 	}
 
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
