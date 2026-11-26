@@ -1374,6 +1374,32 @@ func ParsePiComposer(output string) PiComposer {
 	return ParsePiComposerLines(lines)
 }
 
+// PiActivelyWorking reports whether a pi pane shows an in-flight turn: when a
+// complete pi composer/footer frame is visible its top-rule spinner (including
+// narrow spinners without trailing rule characters) is authoritative; otherwise,
+// unless pi has exited back to a shell prompt, fall back to registered plugin
+// working patterns (for partial redraws or custom pi.toml overrides).
+func PiActivelyWorking(output string, paneWidth int) bool {
+	if hasTrailingPiShellExitPrompt(output) {
+		return false
+	}
+	if c := ParsePiComposer(output); c.Found {
+		return c.Working
+	}
+	return PluginActivelyWorking(output, AgentTypePi, paneWidth)
+}
+
+// PiIdlePromptShowing reports whether a pi pane is waiting for input: its
+// bottom-anchored composer and footer are visible without a working spinner,
+// trust dialog, or trailing shell prompt proving pi exited.
+func PiIdlePromptShowing(output string) bool {
+	if hasTrailingPiShellExitPrompt(output) || TrustDialogVisible(output) {
+		return false
+	}
+	c := ParsePiComposer(output)
+	return c.Found && !c.Working
+}
+
 // ParsePiComposerLines parses a pi editor and footer over already-split lines
 // (which may still carry ANSI SGR codes), preserving indices into lines so
 // callers can slice transcript rows directly.
@@ -1478,6 +1504,12 @@ func isPiFooterStats(line string) bool {
 	for i, field := range fields {
 		if piContextGauge.MatchString(field) {
 			return true
+		}
+		if usage && strings.HasPrefix(field, "(") && strings.HasSuffix(field, "%)") {
+			pctText := strings.TrimSuffix(strings.TrimPrefix(field, "("), "%)")
+			if _, err := strconv.ParseFloat(pctText, 64); err == nil {
+				return true
+			}
 		}
 		if piUsageToken.MatchString(field) {
 			usage = true

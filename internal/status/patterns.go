@@ -281,6 +281,9 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	if agentType == string(agent.AgentTypeOmp) {
 		return agent.OmpIdlePromptShowing(output)
 	}
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypePi {
+		return agent.PiIdlePromptShowing(output)
+	}
 
 	// Registered plugin agents: declared Working patterns veto idle; declared
 	// Idle patterns are consulted alongside the generic prompt scan (ntm#260).
