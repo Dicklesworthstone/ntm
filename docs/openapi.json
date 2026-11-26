@@ -48907,6 +48907,10 @@
             "type": "string",
             "description": "Pane"
           },
+          "pane_id": {
+            "type": "string",
+            "description": "Pane i d"
+          },
           "priority": {
             "type": "string",
             "description": "Priority"
@@ -49130,6 +49134,10 @@
           "pane": {
             "type": "string",
             "description": "Pane"
+          },
+          "pane_id": {
+            "type": "string",
+            "description": "Pane i d"
           },
           "prompt_sent": {
             "type": "boolean",

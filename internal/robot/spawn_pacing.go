@@ -464,6 +464,9 @@ func WithSpawnLaunchReadiness(opts SpawnOptions, timeout time.Duration) (SpawnOp
 		if agent.Pane == "" {
 			agent.Pane = fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
 		}
+		if agent.PaneID == "" {
+			agent.PaneID = pane.ID
+		}
 		if agent.Type == "" {
 			agent.Type = agentType
 		}
@@ -475,7 +478,8 @@ func WithSpawnLaunchReadiness(opts SpawnOptions, timeout time.Duration) (SpawnOp
 		if err == nil && agent.Error != "" {
 			err = errors.New(agent.Error)
 		}
-		if err == nil && (agent.Pane != fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index) || agent.Type != agentType) {
+		if err == nil && (agent.Pane != fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index) ||
+			(pane.ID != "" && agent.PaneID != pane.ID) || agent.Type != agentType) {
 			err = errors.New("launch receipt does not identify the requested agent pane")
 		}
 		if err == nil {
@@ -488,7 +492,8 @@ func WithSpawnLaunchReadiness(opts SpawnOptions, timeout time.Duration) (SpawnOp
 			}
 			cancel()
 			if err == nil && (observation.Session != session || len(observation.Agents) != 1 ||
-				observation.Agents[0].Pane != agent.Pane || observation.Agents[0].Type != agent.Type ||
+				observation.Agents[0].Pane != agent.Pane || observation.Agents[0].PaneID != agent.PaneID ||
+				observation.Agents[0].Type != agent.Type ||
 				!observation.Agents[0].Ready || observation.Agents[0].Error != "") {
 				err = errors.New("readiness check returned no ready observation for the launched agent")
 			}

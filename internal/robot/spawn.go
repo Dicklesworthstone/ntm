@@ -560,6 +560,7 @@ type SpawnRecovery struct {
 // SpawnAssignment represents a work assignment to a spawned agent.
 type SpawnAssignment struct {
 	Pane              string `json:"pane"`        // Pane reference (e.g., "0.1")
+	PaneID            string `json:"pane_id,omitempty"`
 	AgentType         string `json:"agent_type"`  // claude, codex, gemini
 	BeadID            string `json:"bead_id"`     // Assigned bead ID
 	BeadTitle         string `json:"bead_title"`  // Bead title for context
@@ -584,6 +585,7 @@ type SpawnAssignment struct {
 // SpawnPromptDelivery is one agent's --spawn-prompt delivery outcome.
 type SpawnPromptDelivery struct {
 	Pane        string `json:"pane"`
+	PaneID      string `json:"pane_id,omitempty"`
 	AgentType   string `json:"agent_type"`
 	Order       int    `json:"order"` // 1-based position in stagger.schedule
 	PromptSent  bool   `json:"prompt_sent"`
@@ -611,6 +613,15 @@ type SpawnedAgent struct {
 	StartupMs           int64  `json:"startup_ms"`
 	CredentialIsolated  *bool  `json:"credential_isolated,omitempty"`
 	Error               string `json:"error,omitempty"`
+}
+
+// paneSelector keeps a launch bound to its tmux identity after panes move or
+// indices are reused. A recorded ID must never fall back to its former slot.
+func (a SpawnedAgent) paneSelector() string {
+	if id := strings.TrimSpace(a.PaneID); id != "" {
+		return id
+	}
+	return a.Pane
 }
 
 func collectSpawnAdmissionInputWithPanes(
@@ -2157,6 +2168,7 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 	}
 	agent := SpawnedAgent{
 		Pane:                fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+		PaneID:              pane.ID,
 		Type:                agentType,
 		Variant:             model.ModelAlias,
 		Persona:             personaMeta.personaName,
@@ -2388,13 +2400,12 @@ func waitForAgentsReadyWithCapture(
 				continue // Already detected as ready
 			}
 
-			// Build tmux target from session and pane reference
-			// The Pane field is in "window.index" format (e.g., "0.2")
-			// For tmux capture, use "session:window.pane" format
-			paneRef := output.Agents[i].Pane
-
-			// We can use the paneRef directly as it contains window.index
-			target := fmt.Sprintf("%s:%s", output.Session, paneRef)
+			// Read the launched pane, not whichever pane now occupies its old
+			// window/index. A removed ID remains an error until the deadline.
+			target := output.Agents[i].paneSelector()
+			if !strings.HasPrefix(target, "%") {
+				target = fmt.Sprintf("%s:%s", output.Session, target)
+			}
 
 			// Capture pane output (50 lines to catch Claude's TUI)
 			captured, err := capture(readyCtx, target, 50)
@@ -3005,13 +3016,14 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 
 		spawnAssignment := SpawnAssignment{
 			Pane:         agent.Pane,
+			PaneID:       agent.PaneID,
 			AgentType:    agent.Type,
 			BeadID:       item.ID,
 			BeadTitle:    item.Title,
 			Priority:     fmt.Sprintf("P%d", item.Priority),
 			AssignReason: item.MatchReason,
 		}
-		resolved, resolveErr := tmux.ResolvePaneSelectors(panes, []string{agent.Pane}, true)
+		resolved, resolveErr := tmux.ResolvePaneSelectors(panes, []string{agent.paneSelector()}, true)
 		if resolveErr != nil {
 			spawnAssignment.ClaimError = fmt.Sprintf("resolve pane %s: %v", agent.Pane, resolveErr)
 			assignments = append(assignments, spawnAssignment)
@@ -3019,6 +3031,7 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 		}
 		pane := resolved[0]
 		spawnAssignment.Pane = pane.Ref().Canonical(multiWindow)
+		spawnAssignment.PaneID = pane.ID
 		target := pane.ID
 		if target == "" {
 			target = pane.Ref().Physical()
@@ -3215,7 +3228,7 @@ func spawnAgentPlanErrors(agents []SpawnedAgent, err error) []SpawnAssignment {
 	result := make([]SpawnAssignment, 0, len(agents))
 	for _, agent := range agents {
 		result = append(result, SpawnAssignment{
-			Pane: agent.Pane, AgentType: agent.Type, ClaimError: err.Error(),
+			Pane: agent.Pane, PaneID: agent.PaneID, AgentType: agent.Type, ClaimError: err.Error(),
 		})
 	}
 	return result
@@ -3228,18 +3241,27 @@ func ensureSpawnAssignmentCoverage(output *SpawnOutput) {
 	multiWindow := spawnCoverageSpansMultipleWindows(output.Agents)
 	represented := make(map[string]struct{}, len(output.Assignments))
 	for _, spawnAssignment := range output.Assignments {
-		represented[spawnCoveragePaneKey(spawnAssignment.Pane, multiWindow)] = struct{}{}
+		// Callers without IDs correlate by address. Once a launch captured
+		// an ID, only that ID can prove its assignment is covered.
+		represented["pane:"+spawnCoveragePaneKey(spawnAssignment.Pane, multiWindow)] = struct{}{}
+		if id := strings.TrimSpace(spawnAssignment.PaneID); id != "" {
+			represented["id:"+id] = struct{}{}
+		}
 	}
 	for _, agent := range output.Agents {
 		if agent.Type == "user" {
 			continue
 		}
-		coverageKey := spawnCoveragePaneKey(agent.Pane, multiWindow)
+		coverageKey := "pane:" + spawnCoveragePaneKey(agent.Pane, multiWindow)
+		if id := strings.TrimSpace(agent.PaneID); id != "" {
+			coverageKey = "id:" + id
+		}
 		if _, ok := represented[coverageKey]; ok {
 			continue
 		}
 		output.Assignments = append(output.Assignments, SpawnAssignment{
 			Pane:       agent.Pane,
+			PaneID:     agent.PaneID,
 			AgentType:  agent.Type,
 			ClaimError: "no work assignment was produced for this eligible agent",
 		})
@@ -3334,7 +3356,7 @@ func deliverSpawnInitialPrompts(
 	}
 	deliveries := make([]SpawnPromptDelivery, len(agents))
 	for i, agent := range agents {
-		deliveries[i] = SpawnPromptDelivery{Pane: agent.Pane, AgentType: agent.Type, Order: i + 1}
+		deliveries[i] = SpawnPromptDelivery{Pane: agent.Pane, PaneID: agent.PaneID, AgentType: agent.Type, Order: i + 1}
 	}
 	failFrom := func(start int, err error) {
 		for i := start; i < len(deliveries); i++ {
@@ -3362,12 +3384,14 @@ func deliverSpawnInitialPrompts(
 			failFrom(i, wrapped)
 			return deliveries, spawnCancellationError(ctx, wrapped)
 		}
-		resolved, resolveErr := tmux.ResolvePaneSelectors(panes, []string{agent.Pane}, true)
+		resolved, resolveErr := tmux.ResolvePaneSelectors(panes, []string{agent.paneSelector()}, true)
 		if resolveErr != nil {
 			deliveries[i].Error = fmt.Sprintf("resolve pane %s: %v", agent.Pane, resolveErr)
 			continue
 		}
 		pane := resolved[0]
+		deliveries[i].Pane = pane.Ref().Physical()
+		deliveries[i].PaneID = pane.ID
 		target := pane.ID
 		if target == "" {
 			target = pane.Ref().Physical()
@@ -3455,7 +3479,7 @@ func spawnAssignmentPlanErrors(agents []SpawnedAgent, items []workItem, err erro
 	for _, item := range items {
 		agent := agents[item.AgentIndex]
 		result = append(result, SpawnAssignment{
-			Pane: agent.Pane, AgentType: agent.Type, BeadID: item.ID,
+			Pane: agent.Pane, PaneID: agent.PaneID, AgentType: agent.Type, BeadID: item.ID,
 			BeadTitle: item.Title, Priority: fmt.Sprintf("P%d", item.Priority),
 			ClaimError: err.Error(),
 		})
@@ -3505,10 +3529,10 @@ func spawnDurableAssignmentReplays(
 			return result, err
 		}
 
-		resolved, err := tmux.ResolvePaneSelectors(panes, []string{agent.Pane}, true)
+		resolved, err := tmux.ResolvePaneSelectors(panes, []string{agent.paneSelector()}, true)
 		if err != nil {
 			result = append(result, SpawnAssignment{
-				Pane: agent.Pane, AgentType: agent.Type,
+				Pane: agent.Pane, PaneID: agent.PaneID, AgentType: agent.Type,
 				ClaimError: fmt.Sprintf("resolve pane %s for assignment replay: %v", agent.Pane, err),
 			})
 			continue
@@ -3538,7 +3562,7 @@ func spawnDurableAssignmentReplays(
 		}
 		if len(candidates) != 1 {
 			result = append(result, SpawnAssignment{
-				Pane: paneRef, AgentType: agent.Type,
+				Pane: paneRef, PaneID: agent.PaneID, AgentType: agent.Type,
 				ClaimError: fmt.Sprintf("assignment replay target %s has %d active durable records", target, len(candidates)),
 			})
 			continue
@@ -3550,7 +3574,7 @@ func spawnDurableAssignmentReplays(
 		)
 		if err != nil {
 			result = append(result, SpawnAssignment{
-				Pane: paneRef, AgentType: agent.Type, BeadID: candidates[0].BeadID,
+				Pane: paneRef, PaneID: agent.PaneID, AgentType: agent.Type, BeadID: candidates[0].BeadID,
 				BeadTitle: candidates[0].BeadTitle, ClaimError: err.Error(),
 			})
 			if cancelErr := spawnCancellationError(ctx, err); cancelErr != nil {
@@ -3580,7 +3604,7 @@ func spawnDurableAssignmentReplay(
 		occupancy = strings.TrimSpace(existing.DispatchTarget)
 	}
 	promptChecksum := assignment.PromptSHA256(existing.PromptSent)
-	if existing.Pane != pane.Index || strings.TrimSpace(existing.DispatchTarget) != target || occupancy != target ||
+	if (pane.ID == "" && existing.Pane != pane.Index) || strings.TrimSpace(existing.DispatchTarget) != target || occupancy != target ||
 		normalizeAgentType(existing.AgentType) != normalizeAgentType(agent.Type) {
 		return SpawnAssignment{}, fmt.Errorf("durable assignment %s does not match pane %s identity", existing.BeadID, target)
 	}
@@ -3615,6 +3639,7 @@ func spawnDurableAssignmentReplay(
 
 	return SpawnAssignment{
 		Pane:              paneRef,
+		PaneID:            pane.ID,
 		AgentType:         agent.Type,
 		BeadID:            existing.BeadID,
 		BeadTitle:         existing.BeadTitle,

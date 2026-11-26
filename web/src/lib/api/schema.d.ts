@@ -13312,6 +13312,8 @@ export interface components {
             memory_injection?: components["schemas"]["CMInjectionInfo"];
             /** @description Pane */
             pane: string;
+            /** @description Pane i d */
+            pane_id?: string;
             /** @description Priority */
             priority: string;
             /** @description Prompt error */
@@ -13403,6 +13405,8 @@ export interface components {
             order: number;
             /** @description Pane */
             pane: string;
+            /** @description Pane i d */
+            pane_id?: string;
             /** @description Prompt sent */
             prompt_sent: boolean;
         };

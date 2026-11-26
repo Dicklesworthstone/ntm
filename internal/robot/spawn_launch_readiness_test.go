@@ -14,6 +14,7 @@ import (
 
 func TestSpawnLaunchReadinessOrdersEveryLaunchAndPreservesOptions(t *testing.T) {
 	var order []string
+	var lastPaneID string
 	ports := &SpawnLifecycleDependencies{
 		IsTMUXInstalled: func() bool { return false },
 		LaunchAgent: func(_ context.Context, pane tmux.Pane, session, kind string, number int, dir, command string) (SpawnedAgent, error) {
@@ -21,12 +22,13 @@ func TestSpawnLaunchReadinessOrdersEveryLaunchAndPreservesOptions(t *testing.T) 
 				t.Fatal("launch arguments changed")
 			}
 			order = append(order, fmt.Sprintf("launch:%d", number))
+			lastPaneID = pane.ID
 			// A launch receipt is not itself proof of readiness.
 			return SpawnedAgent{Title: "original title", Ready: true, StartupMs: 12}, nil
 		},
 		WaitForReady: func(ctx context.Context, out *SpawnOutput, timeout time.Duration) error {
 			if _, ok := ctx.Deadline(); !ok || timeout != time.Minute || len(out.Agents) != 1 || out.Agents[0].Ready ||
-				out.Session != "gated" || out.WorkingDir != "/project" || out.Agents[0].Type != "claude" {
+				out.Session != "gated" || out.WorkingDir != "/project" || out.Agents[0].Type != "claude" || out.Agents[0].PaneID != lastPaneID {
 				t.Fatalf("wrong readiness request: %+v", out)
 			}
 			order = append(order, "ready:"+out.Agents[0].Pane)
@@ -50,7 +52,7 @@ func TestSpawnLaunchReadinessOrdersEveryLaunchAndPreservesOptions(t *testing.T) 
 	}
 	for i := 1; i <= 3; i++ {
 		agent, err := opts.LifecycleDeps.LaunchAgent(context.Background(), tmux.Pane{ID: fmt.Sprintf("%%%d", i), WindowIndex: 2, Index: i}, "gated", "claude", i, "/project", "original command")
-		if err != nil || !agent.Ready || agent.Title != "original title" || agent.StartupMs != 12 || agent.Error != "" {
+		if err != nil || !agent.Ready || agent.Title != "original title" || agent.StartupMs != 12 || agent.Error != "" || agent.PaneID != fmt.Sprintf("%%%d", i) {
 			t.Fatalf("launch %d lost receipt: %+v, %v", i, agent, err)
 		}
 	}
@@ -61,7 +63,7 @@ func TestSpawnLaunchReadinessOrdersEveryLaunchAndPreservesOptions(t *testing.T) 
 }
 
 func TestSpawnLaunchReadinessFailureStopsLaterSideEffects(t *testing.T) {
-	for _, failure := range []string{"launch error", "receipt error", "wrong launch pane", "readiness error", "not ready", "wrong ready pane", "missing ready agent", "late success"} {
+	for _, failure := range []string{"launch error", "receipt error", "wrong launch pane", "wrong launch ID", "readiness error", "not ready", "wrong ready pane", "wrong ready ID", "missing ready agent", "late success"} {
 		t.Run(failure, func(t *testing.T) {
 			cause := errors.New(failure)
 			launches, waits := 0, 0
@@ -76,6 +78,8 @@ func TestSpawnLaunchReadinessFailureStopsLaterSideEffects(t *testing.T) {
 						a.Error = failure
 					case "wrong launch pane":
 						a.Pane = "0.9"
+					case "wrong launch ID":
+						a.PaneID = "%99"
 					}
 					return a, nil
 				},
@@ -88,6 +92,8 @@ func TestSpawnLaunchReadinessFailureStopsLaterSideEffects(t *testing.T) {
 						return nil
 					case "wrong ready pane":
 						out.Agents[0].Pane = "0.9"
+					case "wrong ready ID":
+						out.Agents[0].PaneID = "%99"
 					case "missing ready agent":
 						out.Agents = nil
 						return nil

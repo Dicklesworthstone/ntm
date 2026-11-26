@@ -2600,6 +2600,83 @@ func spawnOpenAssignmentDetails(_ context.Context, _ string, beadID string) (*bv
 	return &bv.BeadAssignmentDetails{ID: beadID, Status: "open"}, nil
 }
 
+func TestSpawnAssignmentReplayUsesCapturedPaneID(t *testing.T) {
+	t.Parallel()
+	for _, originalExists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("original=%t", originalExists), func(t *testing.T) {
+			t.Parallel()
+			const session, beadID, actor, prompt = "spawn-id-replay", "bd-replay-id", "ExactOwner/ntm-key", "recorded work prompt"
+			panes := []tmux.Pane{{ID: "%9", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: session + "__cc_9"}}
+			if originalExists {
+				panes = append(panes, tmux.Pane{ID: "%2", WindowIndex: 2, Index: 7, Type: tmux.AgentClaude, Title: session + "__cc_1"})
+			}
+			checksum := assignment.PromptSHA256(prompt)
+			store := &assignment.AssignmentStore{Assignments: map[string]*assignment.Assignment{
+				beadID: {
+					BeadID: beadID, BeadTitle: "Recorded work", Pane: 1,
+					AgentType: "claude", AgentName: "ExactOwner", Status: assignment.StatusAssigned,
+					IdempotencyKey: "replay-identity-key", ClaimActor: actor, ClaimState: assignment.ClaimClaimed,
+					ClaimStatus: "in_progress", DispatchState: assignment.DispatchSent,
+					DispatchTarget: "%2", OccupancyKey: "%2", PromptSent: prompt,
+					PromptSHA256: checksum, IntentSHA256: checksum, DispatchReceiptID: "tmux:%2:receipt",
+				},
+			}}
+			var mutations, ownerReads int
+			deps := &SpawnAssignmentDependencies{
+				AssignmentLedgerExists: func(string) (bool, error) { return true, nil },
+				LoadStore:             func(string) (*assignment.AssignmentStore, error) { return store, nil },
+				ListPanes:             func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+				GetBeadDetails: func(_ context.Context, _ string, id string) (*bv.BeadAssignmentDetails, error) {
+					ownerReads++
+					return &bv.BeadAssignmentDetails{ID: id, Status: "in_progress", Assignee: actor, Priority: 1}, nil
+				},
+				ClaimBead: func(context.Context, string, string, string) (bv.BeadClaimResult, error) {
+					mutations++
+					return bv.BeadClaimResult{}, errors.New("replay must not claim")
+				},
+				NewIdempotencyKey: func() (string, error) {
+					mutations++
+					return "", errors.New("replay must not create an intent")
+				},
+				ObserveSession: func(context.Context, string) (statuspkg.SessionObservation, error) {
+					mutations++
+					return statuspkg.SessionObservation{}, errors.New("replay must not prepare a delivery")
+				},
+				DispatchDeliverer: dispatchsvc.DelivererFunc(func(context.Context, dispatchsvc.Delivery) error {
+					mutations++
+					return errors.New("replay must not deliver")
+				}),
+			}
+			out := &SpawnOutput{
+				RobotResponse: NewRobotResponse(true), Session: session,
+				Agents:   []SpawnedAgent{{Pane: "0.1", PaneID: "%2", Type: "claude"}},
+				Recovery: &SpawnRecovery{InjectedText: "new handoff", DeliveredTo: []string{}},
+			}
+			got, err := assignWorkToAgentsWithError(t.Context(), out, t.TempDir(), session, "top-n", config.Default(),
+				false, nil, deps, mockTriage([]bv.TriageRecommendation{}, nil), "", PromptContextOptions{}, nil)
+			if err != nil || len(got) != 1 || got[0].PaneID != "%2" {
+				t.Fatalf("replay identity lost: %+v, %v", got, err)
+			}
+			out.Assignments = got
+			finalizeSpawnAssignmentOutput(out)
+			recordSpawnRecoveryDeliveries(out)
+			if len(out.Assignments) != 1 || out.Success != originalExists {
+				t.Fatalf("replay coverage matched a reused physical address: %+v", out)
+			}
+			if originalExists {
+				if !got[0].Claimed || !got[0].PromptSent || got[0].Pane != "2.7" || got[0].DispatchReceiptID != "tmux:%2:receipt" || ownerReads != 1 {
+					t.Fatalf("moving the exact pane invalidated its receipt: %+v owners=%d", got, ownerReads)
+				}
+			} else if got[0].Claimed || got[0].PromptSent || got[0].ClaimError == "" || ownerReads != 0 {
+				t.Fatalf("replacement inherited the old pane's receipt: %+v owners=%d", got, ownerReads)
+			}
+			if mutations != 0 || len(out.Recovery.DeliveredTo) != 0 {
+				t.Fatalf("historical replay triggered work or confirmed new recovery: mutations=%d recovery=%+v", mutations, out.Recovery)
+			}
+		})
+	}
+}
+
 func TestWaitForAgentsReadyCancellationInterruptsPolling(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -3060,6 +3137,58 @@ func TestWaitForAgentsReadyRequiresLiveProcess(t *testing.T) {
 	}
 	if !output.Agents[0].Ready {
 		t.Fatal("an unavailable PID must not block readiness")
+	}
+}
+
+func TestWaitForAgentsReadyUsesCapturedPaneID(t *testing.T) {
+	originalLiveness := spawnPaneLiveness
+	t.Cleanup(func() { spawnPaneLiveness = originalLiveness })
+	for _, tc := range []struct {
+		name       string
+		paneID     string
+		wantTarget string
+		missing    bool
+	}{
+		{name: "moved pane", paneID: "%7", wantTarget: "%7"},
+		{name: "removed pane", paneID: "%7", wantTarget: "%7", missing: true},
+		{name: "legacy address", wantTarget: "ready-id:0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var captures, livenessChecks int
+			spawnPaneLiveness = func(_ context.Context, target string) (int, bool) {
+				livenessChecks++
+				if target != tc.wantTarget {
+					t.Fatalf("liveness checked replacement target %q, want %q", target, tc.wantTarget)
+				}
+				return 4242, true
+			}
+			output := &SpawnOutput{Session: "ready-id", Agents: []SpawnedAgent{{Pane: "0.1", PaneID: tc.paneID, Type: "claude"}}}
+			capture := func(_ context.Context, target string, _ int) (string, error) {
+				captures++
+				if target != tc.wantTarget {
+					t.Fatalf("readiness captured replacement target %q, want %q", target, tc.wantTarget)
+				}
+				if tc.missing {
+					return "", errors.New("launched pane no longer exists")
+				}
+				return "Claude Code ready for input", nil
+			}
+			timeout := time.Second
+			if tc.missing {
+				timeout = 20 * time.Millisecond
+			}
+			err := waitForAgentsReadyWithCapture(t.Context(), output, timeout, capture)
+			if tc.missing {
+				if !errors.Is(err, context.DeadlineExceeded) || output.Agents[0].Ready || livenessChecks != 0 {
+					t.Fatalf("removed pane gained readiness: output=%+v err=%v liveness=%d", output, err, livenessChecks)
+				}
+			} else if err != nil || !output.Agents[0].Ready || livenessChecks != 1 {
+				t.Fatalf("captured pane did not become ready: output=%+v err=%v liveness=%d", output, err, livenessChecks)
+			}
+			if captures == 0 {
+				t.Fatal("readiness was granted without observing its target")
+			}
+		})
 	}
 }
 

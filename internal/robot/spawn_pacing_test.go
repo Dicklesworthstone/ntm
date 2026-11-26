@@ -611,6 +611,86 @@ func TestGetSpawnHandoffBudgetAndHistoricalReceipts(t *testing.T) {
 	}
 }
 
+func TestGetSpawnDeliveryKeepsLaunchedPaneIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, assignWork := range []bool{false, true} {
+		for _, originalExists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("assign=%t/original=%t", assignWork, originalExists), func(t *testing.T) {
+				session := fmt.Sprintf("spawn-id-%t-%t", assignWork, originalExists)
+				world := newStaggerSpawnWorld(t, session, tmux.AgentClaude)
+				opts := world.options(t)
+				opts.CCCount, opts.Prompt = 1, "Continue the migration"
+				opts.AssignWork = assignWork
+				writeRobotSpawnHandoff(t, opts.WorkingDir, session, "Captured launch recovery")
+				claims := 0
+				if assignWork {
+					opts.AssignStrategy = "top-n"
+					store := assignment.NewStore(session)
+					world.assignment.LoadAssignmentPolicy = func(string, string, bool) (*config.Config, error) { return testSpawnConfig(), nil }
+					world.assignment.FetchActionable = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+						return []bv.TriageRecommendation{{ID: "bd-identity", Title: "Continue migration", Status: "open", Priority: 1}}, nil
+					}
+					world.assignment.LoadStore = func(string) (*assignment.AssignmentStore, error) { return store, nil }
+					world.assignment.ClaimBead = func(_ context.Context, _ string, beadID, actor string) (bv.BeadClaimResult, error) {
+						claims++
+						return bv.BeadClaimResult{ID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+					}
+					world.assignment.GetBeadDetails = spawnOpenAssignmentDetails
+					world.assignment.GetBeadStatus = func(context.Context, string, string) (string, error) { return "open", nil }
+					world.assignment.NewIdempotencyKey = func() (string, error) { return "spawn-identity-key", nil }
+				}
+				world.lifecycle.WaitForReady = func(context.Context, *SpawnOutput, time.Duration) error {
+					world.record("ready")
+					// Another idle Claude now occupies the original 0.1 slot.
+					// The launched %2 either moved to 2.7 or was removed.
+					live := []tmux.Pane{
+						{ID: "%1", WindowIndex: 0, Index: 0, Type: tmux.AgentUser},
+						{ID: "%9", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: session + "__cc_9"},
+					}
+					if originalExists {
+						live = append(live, tmux.Pane{ID: "%2", WindowIndex: 2, Index: 7, Type: tmux.AgentClaude, Title: session + "__cc_1"})
+					}
+					world.assignment.ListPanes = func(context.Context, string) ([]tmux.Pane, error) {
+						return append([]tmux.Pane(nil), live...), nil
+					}
+					world.assignment.ObserveSession = bulkSafeObserver(live)
+					return nil
+				}
+				out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+				if err != nil || out == nil || out.Success != originalExists || out.Recovery == nil {
+					t.Fatalf("spawn identity result: out=%+v err=%v", out, err)
+				}
+				if len(out.Agents) != 2 || out.Agents[1].PaneID != "%2" {
+					t.Fatalf("launch identity was replaced: %+v", out.Agents)
+				}
+				if assignWork {
+					if len(out.Assignments) != 1 || out.Assignments[0].PaneID != "%2" || out.Assignments[0].PromptSent != originalExists {
+						t.Fatalf("assignment coverage lost launch identity: %+v", out.Assignments)
+					}
+					if originalExists && (out.Assignments[0].Pane != "2.7" || claims != 1) {
+						t.Fatalf("moved assignment not correlated: %+v claims=%d", out.Assignments, claims)
+					}
+					if !originalExists && (claims != 0 || out.Assignments[0].ClaimError == "") {
+						t.Fatalf("replacement caused a claim: %+v claims=%d", out.Assignments, claims)
+					}
+				} else if len(out.PromptDeliveries) != 1 || out.PromptDeliveries[0].PaneID != "%2" || out.PromptDeliveries[0].PromptSent != originalExists {
+					t.Fatalf("prompt receipt lost launch identity: %+v", out.PromptDeliveries)
+				}
+				if originalExists {
+					if len(world.deliveries) != 1 || world.deliveries[0].PaneID != "%2" || !strings.Contains(world.deliveries[0].Message, "Captured launch recovery") {
+						t.Fatalf("handoff reached a replacement pane: %+v", world.deliveries)
+					}
+					if !reflect.DeepEqual(out.Recovery.DeliveredTo, []string{"2.7"}) {
+						t.Fatalf("recovery receipt has stale address: %+v", out.Recovery)
+					}
+				} else if len(world.deliveries) != 0 || len(out.Recovery.DeliveredTo) != 0 {
+					t.Fatalf("removed pane was replaced during delivery: deliveries=%+v recovery=%+v", world.deliveries, out.Recovery)
+				}
+			})
+		}
+	}
+}
+
 func TestResolveSpawnStaggerModes(t *testing.T) {
 	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
