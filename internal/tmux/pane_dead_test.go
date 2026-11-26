@@ -46,6 +46,27 @@ func TestParsePaneLine_PaneDeadFlag(t *testing.T) {
 	}
 }
 
+func TestParsePaneLine_EmptyPIDRequiresDeadFlag(t *testing.T) {
+	t.Parallel()
+	line := fullPaneLine("%2", "1", "sess__cod_2", "codex", "", "3", "codex", "", "", "1")
+	pane, err := parsePaneLine(line+FieldSeparator+"[rotation_123]", FieldSeparator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pane.Dead || pane.PID != 0 || pane.ID != "%2" || pane.WindowIndex != 3 || pane.RotationToken != "rotation_123" {
+		t.Fatalf("dead pane metadata: %+v", pane)
+	}
+	for _, invalid := range []string{
+		fullPaneLine("%2", "1", "t", "sh", "", "3", "", "", "", "0"),
+		paneLine("%2", "1", "t", "sh", "", "3", ""),
+		fullPaneLine("%2", "1", "t", "sh", "bad", "3", "", "", "", "1"),
+	} {
+		if _, err := parsePaneLine(invalid, FieldSeparator); err == nil || !strings.Contains(err.Error(), "parse pane PID") {
+			t.Fatalf("invalid PID in %q: got %v", invalid, err)
+		}
+	}
+}
+
 func TestParsePaneLine_PaneDeadDoesNotShiftServiceTags(t *testing.T) {
 	t.Parallel()
 

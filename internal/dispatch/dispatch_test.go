@@ -1263,6 +1263,23 @@ func TestRefuseDeadAgentPane(t *testing.T) {
 	}
 }
 
+func TestDeliveryToRetainedDeadPane(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []tmux.AgentType{tmux.AgentCodex, tmux.AgentUser} {
+		pane := testPane("%2", 1, 0, kind, "")
+		pane.Dead = true
+		target := targetFromPane(pane, true)
+		_, err := PrepareTMUXDelivery(context.Background(), Delivery{Target: target})
+		if !IsGuaranteedNoDeliveryActuation(err) || !strings.Contains(err.Error(), "pane 1.0 is dead") {
+			t.Fatalf("delivery to retained %s pane: %v", kind, err)
+		}
+		other := pane
+		other.Dead = false
+		_, err = PlanTargets(Request{Panes: []tmux.Pane{other, pane}})
+		requireCode(t, err, ErrInvalidRequest)
+	}
+}
+
 // TestPreActuationRefusalsAreMarkedRetryable pins ntm#294: every refusal the
 // tmux deliverer raises before the first keystroke must carry the
 // no-actuation mark, so a caller behind a durable idempotency barrier can

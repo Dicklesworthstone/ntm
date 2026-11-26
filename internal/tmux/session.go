@@ -4688,9 +4688,14 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 		return nil, fmt.Errorf("parse pane height %q: %w", parts1[5], err)
 	}
 	active := parts1[6] == "1"
-	pid, err := strconv.Atoi(parts2[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse pane PID %q: %w", parts2[0], err)
+	// tmux 3.8 leaves pane_pid empty after a remain-on-exit pane dies.
+	// Older versions can still report its previous PID.
+	var pid int
+	if !dead || parts2[0] != "" {
+		pid, err = strconv.Atoi(parts2[0])
+		if err != nil {
+			return nil, fmt.Errorf("parse pane PID %q: %w", parts2[0], err)
+		}
 	}
 	windowIndex, err := strconv.Atoi(parts2[1])
 	if err != nil {

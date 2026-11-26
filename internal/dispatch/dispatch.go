@@ -333,13 +333,16 @@ func validateTMUXDeliveryProtocol(delivery Delivery) error {
 	return nil
 }
 
-// RefuseDeadAgentPane rejects delivery to an agent-typed pane whose CLI has
+// RefuseDeadAgentPane rejects delivery to retained dead panes and agents whose CLI has
 // exited back to a bare shell (ntm-0g0b): the keystrokes would land in zsh —
 // possibly EXECUTING message text as shell commands — while the send reported
-// success. User panes are exempt (a shell is their normal state), and the
+// success. Live user panes are exempt (a shell is their normal state), and the
 // check is conservative (only definite shells refuse), so a live agent can
 // never be false-refused.
 func RefuseDeadAgentPane(pane tmux.Pane) error {
+	if pane.Dead {
+		return fmt.Errorf("PANE_AGENT_DEAD: pane %s is dead (remain-on-exit); restart it before sending work", pane.Ref().Physical())
+	}
 	if !pane.AgentCLIDead() {
 		return nil
 	}
@@ -1103,7 +1106,7 @@ func canonicalizePanes(input []tmux.Pane) ([]tmux.Pane, error) {
 func samePaneSnapshot(a, b tmux.Pane) bool {
 	if a.ID != b.ID || a.Index != b.Index || a.WindowIndex != b.WindowIndex || a.NTMIndex != b.NTMIndex ||
 		a.Title != b.Title || a.Type != b.Type || a.Variant != b.Variant || a.Command != b.Command ||
-		a.Width != b.Width || a.Height != b.Height || a.Active != b.Active || a.PID != b.PID ||
+		a.Width != b.Width || a.Height != b.Height || a.Active != b.Active || a.PID != b.PID || a.Dead != b.Dead ||
 		a.RotationToken != b.RotationToken || len(a.Tags) != len(b.Tags) {
 		return false
 	}
