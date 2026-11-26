@@ -206,7 +206,7 @@ type PipelineValidateRequest struct {
 
 // PipelineCleanupRequest is the request body for POST /api/v1/pipelines/cleanup
 type PipelineCleanupRequest struct {
-	OlderThanHours int `json:"older_than_hours,omitempty"`
+	OlderThanHours *int  `json:"older_than_hours,omitempty"`
 	DryRun         *bool `json:"dry_run,omitempty"`
 }
 
@@ -978,21 +978,28 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 	}
 	reqID := requestIDFromContext(r.Context())
 
+	// Cleanup controls are body-only. Silently ignoring a query such as
+	// ?dry_run=true would turn a requested preview into deletion.
+	if r.URL.RawQuery != "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "put pipeline cleanup options in the JSON body", nil, reqID)
+		return
+	}
+
 	// An omitted body retains the original cleanup defaults. Reject malformed
 	// preview requests before opening any checkpoint for deletion.
-	req := &PipelineCleanupRequest{DryRun: new(bool)}
+	req := &PipelineCleanupRequest{OlderThanHours: new(int), DryRun: new(bool)}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
 		return
 	}
-	if err := decoder.Decode(new(interface{})); err != io.EOF || req == nil || req.DryRun == nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "cleanup requires one JSON object with a boolean dry_run when supplied, or an empty body", nil, reqID)
+	if err := decoder.Decode(new(interface{})); err != io.EOF || req == nil || req.OlderThanHours == nil || req.DryRun == nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "provide an empty body or one cleanup options object with non-null values", nil, reqID)
 		return
 	}
 
-	hours := req.OlderThanHours
+	hours := *req.OlderThanHours
 	if hours < 0 || int64(hours) > math.MaxInt64/int64(time.Hour) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "older_than_hours is outside the supported range", nil, reqID)
 		return

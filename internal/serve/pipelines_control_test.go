@@ -111,9 +111,18 @@ func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
 		}
 	}
 	srv.auth.Role = RoleAdmin
+	// A query-only preview or retention threshold must not fall through to
+	// body defaults and delete the settled checkpoint.
+	for _, query := range []string{"?dry_run=true", "?older_than_hours=8760"} {
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, pipelineRecoveryHTTPRequest(http.MethodPost, path+query, ""))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("cleanup accepted %s: %d %s", query, rec.Code, rec.Body)
+		}
+	}
 	for _, invalid := range []string{
 		`{"dryrun":true}`, `{"dry_run":null}`, `null`, `{} {}`,
-		`{"older_than_hours":-1}`, `{"older_than_hours":5124096}`,
+		`{"older_than_hours":null}`, `{"older_than_hours":-1}`, `{"older_than_hours":5124096}`,
 	} {
 		if rec := request(invalid); rec.Code != http.StatusBadRequest {
 			t.Fatalf("cleanup accepted %s: %d %s", invalid, rec.Code, rec.Body)
