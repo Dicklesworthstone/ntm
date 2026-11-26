@@ -104,8 +104,7 @@ type PaneWorkStatus struct {
 	// invisible to buffered tails, so orchestrators previously audited
 	// `tmux list-panes -F '#{pane_current_command} #{pane_pid}'` before
 	// every state-changing action. AgentCLIDead is true when an agent-typed
-	// pane's foreground process is a bare shell — anything sent to it lands
-	// in zsh, not an agent.
+	// pane's process exited or its foreground process is a bare shell.
 	PanePID            int    `json:"pane_pid,omitempty"`
 	PaneCurrentCommand string `json:"pane_current_command,omitempty"`
 	AgentCLIDead       bool   `json:"agent_cli_dead,omitempty"`
@@ -428,6 +427,19 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 
 		paneHint := sel.hint
 		paneObservation, found := observationsByID[sel.id]
+		if found && paneObservation.Metadata.Dead {
+			status := paneWorkStatusFromObservation(paneObservation)
+			status.Recommendation = string(agent.RecommendErrorState)
+			status.RecommendationReason = "Pane process exited and tmux retained its last screen"
+			status.Confidence = paneObservation.Current.Confidence
+			status.IndicatorBasis = "pane_dead"
+			status.Indicators = WorkIndicators{Work: []string{}, Limit: []string{}}
+			output.Panes[paneKey] = status
+			output.Summary.ErrorCount++
+			rec := status.Recommendation
+			output.Summary.ByRecommendation[rec] = append(output.Summary.ByRecommendation[rec], paneKey)
+			continue
+		}
 		if !found || paneObservation.Current.Freshness != statuspkg.FreshnessFresh || paneObservation.Current.Error != "" {
 			workStatus := paneWorkStatusFromObservation(paneObservation)
 			if !found {
@@ -653,6 +665,16 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 		ObservationError:      observation.Current.Error,
 		SafeToDispatch:        observation.SafeToDispatch(),
 	}
+	if strings.TrimSpace(observation.Metadata.ID) != "" {
+		result.paneType = paneAgentType(observation.Metadata)
+	}
+	result.PanePID = observation.Metadata.PID
+	result.PaneCurrentCommand = observation.Metadata.Command
+	result.AgentCLIDead = observation.Metadata.AgentCLIDead()
+	if observation.Metadata.Dead {
+		// Older tmux versions retain the exited process's PID, which may be reused.
+		return result
+	}
 	// Pane age is the current shell incarnation's (PaneStartedAt) — exactly
 	// the semantics age-based replacement policies need (ntm-qvpm).
 	// Best-effort: a vanished PID simply omits the fields.
@@ -662,12 +684,6 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 			result.AgentUptimeSeconds = uptime
 		}
 	}
-	if strings.TrimSpace(observation.Metadata.ID) != "" {
-		result.paneType = paneAgentType(observation.Metadata)
-	}
-	result.PanePID = observation.Metadata.PID
-	result.PaneCurrentCommand = observation.Metadata.Command
-	result.AgentCLIDead = observation.Metadata.AgentCLIDead()
 	return result
 }
 

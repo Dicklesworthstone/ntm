@@ -798,6 +798,9 @@ func (o *SessionObserver) captureAll(ctx context.Context, panes []tmux.PaneActiv
 	jobs := make(chan int, len(panes))
 	completed := make(chan observationCaptureResult, len(panes))
 	for index := range panes {
+		if panes[index].Pane.Dead {
+			continue
+		}
 		jobs <- index
 	}
 	close(jobs)
@@ -852,6 +855,21 @@ func (o *SessionObserver) buildPaneObservation(cache *sessionObservationCache, p
 		PaneName:  pane.Pane.Title,
 		AgentType: normalizedAgentType,
 		Metadata:  pane.Pane,
+	}
+	// A retained pane can display the final prompt or spinner indefinitely.
+	// Its process exit is fresh topology evidence regardless of that frame.
+	if pane.Pane.Dead {
+		baseStatus.State = StateError
+		baseStatus.ErrorType = ErrorGeneric
+		observation.Current = StateObservation{
+			Status:     baseStatus,
+			ObservedAt: observedAt,
+			Freshness:  FreshnessFresh,
+			Confidence: 1,
+			Evidence:   []ObservationEvidence{topologyEvidence},
+		}
+		cache.lastKnown[key] = cloneStateObservation(observation.Current)
+		return observation
 	}
 	if captureErr != nil {
 		observation.Current = StateObservation{

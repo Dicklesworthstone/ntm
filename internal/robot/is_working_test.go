@@ -71,7 +71,7 @@ func TestGetIsWorkingCanceledContextReturnsTimeoutWithoutObservation(t *testing.
 	}
 }
 
-// Exercise the public JSON surface with two Antigravity panes sharing one
+// Exercise the public JSON surface with live and retained Antigravity panes sharing one
 // active window. Every invocation creates a fresh observer, matching a robot
 // polling loop: the idle verdict cannot depend on prior capture history.
 func TestPrintIsWorkingAntigravityIdleWithBusySibling(t *testing.T) {
@@ -119,6 +119,9 @@ esac
 				"agy", "160", "40", "0", activity, strconv.Itoa(os.Getpid()), "0", "agy", "", "", "0",
 			}, tmux.FieldSeparator))
 		}
+		rows = append(rows, strings.Join([]string{
+			"%3", "3", "s__agy_3", "agy", "160", "40", "0", activity, "", "0", "agy", "", "", "1",
+		}, tmux.FieldSeparator))
 		t.Setenv("NTM_AGY_TEST_PANES", strings.Join(rows, "\n"))
 		stdout, err := captureStdout(t, func() error {
 			return PrintIsWorking(t.Context(), IsWorkingOptions{Session: "s", LinesCaptured: 100})
@@ -130,8 +133,14 @@ esac
 		if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 			t.Fatalf("PrintIsWorking() did not emit one JSON document: %v; stdout = %q", err, stdout)
 		}
-		if !output.Success || output.Summary.TotalPanes != 2 || output.Summary.IdleCount != 1 || output.Summary.WorkingCount != 1 {
+		if !output.Success || output.Summary.TotalPanes != 3 || output.Summary.IdleCount != 1 || output.Summary.WorkingCount != 1 || output.Summary.ErrorCount != 1 {
 			t.Fatalf("unexpected work-state summary: %+v", output)
+		}
+		dead, ok := output.Panes["3"]
+		if !ok || !dead.AgentCLIDead || dead.SafeToDispatch || dead.IsIdle || dead.IsWorking ||
+			dead.ObservationState != "error" || dead.ObservationFreshness != "fresh" || dead.IndicatorBasis != "pane_dead" ||
+			dead.Recommendation != string(agent.RecommendErrorState) {
+			t.Fatalf("retained pane = %+v, want a known exited process", dead)
 		}
 		idle, ok := output.Panes["1"]
 		if !ok || idle.AgentType != "agy" || !idle.IsIdle || idle.IsWorking || !idle.SafeToDispatch || idle.Recommendation != string(agent.RecommendSafeToRestart) {

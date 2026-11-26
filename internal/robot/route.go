@@ -538,6 +538,9 @@ func PrintRoute(opts RouteOptions) int {
 // delivery layer refuses it outright (PANE_AGENT_DEAD), so recommending it
 // would hand the caller a send that cannot succeed (bd-fresh-eyes-audit .8).
 func excludeRouteAgent(scorer *AgentScorer, agent *ScoredAgent, pane tmux.Pane) (bool, string) {
+	if pane.Dead {
+		return true, "pane process exited (remain-on-exit)"
+	}
 	if excluded, reason := scorer.checkExclusion(agent); excluded {
 		return true, reason
 	}

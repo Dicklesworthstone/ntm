@@ -777,7 +777,7 @@ func (p Pane) RunsBareShell() bool {
 	return isShell
 }
 
-// AgentCLIDead reports whether an agent-typed pane's CLI has exited back to a
+// AgentCLIDead reports whether an agent-typed pane died or its CLI exited back to a
 // bare shell — the pane looks like an agent (title) but its foreground
 // process is the login shell, so anything typed into it lands in zsh, not an
 // agent ("zsh: command not found" is one of the most-documented swarm failure
@@ -787,7 +787,7 @@ func (p Pane) AgentCLIDead() bool {
 	if !agentType.IsValid() || agentType == AgentUser || agentType == AgentUnknown {
 		return false
 	}
-	return strings.TrimSpace(p.Command) != "" && p.IdleShell()
+	return p.Dead || (strings.TrimSpace(p.Command) != "" && p.IdleShell())
 }
 
 // IdleShell reports whether the pane is an idle interactive shell with
