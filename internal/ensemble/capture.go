@@ -24,6 +24,7 @@ const defaultCaptureLines = 1000
 type CapturedOutput struct {
 	ModeID        string
 	PaneName      string
+	PaneID        string
 	RawOutput     string
 	OutputPath    string // Durable path to the raw transcript for this capture.
 	Parsed        *ModeOutput
@@ -110,6 +111,7 @@ func (c *OutputCapture) CaptureAllContext(ctx context.Context, session *Ensemble
 		captured := CapturedOutput{
 			ModeID:     assignment.ModeID,
 			PaneName:   assignment.PaneName,
+			PaneID:     target,
 			RawOutput:  raw,
 			CapturedAt: time.Now().UTC(),
 		}
