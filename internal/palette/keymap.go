@@ -76,6 +76,7 @@ type targetKeyMap struct {
 	TargetOmp      key.Binding
 	TargetGrok     key.Binding
 	TargetOpencode key.Binding
+	TargetPi       key.Binding
 	SelectAgents   key.Binding
 	Edit           key.Binding
 	Help           key.Binding
@@ -92,6 +93,7 @@ var targetKeys = targetKeyMap{
 	TargetOmp:      key.NewBinding(key.WithKeys("7"), key.WithHelp("7", "omp")),
 	TargetGrok:     key.NewBinding(key.WithKeys("8"), key.WithHelp("8", "grok")),
 	TargetOpencode: key.NewBinding(key.WithKeys("9"), key.WithHelp("9", "opencode")),
+	TargetPi:       key.NewBinding(key.WithKeys("0"), key.WithHelp("0", "pi")),
 	SelectAgents:   key.NewBinding(key.WithKeys("6"), key.WithHelp("6", "pick agents")),
 	Edit:           key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit prompt")),
 	Help:           key.NewBinding(key.WithKeys("?", "f1"), key.WithHelp("?", "help")),
@@ -264,6 +266,7 @@ func targetHelpEntries() []helpEntry {
 		entry("omp", k.TargetOmp),
 		entry("grok", k.TargetGrok),
 		entry("opencode", k.TargetOpencode),
+		entry("pi", k.TargetPi),
 		entry("pick agents", k.SelectAgents),
 		entry("edit prompt", k.Edit),
 		entry("help", k.Help),
@@ -281,6 +284,7 @@ func targetOverlayEntries() []helpEntry {
 		entry("Send to Oh My Pi (omp) agents", k.TargetOmp),
 		entry("Send to Grok (grok) agents", k.TargetGrok),
 		entry("Send to OpenCode (oc) agents", k.TargetOpencode),
+		entry("Send to Pi (pi) agents", k.TargetPi),
 		entry("Pick specific agent panes", k.SelectAgents),
 		entry("Edit prompt before sending", k.Edit),
 		entry("Toggle this help", k.Help),
