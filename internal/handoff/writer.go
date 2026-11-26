@@ -1,6 +1,7 @@
 package handoff
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"os"
@@ -255,10 +256,11 @@ func (w *Writer) Write(h *Handoff, description string) (string, error) {
 	// Set defaults
 	h.SetDefaults()
 
-	// Generate filename: YYYY-MM-DD_HH-MM_{description}.yaml
-	filename := fmt.Sprintf("%s_%s.yaml",
-		time.Now().Format("2006-01-02_15-04"),
-		desc,
+	// Ledger entries must keep referring to distinct snapshots even when two
+	// ntm processes save the same description in the same clock tick.
+	filename := fmt.Sprintf("%s_%s_%s.yaml",
+		time.Now().Format("2006-01-02_15-04-05.000000000"),
+		rand.Text(), desc,
 	)
 	path := filepath.Join(dir, filename)
 

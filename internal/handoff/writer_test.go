@@ -144,6 +144,36 @@ func TestWriterWrite(t *testing.T) {
 	}
 }
 
+func TestRepeatedHandoffsPreserveBothLedgerTargets(t *testing.T) {
+	dir := testTempDir(t)
+	w := NewWriter(dir)
+	reader := NewReader(dir)
+	paths := make(map[string]string)
+	for _, goal := range []string{"Prepared the migration", "Completed the migration"} {
+		path, err := w.Write(New("deploy").WithGoalAndNow(goal, "Verify the service"), "checkpoint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := paths[path]; exists {
+			t.Fatalf("a later handoff replaced %s", path)
+		}
+		paths[path] = goal
+	}
+	ledger, err := os.ReadFile(filepath.Join(dir, ".ntm", "ledgers", "CONTINUITY_deploy.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, goal := range paths {
+		h, err := reader.Read(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Goal != goal || !strings.Contains(string(ledger), "- file: "+filepath.Base(path)+"\n") {
+			t.Errorf("ledger target %s has goal %q, want %q; ledger:\n%s", path, h.Goal, goal, ledger)
+		}
+	}
+}
+
 func TestWriterWriteRejectsSymlinkedSessionDir(t *testing.T) {
 	tmpDir := testTempDir(t)
 	w := NewWriter(tmpDir)
