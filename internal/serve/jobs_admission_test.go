@@ -472,6 +472,13 @@ func TestJobAdmissionCheckpointKeepsExistingProjectResolution(t *testing.T) {
 func TestJobAdmissionSwarmProjectPinnedWithoutChangingRequest(t *testing.T) {
 	t.Parallel()
 	projectA, projectB, override := t.TempDir(), t.TempDir(), t.TempDir()
+	for _, dir := range []*string{&projectA, &projectB, &override} {
+		canonical, err := ResolveProjectDir(*dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*dir = canonical
+	}
 	for _, tc := range []struct {
 		name, workingDir, want string
 		supplied               bool
@@ -578,6 +585,13 @@ func TestJobAdmissionSwarmProjectHTTPQueuedExecutionAndRecovery(t *testing.T) {
 			srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 			srv.jobExecutor.maxConcurrent, srv.jobExecutor.maxQueued = 1, 1
 			projectA, projectB, absolute := t.TempDir(), t.TempDir(), t.TempDir()
+			for _, dir := range []*string{&projectA, &projectB, &absolute} {
+				canonical, err := ResolveProjectDir(*dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				*dir = canonical
+			}
 			srv.projectDir = projectA
 			started, release := make(chan struct{}), make(chan struct{})
 			var once sync.Once
@@ -679,6 +693,198 @@ func TestJobAdmissionSwarmProjectHTTPQueuedExecutionAndRecovery(t *testing.T) {
 				}
 			default:
 				t.Fatal("completed job never reached spawn")
+			}
+		})
+	}
+}
+
+func TestJobAdmissionSwarmSymlinkTargetPinnedHTTP(t *testing.T) {
+	t.Parallel()
+	for _, relative := range []bool{false, true} {
+		t.Run(fmt.Sprintf("relative=%v", relative), func(t *testing.T) {
+			srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
+			srv.jobExecutor.maxConcurrent, srv.jobExecutor.maxQueued = 1, 2
+			projectA, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			projectB, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			jobScopeHTTPPatchProject(t, srv, selection)
+			alias := filepath.Join(selection, "selected")
+			if err := os.Symlink(projectA, alias); err != nil {
+				t.Fatal(err)
+			}
+			workingDir, wantA, wantB := alias, projectA, projectB
+			if relative {
+				workingDir = "selected/new/project"
+				wantA, wantB = filepath.Join(projectA, "new/project"), filepath.Join(projectB, "new/project")
+			}
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			var effects atomic.Int32
+			srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				out := &robot.SpawnOutput{Session: opts.Session, WorkingDir: opts.WorkingDir}
+				if opts.Session == "blocker" {
+					close(started)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return out, ctx.Err()
+					}
+				} else {
+					effects.Add(1)
+					if err := os.MkdirAll(opts.WorkingDir, 0o700); err != nil {
+						return out, err
+					}
+					if err := os.WriteFile(filepath.Join(opts.WorkingDir, "effect"), []byte("once"), 0o600); err != nil {
+						return out, err
+					}
+				}
+				out.Success = true
+				return out, nil
+			}
+			admissionAcceptedJob(t, srv, `{"type":"swarm_spawn","params":{"session":"blocker","cc_count":1}}`)
+			awaitExecutorSignal(t, started)
+			body, err := json.Marshal(CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{
+				"session": "fleet", "cc_count": 1, "working_dir": workingDir, "operation_id": "alias-operation",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const key = "alias-transport"
+			first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, string(body), key))
+			t.Logf("admitted input=%q receipt=%+v", workingDir, first)
+			if first.ProjectDir != wantA || first.Status != JobStatusPending {
+				t.Fatalf("queued alias did not pin its canonical target: %+v, want %q", first, wantA)
+			}
+			if relative {
+				if _, err := os.Stat(wantA); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("admission created the missing spawn directory: %v", err)
+				}
+			}
+			if err := os.Rename(alias, alias+".original"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(projectB, alias); err != nil {
+				t.Fatal(err)
+			}
+			unblock()
+			original := pollJobTerminal(t, srv, first.ID)
+			if original.Job.Status != string(JobStatusCompleted) || original.Job.Result["working_dir"] != wantA || effects.Load() != 1 {
+				t.Fatalf("queued job followed the moved alias: %+v effects=%d", original.Job, effects.Load())
+			}
+			if data, err := os.ReadFile(filepath.Join(wantA, "effect")); err != nil || string(data) != "once" {
+				t.Fatalf("admitted target lost its effect: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(wantB, "effect")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("queued job performed work in the replacement target: %v", err)
+			}
+			rec := jobScopeHTTPPost(srv, string(body), key)
+			second := jobScopeHTTPReceipt(t, rec)
+			if second.ID == first.ID || second.ProjectDir != wantB || rec.Header().Get("X-Idempotent-Replay") != "" {
+				t.Fatalf("moved alias replayed the old target's transport receipt: %+v %v", second, rec.Header())
+			}
+			conflict := pollJobTerminal(t, srv, second.ID)
+			if conflict.Job.Status != string(JobStatusFailed) || operationMetadata(t, conflict.Job.Result)["status"] != "conflict" || effects.Load() != 1 {
+				t.Fatalf("moved alias bypassed the durable operation conflict: %+v effects=%d", conflict.Job, effects.Load())
+			}
+			if err := os.Rename(alias, alias+".replacement"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(alias+".original", alias); err != nil {
+				t.Fatal(err)
+			}
+			rec = jobScopeHTTPPost(srv, string(body), key)
+			if replay := jobScopeHTTPReceipt(t, rec); replay.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" || effects.Load() != 1 {
+				t.Fatalf("original canonical target lost its safe replay: %+v %v effects=%d", replay, rec.Header(), effects.Load())
+			}
+		})
+	}
+}
+
+func TestJobAdmissionSwarmDoesNotRebindReplayScope(t *testing.T) {
+	t.Parallel()
+	for _, initiallyDangling := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initially_dangling=%v", initiallyDangling), func(t *testing.T) {
+			srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
+			projectA, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			projectB, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			alias := filepath.Join(t.TempDir(), "selected")
+			target := projectA
+			if initiallyDangling {
+				target = filepath.Join(projectA, "missing")
+			}
+			if err := os.Symlink(target, alias); err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				calls.Add(1)
+				if err := os.WriteFile(filepath.Join(opts.WorkingDir, "effect"), []byte("once"), 0o600); err != nil {
+					return nil, err
+				}
+				out := &robot.SpawnOutput{Session: opts.Session, WorkingDir: opts.WorkingDir}
+				out.Success = true
+				return out, nil
+			}
+			body, err := json.Marshal(CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{
+				"session": "fleet", "cc_count": 1, "working_dir": alias,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The transport classifier runs before a request can wait for an
+			// idempotency leader. Move the alias before actual admission.
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, captured := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); !captured {
+					t.Fatal("request reached admission without transport classification")
+				}
+				if err := os.Rename(alias, alias+".captured"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(projectB, alias); err != nil {
+					t.Fatal(err)
+				}
+				srv.handleCreateJob(w, r)
+			})
+			handler := srv.jobProjectSelectionMiddleware(srv.jobHTTPReplayScopeMiddleware(srv.idempotencyMiddleware(next)))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "binding-boundary")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			t.Logf("classified target=%q status=%d body=%s", target, rec.Code, rec.Body.String())
+			if initiallyDangling {
+				if rec.Code != http.StatusBadRequest || len(srv.jobStore.List()) != 0 || calls.Load() != 0 {
+					t.Fatalf("failed classification rebound a repaired alias: %d %s calls=%d", rec.Code, rec.Body, calls.Load())
+				}
+				return
+			}
+			first := jobScopeHTTPReceipt(t, rec)
+			final := pollJobTerminal(t, srv, first.ID)
+			if first.ProjectDir != projectA || final.Job.Status != string(JobStatusCompleted) || final.Job.Result["working_dir"] != projectA || calls.Load() != 1 {
+				t.Fatalf("admission rebound the transport-classified target: %+v %+v calls=%d", first, final.Job, calls.Load())
+			}
+			if data, err := os.ReadFile(filepath.Join(projectA, "effect")); err != nil || string(data) != "once" {
+				t.Fatalf("classified target lost its effect: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(projectB, "effect")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reclassification performed work in the moved target: %v", err)
 			}
 		})
 	}
@@ -870,7 +1076,10 @@ func TestJobHTTPProjectScopeSwarmExplicitAndRelativeTargets(t *testing.T) {
 			first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, string(body), key))
 			want := filepath.Join(projectA, directory)
 			if absolute {
-				want = directory
+				want, err = ResolveProjectDir(directory)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			original := pollJobTerminal(t, srv, first.ID)
 			if first.ProjectDir != want || original.Job.Status != string(JobStatusCompleted) || original.Job.Result["working_dir"] != want || calls.Load() != 1 {

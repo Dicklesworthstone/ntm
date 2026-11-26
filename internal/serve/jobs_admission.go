@@ -54,6 +54,33 @@ func (selection jobProjectSelection) absolute(path string) (string, error) {
 	return filepath.Join(selection.cwd, path), nil
 }
 
+// spawnDirectory pins existing symlinks while allowing the spawn engine to
+// create missing descendants later. A dangling link is an existing entry,
+// not authorization to guess where a future directory will resolve.
+func (selection jobProjectSelection) spawnDirectory(path string) (string, error) {
+	absolute, err := selection.absolute(path)
+	if err != nil {
+		return "", err
+	}
+	for ancestor := absolute; ; ancestor = filepath.Dir(ancestor) {
+		_, err := os.Lstat(ancestor)
+		if err == nil {
+			resolved, err := ResolveProjectDir(ancestor)
+			if err != nil {
+				return "", err
+			}
+			suffix, err := filepath.Rel(ancestor, absolute)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(ancestor) == ancestor {
+			return "", err
+		}
+	}
+}
+
 func isCreateJobRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost && (r.URL.Path == "/api/v1/jobs" || r.URL.Path == "/api/v1/jobs/")
 }
@@ -123,6 +150,7 @@ func (s *Server) jobHTTPReplayScopeMiddleware(next http.Handler) http.Handler {
 				var bound CreateJobRequest
 				bound, scope.err = bindJobExecutionProject(scope.request, selection)
 				if scope.err == nil {
+					scope.request = bound
 					scope.project, scope.err = jobOperationScope(bound)
 				}
 			}
@@ -166,6 +194,13 @@ func prepareJobRequestAtSelection(req CreateJobRequest, selection jobProjectSele
 	frozen, err := decodeCreateJobRequest(bytes.NewReader(raw))
 	if err != nil {
 		return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+	}
+	// The transport replay classifier may already have bound the private
+	// target. Clone the public request, but never resolve that target again:
+	// an alias may move while this request waits for an in-flight leader.
+	if req.executionProjectDir != "" {
+		frozen.executionProjectDir = req.executionProjectDir
+		return frozen, nil
 	}
 	return bindJobExecutionProject(frozen, selection)
 }
@@ -243,7 +278,7 @@ func bindJobExecutionProject(frozen CreateJobRequest, selection jobProjectSelect
 		if !filepath.IsAbs(workingDir) {
 			workingDir = filepath.Join(selection.projectDir, workingDir)
 		}
-		frozen.executionProjectDir, err = selection.absolute(workingDir)
+		frozen.executionProjectDir, err = selection.spawnDirectory(workingDir)
 		if err != nil {
 			return frozen, fmt.Errorf("%w: resolve swarm project: %v", errInvalidJobRequest, err)
 		}
@@ -283,6 +318,12 @@ func (s *Server) jobExecutionServer(req CreateJobRequest) *Server {
 func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, error) {
 	var receipt *Job
 	err := s.jobExecutor.submit(ctx, func(owner context.Context) (*scheduledJob, error) {
+		if scope, captured := ctx.Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); captured {
+			if scope.err != nil {
+				return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, scope.err)
+			}
+			req = scope.request
+		}
 		var frozen CreateJobRequest
 		var err error
 		if selection, captured := ctx.Value(jobProjectSelectionKey{}).(jobProjectSelection); captured {

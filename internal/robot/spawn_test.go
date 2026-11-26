@@ -2624,8 +2624,8 @@ func TestSpawnAssignmentReplayUsesCapturedPaneID(t *testing.T) {
 			var mutations, ownerReads int
 			deps := &SpawnAssignmentDependencies{
 				AssignmentLedgerExists: func(string) (bool, error) { return true, nil },
-				LoadStore:             func(string) (*assignment.AssignmentStore, error) { return store, nil },
-				ListPanes:             func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+				LoadStore:              func(string) (*assignment.AssignmentStore, error) { return store, nil },
+				ListPanes:              func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
 				GetBeadDetails: func(_ context.Context, _ string, id string) (*bv.BeadAssignmentDetails, error) {
 					ownerReads++
 					return &bv.BeadAssignmentDetails{ID: id, Status: "in_progress", Assignee: actor, Priority: 1}, nil

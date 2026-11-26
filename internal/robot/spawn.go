@@ -559,7 +559,7 @@ type SpawnRecovery struct {
 
 // SpawnAssignment represents a work assignment to a spawned agent.
 type SpawnAssignment struct {
-	Pane              string `json:"pane"`        // Pane reference (e.g., "0.1")
+	Pane              string `json:"pane"` // Pane reference (e.g., "0.1")
 	PaneID            string `json:"pane_id,omitempty"`
 	AgentType         string `json:"agent_type"`  // claude, codex, gemini
 	BeadID            string `json:"bead_id"`     // Assigned bead ID
