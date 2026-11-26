@@ -24,9 +24,10 @@ import (
 const DefaultOpenAPIServerURL = "http://127.0.0.1:7337"
 
 var (
-	reflectTimeType       = reflect.TypeOf(time.Time{})
-	reflectDurationType   = reflect.TypeOf(time.Duration(0))
-	reflectRawMessageType = reflect.TypeOf(json.RawMessage{})
+	reflectTimeType        = reflect.TypeOf(time.Time{})
+	reflectDurationType    = reflect.TypeOf(time.Duration(0))
+	reflectRawMessageType  = reflect.TypeOf(json.RawMessage{})
+	reflectDriftStatusType = reflect.TypeOf(bv.DriftStatus(0))
 )
 
 // routeQueryParam documents a query parameter accepted by a served handler.
@@ -1943,6 +1944,12 @@ func (r *openapiReflector) typeSchema(t reflect.Type) *Schema {
 	}
 	if t == reflectDurationType {
 		return &Schema{Type: "integer", Format: "int64"}
+	}
+	if t == reflectDriftStatusType {
+		return &Schema{
+			Type: "string",
+			Enum: []any{"OK", "critical", "warning", "no baseline", "unknown"},
+		}
 	}
 	if isTimeWrapperStruct(t) {
 		return &Schema{Type: "string", Format: "date-time"}

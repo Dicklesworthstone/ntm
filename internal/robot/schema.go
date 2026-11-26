@@ -7,7 +7,11 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
+
+var reflectDriftStatusType = reflect.TypeOf(bv.DriftStatus(0))
 
 // SchemaCommand is the supported schema command types.
 var SchemaCommand = map[string]interface{}{
@@ -415,6 +419,12 @@ func typeToSchema(t reflect.Type, defs map[string]*JSONSchema) *JSONSchema {
 		schema := typeToSchema(t.Elem(), defs)
 		// Pointer types can be null
 		return schema
+	}
+	if t == reflectDriftStatusType {
+		return &JSONSchema{
+			Type: "string",
+			Enum: []interface{}{"OK", "critical", "warning", "no baseline", "unknown"},
+		}
 	}
 
 	switch t.Kind() {
