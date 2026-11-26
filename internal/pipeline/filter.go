@@ -62,8 +62,7 @@ const (
 	filterTokenEOF filterTokenKind = iota
 	filterTokenValue
 	filterTokenString
-	filterTokenEqual
-	filterTokenNotEqual
+	filterTokenComparison
 	filterTokenAnd
 	filterTokenOr
 	filterTokenLeftParen
@@ -88,11 +87,18 @@ func tokenizeFilter(expr string) ([]filterToken, error) {
 		}
 		switch {
 		case strings.HasPrefix(expr[i:], "=="):
-			tokens = append(tokens, filterToken{kind: filterTokenEqual, value: "=="})
+			tokens = append(tokens, filterToken{kind: filterTokenComparison, value: "=="})
 			i += 2
 		case strings.HasPrefix(expr[i:], "!="):
-			tokens = append(tokens, filterToken{kind: filterTokenNotEqual, value: "!="})
+			tokens = append(tokens, filterToken{kind: filterTokenComparison, value: "!="})
 			i += 2
+		case expr[i] == '<' || expr[i] == '>':
+			start := i
+			i++
+			if i < len(expr) && expr[i] == '=' {
+				i++
+			}
+			tokens = append(tokens, filterToken{kind: filterTokenComparison, value: expr[start:i]})
 		case strings.HasPrefix(expr[i:], "&&"):
 			tokens = append(tokens, filterToken{kind: filterTokenAnd, value: "&&"})
 			i += 2
@@ -133,7 +139,7 @@ func tokenizeFilter(expr string) ([]filterToken, error) {
 }
 
 func isFilterDelimiter(b byte) bool {
-	return strings.ContainsRune("()=!&|\"'", rune(b))
+	return strings.ContainsRune("()=<>!&|\"'", rune(b))
 }
 
 func scanFilterString(expr string, start int) (string, int, error) {
@@ -210,19 +216,13 @@ func (p *filterParser) parseComparison() (filterNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.match(filterTokenEqual) {
-		right, err := p.consumeOperand("expected right side of ==")
+	operator := p.peek()
+	if p.match(filterTokenComparison) {
+		right, err := p.consumeOperand("expected right side of " + operator.value)
 		if err != nil {
 			return nil, err
 		}
-		return filterCompareNode{op: "==", left: left, right: right}, nil
-	}
-	if p.match(filterTokenNotEqual) {
-		right, err := p.consumeOperand("expected right side of !=")
-		if err != nil {
-			return nil, err
-		}
-		return filterCompareNode{op: "!=", left: left, right: right}, nil
+		return filterCompareNode{op: operator.value, left: left, right: right}, nil
 	}
 	return filterTruthyNode{operand: left}, nil
 }
@@ -301,15 +301,37 @@ func (n filterCompareNode) eval(ctx FilterContext) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	equal := filterValuesEqual(left, right)
 	switch n.op {
 	case "==":
-		return equal, nil
+		return filterValuesEqual(left, right), nil
 	case "!=":
-		return !equal, nil
+		return !filterValuesEqual(left, right), nil
+	case "<", "<=", ">", ">=":
+		l, lok := filterNumber(left)
+		r, rok := filterNumber(right)
+		if !lok || !rok {
+			return false, fmt.Errorf("filter %s requires finite numeric operands", n.op)
+		}
+		return numericOrderMatches(l.cmp(r), n.op), nil
 	default:
 		return false, fmt.Errorf("unknown filter comparison operator %q", n.op)
 	}
+}
+
+// numericOrderMatches evaluates a validated ordering operator against a
+// three-way comparison, shared by foreach numbers and bead priorities.
+func numericOrderMatches(order int, op string) bool {
+	switch op {
+	case "<":
+		return order < 0
+	case "<=":
+		return order <= 0
+	case ">":
+		return order > 0
+	case ">=":
+		return order >= 0
+	}
+	return false
 }
 
 type filterTruthyNode struct {

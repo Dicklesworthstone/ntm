@@ -51,6 +51,12 @@ func TestEvaluateForeachFilterJSONNumbers(t *testing.T) {
 		{"item!=0.1", "0.10000000000000000001", true},
 		{"item==1152921504606846976", "1152921504606846976.0", true},
 		{"item!=1152921504606846976", "1152921504606847000.0", true},
+		{"item < 1", "1.0", false},
+		{"item <= 1", "1.0", true},
+		{"item > 9007199254740992", "9007199254740993", true},
+		{"item >= 9007199254740993", "9007199254740992", false},
+		{"item < -1e-999999", "-2e-999999", true},
+		{"item >= -0", "0.0000", true},
 		{"item==1e23", "1e23", true},
 	} {
 		t.Run(tc.expr+"/"+tc.value, func(t *testing.T) {
@@ -345,5 +351,28 @@ func TestSharedFilterGrammarBounds(t *testing.T) {
 	expr := strings.Repeat("(", maxFilterExpressionDepth) + "role==a" + strings.Repeat(")", maxFilterExpressionDepth)
 	if got, err := EvaluateForeachFilter(expr, FilterContext{Item: map[string]string{"role": "a"}}); err != nil || !got {
 		t.Fatalf("maximum supported depth = %t, %v", got, err)
+	}
+}
+
+func TestNumericOrderingValidation(t *testing.T) {
+	for _, expr := range []string{"item < word", "item <= true", "item <", "item << 3", "item >= 2 <= 5"} {
+		if _, err := EvaluateForeachFilter(expr, FilterContext{Item: 1}); err == nil {
+			t.Errorf("accepted invalid numeric filter %q", expr)
+		}
+	}
+	for _, expr := range []string{"status < open", "label >= 3", "priority < foo"} {
+		if _, err := compileBeadFilter(expr); err == nil {
+			t.Errorf("accepted invalid bead filter %q", expr)
+		}
+	}
+	f, err := compileBeadFilter("priority >= 1 && priority < 3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for priority := 0; priority <= 4; priority++ {
+		got, err := f.eval(FilterContext{Item: BeadRecord{Priority: priority}})
+		if err != nil || got != (priority == 1 || priority == 2) {
+			t.Errorf("priority %d selected=%v error=%v", priority, got, err)
+		}
 	}
 }

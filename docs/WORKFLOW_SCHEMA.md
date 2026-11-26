@@ -624,7 +624,7 @@ step kind on the same step.
 
 ### Filter Expressions
 
-Filters support `==`, `!=`, `&&`, `||`, and nested parentheses. `&&` binds
+Filters support `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, and nested parentheses. `&&` binds
 more tightly than `||`; use parentheses to group alternatives. Field names
 are case insensitive, while string values and labels match exactly.
 
@@ -634,7 +634,9 @@ are case insensitive, while string values and labels match exactly.
 | `state` | Exact string comparison, falling back to the record's `status` when its `state` is empty |
 | `type`, `issue_type` | Exact issue type comparison |
 | `label`, `labels` | Membership or non-membership in the record's label list |
-| `priority` | Integer equality or inequality; quoted integers are accepted |
+| `priority` | Integer equality and ordering, including quoted integers |
+
+For `foreach.filter`, ordering compares finite numeric operands, including numeric strings. Decimal and exponent comparisons preserve precision. For `bead_query.filter`, ordering applies to `priority`, for example `priority <= 1` selects P0 and P1.
 
 Quote values containing whitespace, parentheses, or operators. Both single
 and double quotes are supported; a backslash escapes a quote or backslash

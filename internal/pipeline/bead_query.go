@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -470,7 +471,10 @@ func compileBeadFilterNode(node filterNode) (filterNode, error) {
 		if _, ok := beadRecordField(BeadRecord{}, field); !ok {
 			return nil, fmt.Errorf("unknown bead field %q", field)
 		}
-		compiled := beadFilterComparison{field: field, value: n.right.value, negate: n.op == "!="}
+		if field != "priority" && n.op != "==" && n.op != "!=" {
+			return nil, fmt.Errorf("bead operator %s requires the priority field, got %q", n.op, field)
+		}
+		compiled := beadFilterComparison{field: field, value: n.right.value, op: n.op}
 		if field == "priority" {
 			priority, err := strconv.Atoi(n.right.value)
 			if err != nil {
@@ -488,7 +492,7 @@ type beadFilterComparison struct {
 	field    string
 	value    string
 	priority int
-	negate   bool
+	op       string
 }
 
 func (n beadFilterComparison) eval(ctx FilterContext) (bool, error) {
@@ -506,12 +510,15 @@ func (n beadFilterComparison) eval(ctx FilterContext) (bool, error) {
 			}
 		}
 	case "priority":
+		if n.op != "==" && n.op != "!=" {
+			return numericOrderMatches(cmp.Compare(record.Priority, n.priority), n.op), nil
+		}
 		matches = record.Priority == n.priority
 	default:
 		got, _ := beadRecordField(record, n.field) // Validated during compilation.
 		matches = got == n.value
 	}
-	if n.negate {
+	if n.op == "!=" {
 		return !matches, nil
 	}
 	return matches, nil
