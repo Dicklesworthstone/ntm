@@ -280,6 +280,7 @@ func pushedFiles(repoPath string, stdin io.Reader) ([]string, error) {
 	sawRefLine := false
 	if stdin != nil {
 		scanner := bufio.NewScanner(stdin)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			fields := strings.Fields(scanner.Text())
 			if len(fields) < 4 {

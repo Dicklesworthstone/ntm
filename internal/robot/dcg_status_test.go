@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tools"
@@ -220,5 +221,23 @@ func TestGetDCGStatus_CommandsCheckedCountsExactCycles(t *testing.T) {
 	// audit entries come from the send path.
 	if out.DCG.Stats.CommandsBlocked != 0 {
 		t.Errorf("CommandsBlocked=%d, want 0 (no send-path blocks recorded)", out.DCG.Stats.CommandsBlocked)
+	}
+}
+
+func TestReadAuditLogStats_LongLineOver64KB(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "long.jsonl")
+	longCmd := "echo " + strings.Repeat("x", 80*1024)
+	content := fmt.Sprintf(
+		"{\"event\":\"command_blocked\",\"command\":%q,\"timestamp\":\"2026-11-25T00:00:00Z\",\"pane\":\"%%1\"}\n{\"event\":\"command_checked\",\"command\":\"ls\",\"timestamp\":\"2026-11-25T00:00:01Z\"}\n",
+		longCmd,
+	)
+	if err := os.WriteFile(logPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write long audit log: %v", err)
+	}
+	checked, blocked, lastBlocked := readAuditLogStats(logPath)
+	if checked != 2 || blocked != 1 || lastBlocked == nil || lastBlocked.Command != longCmd {
+		t.Fatalf("readAuditLogStats(long) = (checked=%d, blocked=%d, last=%v), want (2, 1, non-nil long cmd)", checked, blocked, lastBlocked != nil)
 	}
 }

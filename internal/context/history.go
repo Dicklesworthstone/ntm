@@ -289,6 +289,7 @@ func (s *RotationHistoryStore) Count() (int, error) {
 
 	count := 0
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
 	for scanner.Scan() {
 		count++
 	}

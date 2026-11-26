@@ -397,6 +397,7 @@ func readAuditLogStats(logPath string) (int, int, *LastBlockedCommand) {
 	var lastEntry *dcg.AuditEntry
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -416,6 +417,9 @@ func readAuditLogStats(logPath string) (int, int, *LastBlockedCommand) {
 			blocked++
 			lastEntry = &entry
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("[robot.dcg] audit log scan truncated", "path", logPath, "error", err)
 	}
 
 	if lastEntry == nil {
