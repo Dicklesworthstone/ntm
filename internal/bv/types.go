@@ -3,6 +3,8 @@ package bv
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -109,6 +111,39 @@ func (d DriftStatus) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// MarshalJSON encodes DriftStatus as its canonical string label rather than a raw enum integer.
+func (d DriftStatus) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.String())
+}
+
+// UnmarshalJSON accepts either canonical string labels or legacy integer enum codes.
+func (d *DriftStatus) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "ok":
+			*d = DriftOK
+		case "critical":
+			*d = DriftCritical
+		case "warning":
+			*d = DriftWarning
+		case "no baseline", "no_baseline":
+			*d = DriftNoBaseline
+		case "unknown":
+			*d = DriftStatus(-1)
+		default:
+			return fmt.Errorf("unknown drift status %q", s)
+		}
+		return nil
+	}
+	var code int
+	if err := json.Unmarshal(data, &code); err != nil {
+		return err
+	}
+	*d = DriftStatus(code)
+	return nil
 }
 
 // DriftResult contains drift check results
