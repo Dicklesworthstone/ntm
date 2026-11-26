@@ -739,3 +739,78 @@ func newSessionTemplateLoaderWithProjectForTest(projectPath string) *SessionTemp
 		userDir:    getDefaultSessionTemplateDir(),
 	}
 }
+
+func TestSessionTemplate_ModernHarnesses(t *testing.T) {
+	parentYAML := []byte(`apiVersion: v1
+kind: SessionTemplate
+metadata:
+  name: modern-parent
+spec:
+  agents:
+    grok:
+      count: 1
+      model: grok-3
+    omp:
+      count: 2
+`)
+	parent, err := ParseSessionTemplate(parentYAML)
+	if err != nil {
+		t.Fatalf("ParseSessionTemplate(parent): %v", err)
+	}
+	if err := parent.Validate(); err != nil {
+		t.Fatalf("parent.Validate(): %v", err)
+	}
+	if got := parent.GetAgentCount(); got != 3 {
+		t.Fatalf("parent.GetAgentCount() = %d, want 3", got)
+	}
+
+	childYAML := []byte(`apiVersion: v1
+kind: SessionTemplate
+metadata:
+  name: modern-child
+  extends: modern-parent
+spec:
+  agents:
+    pi:
+      count: 1
+    opencode:
+      count: 2
+      model: qwen3
+`)
+	child, err := ParseSessionTemplate(childYAML)
+	if err != nil {
+		t.Fatalf("ParseSessionTemplate(child): %v", err)
+	}
+	child.MergeFrom(parent)
+	if err := child.Validate(); err != nil {
+		t.Fatalf("child.Validate(): %v", err)
+	}
+	if got := child.GetAgentCount(); got != 6 {
+		t.Fatalf("child.GetAgentCount() after MergeFrom = %d, want 6", got)
+	}
+	if child.Spec.Agents.Grok == nil || child.Spec.Agents.Grok.Model != "grok-3" {
+		t.Fatalf("child did not inherit grok spec: %+v", child.Spec.Agents.Grok)
+	}
+	if child.Spec.Agents.Omp == nil || child.Spec.Agents.Omp.Count != 2 {
+		t.Fatalf("child did not inherit omp spec: %+v", child.Spec.Agents.Omp)
+	}
+	if child.Spec.Agents.Pi == nil || child.Spec.Agents.Pi.Count != 1 {
+		t.Fatalf("child missing pi spec: %+v", child.Spec.Agents.Pi)
+	}
+	if child.Spec.Agents.Opencode == nil || child.Spec.Agents.Opencode.Model != "qwen3" {
+		t.Fatalf("child missing opencode spec: %+v", child.Spec.Agents.Opencode)
+	}
+
+	// Negative counts on modern harnesses must fail Validate().
+	bad := &SessionTemplate{
+		APIVersion: "v1",
+		Kind:       "SessionTemplate",
+		Metadata:   SessionTemplateMetadata{Name: "bad-modern"},
+		Spec: SessionTemplateSpec{
+			Agents: AgentsSpec{Opencode: &AgentTypeSpec{Count: -1}},
+		},
+	}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("expected Validate() error for negative opencode count")
+	}
+}

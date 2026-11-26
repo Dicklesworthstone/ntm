@@ -118,6 +118,18 @@ type AgentsSpec struct {
 	// Ollama defines Ollama agent configuration.
 	Ollama *AgentTypeSpec `yaml:"ollama,omitempty"`
 
+	// Grok defines xAI Grok agent configuration.
+	Grok *AgentTypeSpec `yaml:"grok,omitempty"`
+
+	// Omp defines Oh My Pi agent configuration.
+	Omp *AgentTypeSpec `yaml:"omp,omitempty"`
+
+	// Pi defines Pi coding agent configuration.
+	Pi *AgentTypeSpec `yaml:"pi,omitempty"`
+
+	// Opencode defines OpenCode agent configuration.
+	Opencode *AgentTypeSpec `yaml:"opencode,omitempty"`
+
 	// UserPane controls whether a user pane is included (default: true).
 	UserPane *bool `yaml:"userPane,omitempty"`
 
@@ -441,6 +453,18 @@ func (t *SessionTemplate) GetAgentCount() int {
 	if t.Spec.Agents.Ollama != nil {
 		count += t.Spec.Agents.Ollama.TotalCount()
 	}
+	if t.Spec.Agents.Grok != nil {
+		count += t.Spec.Agents.Grok.TotalCount()
+	}
+	if t.Spec.Agents.Omp != nil {
+		count += t.Spec.Agents.Omp.TotalCount()
+	}
+	if t.Spec.Agents.Pi != nil {
+		count += t.Spec.Agents.Pi.TotalCount()
+	}
+	if t.Spec.Agents.Opencode != nil {
+		count += t.Spec.Agents.Opencode.TotalCount()
+	}
 	for _, persona := range t.Spec.Agents.Personas {
 		if persona.Count > 0 {
 			count += persona.Count
@@ -484,6 +508,18 @@ func (t *SessionTemplate) MergeFrom(parent *SessionTemplate) {
 	}
 	if parent.Spec.Agents.Ollama != nil && t.Spec.Agents.Ollama == nil {
 		t.Spec.Agents.Ollama = parent.Spec.Agents.Ollama
+	}
+	if parent.Spec.Agents.Grok != nil && t.Spec.Agents.Grok == nil {
+		t.Spec.Agents.Grok = parent.Spec.Agents.Grok
+	}
+	if parent.Spec.Agents.Omp != nil && t.Spec.Agents.Omp == nil {
+		t.Spec.Agents.Omp = parent.Spec.Agents.Omp
+	}
+	if parent.Spec.Agents.Pi != nil && t.Spec.Agents.Pi == nil {
+		t.Spec.Agents.Pi = parent.Spec.Agents.Pi
+	}
+	if parent.Spec.Agents.Opencode != nil && t.Spec.Agents.Opencode == nil {
+		t.Spec.Agents.Opencode = parent.Spec.Agents.Opencode
 	}
 	if parent.Spec.Agents.UserPane != nil && t.Spec.Agents.UserPane == nil {
 		t.Spec.Agents.UserPane = parent.Spec.Agents.UserPane
@@ -623,6 +659,34 @@ func (a *AgentsSpec) Validate() error {
 			return err
 		}
 		total += a.Ollama.TotalCount()
+	}
+
+	if a.Grok != nil {
+		if err := a.Grok.Validate("grok"); err != nil {
+			return err
+		}
+		total += a.Grok.TotalCount()
+	}
+
+	if a.Omp != nil {
+		if err := a.Omp.Validate("omp"); err != nil {
+			return err
+		}
+		total += a.Omp.TotalCount()
+	}
+
+	if a.Pi != nil {
+		if err := a.Pi.Validate("pi"); err != nil {
+			return err
+		}
+		total += a.Pi.TotalCount()
+	}
+
+	if a.Opencode != nil {
+		if err := a.Opencode.Validate("opencode"); err != nil {
+			return err
+		}
+		total += a.Opencode.TotalCount()
 	}
 
 	for _, p := range a.Personas {
