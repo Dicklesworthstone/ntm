@@ -384,6 +384,153 @@ func TestCompareNumericPair(t *testing.T) {
 	}
 }
 
+func TestConditionEvaluatorExactNumericTruthiness(t *testing.T) {
+	state := &ExecutionState{Variables: map[string]interface{}{}}
+	evaluator := NewConditionEvaluator(NewSubstitutor(state, "test-session", "numeric-truthiness"))
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"0", false},
+		{"-0", false},
+		{"+0", false},
+		{"+0.0e+12", false},
+		{"0.0", false},
+		{"-0.000", false},
+		{".0", false},
+		{"0.", false},
+		{"0e10", false},
+		{"-0.000E-999999999999999999999", false},
+		{"0e999999999999999999999", false},
+		{"1", true},
+		{"+1", true},
+		{"-1", true},
+		{"0.0001", true},
+		{"9007199254740993", true},
+		{"1e-999999999999999999999", true},
+		{"-1e-999999999999999999999", true},
+		{"1e999999999999999999999", true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			state.Variables["value"] = tc.value
+			for _, expr := range []string{tc.value, "${vars.value}"} {
+				for _, gate := range []struct {
+					expr string
+					want bool
+				}{
+					{expr, tc.want},
+					{"NOT (" + expr + ")", !tc.want},
+					{"(" + expr + ") AND true", tc.want},
+					{"(" + expr + ") OR false", tc.want},
+				} {
+					result, err := evaluator.Evaluate(gate.expr)
+					if err != nil || result.Value != gate.want || result.Skip == gate.want {
+						t.Fatalf("Evaluate(%q) = %+v, %v; want run=%t", gate.expr, result, err, gate.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestConditionEvaluatorJSONNumericTruthiness(t *testing.T) {
+	decoder := json.NewDecoder(strings.NewReader(`{
+		"zero": 0,
+		"decimal": 0.0,
+		"negative": -0,
+		"exponent": 0e10,
+		"tiny": 1e-999999999999999999999,
+		"large": 1e999999999999999999999
+	}`))
+	decoder.UseNumber()
+	var variables map[string]interface{}
+	if err := decoder.Decode(&variables); err != nil {
+		t.Fatalf("decode JSON variables: %v", err)
+	}
+	for name, value := range variables {
+		if _, ok := value.(json.Number); !ok {
+			t.Fatalf("variable %q has type %T, want json.Number", name, value)
+		}
+	}
+	variables["padded"] = " 0.0 "
+	variables["payload"] = "0 OR true"
+	state := &ExecutionState{Variables: variables}
+	evaluator := NewConditionEvaluator(NewSubstitutor(state, "test-session", "json-truthiness"))
+	for _, tc := range []struct {
+		expr string
+		want bool
+	}{
+		{"${vars.decimal}", false},
+		{"${vars.negative}", false},
+		{"${vars.exponent}", false},
+		{"${vars.tiny}", true},
+		{"${vars.large}", true},
+		{"${vars.decimal} AND ${invalidnamespace.x}", false},
+		{"${vars.tiny} OR ${invalidnamespace.x}", true},
+		{`"${vars.zero}"`, false},
+		{`"${vars.decimal}"`, true},
+		{`"-0"`, true},
+		{`"0e10"`, true},
+		{"'0.0'", true},
+		{"'0'", false},
+		{`" 0 "`, true},
+		{`"FALSE"`, false},
+		{"${vars.padded}", false},
+		{`"${vars.padded}"`, true},
+		{"NOT ${vars.payload}", false},
+		{`${vars.payload} == "0 OR true"`, true},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			result, err := evaluator.Evaluate(tc.expr)
+			if err != nil || result.Value != tc.want || result.Skip == tc.want {
+				t.Fatalf("Evaluate(%q) = %+v, %v; want run=%t", tc.expr, result, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestConditionEvaluatorNumericTruthinessSizeLimit(t *testing.T) {
+	atLimitZero := "0." + strings.Repeat("0", maxFilterExpressionBytes-2)
+	oversizedZero := atLimitZero + "0"
+	state := &ExecutionState{Variables: map[string]interface{}{}}
+	evaluator := NewConditionEvaluator(NewSubstitutor(state, "test-session", "bounded-truthiness"))
+	for _, tc := range []struct {
+		name    string
+		value   string
+		expr    string
+		want    bool
+		wantErr bool
+	}{
+		{"zero at limit", atLimitZero, "${vars.value}", false, false},
+		{"oversized zero", oversizedZero, "${vars.value}", false, true},
+		{"oversized signed zero", "+" + atLimitZero, "${vars.value}", false, true},
+		{"oversized integer", strings.Repeat("9", maxFilterExpressionBytes+1), "${vars.value}", false, true},
+		{"oversized exponent", "1e" + strings.Repeat("9", maxFilterExpressionBytes), "${vars.value}", false, true},
+		{"oversized signed exponent", "1e+" + strings.Repeat("9", maxFilterExpressionBytes), "${vars.value}", false, true},
+		{"long plain text", strings.Repeat("x", maxFilterExpressionBytes+1), "${vars.value}", true, false},
+		{"long numeric prefix text", "1e" + strings.Repeat("9", maxFilterExpressionBytes) + "x", "${vars.value}", true, false},
+		{"long exponent letters", strings.Repeat("e", maxFilterExpressionBytes+1), "${vars.value}", true, false},
+		{"quoted oversized zero", oversizedZero, `"${vars.value}"`, true, false},
+		{"short circuit and", oversizedZero, "false AND ${vars.value}", false, false},
+		{"short circuit or", oversizedZero, "true OR ${vars.value}", true, false},
+		{"negated oversized zero", oversizedZero, "NOT ${vars.value}", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state.Variables["value"] = tc.value
+			result, err := evaluator.Evaluate(tc.expr)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "numeric boolean operand exceeds") {
+					t.Fatalf("Evaluate(%q) error = %v; want numeric size error", tc.expr, err)
+				}
+				return
+			}
+			if err != nil || result.Value != tc.want || result.Skip == tc.want {
+				t.Fatalf("Evaluate(%q) = %+v, %v; want run=%t", tc.expr, result, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestConditionEvaluatorExactNumericOrdering(t *testing.T) {
 	// Deliberately ordered values include adjacent integers beyond float64's
 	// precision, decimal significand prefixes, opposite signs and exponents
