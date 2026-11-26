@@ -4,7 +4,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1411,9 +1410,10 @@ func parseItemsString(s string) ([]interface{}, error) {
 
 	// Try JSON array first
 	if strings.HasPrefix(s, "[") {
-		var arr []interface{}
-		if err := json.Unmarshal([]byte(s), &arr); err == nil {
-			return arr, nil
+		if value, err := decodeOutputJSON(s); err == nil {
+			if items, ok := value.([]interface{}); ok {
+				return items, nil
+			}
 		}
 	}
 

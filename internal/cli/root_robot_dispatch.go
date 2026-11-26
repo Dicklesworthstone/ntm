@@ -1104,7 +1104,7 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 	if robotPipelineRun != "" {
 		vars, err := pipeline.ParsePipelineVars(robotPipelineVars)
 		if err != nil {
-			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use KEY=VALUE pipeline variables", "robot-pipeline-run")
+			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Provide --pipeline-vars as a JSON object", "robot-pipeline-run")
 			return true
 		}
 		session, projectDir, err := resolveRobotSessionProjectScope(cmd.Context(), resolveRobotPipelineSession(cmd))

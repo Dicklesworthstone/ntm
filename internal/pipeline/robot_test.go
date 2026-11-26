@@ -620,6 +620,30 @@ func TestParsePipelineVars(t *testing.T) {
 	}
 }
 
+func TestPipelineVariableJSONPreservesForeachSelections(t *testing.T) {
+	t.Parallel()
+	const rows = `[{"id":9007199254740993,"score":0.10000000000000000001,"weight":1e-900}]`
+	vars, err := ParsePipelineVars(`{"items":` + rows + `}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop, err := toInterfaceSlice(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, items := range map[string][]interface{}{"pipeline-vars": vars["items"].([]interface{}), "loop.items": loop} {
+		for _, expr := range []string{"item.id!=9007199254740992", "item.score>0.1", "item.weight>0"} {
+			selected, err := EvaluateForeachFilter(expr, FilterContext{Item: items[0]})
+			if err != nil || !selected {
+				t.Errorf("%s filter %q selected=%v error=%v", name, expr, selected, err)
+			}
+		}
+	}
+	if _, err := ParsePipelineVars(`{"items":[]} {}`); err == nil {
+		t.Error("accepted trailing JSON after pipeline variables")
+	}
+}
+
 func TestPipelineRegistry(t *testing.T) {
 	// Clear registry before test
 	ClearPipelineRegistry()

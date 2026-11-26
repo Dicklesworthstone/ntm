@@ -14,7 +14,7 @@ import (
 
 func TestParsePipelineRunVariablesPrecedenceAndJSONTypes(t *testing.T) {
 	varFile := filepath.Join(t.TempDir(), "vars.json")
-	if err := os.WriteFile(varFile, []byte(`{"foo":"file","n":5,"arr":["x","y"],"flag":false}`), 0o644); err != nil {
+	if err := os.WriteFile(varFile, []byte(`{"foo":"file","n":5,"id":9007199254740993,"arr":["x","y"],"flag":false}`), 0o644); err != nil {
 		t.Fatalf("write var file: %v", err)
 	}
 
@@ -35,6 +35,9 @@ func TestParsePipelineRunVariablesPrecedenceAndJSONTypes(t *testing.T) {
 	}
 	if got["n"] != float64(5) {
 		t.Fatalf("n = %#v, want JSON float64", got["n"])
+	}
+	if got["id"] != json.Number("9007199254740993") {
+		t.Fatalf("id = %#v, want exact integer from var file", got["id"])
 	}
 	if !reflect.DeepEqual(got["arr"], []interface{}{"x", "y"}) {
 		t.Fatalf("arr = %#v, want JSON array", got["arr"])

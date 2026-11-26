@@ -1084,11 +1084,18 @@ func ParsePipelineVars(varsJSON string) (map[string]interface{}, error) {
 		return nil, nil
 	}
 
-	var vars map[string]interface{}
-	if err := json.Unmarshal([]byte(varsJSON), &vars); err != nil {
+	raw, err := decodeOutputJSON(varsJSON)
+	if err != nil {
 		return nil, fmt.Errorf("invalid JSON for pipeline-vars: %w", err)
 	}
 
+	if raw == nil {
+		return nil, nil
+	}
+	vars, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected a JSON object of pipeline variables, got %T", raw)
+	}
 	return vars, nil
 }
 
