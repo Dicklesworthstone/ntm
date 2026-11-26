@@ -137,6 +137,7 @@ func (e *Estimator) Estimate(ctx context.Context, input EstimateInput, opts Esti
 				cacheCfg.Enabled = false
 			} else {
 				cache = created
+				defer cache.Close()
 			}
 		}
 		generator := NewContextPackGenerator(projectDir, cache, logger)
