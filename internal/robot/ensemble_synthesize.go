@@ -418,6 +418,11 @@ func GetEnsembleSynthesize(ctx context.Context, opts EnsembleSynthesizeOptions, 
 	var outputPath string
 	if rawOut := strings.TrimSpace(opts.Output); rawOut != "" {
 		cleanPath := filepath.Clean(rawOut)
+		if !filepath.IsAbs(cleanPath) {
+			if projDir := strings.TrimSpace(opts.ProjectDir); projDir != "" {
+				cleanPath = filepath.Join(projDir, cleanPath)
+			}
+		}
 		if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
 			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("create output directory: %w", err),
