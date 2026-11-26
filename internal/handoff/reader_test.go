@@ -190,6 +190,44 @@ version: "1.0"
 	})
 }
 
+func TestMixedHandoffNamesRecoverNewestAndArchiveOldest(t *testing.T) {
+	r, dir := setupTestReader(t)
+	older := createHandoffFile(t, dir, "deploy", "auto-handoff-123.yaml", "goal: old\nnow: prepare\n")
+	newer := createHandoffFile(t, dir, "deploy", "2025-01-02_12-00_manual.yaml", "goal: new\nnow: verify\n")
+	stamp := time.Unix(1700000000, 0)
+	if err := os.Chtimes(older, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	stamp = stamp.Add(time.Minute)
+	if err := os.Chtimes(newer, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	h, path, err := r.FindLatest("deploy")
+	if err != nil || path != newer || h == nil || h.Goal != "new" {
+		t.Fatalf("latest handoff = %+v at %q, err = %v; want %q", h, path, err, newer)
+	}
+	goal, now, err := r.ExtractGoalNow("deploy")
+	if err != nil || goal != "new" || now != "verify" {
+		t.Fatalf("status line = %q, %q, %v", goal, now, err)
+	}
+	history, err := r.ListHandoffs("deploy")
+	if err != nil || len(history) != 2 || history[0].Path != newer {
+		t.Fatalf("history = %+v, err = %v", history, err)
+	}
+
+	w := NewWriterWithOptions(dir, 2, nil)
+	if _, err := w.Write(New("deploy").WithGoalAndNow("Finished", "Ship"), "final"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newer); err != nil {
+		t.Fatalf("newer handoff was not retained: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(older), ".archive", filepath.Base(older))); err != nil {
+		t.Fatalf("older handoff was not archived: %v", err)
+	}
+}
+
 func TestFindLatestAny(t *testing.T) {
 	t.Run("finds most recent across sessions", func(t *testing.T) {
 		r, tmpDir := setupTestReader(t)

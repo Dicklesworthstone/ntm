@@ -48,8 +48,10 @@ type HandoffMeta struct {
 	IsAuto  bool
 }
 
-func discoverHandoffYAMLPaths(dir string, entries []os.DirEntry) []string {
-	var paths []string
+// Discover regular snapshots in publication order, newest first. Auto handoffs,
+// custom output paths, and older writers use different filename formats.
+func discoverHandoffs(dir string, entries []os.DirEntry) []HandoffMeta {
+	var metas []HandoffMeta
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") || e.Type()&os.ModeSymlink != 0 {
 			continue
@@ -60,13 +62,16 @@ func discoverHandoffYAMLPaths(dir string, entries []os.DirEntry) []string {
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			continue
 		}
-		paths = append(paths, path)
+		metas = append(metas, HandoffMeta{Path: path, Date: info.ModTime()})
 	}
 
-	sort.Slice(paths, func(i, j int) bool {
-		return filepath.Base(paths[i]) > filepath.Base(paths[j])
+	sort.Slice(metas, func(i, j int) bool {
+		if metas[i].Date.Equal(metas[j].Date) {
+			return metas[i].Path > metas[j].Path
+		}
+		return metas[i].Date.After(metas[j].Date)
 	})
-	return paths
+	return metas
 }
 
 // NewReader creates a Reader for the given project directory.
@@ -114,14 +119,15 @@ func (r *Reader) FindLatest(sessionName string) (*Handoff, string, error) {
 		return nil, "", fmt.Errorf("readdir failed: %w", err)
 	}
 
-	yamlPaths := discoverHandoffYAMLPaths(dir, entries)
-	if len(yamlPaths) == 0 {
+	snapshots := discoverHandoffs(dir, entries)
+	if len(snapshots) == 0 {
 		r.logger.Debug("no handoff files found", "session", sessionName)
 		return nil, "", nil
 	}
 
 	var lastErr error
-	for _, path := range yamlPaths {
+	for _, snapshot := range snapshots {
+		path := snapshot.Path
 		h, err := r.Read(path)
 		if err != nil {
 			lastErr = err
@@ -255,13 +261,14 @@ func (r *Reader) ExtractGoalNow(sessionName string) (goal, now string, err error
 		return "", "", err
 	}
 
-	yamlPaths := discoverHandoffYAMLPaths(dir, entries)
-	if len(yamlPaths) == 0 {
+	snapshots := discoverHandoffs(dir, entries)
+	if len(snapshots) == 0 {
 		return "", "", nil
 	}
 
 	var lastErr error
-	for _, path := range yamlPaths {
+	for _, snapshot := range snapshots {
+		path := snapshot.Path
 		// Check cache
 		r.cacheMu.RLock()
 		entry, ok := r.goalNowCache[path]
@@ -345,28 +352,19 @@ func (r *Reader) ListHandoffs(sessionName string) ([]HandoffMeta, error) {
 	}
 
 	var metas []HandoffMeta
-	for _, path := range discoverHandoffYAMLPaths(dir, entries) {
-		info, _ := os.Stat(path)
-
+	for _, meta := range discoverHandoffs(dir, entries) {
 		// Quick extract goal/now without full parse
-		goal, _, err := r.extractGoalNowDirect(path)
+		goal, _, err := r.extractGoalNowDirect(meta.Path)
 		if err != nil {
 			continue
 		}
 
-		meta := HandoffMeta{
-			Path:    path,
-			Session: sessionName,
-			Goal:    goal,
-			IsAuto:  strings.HasPrefix(filepath.Base(path), "auto-handoff-"),
-		}
-
-		if info != nil {
-			meta.Date = info.ModTime()
-		}
+		meta.Session = sessionName
+		meta.Goal = goal
+		meta.IsAuto = strings.HasPrefix(filepath.Base(meta.Path), "auto-handoff-")
 
 		// Extract status from file (quick regex)
-		if content, err := os.ReadFile(path); err == nil {
+		if content, err := os.ReadFile(meta.Path); err == nil {
 			if match := statusRegex.FindSubmatch(content); match != nil {
 				meta.Status = string(match[1])
 			}
@@ -374,11 +372,6 @@ func (r *Reader) ListHandoffs(sessionName string) ([]HandoffMeta, error) {
 
 		metas = append(metas, meta)
 	}
-
-	// Sort by date descending
-	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].Date.After(metas[j].Date)
-	})
 
 	r.logger.Debug("listed handoffs",
 		"session", sessionName,

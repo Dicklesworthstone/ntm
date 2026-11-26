@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -200,17 +200,6 @@ func (w *Writer) sessionDirPath(sessionName string) (string, error) {
 	return dir, nil
 }
 
-func visibleYAMLPaths(paths []string) []string {
-	filtered := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if strings.HasPrefix(filepath.Base(path), ".") {
-			continue
-		}
-		filtered = append(filtered, path)
-	}
-	return filtered
-}
-
 // Write saves a handoff to the appropriate directory using atomic write.
 // The description is sanitized to kebab-case for use in the filename.
 // Returns the path to the written file.
@@ -382,18 +371,15 @@ func (w *Writer) checkRotation(sessionName string) error {
 		return err
 	}
 
-	yamlFiles := visibleYAMLPaths(discoverHandoffYAMLPaths(dir, entries))
+	snapshots := slices.DeleteFunc(discoverHandoffs(dir, entries), func(meta HandoffMeta) bool {
+		return strings.HasPrefix(filepath.Base(meta.Path), ".")
+	})
 
 	// Check rotation needs: since we're about to write a new file,
 	// rotate if count >= maxPerDir to make room
-	if len(yamlFiles) < w.maxPerDir {
+	if len(snapshots) < w.maxPerDir {
 		return nil // No rotation needed
 	}
-
-	// Sort by name ascending (older files have earlier timestamps in name)
-	sort.Slice(yamlFiles, func(i, j int) bool {
-		return filepath.Base(yamlFiles[i]) < filepath.Base(yamlFiles[j])
-	})
 
 	// Create archive dir
 	if err := ensureSafeDir(archiveDir); err != nil {
@@ -401,11 +387,10 @@ func (w *Writer) checkRotation(sessionName string) error {
 	}
 
 	// Move oldest files to archive (at least 1 to make room for new file)
-	toMove := len(yamlFiles) - w.maxPerDir + 1
 	moved := 0
-	for i := 0; i < toMove; i++ {
-		oldPath := yamlFiles[i]
-		newPath := filepath.Join(archiveDir, filepath.Base(yamlFiles[i]))
+	for i := len(snapshots) - 1; i >= w.maxPerDir-1; i-- {
+		oldPath := snapshots[i].Path
+		newPath := filepath.Join(archiveDir, filepath.Base(oldPath))
 		if err := os.Rename(oldPath, newPath); err != nil {
 			w.logger.Warn("failed to archive handoff",
 				"path", oldPath,
