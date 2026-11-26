@@ -4191,6 +4191,8 @@ func TestSendCommandUsesSharedDeliveryPreflight(t *testing.T) {
 	const claudeTrust = "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
 	const codexTrust = "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\n"
 	const antigravityTrust = "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm\n"
+	// GH #383: agy 1.5.18 puts model information beside the shortcut hint.
+	const antigravityInlineIdle = "Antigravity\n\n  >\n\n  ? for shortcuts                                      auto · Gemini 4 Neon · high\n"
 	const grokTrust = "Grok Build may run or modify contents in this directory,\nposing security risks.\nYes, proceed  y\nNo, quit  n\n"
 
 	for _, tc := range []struct {
@@ -4207,6 +4209,9 @@ func TestSendCommandUsesSharedDeliveryPreflight(t *testing.T) {
 		{name: "claude trust before clear", kind: tmux.AgentClaude, command: "claude", capture: claudeTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
 		{name: "codex trust before clear", kind: tmux.AgentCodex, command: "codex", capture: codexTrust, clearInput: true, wantError: "COMPOSER_NOT_CLEARED"},
 		{name: "antigravity trust before clear", kind: tmux.AgentAntigravity, command: "agy", capture: antigravityTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "antigravity inline footer idle", kind: tmux.AgentAntigravity, command: "agy", capture: antigravityInlineIdle, wantEnters: 2},
+		{name: "antigravity inline footer before trust", kind: tmux.AgentAntigravity, command: "agy", capture: antigravityInlineIdle + antigravityTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "antigravity stale inline footer", kind: tmux.AgentAntigravity, command: "agy", capture: antigravityInlineIdle + "Loading agent configuration...\n", wantError: "composer not visible"},
 		{name: "grok trust", kind: tmux.AgentGrok, command: "grok", capture: grokTrust, wantError: "PANE_INTERACTIVE_GATE"},
 		{name: "grok trust before clear", kind: tmux.AgentGrok, command: "grok", capture: grokTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
 		{name: "claude initializing", kind: tmux.AgentClaude, command: "claude", capture: "Loading agent configuration...\n", wantError: "composer not visible"},
@@ -4281,6 +4286,57 @@ func TestSendCommandUsesSharedDeliveryPreflight(t *testing.T) {
 			}
 			if strings.Count(calls, "send-keys -t %91 -l -- continue the review\n") != 1 {
 				t.Fatalf("prompt was not delivered exactly once through the existing transport:\n%s", calls)
+			}
+		})
+	}
+}
+
+// Exercise the --robot-send handler through the same fake tmux boundary as
+// the CLI command: both submission and staging must accept an idle agy 1.5.18
+// composer without requiring the agent to be actively working (GH #383).
+func TestRobotSendAntigravityInlineFooter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	const capture = "Antigravity\n\n  >\n\n  ? for shortcuts                                      auto · Gemini 4 Neon · high\n"
+	const message = "continue the review"
+	for _, enter := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enter=%v", enter), func(t *testing.T) {
+			projectRoot, logPath := workflowCommandTmuxFixture(t, "stable")
+			for name, content := range map[string]string{
+				"pane-kind":    string(tmux.AgentAntigravity),
+				"pane-command": "agy",
+				"pane-output":  capture,
+			} {
+				if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := robot.GetSend(robot.SendOptions{
+				Context: t.Context(), Session: "evidence-run", Panes: []string{"1"},
+				Message: message, Enter: &enter,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Success || !slices.Equal(result.Targets, []string{"1"}) ||
+				!slices.Equal(result.Successful, []string{"1"}) || len(result.Failed) != 0 {
+				t.Fatalf("robot send refused idle Antigravity composer: %+v", result)
+			}
+			commands, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(commands)
+			if strings.Count(calls, "send-keys -t %91 -l -- "+message+"\n") != 1 {
+				t.Fatalf("robot prompt was not delivered exactly once:\n%s", calls)
+			}
+			wantEnters := 0
+			if enter {
+				wantEnters = 2
+			}
+			if got := strings.Count(calls, "send-keys -t %91 Enter\n"); got != wantEnters {
+				t.Fatalf("robot send issued %d Enters, want %d:\n%s", got, wantEnters, calls)
 			}
 		})
 	}

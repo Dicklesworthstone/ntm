@@ -192,6 +192,54 @@ func TestInterruptKeyForAgent_OpencodeUsesEscape(t *testing.T) {
 	}
 }
 
+func TestAntigravityComposerDraftFooterLayouts(t *testing.T) {
+	t.Parallel()
+	// GH #383 reports this footer from agy 1.5.18, with the model on the
+	// shortcut row. Reconstruct the surrounding composer for each state.
+	const inlineFooter = "? for shortcuts                                      auto · Gemini 4 Neon · high\n"
+	const idle = "Antigravity\n\n  >\n\n"
+	for _, tc := range []struct {
+		name      string
+		capture   string
+		wantDraft string
+		wantFound bool
+	}{
+		{name: "empty capture"},
+		{name: "shortcut only", capture: idle + "? for shortcuts\n", wantFound: true},
+		{name: "legacy separate model", capture: idle + "? for shortcuts\nGemini 4 Neon (XHigh)\n", wantFound: true},
+		{name: "reported inline model", capture: idle + inlineFooter, wantFound: true},
+		{name: "separate auto model", capture: idle + "? for shortcuts\nauto · Gemini 4 Neon · high\n", wantFound: true},
+		{name: "inline Gemini model", capture: idle + "? for shortcuts  Gemini 4 Neon (XHigh)\n", wantFound: true},
+		{name: "inline auto", capture: idle + "? for shortcuts\tauto\n", wantFound: true},
+		{name: "inline auto parentheses", capture: idle + "? for shortcuts  auto (Gemini 4 Neon)\n", wantFound: true},
+		{name: "inline model label", capture: idle + "? for shortcuts  Model: Gemini 4 Neon\n", wantFound: true},
+		{name: "case and whitespace", capture: idle + " \t" + strings.ToUpper(strings.TrimSpace(inlineFooter)) + " \t\n", wantFound: true},
+		{name: "ANSI and CRLF", capture: "Antigravity\r\n\r\n  >\r\n\r\n\x1b[2m" + strings.TrimSpace(inlineFooter) + "\x1b[0m\r\n", wantFound: true},
+		{name: "draft", capture: "> fix the race condition\n\n" + inlineFooter, wantDraft: "fix the race condition", wantFound: true},
+		{name: "multiline draft", capture: "> fix the race\n  condition and add tests\n────────────────────\n" + inlineFooter, wantDraft: "fix the race\ncondition and add tests", wantFound: true},
+		{name: "missing prompt", capture: "Antigravity\n" + inlineFooter},
+		{name: "quoted footer", capture: idle + "The footer says " + inlineFooter},
+		{name: "missing prefix boundary", capture: idle + "? for shortcutsGemini 4 Neon\n"},
+		{name: "unrecognized inline suffix", capture: idle + "? for shortcuts are documented here\n"},
+		{name: "second model after inline model", capture: idle + inlineFooter + "Gemini 4 Neon (XHigh)\n"},
+		{name: "dialog option", capture: "> 1. Continue\n\n" + inlineFooter},
+		{name: "trust dialog", capture: "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm\n" + inlineFooter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			draft, found := antigravityComposerDraft(tc.capture)
+			if draft != tc.wantDraft || found != tc.wantFound {
+				t.Fatalf("antigravityComposerDraft = (%q, %v), want (%q, %v)", draft, found, tc.wantDraft, tc.wantFound)
+			}
+			if AntigravityComposerVisible(tc.capture) != tc.wantFound || ComposerVisibleForDelivery(tc.capture, AgentAntigravity) != tc.wantFound {
+				t.Fatalf("composer visibility disagrees with wantFound=%v", tc.wantFound)
+			}
+			if st := InspectComposer(tc.capture, AgentAntigravity); st.MarkerVisible != tc.wantFound || st.HoldsText != (tc.wantDraft != "") {
+				t.Fatalf("InspectComposer = %+v, want MarkerVisible=%v HoldsText=%v", st, tc.wantFound, tc.wantDraft != "")
+			}
+		})
+	}
+}
+
 func TestInspectComposerAndVisibleForDelivery_AntigravityAndOpencode(t *testing.T) {
 	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"
 	if !AntigravityComposerVisible(agyIdle) || !ComposerVisibleForDelivery(agyIdle, AgentAntigravity) {
@@ -230,12 +278,13 @@ func TestInspectComposerRejectsStaleNativeFooters(t *testing.T) {
 	}{
 		{"opencode", AgentOpencode, ompFixture(t, "opencode_idle.txt")},
 		{"antigravity", AgentAntigravity, "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"},
+		{"antigravity inline model", AgentAntigravity, "Antigravity\n\n  >\n\n  ? for shortcuts                                      auto · Gemini 4 Neon · high\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if st := InspectComposer(tc.capture+strings.Repeat("\n", 40), tc.harness); !st.MarkerVisible || st.HoldsText {
 				t.Fatalf("live composer with blank viewport padding = %+v", st)
 			}
-			for _, suffix := range []string{"new unframed output\n", "Press Enter to continue\n", strings.Repeat("output line\n", 40)} {
+			for _, suffix := range []string{"new unframed output\n", "Press Enter to continue\n", "$ \n", strings.Repeat("output line\n", 40)} {
 				capture := tc.capture + suffix
 				if st := InspectComposer(capture, tc.harness); st.MarkerVisible || st.HoldsText {
 					t.Fatalf("stale composer with suffix %q = %+v", suffix, st)

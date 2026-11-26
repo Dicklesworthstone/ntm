@@ -3132,9 +3132,10 @@ var antigravityANSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a\x1
 
 // antigravityComposerDraft extracts any unsubmitted draft from a visible
 // Antigravity (agy) pane capture. At idle, Antigravity renders a `>` prompt row
-// anchored above its `? for shortcuts` and model footer rows; trust/approval
-// dialogs reuse `>` as a selection cursor without `? for shortcuts`, so both
-// the interactive-gate veto and the footer anchor are required.
+// anchored above its `? for shortcuts` footer, with the model on that row or
+// the next. Trust/approval dialogs reuse `>` as a selection cursor without
+// `? for shortcuts`, so both the interactive-gate veto and footer anchor are
+// required.
 func antigravityComposerDraft(capture string) (draft string, found bool) {
 	clean := strings.ReplaceAll(antigravityANSIRe.ReplaceAllString(capture, ""), "\r\n", "\n")
 	if strings.TrimSpace(clean) == "" || agent.HasTrailingShellExitPrompt(clean) {
@@ -3144,10 +3145,12 @@ func antigravityComposerDraft(capture string) (draft string, found bool) {
 		return "", false
 	}
 	lines := strings.Split(strings.TrimRight(clean, "\n \t"), "\n")
+	const shortcutHint = "? for shortcuts"
 	footerIdx := -1
 	start := max(0, len(lines)-antigravityComposerScanLines)
 	for i := len(lines) - 1; i >= start; i-- {
-		if strings.EqualFold(strings.TrimSpace(lines[i]), "? for shortcuts") {
+		suffix, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(lines[i])), shortcutHint)
+		if ok && (suffix == "" || suffix[0] == ' ' || suffix[0] == '\t') {
 			footerIdx = i
 			break
 		}
@@ -3155,18 +3158,23 @@ func antigravityComposerDraft(capture string) (draft string, found bool) {
 	if footerIdx < 1 {
 		return "", false
 	}
-	// The shortcut footer is followed only by the optional model row. A
-	// previously rendered composer must not regain input authority after new
-	// transcript output, a shell, or another screen takes its place.
+	// agy 1.5.18 places the model beside the shortcut hint (GH #383); older
+	// layouts put it below. Allow one optional model row in either position.
+	// A previously rendered composer must not regain input authority after
+	// new transcript output, a shell, or another screen takes its place.
 	modelSeen := false
-	for _, line := range lines[footerIdx+1:] {
+	for i, line := range lines[footerIdx:] {
 		line = strings.TrimSpace(line)
+		if i == 0 {
+			line = strings.TrimSpace(line[len(shortcutHint):])
+		}
 		if line == "" {
 			continue
 		}
 		lower := strings.ToLower(line)
 		if modelSeen || !(strings.HasPrefix(lower, "gemini ") || lower == "auto" ||
-			strings.HasPrefix(lower, "auto (") || strings.HasPrefix(lower, "model: ")) {
+			strings.HasPrefix(lower, "auto (") || strings.HasPrefix(lower, "auto · ") ||
+			strings.HasPrefix(lower, "model: ")) {
 			return "", false
 		}
 		modelSeen = true
