@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -206,6 +207,7 @@ type PipelineValidateRequest struct {
 // PipelineCleanupRequest is the request body for POST /api/v1/pipelines/cleanup
 type PipelineCleanupRequest struct {
 	OlderThanHours int `json:"older_than_hours,omitempty"`
+	DryRun         *bool `json:"dry_run,omitempty"`
 }
 
 // PipelineResumeRequest is the request body for POST /api/v1/pipelines/{id}/resume
@@ -976,21 +978,32 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 	}
 	reqID := requestIDFromContext(r.Context())
 
-	var req PipelineCleanupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	// An omitted body retains the original cleanup defaults. Reject malformed
+	// preview requests before opening any checkpoint for deletion.
+	req := &PipelineCleanupRequest{DryRun: new(bool)}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
 		return
 	}
+	if err := decoder.Decode(new(interface{})); err != io.EOF || req == nil || req.DryRun == nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "cleanup requires one JSON object with a boolean dry_run when supplied, or an empty body", nil, reqID)
+		return
+	}
 
-	// Default to 24 hours
 	hours := req.OlderThanHours
-	if hours <= 0 {
+	if hours < 0 || int64(hours) > math.MaxInt64/int64(time.Hour) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "older_than_hours is outside the supported range", nil, reqID)
+		return
+	}
+	if hours == 0 {
 		hours = 24
 	}
 
-	slog.Info("pipeline cleanup", "request_id", reqID, "older_than_hours", hours)
+	slog.Info("pipeline cleanup", "request_id", reqID, "older_than_hours", hours, "dry_run", *req.DryRun)
 
-	report, err := pipeline.CleanupStates(r.Context(), s.pipelineProjectDir(), time.Duration(hours)*time.Hour, false)
+	report, err := pipeline.CleanupStates(r.Context(), s.pipelineProjectDir(), time.Duration(hours)*time.Hour, *req.DryRun)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "cleanup failed", map[string]interface{}{
 			"error": err.Error(),
@@ -1004,6 +1017,7 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 		"retained":         report.Retained,
 		"entries":          report.Entries,
 		"older_than_hours": hours,
+		"dry_run":          *req.DryRun,
 	}, reqID)
 }
 

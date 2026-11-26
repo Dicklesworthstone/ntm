@@ -634,6 +634,7 @@ type PipelineCleanupEnvelopeResponse struct {
 	Retained       int                          `json:"retained"`
 	Entries        []pipeline.StateCleanupEntry `json:"entries"`
 	OlderThanHours int                          `json:"older_than_hours"`
+	DryRun         bool                         `json:"dry_run"`
 }
 
 type ServerConfigEnvelopeResponse struct {

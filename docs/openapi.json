@@ -40070,6 +40070,9 @@
           "deleted": {
             "type": "integer"
           },
+          "dry_run": {
+            "type": "boolean"
+          },
           "eligible": {
             "type": "integer"
           },
@@ -40097,6 +40100,7 @@
         },
         "required": [
           "deleted",
+          "dry_run",
           "eligible",
           "entries",
           "older_than_hours",
@@ -40108,6 +40112,9 @@
       "PipelineCleanupRequest": {
         "type": "object",
         "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
           "older_than_hours": {
             "type": "integer"
           }

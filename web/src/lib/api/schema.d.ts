@@ -10513,6 +10513,7 @@ export interface components {
         };
         PipelineCleanupEnvelopeResponse: {
             deleted: number;
+            dry_run: boolean;
             eligible: number;
             entries: components["schemas"]["StateCleanupEntry"][];
             older_than_hours: number;
@@ -10522,6 +10523,7 @@ export interface components {
             timestamp: string;
         };
         PipelineCleanupRequest: {
+            dry_run?: boolean;
             older_than_hours?: number;
         };
         PipelineExecRequest: {

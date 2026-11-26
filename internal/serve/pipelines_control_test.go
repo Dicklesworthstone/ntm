@@ -94,7 +94,7 @@ func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
 	defer owner.Close()
 	const path = "/api/v1/pipelines/cleanup"
 	const body = `{"older_than_hours":24}`
-	request := func() *httptest.ResponseRecorder {
+	request := func(body string) *httptest.ResponseRecorder {
 		t.Helper()
 		rec := httptest.NewRecorder()
 		srv.router.ServeHTTP(rec, pipelineRecoveryHTTPRequest(http.MethodPost, path, body))
@@ -102,7 +102,7 @@ func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
 	}
 
 	// Exercise the registered route and its permissions, not just the handler.
-	if rec := request(); rec.Code != http.StatusForbidden {
+	if rec := request(body); rec.Code != http.StatusForbidden {
 		t.Fatalf("operator cleanup = %d %s, want forbidden", rec.Code, rec.Body)
 	}
 	for runID, original := range before {
@@ -111,7 +111,28 @@ func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
 		}
 	}
 	srv.auth.Role = RoleAdmin
-	rec := request()
+	for _, invalid := range []string{
+		`{"dryrun":true}`, `{"dry_run":null}`, `null`, `{} {}`,
+		`{"older_than_hours":-1}`, `{"older_than_hours":5124096}`,
+	} {
+		if rec := request(invalid); rec.Code != http.StatusBadRequest {
+			t.Fatalf("cleanup accepted %s: %d %s", invalid, rec.Code, rec.Body)
+		}
+	}
+	preview := request(`{"older_than_hours":24,"dry_run":true}`)
+	var plan struct {
+		pipeline.StateCleanupResult
+		DryRun bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &plan); err != nil || preview.Code != http.StatusOK || !plan.DryRun || plan.Eligible != 1 || plan.Deleted != 0 || plan.Retained != 3 {
+		t.Fatalf("cleanup preview: %d %s: %v", preview.Code, preview.Body, err)
+	}
+	for runID, original := range before {
+		if !bytes.Equal(original, pipelineRecoveryHTTPJournal(t, root, runID)) {
+			t.Fatalf("cleanup preview changed %s", runID)
+		}
+	}
+	rec := request(body)
 	var response struct {
 		Success bool `json:"success"`
 		pipeline.StateCleanupResult
