@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -112,20 +116,59 @@ func WithExecutor(e Executor) ClientOption {
 	}
 }
 
-// NewClient creates a new CASS client
+func expandCASSPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || (os.PathSeparator == '\\' && strings.HasPrefix(p, `~\`)) {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if p == "~" {
+				return home
+			}
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
+// NewClient creates a new CASS client, honoring NTM_CASS_BINARY and
+// NTM_CASS_TIMEOUT environment overrides when no explicit option overrides them.
 func NewClient(opts ...ClientOption) *Client {
 	// Default to "cass" in PATH
 	binary := "cass"
+	if envBin := expandCASSPath(os.Getenv("NTM_CASS_BINARY")); envBin != "" {
+		binary = envBin
+	}
+	timeout := 30 * time.Second
+	if envTimeout := strings.TrimSpace(os.Getenv("NTM_CASS_TIMEOUT")); envTimeout != "" {
+		if secs, err := strconv.Atoi(envTimeout); err == nil && secs > 0 {
+			timeout = time.Duration(secs) * time.Second
+		}
+	}
 
 	c := &Client{
 		executor: &DefaultExecutor{BinaryPath: binary},
-		timeout:  30 * time.Second,
+		timeout:  timeout,
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+// NewClientFromSettings builds a CASS client honoring configured binary_path
+// and timeout_seconds (falling back to NTM_CASS_BINARY / "cass" on PATH and 30s).
+func NewClientFromSettings(binaryPath string, timeoutSeconds int) *Client {
+	var opts []ClientOption
+	if expanded := expandCASSPath(binaryPath); expanded != "" {
+		opts = append(opts, WithBinaryPath(expanded))
+	}
+	if timeoutSeconds > 0 {
+		opts = append(opts, WithTimeout(time.Duration(timeoutSeconds)*time.Second))
+	}
+	return NewClient(opts...)
 }
 
 // IsInstalled checks if the cass binary is available
