@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
@@ -317,6 +318,64 @@ func validateSavedLaunchTarget(ctx context.Context, session string, expected tmu
 	return fmt.Errorf("pane %s disappeared before launch", expected.ID)
 }
 
+// waitForFreshRestoreShells gives freshly created restore panes a brief window
+// to finish interactive shell rc startup (e.g. zsh/bash init subshells) before
+// validateSavedLaunchTarget enforces IdleShell(). It returns immediately when
+// all target panes are already idle or if any pane's PID/liveness/ownership
+// changes so fail-closed replacement guards stay immediate.
+func waitForFreshRestoreShells(ctx context.Context, session string, launches []savedPaneLaunch, panes []tmux.Pane) {
+	pending := make(map[string]tmux.Pane)
+	for i := range launches {
+		if launches[i].plan == nil || i >= len(panes) {
+			continue
+		}
+		p := panes[i]
+		if p.ID == "" || p.PID <= 0 || p.Dead || p.RotationToken != "" || p.IsServicePane() {
+			continue
+		}
+		if !p.IdleShell() {
+			pending[p.ID] = p
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(pending) > 0 {
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		livePanes, err := tmux.GetPanesContext(ctx, session)
+		if err != nil {
+			return
+		}
+		liveByID := make(map[string]tmux.Pane, len(livePanes))
+		for _, p := range livePanes {
+			liveByID[p.ID] = p
+		}
+		for id, expected := range pending {
+			cur, ok := liveByID[id]
+			if !ok || cur.PID != expected.PID || cur.Dead || cur.RotationToken != "" || cur.IsServicePane() {
+				// Stop waiting on replaced/dead/claimed/missing pane so
+				// validateSavedLaunchTarget fails closed immediately.
+				delete(pending, id)
+				continue
+			}
+			if cur.IdleShell() {
+				delete(pending, id)
+			}
+		}
+	}
+}
+
 // RestoreWithAgents preflights every saved launch before --force can destroy an
 // existing session, then restores topology and dispatches to its captured panes.
 // A non-nil result with an error reports a partial launch after topology restore.
@@ -332,6 +391,7 @@ func RestoreWithAgents(ctx context.Context, state *SessionState, cmds AgentComma
 	defer closeSavedLaunches(launches)
 	var result *ResumeResult
 	err = restoreSession(ctx, state, opts, func(panes []tmux.Pane) error {
+		waitForFreshRestoreShells(ctx, name, launches, panes)
 		var launchErr error
 		result, launchErr = dispatchSavedLaunches(ctx, name, launches, panes)
 		return launchErr
