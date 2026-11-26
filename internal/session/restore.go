@@ -520,6 +520,7 @@ func ResumeContext(ctx context.Context, state *SessionState, cmds AgentCommands,
 	defer closeSavedLaunches(launches)
 	var result *ResumeResult
 	err = restoreSession(ctx, state, RestoreOptions{Name: name, Force: opts.Force, SkipGitCheck: true}, func(panes []tmux.Pane) error {
+		waitForFreshRestoreShells(ctx, name, launches, panes)
 		var launchErr error
 		result, launchErr = dispatchSavedLaunches(ctx, name, launches, panes)
 		return launchErr
