@@ -24,6 +24,7 @@ type Cache struct {
 	ttl       time.Duration
 	mu        sync.RWMutex
 	done      chan struct{}
+	closeOnce sync.Once
 	cleanupWg sync.WaitGroup
 }
 
@@ -90,6 +91,18 @@ func (c *Cache) Clear() {
 	defer c.mu.Unlock()
 
 	clear(c.entries)
+}
+
+// Close stops the background cleanup goroutine and waits for it to exit.
+// It is safe to call Close multiple times or on a nil receiver.
+func (c *Cache) Close() {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		close(c.done)
+	})
+	c.cleanupWg.Wait()
 }
 
 // cleanupLoop periodically removes expired entries

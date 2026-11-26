@@ -114,6 +114,14 @@ func NewContextPackCacheWithDir(dir string, cfg CacheConfig, logger *slog.Logger
 	return cache, nil
 }
 
+// Close releases background goroutines owned by the in-memory cache.
+func (c *ContextPackCache) Close() {
+	if c == nil {
+		return
+	}
+	c.mem.Close()
+}
+
 func defaultContextCacheDir() (string, error) {
 	// Honor XDG_CACHE_HOME on every platform. os.UserCacheDir uses
 	// $HOME/Library/Caches on macOS and ignores XDG_CACHE_HOME entirely,
