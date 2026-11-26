@@ -26,6 +26,12 @@ const OmpQuotaUnsupported = "no quota API; relies on provider-error classificati
 	"(omp ends a failed turn with a dismissable provider-error block, reported by " +
 	"--robot-is-working as ERROR_STATE with indicator_basis provider_error)"
 
+// PiQuotaUnsupported explains why a pi pane never has a quota reading and
+// where provider exhaustion shows up instead.
+const PiQuotaUnsupported = "no quota API; relies on provider-error classification " +
+	"(pi wraps arbitrary upstream providers and reports provider failures via " +
+	"--robot-is-working as ERROR_STATE)"
+
 // QuotaInfo represents current quota state for an account
 type QuotaInfo struct {
 	Provider     Provider  `json:"provider"`
