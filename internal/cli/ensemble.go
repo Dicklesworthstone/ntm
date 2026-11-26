@@ -1163,6 +1163,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 				cacheEnabled = false
 			} else {
 				outputCache = cache
+				defer outputCache.Close()
 			}
 
 			if cacheEnabled {
@@ -3845,6 +3846,7 @@ func runEnsembleCacheStats(w io.Writer, format, project string) error {
 	if err != nil {
 		return fmt.Errorf("open mode output cache: %w", err)
 	}
+	defer cache.Close()
 
 	cacheDir := filepath.Join(projectDir, ".ntm", "ensemble-cache")
 	payload := ensembleCacheStatsOutput{
@@ -3900,6 +3902,7 @@ func runEnsembleCacheClear(w io.Writer, format, project string) error {
 	if err != nil {
 		return fmt.Errorf("open mode output cache: %w", err)
 	}
+	defer cache.Close()
 
 	cacheDir := filepath.Join(projectDir, ".ntm", "ensemble-cache")
 	removed := cache.Clear()

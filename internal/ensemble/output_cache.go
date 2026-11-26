@@ -172,6 +172,14 @@ func NewModeOutputCacheWithDir(dir string, cfg ModeOutputCacheConfig, logger *sl
 	return cache, nil
 }
 
+// Close releases background goroutines owned by the in-memory cache.
+func (c *ModeOutputCache) Close() {
+	if c == nil {
+		return
+	}
+	c.mem.Close()
+}
+
 func defaultModeOutputCacheDir(projectDir string) string {
 	if projectDir == "" {
 		projectDir, _ = os.Getwd()
