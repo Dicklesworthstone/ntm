@@ -66,7 +66,10 @@ func TestBackgroundProcess(t *testing.T) {
 	}
 	cfg := DefaultExecutorConfig("background")
 	cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, path, id
-	result := StartBackgroundPipeline(workflow, map[string]interface{}{"payload": "spaces ' quotes \n lines"}, cfg)
+	result := StartBackgroundPipeline(workflow, map[string]interface{}{
+		"payload":  "spaces ' quotes \n lines",
+		"work_ids": []interface{}{json.Number("9007199254740993"), json.Number("0.10000000000000000001")},
+	}, cfg)
 	_ = json.NewEncoder(os.Stdout).Encode(result)
 	if result.Error != "" {
 		os.Exit(1)
@@ -156,6 +159,12 @@ func TestBackgroundPipelineSurvivesLauncherExit(t *testing.T) {
 				t.Fatal(err)
 			}
 			st := awaitBackgroundState(t, root, out.RunID, StatusCompleted)
+			if mode == "launch" {
+				ids, err := json.Marshal(st.Variables["work_ids"])
+				if err != nil || string(ids) != `[9007199254740993,0.10000000000000000001]` {
+					t.Fatalf("worker changed numeric inputs: work_ids=%s, err=%v", ids, err)
+				}
+			}
 			if data, err := os.ReadFile(filepath.Join(root, "marker")); err != nil || string(data) != "completed" {
 				t.Fatalf("work did not survive launcher exit: %q %v", data, err)
 			}

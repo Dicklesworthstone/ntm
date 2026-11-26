@@ -437,7 +437,7 @@ func readBackgroundJSON(path string, limit int64, into interface{}) error {
 	if int64(len(data)) > limit {
 		return errors.New("background record exceeds size limit")
 	}
-	return json.Unmarshal(data, into)
+	return decodeCheckpointJSON(data, into)
 }
 
 // RunBackgroundWorker is invoked by the hidden CLI re-exec command. It uses
@@ -461,6 +461,11 @@ func RunBackgroundWorker(ctx context.Context, projectDir, requestID string, inpu
 	if err := readBackgroundJSON(filepath.Join(dir, requestID+".json"), maxBackgroundRequestBytes, &req); err != nil {
 		return err
 	}
+	// Re-exec transports the overrides and prior state through JSON. Keep
+	// ordinary float64 values where possible and preserve receipt-bound
+	// numeric spellings in embedded checkpoints.
+	normalizeCheckpointJSONNumbers(req.Variables)
+	normalizeStateJSONNumbers(req.Config.StartFromState)
 	if req.Version != backgroundRequestVersion || len(req.Token) != 32 || req.Config.ProjectDir != root {
 		return errors.New("invalid background request version or identity")
 	}
