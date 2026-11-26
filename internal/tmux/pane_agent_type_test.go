@@ -51,6 +51,25 @@ func TestGuardedPaneMutationsRejectInvalidInputs(t *testing.T) {
 			}
 		}
 	}
+	for _, pane := range []Pane{
+		{ID: "%7", PID: 1},
+		{ID: "%7", PID: -1, Dead: true},
+		{ID: "%7", Dead: true, Service: "cm"},
+		{ID: "%7", Dead: true, RotationToken: "owned"},
+	} {
+		if err := client.RespawnDeadPaneIfCurrentContext(t.Context(), pane, t.TempDir()); !errors.Is(err, ErrPaneIdentityChanged) {
+			t.Fatalf("invalid retained pane reached tmux: %+v: %v", pane, err)
+		}
+	}
+	if err := client.RespawnDeadPaneIfCurrentContext(t.Context(), Pane{ID: "%7", Dead: true}, ""); err == nil {
+		t.Fatal("retained pane recovery accepted an unknown working directory")
+	}
+	if err := client.respawnPaneIfCurrentContext(t.Context(), "%7", 0, true, t.TempDir(), true, paneMutationDead); err == nil {
+		t.Fatal("retained pane recovery accepted a destructive respawn")
+	}
+	if err := client.runPaneMutationIfCurrentContext(t.Context(), "%7", 0, paneMutationDead, "send-keys", "-t", "%7", "Enter"); err == nil {
+		t.Fatal("dead pane guard permitted terminal input with no process identity")
+	}
 	for _, directory := range []string{"relative", "/private\npath", "/private\tpath"} {
 		if err := client.RespawnPaneIfCurrentContext(t.Context(), "%7", 1, true, directory, false); err == nil || strings.Contains(err.Error(), directory) {
 			t.Fatalf("unsafe working directory did not fail before mutation: %v", err)
@@ -224,6 +243,90 @@ func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+func TestRealGuardedDeadPaneRespawnPreservesReplacementAndOwnership(t *testing.T) {
+	t.Parallel()
+	session := createTestSession(t)
+	original := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+	if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-t", original.ID, "remain-on-exit", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.RunSilentContext(t.Context(), "respawn-pane", "-k", "-t", original.ID, "/bin/true"); err != nil {
+		t.Fatal(err)
+	}
+	dead := waitGuardedTestPane(t, session, func(p Pane) bool { return p.Dead })
+	if dead.ID != original.ID {
+		t.Fatal("fixture did not retain the original physical pane")
+	}
+	directory := filepath.Join(t.TempDir(), "retained pane's worktree")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	wantPath, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A changed PID, a new service owner, or a rotation lease must refuse
+	// recovery even though the old observation described a dead pane.
+	wrongPID := dead
+	wrongPID.PID += 1000000
+	if err := DefaultClient.RespawnDeadPaneIfCurrentContext(t.Context(), wrongPID, directory); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("retained pane accepted a different PID: %v", err)
+	}
+	for _, option := range []string{PaneOptionRotationToken, PaneOptionNTMService, PaneOptionACFSService} {
+		if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-t", dead.ID, option, "claimed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := DefaultClient.RespawnDeadPaneIfCurrentContext(t.Context(), dead, directory); !errors.Is(err, ErrPaneIdentityChanged) {
+			t.Fatalf("retained pane recovery ignored %s: %v", option, err)
+		}
+		if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-u", "-t", dead.ID, option); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SetPaneAgentIdentityContext(t.Context(), dead.ID, session+"__cod_1", AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+	dead = waitGuardedTestPane(t, session, func(p Pane) bool { return p.Dead && p.RecordedType == AgentCodex })
+	if err := SetPaneAgentTypeContext(t.Context(), dead.ID, AgentClaude); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.RespawnDeadPaneIfCurrentContext(t.Context(), dead, directory); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("retained pane recovery ignored a changed agent identity: %v", err)
+	}
+	if err := SetPaneAgentTypeContext(t.Context(), dead.ID, AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+
+	// This exercises both legacy retained PIDs and tmux 3.8's absent PID
+	// using the observation the installed server actually provides.
+	if err := DefaultClient.RespawnDeadPaneIfCurrentContext(t.Context(), dead, directory); err != nil {
+		t.Fatal(err)
+	}
+	fresh := waitGuardedTestPane(t, session, func(p Pane) bool { return !p.Dead && p.PID > 0 && p.IdleShell() })
+	if fresh.ID != dead.ID || fresh.PID == dead.PID {
+		t.Fatalf("recovery did not replace the process in the retained pane: dead=%+v fresh=%+v", dead, fresh)
+	}
+	path, err := DefaultClient.RunContext(t.Context(), "display-message", "-p", "-t", fresh.ID, "#{pane_current_path}")
+	if err != nil || path != wantPath {
+		t.Fatalf("retained pane recovery lost the observed working directory: %q, %v", path, err)
+	}
+
+	// A stale retry must not kill the replacement. Even a matching current
+	// PID cannot authorize this dead-only operation against a live pane.
+	matchingPID := fresh
+	matchingPID.Dead = true
+	for _, stale := range []Pane{dead, matchingPID} {
+		if err := DefaultClient.RespawnDeadPaneIfCurrentContext(t.Context(), stale, directory); !errors.Is(err, ErrPaneIdentityChanged) {
+			t.Fatalf("retained pane recovery accepted a live replacement: %v", err)
+		}
+		current := waitGuardedTestPane(t, session, func(p Pane) bool { return !p.Dead && p.PID > 0 })
+		if current.PID != fresh.PID {
+			t.Fatal("refused retained pane recovery replaced the live shell")
+		}
 	}
 }
 

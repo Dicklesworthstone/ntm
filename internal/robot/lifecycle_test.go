@@ -1020,6 +1020,48 @@ exec "$NTM_LIFECYCLE_NATIVE_TMUX" "$@"
 	}
 }
 
+func TestLifecycleExitedPaneIdentityMatches(t *testing.T) {
+	t.Parallel()
+	original := tmux.Pane{ID: "%7", PID: 1234, Index: 1, WindowIndex: 2, Type: tmux.AgentCodex}
+	for _, tc := range []struct {
+		name   string
+		change func(*tmux.Pane)
+		want   bool
+	}{
+		{"retained original PID", func(*tmux.Pane) {}, true},
+		{"absent PID after exit", func(p *tmux.Pane) { p.PID = 0 }, true},
+		{"live original process", func(p *tmux.Pane) { p.Dead = false }, false},
+		{"live missing PID", func(p *tmux.Pane) {
+			p.PID = 0
+			p.Dead = false
+		}, false},
+		{"different process", func(p *tmux.Pane) { p.PID++ }, false},
+		{"negative PID", func(p *tmux.Pane) { p.PID = -1 }, false},
+		{"different pane", func(p *tmux.Pane) { p.ID = "%8" }, false},
+		{"moved pane", func(p *tmux.Pane) { p.Index++ }, false},
+		{"moved window", func(p *tmux.Pane) { p.WindowIndex++ }, false},
+		{"different agent", func(p *tmux.Pane) { p.Type = tmux.AgentClaude }, false},
+		{"service owner", func(p *tmux.Pane) { p.Service = "cm" }, false},
+		{"rotation owner", func(p *tmux.Pane) { p.RotationToken = "owned" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := original
+			current.Dead = true
+			tc.change(&current)
+			if got := lifecycleExitedPaneIdentityMatches(original, current); got != tc.want {
+				t.Fatalf("retained pane identity match = %t, want %t: %+v", got, tc.want, current)
+			}
+		})
+	}
+	dead := original
+	dead.Dead = true
+	dead.PID = 0
+	original.PID = 0
+	if lifecycleExitedPaneIdentityMatches(original, dead) {
+		t.Fatal("unobserved original process authorized retained pane recovery")
+	}
+}
+
 func TestDirectExecMockAgentHelper(t *testing.T) {
 	if os.Getenv("NTM_MOCK_DIRECT_EXEC_AGENT") != "1" {
 		return
@@ -1138,6 +1180,11 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 		}
 		if !tmux.SessionExists(session) {
 			t.Fatal("single-pane session was destroyed during --respawn-shell")
+		}
+		panes, err := tmux.GetPanes(session)
+		if err != nil || len(panes) != 1 || panes[0].ID != pane.ID || panes[0].Dead ||
+			panes[0].PID <= 0 || panes[0].PID == pane.PID || panes[0].PID != res.ShellPID {
+			t.Fatalf("recovery did not preserve the physical pane with a verified new process: panes=%+v result=%+v err=%v", panes, res, err)
 		}
 		gotCwd, err := restartPaneWorkingDirectory(t.Context(), pane.ID)
 		if err != nil || gotCwd != workDir {

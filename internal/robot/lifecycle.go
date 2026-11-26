@@ -645,6 +645,18 @@ func lifecyclePaneIdentityMatches(original, refreshed tmux.Pane) bool {
 		!refreshed.Dead && refreshed.RotationToken == ""
 }
 
+// A retained pane can lose its PID after the direct-exec root exits. Accept
+// that absence only alongside a dead pane at the original physical location
+// and with the original agent identity. A live or re-owned pane is never a
+// replacement-shell target, even when its shell PID happens to match.
+func lifecycleExitedPaneIdentityMatches(original, refreshed tmux.Pane) bool {
+	return original.ID != "" && original.ID == refreshed.ID && original.PID > 0 &&
+		refreshed.PID >= 0 && (refreshed.PID == 0 || original.PID == refreshed.PID) &&
+		original.Index == refreshed.Index && original.WindowIndex == refreshed.WindowIndex &&
+		original.Type.Canonical() == refreshed.Type.Canonical() && !refreshed.IsServicePane() &&
+		refreshed.Dead && refreshed.RotationToken == ""
+}
+
 // validateLifecycleExpectedPane prevents a fallback from silently rebinding
 // an earlier result's physical pane ID to a replacement process or provider.
 func validateLifecycleExpectedPane(opts LifecycleOptions, panes []tmux.Pane) error {
@@ -1036,7 +1048,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 	for attempt := 0; attempt < 2 && !exited; attempt++ {
 		if attempt > 0 {
 			refreshed, obsLookup = refreshLifecyclePane(ctx, opts.Session, original.ID)
-			if obsLookup == paneFound && refreshed.Dead {
+			if obsLookup == paneFound && lifecycleExitedPaneIdentityMatches(original, refreshed) {
 				obs = refreshed
 				exited = true
 				break
@@ -1049,7 +1061,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 		})
 		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval(), true)
-		if ctx.Err() == nil && obsLookup == paneFound && obs.Dead && obs.PID == original.PID {
+		if ctx.Err() == nil && obsLookup == paneFound && lifecycleExitedPaneIdentityMatches(original, obs) {
 			exitErr = nil
 			exited = true
 		}
@@ -1070,8 +1082,15 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		return obs, false
 	}
 
+	if !lifecycleExitedPaneIdentityMatches(original, obs) {
+		result.Status = "withheld"
+		result.Refused = true
+		result.Detail = joinLifecycleDetail(result.Detail, "retained pane identity changed before replacement shell recovery")
+		return obs, false
+	}
+
 	respawnCtx := tmux.WithObservedPaneAgentType(ctx, original)
-	if err := tmux.DefaultClient.RespawnPaneIfCurrentContext(respawnCtx, original.ID, original.PID, true, workingDir, true); err != nil {
+	if err := tmux.DefaultClient.RespawnDeadPaneIfCurrentContext(respawnCtx, obs, workingDir); err != nil {
 		result.Status = "failed"
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("respawn shell failed: %v", err))
 		return obs, false

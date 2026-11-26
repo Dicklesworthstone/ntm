@@ -763,11 +763,35 @@ func (c *Client) PreflightRestartShellContext(ctx context.Context) error {
 // direct-provider command before the saved launch can be delivered. Other panes
 // retain ordinary respawn behavior. An observed working directory is preserved.
 func (c *Client) RespawnPaneIfCurrentContext(ctx context.Context, target string, expectedPID int, kill bool, workingDir string, freshShell bool) error {
+	return c.respawnPaneIfCurrentContext(ctx, target, expectedPID, kill, workingDir, freshShell, paneMutationAny)
+}
+
+// RespawnDeadPaneIfCurrentContext restores an observed retained pane to an
+// interactive shell. Tmux 3.8 clears pane_pid after exit, so the dead-only guard
+// compares an empty PID when none was observed. It also requires pane_dead=1
+// in the same command queue as the respawn, preserving the ownership guards.
+// No -k is issued: even a replacement that becomes live before respawn must
+// not be killed. Callers must capture the working directory before exit.
+func (c *Client) RespawnDeadPaneIfCurrentContext(ctx context.Context, pane Pane, workingDir string) error {
+	if !pane.Dead || pane.PID < 0 || pane.IsServicePane() || pane.RotationToken != "" {
+		return fmt.Errorf("pane %s is not an unclaimed retained pane: %w", pane.ID, ErrPaneIdentityChanged)
+	}
+	if workingDir == "" {
+		return errors.New("retained pane recovery requires an observed working directory")
+	}
+	ctx = WithObservedPaneAgentType(ctx, pane)
+	return c.respawnPaneIfCurrentContext(ctx, pane.ID, pane.PID, false, workingDir, true, paneMutationDead)
+}
+
+func (c *Client) respawnPaneIfCurrentContext(ctx context.Context, target string, expectedPID int, kill bool, workingDir string, freshShell bool, mode paneMutationMode) error {
 	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
 		return err
 	}
-	if expectedPID <= 0 {
+	if expectedPID <= 0 && (mode != paneMutationDead || expectedPID != 0) {
 		return errors.New("guarded pane mutation requires a positive expected PID")
+	}
+	if mode == paneMutationDead && kill {
+		return errors.New("retained pane recovery cannot kill a live process")
 	}
 	if workingDir != "" {
 		if !filepath.IsAbs(workingDir) {
@@ -797,7 +821,7 @@ func (c *Client) RespawnPaneIfCurrentContext(ctx context.Context, target string,
 		// replacement shell interactive for the saved launch and later input.
 		args = append(args, "/bin/sh", "-p", "-i")
 	}
-	return c.runPaneMutationIfCurrentContext(ctx, target, expectedPID, paneMutationAny, args...)
+	return c.runPaneMutationIfCurrentContext(ctx, target, expectedPID, mode, args...)
 }
 
 type paneMutationMode int
@@ -806,6 +830,7 @@ const (
 	paneMutationAny paneMutationMode = iota
 	paneMutationShell
 	paneMutationAgent
+	paneMutationDead
 )
 
 // runPaneMutationIfCurrentContext evaluates its guard inside the tmux server,
@@ -817,11 +842,14 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
 		return err
 	}
-	if expectedPID <= 0 {
+	if expectedPID <= 0 && (mode != paneMutationDead || expectedPID != 0) {
 		return errors.New("guarded pane mutation requires a positive expected PID")
 	}
 	if len(args) == 0 {
 		return errors.New("guarded pane mutation requires a command")
+	}
+	if mode == paneMutationDead && args[0] != "respawn-pane" {
+		return errors.New("dead pane guard is reserved for respawn")
 	}
 	guard := paneMutationGuardFromContext(ctx)
 	if guard != nil && isPaneInputCommand(args) {
@@ -865,6 +893,12 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 		}
 	}
 	condition := fmt.Sprintf("#{==:#{pane_pid},%d}", expectedPID)
+	if mode == paneMutationDead {
+		if expectedPID == 0 {
+			condition = "#{==:#{pane_pid},}"
+		}
+		condition = "#{&&:#{==:#{pane_dead},1}," + condition + "}"
+	}
 	condition = "#{&&:" + condition + ",#{==:#{" + PaneAgentTypeOption + "}," + recorded + "}}"
 	options := []string{PaneOptionRotationToken}
 	if ParsePaneAgentTypeOption(recorded) == AgentUnknown {
@@ -873,7 +907,7 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 	for _, option := range options {
 		condition = "#{&&:" + condition + ",#{==:#{" + option + "},}}"
 	}
-	if mode != paneMutationAny {
+	if mode != paneMutationAny && mode != paneMutationDead {
 		// Keep the permitted command names aligned with RunsBareShell. tmux
 		// supplies the basename, even when the shell was invoked by full path.
 		shells := make([]string, 0, len(bareShellCommands))
