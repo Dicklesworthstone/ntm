@@ -711,7 +711,7 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 		}
 		defer func() {
 			if claim.lock != nil {
-				_ = claim.lock.Close()
+				_ = closeOutboxLock(claim.lock)
 			}
 		}()
 	}
