@@ -122,7 +122,23 @@ func registerDepsKernel() {
 // is reported — and counted as available — alongside the built-ins.
 func defaultDepChecks() []depCheck {
 	checks := builtinDepChecks()
-	return append(checks, pluginDepChecks(registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])))...)
+	seenCmd := make(map[string]struct{}, len(checks))
+	for _, c := range checks {
+		if cmd := strings.ToLower(strings.TrimSpace(c.Command)); cmd != "" {
+			seenCmd[cmd] = struct{}{}
+		}
+	}
+	for _, p := range pluginDepChecks(registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:]))) {
+		cmd := strings.ToLower(strings.TrimSpace(p.Command))
+		if cmd != "" {
+			if _, dup := seenCmd[cmd]; dup {
+				continue
+			}
+			seenCmd[cmd] = struct{}{}
+		}
+		checks = append(checks, p)
+	}
+	return checks
 }
 
 func builtinDepChecks() []depCheck {
