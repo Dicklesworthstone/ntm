@@ -121,6 +121,8 @@ export interface LocalModelsResult {
     success: boolean;
     action: string;
     host?: string;
+    error?: string;
+    hint?: string;
     model_count: number;
     total_size_bytes: number;
     disk_low: boolean;
@@ -352,6 +354,8 @@ export function normalizeLocalModelsResult(raw: unknown): LocalModelsResult {
         success: Boolean(obj.success ?? true),
         action: String(obj.action ?? 'recommend'),
         host: obj.host ? String(obj.host) : undefined,
+        error: obj.error ? String(obj.error) : undefined,
+        hint: obj.hint ? String(obj.hint) : undefined,
         model_count: Number(obj.model_count ?? models.length),
         total_size_bytes: Number(obj.total_size_bytes ?? 0),
         disk_low: Boolean(obj.disk_low),
@@ -482,6 +486,12 @@ export function formatLocalModelsMarkdown(res: LocalModelsResult): string {
     ];
     if (res.host) {
         lines.push(`- **Ollama Host:** \`${res.host}\``);
+    }
+    if (!res.success && res.error) {
+        lines.push(`- **Status:** Unavailable — ${res.error}`);
+        if (res.hint) {
+            lines.push(`- **Hint:** ${res.hint}`);
+        }
     }
     if (res.action === 'list') {
         lines.push('', `## Installed Models (${res.model_count})`, '');
