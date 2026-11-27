@@ -9110,8 +9110,11 @@ export interface components {
             BottleneckCount: number;
             /** @description Drift message */
             DriftMessage: string;
-            /** @description Drift status */
-            DriftStatus: string;
+            /**
+             * @description Drift status
+             * @enum {string}
+             */
+            DriftStatus: "OK" | "critical" | "warning" | "no baseline" | "unknown";
             /** @description Top bottleneck */
             TopBottleneck: string;
         };

@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 func TestRouterSpecAgentMailProjectSelector(t *testing.T) {
@@ -638,4 +641,89 @@ func TestRouterSpecCompletenessAndArtifactFreshness(t *testing.T) {
 			t.Errorf("web/src/lib/api/schema.d.ts missing path %s; run `bash scripts/gen_web_types.sh`", path)
 		}
 	}
+}
+
+// Robot-registry types reach the spec through registerRobotComponent and
+// convertRobotSchema, which used to drop Enum: DriftStatus was served as a bare
+// string although its robot schema lists the labels. Every enum a robot schema
+// declares must survive the conversion, and the served spec must carry
+// DriftStatus's labels.
+func TestServedSpecCarriesRobotSchemaEnums(t *testing.T) {
+	t.Parallel()
+	spec, err := GenerateOpenAPISpecFromRouter("test", DefaultOpenAPIServerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := spec.Components.Schemas["HealthSummary"]
+	if health == nil || health.Properties["DriftStatus"] == nil {
+		t.Fatal("HealthSummary.DriftStatus missing from the served spec")
+	}
+	drift := health.Properties["DriftStatus"]
+	wantLabels := []any{"OK", "critical", "warning", "no baseline", "unknown"}
+	if drift.Type != "string" || !reflect.DeepEqual(drift.Enum, wantLabels) {
+		t.Errorf("served HealthSummary.DriftStatus = type %q enum %v, want string enum %v", drift.Type, drift.Enum, wantLabels)
+	}
+
+	enums := 0
+	for _, schemaType := range robot.GetRobotRegistry().SchemaTypes {
+		out, err := robot.GetSchema(schemaType)
+		if err != nil || out == nil || out.Schema == nil {
+			t.Errorf("robot schema %q: output %v, err %v", schemaType, out, err)
+			continue
+		}
+		components := &OpenAPIComponents{}
+		name, ok := registerRobotComponent(components, schemaType)
+		if !ok {
+			continue // unnamed binding: registerRobotComponent never serves it
+		}
+		enums += assertRobotEnumsSurvive(t, schemaType, out.Schema, components.Schemas[name])
+		for defName, def := range out.Schema.Definitions {
+			enums += assertRobotEnumsSurvive(t, schemaType+"#"+defName, def, components.Schemas[defName])
+		}
+	}
+	if enums == 0 {
+		t.Fatal("no robot schema declared an enum; DriftStatus should")
+	}
+	t.Logf("robot schema enum nodes checked: %d", enums)
+
+	// An enum-only value schema must not collapse into additionalProperties: true.
+	conv := convertRobotSchema(&robot.JSONSchema{
+		Type:                 "object",
+		AdditionalProperties: &robot.JSONSchema{Enum: []any{"a", "b"}},
+	})
+	if extra, ok := conv.AdditionalProperties.(*Schema); !ok || !reflect.DeepEqual(extra.Enum, []any{"a", "b"}) {
+		t.Fatalf("enum-only additionalProperties converted to %#v, want a schema carrying enum [a b]", conv.AdditionalProperties)
+	}
+}
+
+// assertRobotEnumsSurvive walks a robot JSON schema and its converted OpenAPI
+// schema together, reports every enum the conversion lost or changed, and
+// returns how many enum nodes it checked.
+func assertRobotEnumsSurvive(t *testing.T, path string, js *robot.JSONSchema, s *Schema) int {
+	t.Helper()
+	if js == nil {
+		return 0
+	}
+	if s == nil {
+		t.Errorf("%s: dropped by convertRobotSchema", path)
+		return 0
+	}
+	checked := 0
+	if len(js.Enum) > 0 {
+		checked++
+		if !reflect.DeepEqual(s.Enum, js.Enum) {
+			t.Errorf("%s: enum = %v, want %v", path, s.Enum, js.Enum)
+		}
+	}
+	for name, prop := range js.Properties {
+		checked += assertRobotEnumsSurvive(t, path+"."+name, prop, s.Properties[name])
+	}
+	checked += assertRobotEnumsSurvive(t, path+"[]", js.Items, s.Items)
+	if extra, ok := s.AdditionalProperties.(*Schema); ok {
+		checked += assertRobotEnumsSurvive(t, path+"{}", js.AdditionalProperties, extra)
+	} else if js.AdditionalProperties != nil && len(js.AdditionalProperties.Enum) > 0 {
+		checked++
+		t.Errorf("%s{}: enum collapsed into additionalProperties: true", path)
+	}
+	return checked
 }

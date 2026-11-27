@@ -35341,7 +35341,14 @@
           },
           "DriftStatus": {
             "type": "string",
-            "description": "Drift status"
+            "description": "Drift status",
+            "enum": [
+              "OK",
+              "critical",
+              "warning",
+              "no baseline",
+              "unknown"
+            ]
           },
           "TopBottleneck": {
             "type": "string",

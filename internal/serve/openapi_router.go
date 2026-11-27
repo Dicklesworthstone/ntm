@@ -612,6 +612,7 @@ func registerRobotComponent(components *OpenAPIComponents, schemaType string) (s
 			Type:        js.Type,
 			Required:    js.Required,
 			Properties:  js.Properties,
+			Enum:        js.Enum,
 		})
 		if top.Description == "" {
 			top.Description = fmt.Sprintf("Robot schema registry type %s (robot schema key %q).", name, schemaType)
@@ -646,6 +647,7 @@ func convertRobotSchema(js *robot.JSONSchema) *Schema {
 		Format:      js.Format,
 		Description: js.Description,
 		Required:    js.Required,
+		Enum:        js.Enum,
 	}
 	if js.Ref != "" {
 		s.Ref = strings.Replace(js.Ref, "#/definitions/", "#/components/schemas/", 1)
@@ -662,7 +664,7 @@ func convertRobotSchema(js *robot.JSONSchema) *Schema {
 	if js.AdditionalProperties != nil {
 		conv := convertRobotSchema(js.AdditionalProperties)
 		// An empty schema means "any value"; encode as boolean true for brevity.
-		if conv != nil && conv.Type == "" && conv.Ref == "" && len(conv.Properties) == 0 && conv.Items == nil {
+		if conv != nil && conv.Type == "" && conv.Ref == "" && len(conv.Properties) == 0 && conv.Items == nil && len(conv.Enum) == 0 {
 			s.AdditionalProperties = true
 		} else {
 			s.AdditionalProperties = conv
