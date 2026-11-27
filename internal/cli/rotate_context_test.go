@@ -61,16 +61,19 @@ func isolateContextRotationStores(t *testing.T) string {
 	oldPending := ctxmon.DefaultPendingRotationStore
 	oldHistory := ctxmon.DefaultRotationHistoryStore
 	oldJSON := jsonOutput
+	oldCfg := cfg
 
 	pendingPath := filepath.Join(root, "pending.jsonl")
 	ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(pendingPath)
 	ctxmon.DefaultRotationHistoryStore = ctxmon.NewRotationHistoryStore()
 	jsonOutput = false
+	cfg = nil
 
 	t.Cleanup(func() {
 		ctxmon.DefaultPendingRotationStore = oldPending
 		ctxmon.DefaultRotationHistoryStore = oldHistory
 		jsonOutput = oldJSON
+		cfg = oldCfg
 	})
 
 	return pendingPath
