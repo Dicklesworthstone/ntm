@@ -12159,8 +12159,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": true
+                "$ref": "#/components/schemas/CancelRequestBodyV1"
               }
             }
           }
@@ -24589,6 +24588,9 @@
           "no_hooks": {
             "type": "boolean"
           },
+          "no_recovery": {
+            "type": "boolean"
+          },
           "oc_count": {
             "type": "integer"
           },
@@ -24717,7 +24719,16 @@
           "Gemini": {
             "$ref": "#/components/schemas/AgentTypeSpec"
           },
+          "Grok": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
           "Ollama": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Omp": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Opencode": {
             "$ref": "#/components/schemas/AgentTypeSpec"
           },
           "Personas": {
@@ -24725,6 +24736,9 @@
             "items": {
               "$ref": "#/components/schemas/PersonaSpec"
             }
+          },
+          "Pi": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
           },
           "Total": {
             "type": "integer"
@@ -28611,6 +28625,14 @@
           "samples",
           "source"
         ]
+      },
+      "CancelRequestBodyV1": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        }
       },
       "CancelRequestOutput": {
         "type": "object",
@@ -35318,7 +35340,7 @@
             "description": "Drift message"
           },
           "DriftStatus": {
-            "type": "integer",
+            "type": "string",
             "description": "Drift status"
           },
           "TopBottleneck": {
@@ -39760,6 +39782,9 @@
           },
           "width": {
             "type": "integer"
+          },
+          "window_index": {
+            "type": "integer"
           }
         },
         "required": [
@@ -39769,7 +39794,8 @@
           "index",
           "title",
           "type",
-          "width"
+          "width",
+          "window_index"
         ]
       },
       "PaneTitleEnvelopeResponse": {
@@ -45370,6 +45396,13 @@
           "description": {
             "type": "string"
           },
+          "enum": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
           "format": {
             "type": "string"
           },
@@ -47776,11 +47809,11 @@
         "properties": {
           "pane": {
             "type": "integer"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "pane"
-        ]
+        }
       },
       "SessionsListEnvelopeResponse": {
         "type": "object",
@@ -49154,6 +49187,13 @@
       "SpawnRecovery": {
         "type": "object",
         "properties": {
+          "delivered_to": {
+            "type": "array",
+            "description": "Delivered to",
+            "items": {
+              "type": "string"
+            }
+          },
           "goal": {
             "type": "string",
             "description": "Goal"
@@ -49181,8 +49221,15 @@
           "status": {
             "type": "string",
             "description": "Status"
+          },
+          "warning": {
+            "type": "string",
+            "description": "Warning"
           }
-        }
+        },
+        "required": [
+          "delivered_to"
+        ]
       },
       "SpawnStaggerPlan": {
         "type": "object",
@@ -53204,6 +53251,9 @@
           },
           "poll_ms": {
             "type": "integer"
+          },
+          "session": {
+            "type": "string"
           },
           "timeout": {
             "type": "string"

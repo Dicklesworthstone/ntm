@@ -5672,6 +5672,7 @@ export interface components {
             grok_count?: number;
             label?: string;
             no_hooks?: boolean;
+            no_recovery?: boolean;
             oc_count?: number;
             ollama_count?: number;
             omp_count?: number;
@@ -5709,8 +5710,12 @@ export interface components {
             Codex?: components["schemas"]["AgentTypeSpec"];
             Cursor?: components["schemas"]["AgentTypeSpec"];
             Gemini?: components["schemas"]["AgentTypeSpec"];
+            Grok?: components["schemas"]["AgentTypeSpec"];
             Ollama?: components["schemas"]["AgentTypeSpec"];
+            Omp?: components["schemas"]["AgentTypeSpec"];
+            Opencode?: components["schemas"]["AgentTypeSpec"];
             Personas: components["schemas"]["PersonaSpec"][];
+            Pi?: components["schemas"]["AgentTypeSpec"];
             Total?: number;
             UserPane?: boolean;
             Windsurf?: components["schemas"]["AgentTypeSpec"];
@@ -6976,6 +6981,9 @@ export interface components {
             reason?: string;
             samples: number;
             source: string;
+        };
+        CancelRequestBodyV1: {
+            session?: string;
         };
         /** @description Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal. */
         CancelRequestOutput: {
@@ -9103,7 +9111,7 @@ export interface components {
             /** @description Drift message */
             DriftMessage: string;
             /** @description Drift status */
-            DriftStatus: number;
+            DriftStatus: string;
             /** @description Top bottleneck */
             TopBottleneck: string;
         };
@@ -10436,6 +10444,7 @@ export interface components {
             type: string;
             variant?: string;
             width: number;
+            window_index: number;
         };
         PaneTitleEnvelopeResponse: {
             pane: string;
@@ -12172,6 +12181,9 @@ export interface components {
                 [key: string]: unknown;
             };
             description?: string;
+            enum?: {
+                [key: string]: unknown;
+            }[];
             format?: string;
             items?: components["schemas"]["Schema"];
             properties?: {
@@ -12880,7 +12892,8 @@ export interface components {
             total?: number;
         };
         SessionZoomRequest: {
-            pane: number;
+            pane?: number;
+            target?: string;
         };
         SessionsListEnvelopeResponse: {
             count: number;
@@ -13411,6 +13424,8 @@ export interface components {
             prompt_sent: boolean;
         };
         SpawnRecovery: {
+            /** @description Delivered to */
+            delivered_to: string[];
             /** @description Goal */
             goal?: string;
             /** @description Handoff age */
@@ -13425,6 +13440,8 @@ export interface components {
             outcome?: string;
             /** @description Status */
             status?: string;
+            /** @description Warning */
+            warning?: string;
         };
         SpawnStaggerPlan: {
             /** @description Interval ms */
@@ -14732,6 +14749,7 @@ export interface components {
         WaitRequestBodyV1: {
             poll?: string;
             poll_ms?: number;
+            session?: string;
             timeout?: string;
             timeout_ms?: number;
         };
@@ -24875,9 +24893,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["CancelRequestBodyV1"];
             };
         };
         responses: {
