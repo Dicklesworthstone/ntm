@@ -1824,7 +1824,7 @@ describe('Swarm Backpressure & Agent Worktrees Contracts and Commands', () => {
             assert.equal(mockState.createdTerminals[2].name, 'NTM Worktree: BlueLake');
             assert.deepEqual(mockState.createdTerminals[2].sentCommands, [
                 {
-                    text: `'/opt/my tools/ntm' worktrees create BlueLake`,
+                    text: `'/opt/my tools/ntm' worktrees create BlueLake --session ntm-prod`,
                     shouldExecute: true,
                 },
             ]);
@@ -1842,7 +1842,7 @@ describe('Swarm Backpressure & Agent Worktrees Contracts and Commands', () => {
             assert.equal(mockState.createdTerminals[3].name, 'NTM Worktree Merge: BlueLake');
             assert.deepEqual(mockState.createdTerminals[3].sentCommands, [
                 {
-                    text: `'/opt/my tools/ntm' worktrees merge BlueLake`,
+                    text: `'/opt/my tools/ntm' worktrees merge BlueLake --session ntm-prod`,
                     shouldExecute: true,
                 },
             ]);

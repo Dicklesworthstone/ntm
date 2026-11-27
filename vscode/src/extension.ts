@@ -1938,15 +1938,20 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
-    const runWorktreeMergeInTerminal = (agentName: string): void => {
+    const runWorktreeMergeInTerminal = (agentName: string, sessionName?: string): void => {
         const trimmed = agentName.trim();
         if (!trimmed) {
             return;
         }
         const terminal = vscode.window.createTerminal({ name: `NTM Worktree Merge: ${trimmed}` });
         terminal.show(true);
+        const args = ['worktrees', 'merge', trimmed];
+        const targetSession = (sessionName ?? '').trim();
+        if (targetSession) {
+            args.push('--session', targetSession);
+        }
         terminal.sendText(
-            buildNtmTerminalCommand(client.getBinaryPath(), 'worktrees', 'merge', trimmed),
+            buildNtmTerminalCommand(client.getBinaryPath(), args),
             true
         );
     };
@@ -1957,6 +1962,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
             try {
                 const explicitSession = extractSessionName(sessionArg);
                 const result = await client.listWorktrees(explicitSession);
+                const resolvedSession = (result.session || explicitSession || '').trim() || undefined;
                 const picks = buildWorktreeQuickPickItems(result);
                 const picked = await vscode.window.showQuickPick(picks, {
                     placeHolder: result.worktrees.length > 0
@@ -1980,28 +1986,35 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                         name: `NTM Worktree: ${agentName}`,
                     });
                     terminal.show(true);
+                    const createArgs = ['worktrees', 'create', agentName];
+                    if (resolvedSession) {
+                        createArgs.push('--session', resolvedSession);
+                    }
                     terminal.sendText(
                         buildNtmTerminalCommand(
                             client.getBinaryPath(),
-                            'worktrees',
-                            'create',
-                            agentName
+                            createArgs
                         ),
                         true
                     );
                 } else if (picked.itemAction === 'mergeWorktree') {
                     let agentName: string | undefined;
+                    let mergeSession = resolvedSession;
                     if (result.worktrees.length > 0) {
                         const wtChoices = result.worktrees.map(wt => ({
                             label: wt.agent_name,
                             description: wt.branch_name || undefined,
                             detail: wt.path || undefined,
                             agentName: wt.agent_name,
+                            sessionId: wt.session_id || resolvedSession,
                         }));
                         const chosen = await vscode.window.showQuickPick(wtChoices, {
                             placeHolder: 'Select agent worktree to merge into main',
                         });
                         agentName = chosen?.agentName;
+                        if (chosen?.sessionId) {
+                            mergeSession = chosen.sessionId;
+                        }
                     } else {
                         const rawAgent = await vscode.window.showInputBox({
                             prompt: 'Agent name for worktree merge',
@@ -2010,15 +2023,18 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                         agentName = (rawAgent ?? '').trim() || undefined;
                     }
                     if (agentName) {
-                        runWorktreeMergeInTerminal(agentName);
+                        runWorktreeMergeInTerminal(agentName, mergeSession);
                     }
                 } else if (picked.itemAction === 'worktree' && picked.worktree) {
                     const wt = picked.worktree;
+                    const wtSession = (wt.session_id || resolvedSession || '').trim() || undefined;
                     const subAction = await vscode.window.showQuickPick(
                         [
                             {
                                 label: `$(git-merge) Merge Worktree (${wt.agent_name})`,
-                                description: `ntm worktrees merge ${wt.agent_name}`,
+                                description: wtSession
+                                    ? `ntm worktrees merge ${wt.agent_name} --session ${wtSession}`
+                                    : `ntm worktrees merge ${wt.agent_name}`,
                                 action: 'merge' as const,
                             },
                             {
@@ -2030,7 +2046,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                         { placeHolder: `Worktree ${wt.agent_name} (${wt.branch_name || wt.path})` }
                     );
                     if (subAction?.action === 'merge') {
-                        runWorktreeMergeInTerminal(wt.agent_name);
+                        runWorktreeMergeInTerminal(wt.agent_name, wtSession);
                     } else if (subAction?.action === 'web') {
                         await openWebCockpitRoute('/worktrees');
                     }
