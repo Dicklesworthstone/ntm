@@ -22,6 +22,38 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Desktop.Enabled {
 		t.Error("Default desktop should be enabled")
 	}
+	if cfg.Primary != "" || cfg.Fallback != "" {
+		t.Errorf("DefaultConfig Primary/Fallback = (%q, %q), want empty so all enabled channels fan out", cfg.Primary, cfg.Fallback)
+	}
+}
+
+func TestDefaultConfigFansOutToEnabledWebhookAndLog(t *testing.T) {
+	var webhookHits int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		webhookHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	logPath := filepath.Join(t.TempDir(), "notify.log")
+	cfg := DefaultConfig()
+	cfg.Desktop.Enabled = false
+	cfg.FileBox.Enabled = false
+	cfg.Webhook.Enabled = true
+	cfg.Webhook.URL = ts.URL
+	cfg.Log.Enabled = true
+	cfg.Log.Path = logPath
+
+	n := New(cfg)
+	if err := n.Notify(Event{Type: EventAgentError, Message: "fanout check"}); err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+	if webhookHits != 1 {
+		t.Fatalf("webhookHits = %d, want 1", webhookHits)
+	}
+	if data, err := os.ReadFile(logPath); err != nil || !strings.Contains(string(data), "fanout check") {
+		t.Fatalf("log channel missed notification: data=%q err=%v", string(data), err)
+	}
 }
 
 func TestNewNotifier(t *testing.T) {

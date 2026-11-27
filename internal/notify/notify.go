@@ -160,8 +160,8 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:  true,
 		Events:   []string{string(EventAgentError), string(EventAgentCrashed)},
-		Primary:  "desktop",
-		Fallback: "filebox",
+		Primary:  "",
+		Fallback: "",
 		Routing:  nil, // Use default (all enabled channels in parallel)
 		Desktop: DesktopConfig{
 			Enabled: true,
@@ -879,12 +879,12 @@ func (n *Notifier) sendLog(event Event) error {
 	path = util.ExpandPath(path)
 
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	// Open file in append mode
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -924,7 +924,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 	path = util.ExpandPath(path)
 
 	// Ensure directory exists
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0700); err != nil {
 		return fmt.Errorf("failed to create inbox directory: %w", err)
 	}
 
@@ -940,7 +940,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 		if i > 0 {
 			target = filepath.Join(path, fmt.Sprintf("%s_%d.md", baseName, i))
 		}
-		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			if os.IsExist(err) {
 				continue
