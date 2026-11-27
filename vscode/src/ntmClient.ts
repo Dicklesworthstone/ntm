@@ -3401,7 +3401,7 @@ export class NtmClient {
         }
         args.push('--robot-format=json');
 
-        const stdout = await this.run(args);
+        const stdout = await this.run(args, { allowJsonErrorEnvelope: true });
         return normalizeConfigValidateResult(JSON.parse(stdout));
     }
 
@@ -3428,7 +3428,7 @@ export class NtmClient {
         }
         args.push('--robot-format=json');
 
-        const stdout = await this.run(args);
+        const stdout = await this.run(args, { allowJsonErrorEnvelope: true });
         return normalizeLocalModelsResult(JSON.parse(stdout));
     }
 }

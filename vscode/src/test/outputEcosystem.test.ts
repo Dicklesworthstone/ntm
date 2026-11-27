@@ -237,4 +237,37 @@ describe('Wave 16 VS Code Output, Validation, Plugins & Local Models Support', (
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(getStatusCalls, 0);
     });
+
+    it('preserves VRAM guidance when Ollama daemon is offline (exit 1 JSON envelope)', async () => {
+        const client = new NtmClient({
+            execFile: async () => {
+                const err = Object.assign(new Error('exit status 1'), {
+                    code: 1,
+                    stdout: JSON.stringify({
+                        success: false,
+                        error: 'connection refused',
+                        hint: 'Start ollama serve',
+                        action: 'list',
+                        host: 'http://127.0.0.1:11434',
+                        detected_vram_gb: 24,
+                        vram_source: 'nvidia-smi',
+                        recommendations: ['qwen2.5-coder:14b'],
+                        models: [],
+                        model_count: 0,
+                    }),
+                    stderr: '',
+                });
+                throw err;
+            },
+        });
+        const res = await client.getLocalModels({ action: 'list' });
+        assert.equal(res.success, false);
+        assert.equal(res.detected_vram_gb, 24);
+        assert.deepEqual(res.recommendations, ['qwen2.5-coder:14b']);
+        assert.equal(res.error, 'connection refused');
+        const md = formatLocalModelsMarkdown(res);
+        assert.match(md, /24\.0 GB/);
+        assert.match(md, /Unavailable — connection refused/);
+        assert.match(md, /Start ollama serve/);
+    });
 });
