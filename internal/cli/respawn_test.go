@@ -383,7 +383,9 @@ func TestRespawnRevalidatesConfirmedRecovery(t *testing.T) {
 	const secret = "ntm-confirmed-recovery-secret-marker"
 	for _, withEnvironment := range []bool{false, true} {
 		for _, change := range []string{"unchanged", "pane-replaced", "pane-moved", "process-changed", "launch-changed", "directory-changed", "directory-trailing-space"} {
+			withEnvironment, change := withEnvironment, change
 			t.Run(fmt.Sprintf("environment=%t/%s", withEnvironment, change), func(t *testing.T) {
+				t.Parallel()
 				root := t.TempDir()
 				binary := filepath.Join(root, "tmux")
 				const script = `#!/bin/sh
