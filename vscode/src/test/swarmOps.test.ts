@@ -360,4 +360,44 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
             }
         }
     });
+
+    it('preserves multi-window target and physical pane IDs in rebalance and review queue', () => {
+        const rebal = normalizeRebalanceResult({
+            ...REAL_REBALANCE_PAYLOAD,
+            transfers: [
+                {
+                    bead_id: 'bd-mw',
+                    bead_title: 'Multi-window task',
+                    from_pane: 0,
+                    from_target: '2.0',
+                    from_pane_id: '%10',
+                    from_agent: 'claude',
+                    to_pane: 0,
+                    to_target: '3.0',
+                    to_pane_id: '%11',
+                    to_agent: 'codex',
+                },
+            ],
+        });
+        assert.equal(rebal.transfers[0].from_target, '2.0');
+        assert.equal(rebal.transfers[0].to_target, '3.0');
+        const rebalMd = formatRebalanceMarkdown(rebal);
+        assert.match(rebalMd, /2\.0 \(`claude`\) -> 3\.0 \(`codex`\)/);
+
+        const rq = normalizeReviewQueueResult({
+            ...REAL_REVIEW_QUEUE_PAYLOAD,
+            suggestions: [
+                {
+                    agent: 'codex_w3',
+                    pane: 0,
+                    pane_id: '%11',
+                    agent_type: 'codex',
+                    prompt: 'Review multi-window diff',
+                    source: 'git',
+                },
+            ],
+        });
+        assert.equal(rq.suggestions[0].pane_id, '%11');
+        assert.match(formatReviewQueueMarkdown(rq), /pane %11/);
+    });
 });

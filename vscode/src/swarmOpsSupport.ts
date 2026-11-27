@@ -67,8 +67,12 @@ export interface RebalanceTransferItem {
     bead_id: string;
     bead_title: string;
     from_pane: number;
+    from_target?: string;
+    from_pane_id?: string;
     from_agent: string;
     to_pane: number;
+    to_target?: string;
+    to_pane_id?: string;
     to_agent: string;
     reason?: string;
 }
@@ -97,6 +101,7 @@ export interface ReviewQueueOptions {
 export interface ReviewQueueSuggestionItem {
     agent: string;
     pane: number;
+    pane_id?: string;
     agent_type: string;
     prompt: string;
     source: string;
@@ -362,6 +367,18 @@ export function normalizeRebalanceResult(raw: unknown): RebalanceSessionResult {
                       to_pane: typeof tr.to_pane === 'number' ? tr.to_pane : 0,
                       to_agent: typeof tr.to_agent === 'string' ? tr.to_agent : 'unknown',
                   };
+                  if (typeof tr.from_target === 'string' && tr.from_target) {
+                      item.from_target = tr.from_target;
+                  }
+                  if (typeof tr.from_pane_id === 'string' && tr.from_pane_id) {
+                      item.from_pane_id = tr.from_pane_id;
+                  }
+                  if (typeof tr.to_target === 'string' && tr.to_target) {
+                      item.to_target = tr.to_target;
+                  }
+                  if (typeof tr.to_pane_id === 'string' && tr.to_pane_id) {
+                      item.to_pane_id = tr.to_pane_id;
+                  }
                   if (typeof tr.reason === 'string' && tr.reason) {
                       item.reason = tr.reason;
                   }
@@ -406,6 +423,9 @@ export function normalizeReviewQueueResult(raw: unknown): ReviewQueueResult {
                       prompt: s.prompt,
                       source: typeof s.source === 'string' ? s.source : 'git',
                   };
+                  if (typeof s.pane_id === 'string' && s.pane_id) {
+                      item.pane_id = s.pane_id;
+                  }
                   if (typeof s.source_ref === 'string' && s.source_ref) {
                       item.source_ref = s.source_ref;
                   }
@@ -528,8 +548,10 @@ export function formatRebalanceMarkdown(res: RebalanceSessionResult): string {
     if (res.transfers.length > 0) {
         lines.push('', '## Bead Transfers', '');
         for (const tr of res.transfers) {
+            const fromLabel = tr.from_target || tr.from_pane_id || `pane ${tr.from_pane}`;
+            const toLabel = tr.to_target || tr.to_pane_id || `pane ${tr.to_pane}`;
             lines.push(
-                `- \`${tr.bead_id}\` (${tr.bead_title || 'untitled'}): pane ${tr.from_pane} (\`${tr.from_agent}\`) -> pane ${tr.to_pane} (\`${tr.to_agent}\`)`
+                `- \`${tr.bead_id}\` (${tr.bead_title || 'untitled'}): ${fromLabel} (\`${tr.from_agent}\`) -> ${toLabel} (\`${tr.to_agent}\`)`
             );
         }
     }
@@ -547,8 +569,9 @@ export function formatReviewQueueMarkdown(res: ReviewQueueResult): string {
     if (res.suggestions.length > 0) {
         lines.push('', '## Review Assignments', '');
         for (const s of res.suggestions) {
+            const paneLabel = s.pane_id ? `pane ${s.pane_id}` : `pane ${s.pane}`;
             lines.push(
-                `- **${s.agent}** (pane ${s.pane} · \`${s.agent_type}\` · ${s.source}${s.source_ref ? ` \`${s.source_ref}\`` : ''}): ${s.prompt}`
+                `- **${s.agent}** (${paneLabel} · \`${s.agent_type}\` · ${s.source}${s.source_ref ? ` \`${s.source_ref}\`` : ''}): ${s.prompt}`
             );
         }
     }
