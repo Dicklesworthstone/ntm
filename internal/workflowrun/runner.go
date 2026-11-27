@@ -1187,7 +1187,7 @@ func (r *Runner) captureStageBoundary(ctx context.Context) (map[string]workflow.
 }
 
 func (r *Runner) workflowTranscriptType(pane string) string {
-	if strings.EqualFold(strings.TrimSpace(r.Opts.PaneTypes[pane]), "pi") {
+	if agentpkg.AgentType(r.Opts.PaneTypes[pane]).Canonical() == agentpkg.AgentTypePi {
 		return "pi"
 	}
 	return ""
@@ -1216,7 +1216,7 @@ func (r *Runner) captureWorkflowPane(ctx context.Context, pane string) (workflow
 		captured.Incomplete = !complete
 		captured.Capture = strings.TrimRight(transcript, "\n")
 		captured.ScreenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
-		captured.Working = agentpkg.PluginActivelyWorking(status.StripANSI(text), agentpkg.AgentType("pi"), 0)
+		captured.Working = agentpkg.PiActivelyWorking(status.StripANSI(text), 0)
 	}
 	return captured, nil
 }
