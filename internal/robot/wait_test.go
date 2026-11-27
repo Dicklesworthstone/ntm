@@ -2,8 +2,10 @@ package robot
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func useFailingTmuxBinary(t *testing.T) {
@@ -888,5 +891,58 @@ func TestAgentReadyWaitCondition(t *testing.T) {
 	}
 	if !isSingleValidWaitCondition(WaitConditionAgentReady) {
 		t.Error("agent_ready must be a valid wait condition")
+	}
+}
+
+// GitHub #387 end to end: --robot-wait --wait-until=idle timed out on an idle
+// Codex pane whose last reply quoted a hook's "ERROR: ..." line. The pane here
+// prints the reported capture and then sits in cat, so nothing on it changes.
+func TestGetWaitIdleReturnsForCodexPaneQuotingAnErrorRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	capture := filepath.Join(t.TempDir(), "codex-capture.txt")
+	if err := os.WriteFile(capture, []byte("• Ran git commit; the pre-commit hook rejected the commit:\n"+
+		"  ERROR: mcp-agent-mail: file reservation conflict detected!\n"+
+		"  exited with status 1\n\n"+
+		"› Ask Codex to do anything\n\n"+
+		"  GPT-6.2-Sol high · /tmp/demo · GPT-6.2-Sol · high\n"+
+		"  ← for agents · ? for shortcuts\n"), 0o600); err != nil {
+		t.Fatalf("write capture: %v", err)
+	}
+	sessName := fmt.Sprintf("ntm-wait-quoted-error-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(sessName, ""); err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessName) })
+	panes, err := tmux.GetPanes(sessName)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("panes = %+v, err = %v", panes, err)
+	}
+	pane := panes[0].ID
+	if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", pane, "cat "+capture+"; exec cat"); err != nil {
+		t.Fatalf("respawn codex stand-in: %v", err)
+	}
+	if _, err := tmux.DefaultClient.Run("select-pane", "-t", pane, "-T", sessName+"__cod_1"); err != nil {
+		t.Fatalf("title codex pane: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		shown, captureErr := tmux.CapturePaneVisible(pane)
+		if captureErr == nil && strings.Contains(shown, "Ask Codex to do anything") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("codex stand-in never rendered: %q (%v)", shown, captureErr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	response, exitCode := GetWaitContext(t.Context(), WaitOptions{
+		Session: sessName, Condition: WaitConditionIdle, Timeout: 10 * time.Second, PollInterval: 100 * time.Millisecond,
+	})
+	if exitCode != 0 || !response.Success {
+		t.Fatalf("wait idle = exit %d, response %+v; want the idle pane reported", exitCode, response.RobotResponse)
+	}
+	if len(response.Agents) != 1 || response.Agents[0].State != string(StateWaiting) {
+		t.Fatalf("wait agents = %+v, want one WAITING codex pane", response.Agents)
 	}
 }

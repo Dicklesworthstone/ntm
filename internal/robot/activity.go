@@ -827,6 +827,7 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLiveWithCurrentSignal(effectiveMatches, liveMatches)
 	effectiveMatches = filterClaudeToolOutputErrors(effectiveMatches, visibleContent, sc.agentType, sc.paneWidth)
+	effectiveMatches = filterCodexConversationErrors(sc.patternLibrary, effectiveMatches, visibleContent, sc.agentType)
 	effectiveMatches = reconcileClaudeLiveness(effectiveMatches, visibleContent, sc.agentType, sc.paneWidth)
 	for _, m := range effectiveMatches {
 		if m.Pattern == claudeFinishedTurnPattern {
@@ -911,6 +912,71 @@ func filterClaudeToolOutputErrors(matches []PatternMatch, content, agentType str
 		out = append(out, m)
 	}
 	return out
+}
+
+// filterCodexConversationErrors drops error matches that only Codex's
+// conversation transcript produced while its composer is on screen (#387).
+// An assistant reply or tool result that quotes "ERROR: ..." or "exited with
+// status 1" from a hook or build is output, not Codex failing, yet it pinned
+// an idle pane to ERROR, so --robot-wait --wait-until=idle never returned
+// (and a working pane read ERROR instead of THINKING). Codex renders its own
+// failures outside the conversation cells (the "■" error cell, banners), so
+// an error pattern that still matches once those cells are removed keeps
+// ERROR, as do rate-limit banners, a dialog and a shell prompt after the
+// agent exited.
+func filterCodexConversationErrors(lib *PatternLibrary, matches []PatternMatch, content, agentType string) []PatternMatch {
+	if lib == nil || normalizeAgentType(agentType) != "codex" {
+		return matches
+	}
+	candidate := false
+	for _, m := range matches {
+		if m.Category == CategoryError && !rateLimitPatternNames[m.Pattern] {
+			candidate = true
+			break
+		}
+	}
+	if !candidate || !tmux.ComposerVisibleForDelivery(content, tmux.AgentCodex) {
+		return matches
+	}
+	ownErrors := make(map[string]bool)
+	for _, m := range lib.MatchByCategory(codexOutputOutsideConversation(content), agentType, CategoryError) {
+		ownErrors[m.Pattern] = true
+	}
+	out := make([]PatternMatch, 0, len(matches))
+	for _, m := range matches {
+		if m.Category == CategoryError && !rateLimitPatternNames[m.Pattern] && !ownErrors[m.Pattern] {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// codexOutputOutsideConversation blanks Codex's conversation cells: assistant
+// and tool cells (a "•" line at column 0) and user or composer cells ("›" or
+// "»"), each with the indented lines that continue it. Every other column-0
+// line starts text Codex renders itself. Indented lines with no cell above
+// them in the capture are kept, so a capture that starts mid-cell fails
+// closed.
+func codexOutputOutsideConversation(content string) string {
+	lines := strings.Split(content, "\n")
+	inConversation := false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if inConversation {
+				lines[i] = ""
+			}
+			continue
+		}
+		inConversation = strings.HasPrefix(line, "•") || strings.HasPrefix(line, "›") || strings.HasPrefix(line, "»")
+		if inConversation {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // claudeFinishedTurnPattern names the idle evidence reconcileClaudeLiveness

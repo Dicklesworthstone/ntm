@@ -244,6 +244,62 @@ func TestClassifyWithOutput_ClaudeToolOutputIsNotAnAgentError(t *testing.T) {
 	}
 }
 
+// GitHub #387: an idle Codex pane whose last reply quoted a hook's
+// "ERROR: ..." and "exited with status 1" classified ERROR, so
+// --robot-wait --wait-until=idle timed out on a pane ready for input. Text
+// inside Codex's conversation cells is output (a working pane quoting it is
+// THINKING); Codex's own error cells, rate limits, dialogs, an exited agent
+// and ownerless text keep ERROR.
+func TestClassifyWithOutput_CodexConversationErrorsAreNotAgentErrors(t *testing.T) {
+	const composer = "› Ask Codex to do anything\n\n" +
+		"  GPT-6.2-Sol high · /tmp/demo · GPT-6.2-Sol · high\n" +
+		"  ← for agents · ? for shortcuts"
+	// The capture from the report: a finished turn quoting a pre-commit hook.
+	const quotedHook = "• Ran git commit; the pre-commit hook rejected the commit:\n" +
+		"  ERROR: mcp-agent-mail: file reservation conflict detected!\n" +
+		"  exited with status 1\n\n"
+	tests := []struct {
+		name    string
+		content string
+		want    AgentState
+	}{
+		{"reply quoting a hook error", quotedHook + composer, StateWaiting},
+		{"tool output with a failed build", "• Ran go build ./...\n  └ error: undefined: foo\n    exit status 1\n\n" +
+			"• The build fails on an undefined symbol; fixing it next turn.\n\n" + composer, StateWaiting},
+		{"user prompt quoting an error", "› Fix this: Error: connection refused on :8080\n\n" +
+			"• Restarted the listener.\n\n" + composer, StateWaiting},
+		{"working pane quoting a hook error", quotedHook + "• Working (4s • esc to interrupt)\n\n" + composer, StateThinking},
+		{"codex's own error cell", quotedHook + "■ Invalid API key provided.\n\n" + composer, StateError},
+		{"own error after a capture that starts mid-cell", "  ERROR: build failed\n\n" + composer, StateError},
+		{"dialog over a quoted error", quotedHook + "  Update available\n› 1. Update now\n  2. Skip\n  Press enter to continue\n", StateError},
+		{"agent exited to the shell", quotedHook + "› Ask Codex to do anything\nuser@host:~/demo$ ", StateError},
+		{"usage-limit banner", quotedHook + testCodexUsageBanner, StateError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The second capture of an unchanged pane has no output velocity.
+			sc := NewStateClassifier("pane", &ClassifierConfig{AgentType: "codex", HysteresisDuration: 0})
+			_, _ = sc.ClassifyWithOutput(tt.content)
+			activity, err := sc.ClassifyWithOutput(tt.content)
+			if err != nil {
+				t.Fatalf("ClassifyWithOutput: %v", err)
+			}
+			if activity.State != tt.want {
+				t.Fatalf("State = %q (patterns %v), want %q", activity.State, activity.DetectedPatterns, tt.want)
+			}
+			if idle := meetsSingleWaitCondition(activity, WaitConditionIdle); idle != (tt.want == StateWaiting) {
+				t.Fatalf("idle wait condition = %v for state %q", idle, activity.State)
+			}
+		})
+	}
+
+	// A usage-limit banner keeps its rate-limit flag beside quoted errors.
+	sc := NewStateClassifier("pane", &ClassifierConfig{AgentType: "codex", HysteresisDuration: 0})
+	if activity, _ := sc.ClassifyWithOutput(quotedHook + testCodexUsageBanner); !activity.RateLimited {
+		t.Fatalf("usage-limit banner lost its rate-limit flag: %+v", activity)
+	}
+}
+
 // Idle Claude panes at their input box after a finished turn classified
 // UNKNOWN (live swarm, 5 of 6 idle panes), or THINKING on a stale spinner
 // frame, while --robot-is-working called them idle. Activity now follows the
