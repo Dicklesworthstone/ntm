@@ -212,6 +212,7 @@ func TestAgentContextBudget_MultiHarness(t *testing.T) {
 		{AgentAntigravity, "antigravity"},
 		{AgentGrok, "grok"},
 		{AgentOmp, "omp"},
+		{AgentPi, "pi"},
 		{AgentOpencode, "opencode"},
 	} {
 		if string(tc.agentType) != tc.wantValue {
