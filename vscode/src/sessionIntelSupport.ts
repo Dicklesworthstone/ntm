@@ -331,11 +331,13 @@ export function normalizeContextResult(raw: unknown): SessionContextResult {
     const highUsage = typeof summaryObj.high_usage_count === 'number'
         ? summaryObj.high_usage_count
         : agents.filter(a => a.usage_percent >= 80).length;
-    const avgUsage = typeof summaryObj.average_usage === 'number'
-        ? summaryObj.average_usage
-        : (agents.length > 0
-            ? agents.reduce((acc, a) => acc + a.usage_percent, 0) / agents.length
-            : 0);
+    const avgUsage = typeof summaryObj.avg_usage === 'number'
+        ? summaryObj.avg_usage
+        : typeof summaryObj.average_usage === 'number'
+            ? summaryObj.average_usage
+            : (agents.length > 0
+                ? agents.reduce((acc, a) => acc + a.usage_percent, 0) / agents.length
+                : 0);
 
     return {
         success: obj.success !== false,
