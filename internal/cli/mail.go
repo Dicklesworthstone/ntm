@@ -623,7 +623,7 @@ Examples:
 			// Get message body
 			var body string
 			if fromFile != "" {
-				content, err := os.ReadFile(fromFile)
+				content, err := readPromptFileOrStdin(fromFile)
 				if err != nil {
 					return fmt.Errorf("reading file: %w", err)
 				}
