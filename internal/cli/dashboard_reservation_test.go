@@ -132,6 +132,7 @@ func TestDashboardReservationStartupRejectsLateProbeSuccess(t *testing.T) {
 	defer cancel()
 	calls, waits := 0, 0
 	startup := dashboardReservationStartup{
+		probeTimeout: 25 * time.Millisecond,
 		probe: func(probeCtx context.Context) error {
 			calls++
 			if calls == 1 {
