@@ -159,7 +159,7 @@ type mergeFence struct {
 }
 
 func (f *mergeFence) close() {
-	f.once.Do(func() { _ = f.file.Close() })
+	f.once.Do(func() { _ = closeMergeFenceFile(f.file) })
 }
 
 func acquireMergeFence(ctx context.Context, target string) (*mergeFence, error) {

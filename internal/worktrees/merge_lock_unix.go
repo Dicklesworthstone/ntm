@@ -62,6 +62,7 @@ func closeMergeFenceFile(file *os.File) error {
 	if file == nil {
 		return nil
 	}
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-	return file.Close()
+	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	closeErr := file.Close()
+	return errors.Join(unlockErr, closeErr)
 }

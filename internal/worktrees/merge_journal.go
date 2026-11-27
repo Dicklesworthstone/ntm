@@ -123,7 +123,7 @@ func preflightMergeReadiness(ctx context.Context, common string) error {
 	path := filepath.Join(common, "ntm-merge.lock")
 	file, err := openMergeRecoveryFile(path)
 	if err == nil {
-		defer file.Close()
+		defer closeMergeFenceFile(file)
 		if err := verifyMergeFenceFile(file, path); err != nil {
 			return err
 		}
