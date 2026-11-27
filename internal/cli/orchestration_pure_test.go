@@ -400,7 +400,7 @@ func TestBuildSendDryRunEntries_Empty(t *testing.T) {
 	}
 }
 
-// (boolToStr, hasNonClaudeTargets, isNonClaudeAgent, normalizeCommandLine
+// (boolToStr, hasDCGCheckedTargets, sendNeedsDCGCheck, normalizeCommandLine
 // already tested in helpers_batch3_test.go, helpers_batch5_test.go, cli_helpers_test.go)
 
 // =============================================================================

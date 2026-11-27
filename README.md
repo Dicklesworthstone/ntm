@@ -699,7 +699,8 @@ pipe, a subshell, a wrapper script) must place the hooks itself with
 warns at every launch.
 
 With `[integrations.dcg] enabled = true`, command lines in messages bound for non-Claude
-agents are checked by dcg before delivery. `ntm send`, `--robot-send` (including `--track`)
+agents or the user pane (where sent text runs as a shell command) are checked by dcg before
+delivery. `ntm send`, `--robot-send` (including `--track`)
 and REST sends all refuse a blocked command — robot callers get `DESTRUCTIVE_COMMAND_BLOCKED`
 — and each refusal counts toward `ntm metrics` destructive-command incidents. A missing dcg
 binary skips the check; a check that errors or is interrupted refuses the send instead.

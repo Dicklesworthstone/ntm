@@ -121,7 +121,7 @@ const (
 	ErrCodeResourceBusy = "RESOURCE_BUSY"
 
 	// ErrCodeDestructiveCommandBlocked indicates dcg refused a destructive
-	// shell command in a message bound for a non-Claude agent.
+	// shell command in a message bound for a non-Claude agent or the user pane.
 	ErrCodeDestructiveCommandBlocked = "DESTRUCTIVE_COMMAND_BLOCKED"
 
 	// ErrCodeStaleWorkCoordination indicates work could not be attributed to

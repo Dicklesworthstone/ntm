@@ -2406,7 +2406,7 @@ func runSendInternal(opts SendOptions) (err error) {
 		previewPrompt = targetPrompts[0]
 	}
 
-	// Apply DCG safety check for non-Claude agents
+	// Apply the dcg check for every target but Claude (sendNeedsDCGCheck)
 	for _, group := range histGroups {
 		if err := maybeBlockSendWithDCG(ctx, group.prompt, session, group.panes); err != nil {
 			return outputError(err)
@@ -3873,7 +3873,7 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 	if len(panes) == 0 {
 		return nil
 	}
-	if !hasNonClaudeTargets(panes) {
+	if !hasDCGCheckedTargets(panes) {
 		return nil
 	}
 	commands := extractLikelyCommands(prompt)
@@ -3932,19 +3932,20 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 	return nil
 }
 
-func hasNonClaudeTargets(panes []tmux.Pane) bool {
+func hasDCGCheckedTargets(panes []tmux.Pane) bool {
 	for _, p := range panes {
-		if isNonClaudeAgent(p) {
+		if sendNeedsDCGCheck(p) {
 			return true
 		}
 	}
 	return false
 }
 
-func isNonClaudeAgent(p tmux.Pane) bool {
-	if sendValueEqual(p.Type, tmux.AgentUser) {
-		return false
-	}
+// sendNeedsDCGCheck reports whether dcg must see text before it reaches p.
+// Claude panes are left to the PreToolUse dcg hook they are launched with.
+// Every other pane is checked here, the user pane included: text sent there
+// runs as a shell command, and no hook stands between it and the shell.
+func sendNeedsDCGCheck(p tmux.Pane) bool {
 	return sendValueNotEqual(p.Type, tmux.AgentClaude)
 }
 
@@ -4613,12 +4614,12 @@ func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.Bl
 	}
 }
 
-// dcgBlockedPaneLabels names the panes a dcg block applies to: the non-Claude
-// agents, which dcg guards from the send side.
+// dcgBlockedPaneLabels names the panes a dcg block applies to: the ones dcg
+// guards from the send side (sendNeedsDCGCheck).
 func dcgBlockedPaneLabels(panes []tmux.Pane) []string {
 	var labels []string
 	for _, p := range panes {
-		if !isNonClaudeAgent(p) {
+		if !sendNeedsDCGCheck(p) {
 			continue
 		}
 		paneLabel := p.Title

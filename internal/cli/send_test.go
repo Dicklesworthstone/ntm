@@ -3608,6 +3608,49 @@ func TestRobotSendAppliesDCGGuard(t *testing.T) {
 	}
 }
 
+// A robot send to the user pane gets the dcg verdict as well. cat stands in for
+// the user's shell, so a line that got through would only be echoed, never
+// run; the pane carries no NTM title, so ntm treats it as the user pane.
+func TestRobotSendAppliesDCGGuardToUserPane(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	installFakeDCG(t)
+
+	sessName := fmt.Sprintf("ntm_dcguser_%d", time.Now().UnixNano())
+	paneID, err := tmux.DefaultClient.Run(
+		"new-session", "-d", "-s", sessName, "-c", t.TempDir(),
+		"-P", "-F", "#{pane_id}", "cat",
+	)
+	if err != nil {
+		t.Fatalf("create test session: %v", err)
+	}
+	paneID = strings.TrimSpace(paneID)
+	t.Cleanup(func() { _ = tmux.KillSession(sessName) })
+
+	panes, err := tmux.GetPanes(sessName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	if len(panes) != 1 || panes[0].ID != paneID || panes[0].Type != tmux.AgentUser {
+		t.Fatalf("panes = %+v, want the one %s pane classified as the user pane", panes, paneID)
+	}
+
+	userSend, err := robot.GetSend(robot.SendOptions{Session: sessName, Message: "git reset --hard", Pane: paneID})
+	if err != nil {
+		t.Fatalf("GetSend: %v", err)
+	}
+	if userSend.Success || userSend.ErrorCode != robot.ErrCodeDestructiveCommandBlocked || !userSend.Blocked ||
+		len(userSend.Successful) != 0 || !strings.Contains(userSend.Error, "destroys uncommitted work") {
+		t.Fatalf("send = success %v code %q blocked %v error %q successful %v, want the dcg block",
+			userSend.Success, userSend.ErrorCode, userSend.Blocked, userSend.Error, userSend.Successful)
+	}
+	if got := dcgBlockedCommandCount(t, sessName); got != 1 {
+		t.Fatalf("BlockedCommands = %d, want the one robot-blocked send", got)
+	}
+	if output, err := tmux.CapturePaneOutput(paneID, 50); err != nil || strings.Contains(output, "git reset") {
+		t.Fatalf("user pane output = %q err = %v, want the refused command kept out", output, err)
+	}
+}
+
 // A dcg-blocked send must count toward the session's destructive_cmd_incidents
 // in `ntm metrics`. The metric's only feed used to be an event-bus type nothing
 // published, so it reported zero blocked commands and a met target forever.
@@ -3638,6 +3681,92 @@ func TestMaybeBlockSendWithDCGRecordsBlockedCommandMetric(t *testing.T) {
 	for _, target := range report.TargetComparison {
 		if target.Metric == "destructive_cmd_incidents" && target.Status == "met" {
 			t.Fatalf("destructive_cmd_incidents reported %q with a blocked command recorded", target.Status)
+		}
+	}
+}
+
+// Text sent to the user pane runs as a shell command, and no hook checks it
+// there, so the send guard must consult dcg for it exactly as it does for a
+// non-Claude agent. It used to skip user panes, so a user-pane-only send was
+// never checked. The fake dcg only compares the candidate it is handed; no
+// string here reaches a shell.
+func TestMaybeBlockSendWithDCGChecksUserPanes(t *testing.T) {
+	installFakeDCG(t)
+
+	user := tmux.Pane{ID: "%1", Index: 1, Title: "dcguser", Type: tmux.AgentUser}
+	codex := tmux.Pane{ID: "%2", Index: 2, Title: "dcguser__cod_1", Type: tmux.AgentCodex}
+	claude := tmux.Pane{ID: "%3", Index: 3, Title: "dcguser__cc_1", Type: tmux.AgentClaude}
+
+	const (
+		allowed = iota
+		denied
+		checkFailed
+	)
+	tests := []struct {
+		name    string
+		prompt  string
+		panes   []tmux.Pane
+		outcome int
+	}{
+		{"user pane alone gets the dcg deny", "git reset --hard", []tmux.Pane{user}, denied},
+		{"user pane alone gets the dcg allow", "git status", []tmux.Pane{user}, allowed},
+		{"user pane alone refuses a failed check", "git push --force", []tmux.Pane{user}, checkFailed},
+		{"codex pane alone refuses a failed check", "git push --force", []tmux.Pane{codex}, checkFailed},
+		{"claude pane alone is left to its hook", "git reset --hard", []tmux.Pane{claude}, allowed},
+		{"claude and codex get the dcg deny", "git reset --hard", []tmux.Pane{claude, codex}, denied},
+		{"claude and user get the dcg deny", "git reset --hard", []tmux.Pane{claude, user}, denied},
+		{"codex and user get the dcg deny", "git reset --hard", []tmux.Pane{codex, user}, denied},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := maybeBlockSendWithDCG(context.Background(), tc.prompt, "dcguser", tc.panes)
+			switch tc.outcome {
+			case allowed:
+				if err != nil {
+					t.Fatalf("maybeBlockSendWithDCG = %v, want delivery", err)
+				}
+			case denied:
+				if !errors.Is(err, robot.ErrSendCommandBlocked) || !strings.Contains(err.Error(), "destroys uncommitted work") {
+					t.Fatalf("maybeBlockSendWithDCG = %v, want the dcg deny", err)
+				}
+			case checkFailed:
+				if err == nil || errors.Is(err, robot.ErrSendCommandBlocked) {
+					t.Fatalf("maybeBlockSendWithDCG = %v, want a fail-closed check error", err)
+				}
+			}
+		})
+	}
+
+	labels := dcgBlockedPaneLabels([]tmux.Pane{claude, user, codex})
+	if !slices.Equal(labels, []string{"dcguser", "dcguser__cod_1"}) {
+		t.Fatalf("dcgBlockedPaneLabels = %v, want the user and codex panes", labels)
+	}
+}
+
+// User panes get the same dcg-availability handling as non-Claude agents: a
+// missing dcg skips the check, and a probe cut short refuses the send.
+func TestMaybeBlockSendWithDCGUnavailableTreatsUserPanesLikeAgents(t *testing.T) {
+	installFakeDCG(t)
+	adapter := tools.NewDCGAdapter()
+
+	user := tmux.Pane{ID: "%1", Index: 1, Title: "dcgmissing", Type: tmux.AgentUser}
+	codex := tmux.Pane{ID: "%2", Index: 2, Title: "dcgmissing__cod_1", Type: tmux.AgentCodex}
+
+	cfg.Integrations.DCG.BinaryPath = filepath.Join(t.TempDir(), "dcg")
+	adapter.InvalidateAvailabilityCache()
+	for _, paneSet := range [][]tmux.Pane{{user}, {codex}} {
+		if err := maybeBlockSendWithDCG(context.Background(), "git reset --hard", "dcgmissing", paneSet); err != nil {
+			t.Fatalf("%s pane with dcg missing: maybeBlockSendWithDCG = %v, want the check skipped", paneSet[0].Type, err)
+		}
+	}
+
+	cfg.Integrations.DCG.BinaryPath = ""
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, paneSet := range [][]tmux.Pane{{user}, {codex}} {
+		adapter.InvalidateAvailabilityCache()
+		if err := maybeBlockSendWithDCG(canceled, "git reset --hard", "dcgmissing", paneSet); !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s pane with the dcg probe cut short: maybeBlockSendWithDCG = %v, want a refusal", paneSet[0].Type, err)
 		}
 	}
 }

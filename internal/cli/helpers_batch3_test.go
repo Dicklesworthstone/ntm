@@ -138,46 +138,46 @@ func TestPermuteBatchPrompts(t *testing.T) {
 }
 
 // =============================================================================
-// send.go: isNonClaudeAgent
+// send.go: sendNeedsDCGCheck
 // =============================================================================
 
-func TestIsNonClaudeAgent(t *testing.T) {
+func TestSendNeedsDCGCheck(t *testing.T) {
 
 	tests := []struct {
 		name     string
 		paneType tmux.AgentType
 		want     bool
 	}{
-		{"claude is not non-claude", tmux.AgentClaude, false},
-		{"codex is non-claude", tmux.AgentCodex, true},
-		{"gemini is non-claude", tmux.AgentGemini, true},
-		{"user is not non-claude", tmux.AgentUser, false},
-		{"unknown is non-claude", tmux.AgentUnknown, true},
+		{"claude is left to its hook", tmux.AgentClaude, false},
+		{"codex is checked", tmux.AgentCodex, true},
+		{"gemini is checked", tmux.AgentGemini, true},
+		{"user shell is checked", tmux.AgentUser, true},
+		{"unknown is checked", tmux.AgentUnknown, true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pane := tmux.Pane{Type: tc.paneType}
-			got := isNonClaudeAgent(pane)
+			got := sendNeedsDCGCheck(pane)
 			if got != tc.want {
-				t.Errorf("isNonClaudeAgent(%v) = %v, want %v", tc.paneType, got, tc.want)
+				t.Errorf("sendNeedsDCGCheck(%v) = %v, want %v", tc.paneType, got, tc.want)
 			}
 		})
 	}
 }
 
 // =============================================================================
-// send.go: hasNonClaudeTargets
+// send.go: hasDCGCheckedTargets
 // =============================================================================
 
-func TestHasNonClaudeTargets(t *testing.T) {
+func TestHasDCGCheckedTargets(t *testing.T) {
 
-	// All claude - no non-claude targets
+	// All claude - nothing for dcg to check
 	allClaude := []tmux.Pane{
 		{Type: tmux.AgentClaude},
 		{Type: tmux.AgentClaude},
 	}
-	if hasNonClaudeTargets(allClaude) {
+	if hasDCGCheckedTargets(allClaude) {
 		t.Error("all claude panes should return false")
 	}
 
@@ -186,21 +186,21 @@ func TestHasNonClaudeTargets(t *testing.T) {
 		{Type: tmux.AgentClaude},
 		{Type: tmux.AgentCodex},
 	}
-	if !hasNonClaudeTargets(mixed) {
+	if !hasDCGCheckedTargets(mixed) {
 		t.Error("mixed panes should return true")
 	}
 
 	// Empty
-	if hasNonClaudeTargets(nil) {
+	if hasDCGCheckedTargets(nil) {
 		t.Error("nil panes should return false")
 	}
 
-	// User panes only - not non-claude
+	// User panes only - sent text runs in a shell, so dcg checks it
 	userOnly := []tmux.Pane{
 		{Type: tmux.AgentUser},
 	}
-	if hasNonClaudeTargets(userOnly) {
-		t.Error("user-only panes should return false")
+	if !hasDCGCheckedTargets(userOnly) {
+		t.Error("user-only panes should return true")
 	}
 }
 
