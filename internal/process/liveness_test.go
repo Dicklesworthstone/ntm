@@ -581,3 +581,72 @@ func TestSnapshotPIDContextAndProcFSFastPath(t *testing.T) {
 		t.Fatalf("procfs snapshot unexpectedly spawned ps: %s", strings.TrimSpace(string(data)))
 	}
 }
+
+func TestSessionTerminalForegroundDetachedInteractiveShell(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("terminal ownership inspection requires Linux or macOS")
+	}
+	cmd := exec.Command("/bin/sh", "-i")
+	DetachControllingTerminal(cmd)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	pid := cmd.Process.Pid
+	tpgid, pgrp, sid, ok := SessionTerminalForeground(pid)
+	if !ok || pgrp != pid || sid != pid || tpgid > 0 {
+		t.Fatalf("detached session ownership = (%d, %d, %d, %t), want no terminal and group/session %d",
+			tpgid, pgrp, sid, ok, pid)
+	}
+}
+
+func TestSessionTerminalForegroundProcEvidence(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "4242"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previous := procRootOverride.Swap(&root)
+	t.Cleanup(func() { procRootOverride.Store(previous) })
+	for _, tc := range []struct {
+		name  string
+		stat  string
+		tpgid int
+		pgrp  int
+		sid   int
+		ok    bool
+	}{
+		{"shell owns terminal", "4242 (bash) S 1 4242 4242 34816 4242\n", 4242, 4242, 4242, true},
+		{"foreground job", "4242 (bash) S 1 4242 4242 34816 5252\n", 5252, 4242, 4242, true},
+		{"inherited terminal", "4242 (sh) S 1 4242 1010 34816 5252\n", 5252, 4242, 1010, true},
+		{"no terminal", "4242 (sh) S 1 4242 4242 0 -1\n", -1, 4242, 4242, true},
+		{"parentheses in command", "4242 (shell (wrapper)) S 1 4242 4242 34816 4242\n", 4242, 4242, 4242, true},
+		{"truncated", "4242 (bash) S 1 4242\n", 0, 0, 0, false},
+		{"invalid group", "4242 (bash) S 1 nope 4242 34816 4242\n", 0, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(root, "4242", "stat"), []byte(tc.stat), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tpgid, pgrp, sid, ok := SessionTerminalForeground(4242)
+			if tpgid != tc.tpgid || pgrp != tc.pgrp || sid != tc.sid || ok != tc.ok {
+				t.Fatalf("terminal ownership = (%d, %d, %d, %t), want (%d, %d, %d, %t)",
+					tpgid, pgrp, sid, ok, tc.tpgid, tc.pgrp, tc.sid, tc.ok)
+			}
+		})
+	}
+	// An explicit unavailable procfs fixture must not query the host instead.
+	missing := t.TempDir()
+	procRootOverride.Store(&missing)
+	if _, _, _, ok := SessionTerminalForeground(os.Getpid()); ok {
+		t.Fatal("missing fixture fell through to a host process lookup")
+	}
+}

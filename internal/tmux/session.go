@@ -790,14 +790,12 @@ func (p Pane) AgentCLIDead() bool {
 	return p.Dead || (strings.TrimSpace(p.Command) != "" && p.IdleShell())
 }
 
-// IdleShell reports whether the pane is an idle interactive shell with
-// nothing running under it — the only state in which keystrokes reach a
-// shell prompt. tmux's pane_current_command names the foreground
-// process-group leader, which is also the shell for a non-exec'ing wrapper
-// script, a `sh -c …` agent or a command list (`a && b`), so when the pane's
-// root pid is known the process tree and the root's argv decide: a shell
-// started with a script path or -c is running something, and a shell with a
-// live descendant is busy. Without a pid the command name alone decides.
+// IdleShell reports whether input reaches the pane's interactive shell.
+// A non-interactive wrapper (-c or a script path) is still running work even
+// when tmux reports a shell. For an interactive root that owns its PTY, only
+// foreground descendants can keep it busy: a suspended or background agent
+// does not consume prompt input (#390). If terminal ownership or argv cannot
+// be observed, retain the conservative descendant check.
 func (p Pane) IdleShell() bool {
 	command := strings.TrimSpace(p.Command)
 	if command == "" || !PaneCommandIsShell(command) {
@@ -806,13 +804,20 @@ func (p Pane) IdleShell() bool {
 	if p.PID <= 0 {
 		return true
 	}
-	if !shellArgvLooksInteractive(process.GetCmdline(p.PID)) {
+	argv := process.GetCmdline(p.PID)
+	if !shellArgvLooksInteractive(argv) {
 		return false
 	}
-	if p.ForegroundJobRunning() {
-		return false
+	foregroundGroup := 0
+	if tpgid, pgrp, sid, ok := process.SessionTerminalForeground(p.PID); ok && sid == p.PID && tpgid > 0 {
+		if tpgid != pgrp {
+			return false
+		}
+		if len(argv) > 0 {
+			foregroundGroup = pgrp
+		}
 	}
-	return !shellHasLiveDescendant(p.PID, 4)
+	return !shellHasLiveDescendant(p.PID, 4, foregroundGroup)
 }
 
 // ValidatePanePersistentShellContext verifies that the pane's root process is
@@ -974,11 +979,12 @@ func shellArgvLooksInteractive(argv []string) bool {
 	return true
 }
 
-// shellHasLiveDescendant reports whether any process runs under pid. Any
-// descendant counts: even a nested shell under the interactive one means the
-// pane is not idle. (maxDepth is kept for symmetry with
-// detectAgentFromProcessTree; a direct child is enough to decide.)
-func shellHasLiveDescendant(pid, maxDepth int) bool {
+// shellHasLiveDescendant reports whether work below pid can consume input.
+// With no foreground group, any live descendant counts. With an observed
+// foreground group, only descendants proven to be in another group can be
+// ignored. Same-group children (job control disabled), unreadable metadata,
+// and an incomplete bounded traversal retain the busy classification.
+func shellHasLiveDescendant(pid, maxDepth, foregroundGroup int) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -987,23 +993,40 @@ func shellHasLiveDescendant(pid, maxDepth int) bool {
 	}
 	seen := map[int]bool{pid: true}
 	frontier := []int{pid}
+	childLimit := 8
+	if foregroundGroup > 0 {
+		childLimit = 65
+	}
 	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
 		var next []int
 		for _, parent := range frontier {
-			for _, child := range process.GetChildPIDs(parent, 8) {
+			children := process.GetChildPIDs(parent, childLimit)
+			if foregroundGroup > 0 && len(children) > 64 {
+				return true
+			}
+			for _, child := range children {
 				if child <= 0 || seen[child] {
 					continue
 				}
 				seen[child] = true
-				if process.IsAlive(child) {
+				if foregroundGroup > 0 && len(seen) > 64 {
 					return true
+				}
+				if process.IsAlive(child) {
+					if foregroundGroup <= 0 {
+						return true
+					}
+					_, group, _, ok := process.SessionTerminalForeground(child)
+					if !ok || group == foregroundGroup {
+						return true
+					}
 				}
 				next = append(next, child)
 			}
 		}
 		frontier = next
 	}
-	return false
+	return foregroundGroup > 0 && len(frontier) > 0
 }
 
 func isAgentWrapperCommand(command string) bool {

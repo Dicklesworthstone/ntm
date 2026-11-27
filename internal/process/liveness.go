@@ -777,26 +777,29 @@ var processStateNames = map[string]string{
 // a human-readable name, and any error.
 // TerminalForeground reports which process group currently owns the
 // controlling terminal of pid (tpgid) and pid's own process group (pgrp),
-// read from /proc/<pid>/stat. A shell whose pgrp equals tpgid is itself in
+// read from the OS process table. A shell whose pgrp equals tpgid is itself in
 // the foreground (idle, or running a builtin / same-group rc children); a job
 // it launched with job control owns the terminal under a different group.
-// ok is false when the fields cannot be read (non-Linux, process gone).
+// ok is false when terminal ownership cannot be observed.
 func TerminalForeground(pid int) (tpgid, pgrp int, ok bool) {
 	tpgid, pgrp, _, ok = SessionTerminalForeground(pid)
 	return tpgid, pgrp, ok
 }
 
 // SessionTerminalForeground returns tpgid, pgrp, and session ID (sid) from
-// /proc/<pid>/stat. A tmux pane's root process is the session leader of its
-// PTY (sid == pid); when sid != pid, any controlling terminal was inherited
-// from an outer session rather than owned by pid.
+// Linux procfs or the native macOS process snapshot. A tmux pane's root
+// process is the session leader of its PTY (sid == pid); when sid != pid,
+// any controlling terminal was inherited from an outer session.
 func SessionTerminalForeground(pid int) (tpgid, pgrp, sid int, ok bool) {
 	if pid <= 0 {
 		return 0, 0, 0, false
 	}
 	data, err := os.ReadFile(filepath.Join(procRoot(), strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return 0, 0, 0, false
+		if procRootOverride.Load() != nil {
+			return 0, 0, 0, false
+		}
+		return nativeSessionTerminalForeground(pid)
 	}
 	// "pid (comm) state ppid pgrp session tty_nr tpgid ..." — comm may contain
 	// spaces and parentheses, so split after the LAST ')'.

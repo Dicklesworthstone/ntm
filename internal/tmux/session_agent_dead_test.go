@@ -10,7 +10,8 @@ import (
 
 // A shell whose foreground is the pane's process-group leader but which is
 // running the real agent as a child (a non-exec'ing wrapper script, a `a && b`
-// command list) is alive; only a shell with nothing under it is dead.
+// command list) is alive. An interactive shell needs a foreground job, not
+// merely a live background child, to remain an agent input target.
 func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
 	// A command list keeps the shell as sleep's parent; bash and zsh exec a
 	// lone -c command in place.
@@ -21,7 +22,7 @@ func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = wrapper.Process.Kill(); _, _ = wrapper.Process.Wait() })
 	deadline := time.Now().Add(5 * time.Second)
-	for !shellHasLiveDescendant(wrapper.Process.Pid, 4) {
+	for !shellHasLiveDescendant(wrapper.Process.Pid, 4, 0) {
 		if time.Now().After(deadline) {
 			t.Fatalf("shellHasLiveDescendant(%d) stayed false; sleep child never observed", wrapper.Process.Pid)
 		}
@@ -92,7 +93,7 @@ func TestPaneProcessStartedRecognizesNonInteractiveShellAndRejectsIdleShell(t *t
 	}
 	t.Cleanup(func() { _ = wrapper.Process.Kill(); _, _ = wrapper.Process.Wait() })
 	deadline := time.Now().Add(5 * time.Second)
-	for !shellHasLiveDescendant(wrapper.Process.Pid, 4) {
+	for !shellHasLiveDescendant(wrapper.Process.Pid, 4, 0) {
 		if time.Now().After(deadline) {
 			t.Fatalf("wrapper child never started for pid %d", wrapper.Process.Pid)
 		}

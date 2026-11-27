@@ -108,3 +108,21 @@ func nativeHasChildAlive(parentPID int) (alive bool, ok bool) {
 	}
 	return false, true
 }
+
+// nativeSessionTerminalForeground observes terminal ownership without
+// spawning ps. A background child must not make an interactive shell look
+// like it still has a foreground agent (#390).
+func nativeSessionTerminalForeground(pid int) (tpgid, pgrp, sid int, ok bool) {
+	if pid <= 0 {
+		return 0, 0, 0, false
+	}
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || int(kp.Proc.P_pid) != pid || kp.Eproc.Pgid <= 0 {
+		return 0, 0, 0, false
+	}
+	sid, err = unix.Getsid(pid)
+	if err != nil || sid <= 0 {
+		return 0, 0, 0, false
+	}
+	return int(kp.Eproc.Tpgid), int(kp.Eproc.Pgid), sid, true
+}

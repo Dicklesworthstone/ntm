@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -1487,5 +1492,186 @@ func TestGuardSendCommandRefusalCodes(t *testing.T) {
 				t.Fatalf("failed = %+v, want one guard entry", output.Failed)
 			}
 		})
+	}
+}
+
+func TestRobotSendRefusesBackgroundAgentAtShell(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("terminal ownership inspection requires Linux or macOS")
+	}
+	testutil.RequireTmuxThrottled(t)
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("requires bash for controlled job-control transitions")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	session := fmt.Sprintf("ntm-send-background-%d", time.Now().UnixNano())
+	dir := t.TempDir()
+	if err := tmux.CreateSessionContext(ctx, session, dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tmux.KillSession(session); err != nil {
+			t.Errorf("kill fixture session: %v", err)
+		}
+	})
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("initial panes = %+v, %v", panes, err)
+	}
+	paneID := panes[0].ID
+	if err := tmux.DefaultClient.RunSilentContext(ctx, "respawn-pane", "-k", "-t", tmux.ExactTarget(paneID),
+		"/bin/bash", "--noprofile", "--norc", "-i"); err != nil {
+		t.Fatal(err)
+	}
+	waitForPane := func(ready func(tmux.Pane) bool) tmux.Pane {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			current, err := tmux.GetPanesContext(ctx, session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, pane := range current {
+				if pane.ID == paneID && ready(pane) {
+					return pane
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pane never reached the required job-control state: %+v", current)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitForPane(func(pane tmux.Pane) bool {
+		tpgid, pgrp, sid, ok := process.SessionTerminalForeground(pane.PID)
+		return tmux.PaneCommandIsShell(pane.Command) && ok && sid == pane.PID && tpgid > 0 && tpgid == pgrp
+	})
+
+	pidPath := filepath.Join(dir, "background.pid")
+	command := "set -m; sleep 60 & printf '%s\\n' \"$!\" > " + tmux.ShellQuote(pidPath)
+	if err := tmux.SendKeysContext(ctx, paneID, command, true); err != nil {
+		t.Fatal(err)
+	}
+	var childPID int
+	background := waitForPane(func(pane tmux.Pane) bool {
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Sscanf(string(data), "%d", &childPID); err != nil || childPID <= 0 {
+			return false
+		}
+		tpgid, pgrp, sid, ok := process.SessionTerminalForeground(pane.PID)
+		_, childGroup, _, childOK := process.SessionTerminalForeground(childPID)
+		return ok && childOK && sid == pane.PID && tpgid == pgrp && tpgid > 0 &&
+			childGroup != pgrp && process.IsAlive(childPID)
+	})
+	child, err := os.FindProcess(childPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = child.Kill()
+		_ = child.Release()
+	})
+	if err := tmux.SetPaneAgentIdentityContext(ctx, paneID, session+"__cod_1", tmux.AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(dir, "unexpected-shell-input")
+	message := "printf NTM_BACKGROUND_PROMPT_EXECUTED > " + tmux.ShellQuote(marker)
+	for _, enter := range []bool{false, true} {
+		response, err := GetSend(SendOptions{
+			Context: ctx, Session: session, Pane: paneID, Message: message, Enter: &enter, ClearInput: true,
+		})
+		if err != nil || response == nil {
+			t.Fatalf("GetSend: %+v, %v", response, err)
+		}
+		if response.Success || len(response.Successful) != 0 || len(response.Failed) != 1 ||
+			!strings.Contains(response.Failed[0].Error, "PANE_AGENT_DEAD") {
+			t.Fatalf("background agent accepted prompt input (enter=%t): %+v", enter, response)
+		}
+		capture, err := tmux.CapturePaneVisibleContext(ctx, paneID)
+		if err != nil || strings.Contains(capture, "NTM_BACKGROUND_PROMPT_EXECUTED") {
+			t.Fatalf("refused prompt still reached the terminal: %q, %v", capture, err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("refused prompt executed in the shell: %v", err)
+		}
+	}
+	if !process.IsAlive(childPID) {
+		t.Fatal("prompt refusal killed the background job")
+	}
+
+	// Deliberate input to a user pane must remain usable with background jobs.
+	if err := tmux.SetPaneAgentIdentityContext(ctx, paneID, session+"__user", tmux.AgentUser); err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(dir, "explicit-user-input")
+	response, err := GetSend(SendOptions{
+		Context: ctx, Session: session, Pane: paneID,
+		Message: "printf allowed > " + tmux.ShellQuote(allowed),
+	})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("deliberate user-shell input was refused: %+v, %v", response, err)
+	}
+	waitForPane(func(tmux.Pane) bool {
+		data, err := os.ReadFile(allowed)
+		return err == nil && string(data) == "allowed"
+	})
+
+	// A real foreground job is still busy, including shell wrappers.
+	if err := tmux.SendKeysContext(ctx, paneID, "fg", true); err != nil {
+		t.Fatal(err)
+	}
+	foreground := waitForPane(func(pane tmux.Pane) bool {
+		return pane.ForegroundJobRunning()
+	})
+	foreground.Command = "bash"
+	foreground.Type = tmux.AgentCodex
+	if foreground.IdleShell() || foreground.AgentCLIDead() {
+		t.Fatalf("live foreground job was treated as a dead agent: %+v", foreground)
+	}
+
+	// Without job control, a foreground child shares the interactive shell's
+	// group. It must not be mistaken for a background job or a shell prompt.
+	if err := child.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPane(func(pane tmux.Pane) bool {
+		tpgid, pgrp, sid, ok := process.SessionTerminalForeground(pane.PID)
+		return ok && sid == background.PID && tpgid > 0 && tpgid == pgrp
+	})
+	if err := tmux.SendKeysContext(ctx, paneID, "set +m; sleep 60", true); err != nil {
+		t.Fatal(err)
+	}
+	var sameGroupChild int
+	sameGroup := waitForPane(func(pane tmux.Pane) bool {
+		tpgid, pgrp, sid, ok := process.SessionTerminalForeground(pane.PID)
+		if !ok || sid != pane.PID || tpgid <= 0 || tpgid != pgrp {
+			return false
+		}
+		for _, pid := range process.GetChildPIDs(pane.PID, 8) {
+			_, group, _, known := process.SessionTerminalForeground(pid)
+			if known && group == pgrp && process.IsAlive(pid) {
+				sameGroupChild = pid
+				return true
+			}
+		}
+		return false
+	})
+	shared, err := os.FindProcess(sameGroupChild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = shared.Kill()
+		_ = shared.Release()
+	})
+	sameGroup.Command = "bash"
+	sameGroup.Type = tmux.AgentCodex
+	if sameGroup.IdleShell() || sameGroup.AgentCLIDead() {
+		t.Fatalf("same-group foreground child was mistaken for shell input: %+v", sameGroup)
 	}
 }
