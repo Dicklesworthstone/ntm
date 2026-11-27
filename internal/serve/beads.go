@@ -737,6 +737,34 @@ func (s *Server) handleListBeadDeps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawList []map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &rawList); err == nil {
+		normalized := make([]map[string]interface{}, 0, len(rawList))
+		for _, item := range rawList {
+			if item == nil {
+				continue
+			}
+			// br dep list --json emits depends_on_id and type; populate canonical
+			// id and dependency_type aliases so Web/REST clients work uniformly.
+			if id, _ := item["id"].(string); strings.TrimSpace(id) == "" {
+				if depID, ok := item["depends_on_id"].(string); ok && strings.TrimSpace(depID) != "" {
+					item["id"] = depID
+				}
+			}
+			if depType, _ := item["dependency_type"].(string); strings.TrimSpace(depType) == "" {
+				if rawType, ok := item["type"].(string); ok && strings.TrimSpace(rawType) != "" {
+					item["dependency_type"] = rawType
+				}
+			}
+			normalized = append(normalized, item)
+		}
+		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+			"bead_id":      beadID,
+			"dependencies": normalized,
+		}, reqID)
+		return
+	}
+
 	var deps interface{}
 	if err := json.Unmarshal([]byte(output), &deps); err != nil {
 		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
