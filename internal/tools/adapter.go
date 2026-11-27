@@ -88,11 +88,6 @@ func (b *LimitedBuffer) Len() int {
 	return b.buf.Len()
 }
 
-// Reset clears the buffer while preserving Limit.
-func (b *LimitedBuffer) Reset() {
-	b.buf.Reset()
-}
-
 // ToolName identifies a specific tool in the ecosystem
 type ToolName string
 

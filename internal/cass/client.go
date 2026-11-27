@@ -158,19 +158,6 @@ func NewClient(opts ...ClientOption) *Client {
 	return c
 }
 
-// NewClientFromSettings builds a CASS client honoring configured binary_path
-// and timeout_seconds (falling back to NTM_CASS_BINARY / "cass" on PATH and 30s).
-func NewClientFromSettings(binaryPath string, timeoutSeconds int) *Client {
-	var opts []ClientOption
-	if expanded := expandCASSPath(binaryPath); expanded != "" {
-		opts = append(opts, WithBinaryPath(expanded))
-	}
-	if timeoutSeconds > 0 {
-		opts = append(opts, WithTimeout(time.Duration(timeoutSeconds)*time.Second))
-	}
-	return NewClient(opts...)
-}
-
 // IsInstalled checks if the cass binary is available
 func (c *Client) IsInstalled() bool {
 	if execImpl, ok := c.executor.(*DefaultExecutor); ok {
