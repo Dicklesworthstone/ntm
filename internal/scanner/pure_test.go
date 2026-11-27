@@ -48,3 +48,20 @@ func TestEstimateFileCentrality(t *testing.T) {
 		t.Errorf("estimateFileCentrality with negative score = %f, want 0.0", result)
 	}
 }
+
+func TestMatchPatternSegments_LinearTimeAgainstRepeatedDoubleStar(t *testing.T) {
+	t.Parallel()
+	// Previously exponential O(n^k) backtracking on repeated "**" segments.
+	pat := []string{"**", "a", "**", "a", "**", "a", "**", "a", "**", "b"}
+	file := make([]string, 30)
+	for i := range file {
+		file[i] = "a"
+	}
+	if matchPatternSegments(pat, file) {
+		t.Fatal("expected non-match when trailing 'b' is absent")
+	}
+	file[len(file)-1] = "b"
+	if !matchPatternSegments(pat, file) {
+		t.Fatal("expected match when trailing 'b' is present")
+	}
+}
