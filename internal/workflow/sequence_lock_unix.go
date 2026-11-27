@@ -27,7 +27,10 @@ func lockPaneSequenceFile(ctx context.Context, path string) (func(), error) {
 		}
 		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return func() { _ = file.Close() }, nil
+			return func() {
+				_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+				_ = file.Close()
+			}, nil
 		}
 		if errors.Is(err, syscall.EINTR) {
 			continue
