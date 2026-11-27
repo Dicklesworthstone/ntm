@@ -236,6 +236,11 @@ func createTempConfig(t *testing.T, content string) string {
 }
 
 func TestLoadFromFile(t *testing.T) {
+	// Env overrides win over the file, so clear the ones this test asserts
+	// against; an AGENT_MAIL_URL in the caller's shell otherwise fails it.
+	t.Setenv("NTM_PROJECTS_BASE", "")
+	t.Setenv("AGENT_MAIL_URL", "")
+
 	content := `
 projects_base = "/custom/projects"
 
