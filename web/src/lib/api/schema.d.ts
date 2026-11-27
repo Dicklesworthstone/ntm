@@ -5364,6 +5364,8 @@ export interface components {
         AgentActivityInfo: {
             /** @description Agent type */
             agent_type: string;
+            /** @description Background job count */
+            background_job_count?: number;
             /** @description Capture collected at */
             capture_collected_at?: string;
             /** @description Capture error */
