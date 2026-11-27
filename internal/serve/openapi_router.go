@@ -649,6 +649,9 @@ func convertRobotSchema(js *robot.JSONSchema) *Schema {
 		Required:    js.Required,
 		Enum:        js.Enum,
 	}
+	if len(js.Enum) > 0 {
+		s.Enum = append([]any(nil), js.Enum...)
+	}
 	if js.Ref != "" {
 		s.Ref = strings.Replace(js.Ref, "#/definitions/", "#/components/schemas/", 1)
 	}
