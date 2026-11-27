@@ -93,6 +93,8 @@ type AgentStatus struct {
 	AgentType string `json:"agent_type"`
 	// State is the current agent state
 	State AgentState `json:"state"`
+	// BackgroundJobCount is the number of jobs reported by the agent's live footer.
+	BackgroundJobCount int `json:"background_job_count,omitempty"`
 	// ErrorType categorizes the error if State == StateError
 	ErrorType ErrorType `json:"error_type,omitempty"`
 	// LastActive is when the pane last had output activity
@@ -204,6 +206,8 @@ const (
 	// DispatchRefusalLowConfidence: the classification is below the dispatch
 	// confidence floor (or above 1, which is invalid evidence).
 	DispatchRefusalLowConfidence DispatchRefusal = "low_confidence"
+	// DispatchRefusalBackgroundJobs: the agent still owns running jobs.
+	DispatchRefusalBackgroundJobs DispatchRefusal = "waiting_on_own_job"
 	// DispatchRefusalNotIdle: the pane is classified as something other than
 	// idle (working, waiting, error, unknown, ...).
 	DispatchRefusalNotIdle DispatchRefusal = "not_idle"
@@ -222,6 +226,8 @@ func (p PaneObservation) DispatchRefusal() DispatchRefusal {
 		return DispatchRefusalError
 	case !ObservationConfidenceIsActionable(p.Current.Confidence):
 		return DispatchRefusalLowConfidence
+	case p.Current.Status.BackgroundJobCount > 0:
+		return DispatchRefusalBackgroundJobs
 	case p.Current.Status.State != StateIdle:
 		return DispatchRefusalNotIdle
 	default:

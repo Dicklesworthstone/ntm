@@ -178,6 +178,23 @@ func TestScoredAgentForRoutingPropagatesRateLimit(t *testing.T) {
 	}
 }
 
+func TestBackgroundJobsBlockRoutingWithForegroundWork(t *testing.T) {
+	t.Parallel()
+	const capture = "• Working (9s • esc to interrupt) · 1 background terminal running · /ps to view…\n\n\n› Ask Codex to do anything"
+	activity, err := ClassifyPaneOutputActivity("%12", "codex", capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scored := scoredAgentForRouting(tmux.Pane{ID: "%12"}, "codex", activity, nil)
+	if scored.State != StateThinking || scored.BackgroundJobCount != 1 {
+		t.Fatalf("foreground turn with a running terminal: %+v", scored)
+	}
+	scored.Excluded, scored.ExcludeReason = NewAgentScorer(DefaultRoutingConfig()).checkExclusion(&scored)
+	if !scored.Excluded || canRelaxThinkingAgent(scored) {
+		t.Fatalf("background job admitted by strict or relaxed routing: %+v", scored)
+	}
+}
+
 func TestCalculateFinalScore(t *testing.T) {
 	scorer := NewAgentScorer(DefaultRoutingConfig())
 

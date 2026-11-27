@@ -541,7 +541,7 @@ func isRelaxEligibleAssignObservation(pane statuspkg.PaneObservation, agentType 
 	if pane.Current.Freshness != statuspkg.FreshnessFresh || pane.Current.Error != "" {
 		return false
 	}
-	if pane.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+	if pane.Current.Confidence < statuspkg.MinimumDispatchConfidence || pane.Current.Status.BackgroundJobCount > 0 {
 		return false
 	}
 	stateStr := strings.ToLower(strings.TrimSpace(string(pane.Current.Status.State)))

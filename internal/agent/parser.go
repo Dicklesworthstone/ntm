@@ -298,6 +298,7 @@ func (p *parserImpl) extractMetrics(output string, state *AgentState) {
 
 // detectStateFlags sets qualitative state flags based on output patterns.
 func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
+	state.BackgroundJobCount = BackgroundJobCount(output, state.Type, 0)
 	// Rate limit detection (highest priority - agent is blocked)
 	state.IsRateLimited = p.detectRateLimit(output, state.Type)
 	if state.IsRateLimited {
@@ -305,6 +306,15 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		// If rate limited, we are effectively blocked, so clear other flags
 		state.IsWorking = false
 		state.IsIdle = false
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
+	// A completed foreground turn can leave jobs running while the input
+	// box is visible. Protect that work from a new assignment.
+	if state.BackgroundJobCount > 0 {
+		state.IsWorking = true
+		state.WorkIndicators = []string{"background_jobs"}
 		state.IsInError = p.detectError(output, state.Type)
 		return
 	}

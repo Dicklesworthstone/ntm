@@ -306,15 +306,17 @@ func TestClassifyWithOutput_CodexConversationErrorsAreNotAgentErrors(t *testing.
 // same ordering-aware liveness rule dispatch uses.
 func TestClassifyWithOutput_ClaudeFinishedTurnIsWaiting(t *testing.T) {
 	box := "────────────────────────────────────────\n❯ check the test results\n────────────────────────────────────────\n" +
-		"  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage\n"
+		"  ⏵⏵ bypass permissions on"
+	boxWithJob := box + " · 1 shell · ↓ to manage\n"
 	tests := []struct {
 		name    string
 		content string
 		want    AgentState
 	}{
-		{"queued text in the box after a finished turn", "● Done; the fix is pushed.\n\n✻ Crunched for 10s · done 11:09 PM · 1 shell still running\n\n" + box, StateWaiting},
+		{"queued text in the box after a finished turn", "● Done; the fix is pushed.\n\n✻ Crunched for 10s · done 11:09 PM\n\n" + box, StateWaiting},
+		{"finished turn with a running shell", "✻ Crunched for 10s · done 11:09 PM · 1 shell still running\n\n" + boxWithJob, StateWaitingOnJob},
 		{"stale spinner frame above the completion line", "· Thundering… (4s)\n● Done.\n\n✻ Worked for 42s · done 9:03 AM\n\n" + box, StateWaiting},
-		{"live spinner is still THINKING", "● Running the suite.\n\n✻ Brewing… (ctrl+c to interrupt · 41s · ↓ 1.2k tokens)\n\n" + box, StateThinking},
+		{"live spinner is still THINKING", "● Running the suite.\n\n✻ Brewing… (ctrl+c to interrupt · 41s · ↓ 1.2k tokens)\n\n" + boxWithJob, StateThinking},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

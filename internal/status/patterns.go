@@ -216,8 +216,11 @@ const maxIdleScanLines = 12
 // verdict if an active-work spinner appears on a line *below* the prompt — the
 // same "most recent marker wins" ordering rule used by internal/agent.detectIdle.
 func DetectIdleFromOutput(output string, agentType string) bool {
-	agentType = string(agent.AgentType(agentType).Canonical())
+	canonical := agent.AgentType(agentType).Canonical()
+	return agent.BackgroundJobCount(output, canonical, 0) == 0 && idlePromptShowing(output, string(canonical))
+}
 
+func idlePromptShowing(output, agentType string) bool {
 	// These composers remain visible during work. The unified detector
 	// already trusts their live markers, but health checks and startup wait
 	// loops also call this helper directly. A marker ABOVE the prompt must

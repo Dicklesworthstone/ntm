@@ -32,6 +32,40 @@ func observedPane(id string, state statuspkg.AgentState, confidence float64) sta
 	}
 }
 
+// Both assign and assign --watch use this gate at candidate selection. A
+// later capture must release the same pane when the footer disappears.
+func TestAssignPlaceabilityTracksBackgroundJobs(t *testing.T) {
+	pane := placeabilityPane("%1", 1, tmux.AgentClaude)
+	pane.Height = 4
+	pane.Width = 80
+	activity := tmux.PaneActivity{Pane: pane, LastActivity: time.Now().Add(-time.Hour)}
+	observer := statuspkg.NewSessionObserver(statuspkg.NewDetector())
+	const composer = "────────────\n❯ \n────────────\n"
+	const jobs = "1 shell, 1 monitor · ↓ to manage"
+	for _, tc := range []struct {
+		name    string
+		output  string
+		count   int
+		verdict string
+	}{
+		{"live jobs", composer + jobs, 2, PlaceabilityBackgroundJobs},
+		{"jobs only in scrollback", jobs + "\nfinished\n" + composer, 0, PlaceabilityPlaceable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := observer.ObservePaneCapture("demo", activity, tc.output, nil)
+			now := observed.Current.ObservedAt
+			observation := placeabilityObservation(now, observed)
+			verdict, candidate, err := evaluateAssignPane(pane, nil, observation, "", now)
+			if err != nil || observed.Current.Status.BackgroundJobCount != tc.count || verdict.Verdict != tc.verdict || (candidate != nil) != (tc.count == 0) {
+				t.Fatalf("observation=%+v verdict=%+v candidate=%v error=%v", observed.Current, verdict, candidate, err)
+			}
+			if tc.count > 0 && (observed.SafeToDispatch() || isRelaxableThinkingPane(observation, pane, "claude", now) || verdict.Detail != "background_job_count=2") {
+				t.Fatalf("background work must fence strict and relaxed assignment: %+v", verdict)
+			}
+		})
+	}
+}
+
 // TestEvaluateAssignPanePlaceabilityNamesEveryGate pins ntm#306: each gate
 // that used to collapse into "no idle agents" now yields its own verdict, in
 // evaluation order, and only the pane that clears all of them becomes an agent.

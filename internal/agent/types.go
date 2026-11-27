@@ -155,9 +155,10 @@ type AgentState struct {
 
 	// Quantitative metrics (nil = unknown/not available)
 	// Using pointers allows distinguishing "unknown" from "zero"
-	ContextRemaining *float64 `json:"context_remaining,omitempty"` // 0-100 percentage remaining
-	TokensUsed       *int64   `json:"tokens_used,omitempty"`       // Total tokens consumed
-	MemoryMB         *float64 `json:"memory_mb,omitempty"`         // Memory usage (Gemini)
+	ContextRemaining   *float64 `json:"context_remaining,omitempty"`    // 0-100 percentage remaining
+	TokensUsed         *int64   `json:"tokens_used,omitempty"`          // Total tokens consumed
+	MemoryMB           *float64 `json:"memory_mb,omitempty"`            // Memory usage (Gemini)
+	BackgroundJobCount int      `json:"background_job_count,omitempty"` // Jobs reported by the live provider UI
 
 	// Qualitative state flags
 	IsWorking     bool `json:"is_working"`   // Actively producing output (DO NOT INTERRUPT)

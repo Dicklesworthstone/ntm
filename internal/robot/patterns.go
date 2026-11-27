@@ -21,6 +21,9 @@ const (
 	// StateWaiting indicates agent is idle and ready for input.
 	StateWaiting AgentState = "WAITING"
 
+	// StateWaitingOnJob indicates the foreground turn ended with agent-owned work still running.
+	StateWaitingOnJob AgentState = "WAITING_ON_JOB"
+
 	// StateThinking indicates agent is processing (low velocity, thinking indicator).
 	StateThinking AgentState = "THINKING"
 

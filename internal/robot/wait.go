@@ -396,6 +396,7 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 					return response, 1
 				}
 				classifier := monitor.GetOrCreate(pane.ID)
+				classifier.setPaneDimensions(pane.Width, pane.Height)
 				if at := waitPaneAgentType(pane); at != "" && at != "unknown" && at != "user" {
 					classifier.SetAgentType(at)
 				}
@@ -880,8 +881,8 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 		return !activity.RateLimited
 
 	case WaitConditionAgentReady:
-		// Ready means the CLI reached a classified agent state: at its
-		// prompt (WAITING) or already doing work (THINKING/GENERATING).
+		// Ready means the CLI is booted, including while it is working
+		// in the foreground or monitoring its own background job.
 		// UNKNOWN (bare shell / still booting), ERROR, and STALLED stay
 		// pending. Rate-limited panes are not ready: the CLI is up but
 		// cannot accept work.
@@ -889,7 +890,7 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 			return false
 		}
 		switch activity.State {
-		case StateWaiting, StateThinking, StateGenerating:
+		case StateWaiting, StateWaitingOnJob, StateThinking, StateGenerating:
 			return true
 		default:
 			return false

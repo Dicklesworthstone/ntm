@@ -65,6 +65,10 @@ func (d *UnifiedDetector) Analyze(paneID, paneName, agentType string, output str
 // AnalyzeAt is the deterministic form of Analyze. observedAt controls both the
 // result timestamp and activity-recency classification for replayable snapshots.
 func (d *UnifiedDetector) AnalyzeAt(paneID, paneName, agentType string, output string, lastActivity, observedAt time.Time) AgentStatus {
+	return d.analyzeAt(paneID, paneName, agentType, output, lastActivity, observedAt, 0, 0)
+}
+
+func (d *UnifiedDetector) analyzeAt(paneID, paneName, agentType string, output string, lastActivity, observedAt time.Time, paneWidth, paneHeight int) AgentStatus {
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
@@ -83,9 +87,11 @@ func (d *UnifiedDetector) AnalyzeAt(paneID, paneName, agentType string, output s
 		LastOutput: LastMeaningfulOutput(output, normalizedAgentType, d.config.OutputPreviewLength),
 	}
 
-	state, errType := d.determineStateAt(output, normalizedAgentType, lastActivity, observedAt)
-	status.State = state
-	status.ErrorType = errType
+	liveOutput := output
+	if paneHeight > 0 {
+		liveOutput = util.GetLastNLines(output, paneHeight)
+	}
+	status.State, status.ErrorType, status.BackgroundJobCount = d.determineStateAt(liveOutput, normalizedAgentType, lastActivity, observedAt, paneWidth)
 
 	// Extract metrics using agent parser
 	if isKnownAgentType(normalizedAgentType) {
@@ -105,10 +111,21 @@ func (d *UnifiedDetector) AnalyzeAt(paneID, paneName, agentType string, output s
 
 // determineState calculates state based on output and activity
 func (d *UnifiedDetector) determineState(output, agentType string, lastActivity time.Time) (AgentState, ErrorType) {
-	return d.determineStateAt(output, agentType, lastActivity, time.Now())
+	state, errType, _ := d.determineStateAt(output, agentType, lastActivity, time.Now(), 0)
+	return state, errType
 }
 
-func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivity, observedAt time.Time) (AgentState, ErrorType) {
+func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivity, observedAt time.Time, paneWidth int) (AgentState, ErrorType, int) {
+	canonical := agent.AgentType(agentType).Canonical()
+	state, errType := d.foregroundStateAt(output, string(canonical), lastActivity, observedAt)
+	jobs := agent.BackgroundJobCount(output, canonical, paneWidth)
+	if jobs > 0 && state != StateError {
+		state = StateWorking
+	}
+	return state, errType, jobs
+}
+
+func (d *UnifiedDetector) foregroundStateAt(output, agentType string, lastActivity, observedAt time.Time) (AgentState, ErrorType) {
 	// Detection priority:
 	// 1. Check authoritative live-tail markers for active work
 	// 2. Check for idle prompt when velocity is low (agent waiting for input)
@@ -121,7 +138,6 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// in the scrollback. Error patterns from earlier in the session are not relevant
 	// when the agent has clearly recovered and is now waiting for input.
 
-	agentType = string(agent.AgentType(agentType).Canonical())
 	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
 	isLowVelocity := observedAt.Sub(lastActivity) >= threshold
 
@@ -150,7 +166,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.ClaudeActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 		// Fall through to error/heuristic handling below.
@@ -174,7 +190,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		// CodexActivelyWorking is biased to false-WORKING and has already
 		// returned false here, so trusting the idle chrome cannot mask a live
 		// turn.
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
@@ -188,7 +204,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.AntigravityActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
@@ -201,7 +217,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.GrokActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
@@ -213,7 +229,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.OpencodeActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
@@ -232,7 +248,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if summary, failed := agent.OmpProviderError(output); failed {
 			return StateError, ompProviderErrorType(summary)
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
@@ -245,13 +261,13 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.PluginActivelyWorking(output, agent.AgentType(agentType), 0) {
 			return StateWorking, ErrorNone
 		}
-		if DetectIdleFromOutput(output, agentType) {
+		if idlePromptShowing(output, agentType) {
 			return StateIdle, ErrorNone
 		}
 	}
 
 	// Check if at prompt (idle) - prioritize this when velocity is low
-	isAtPrompt := DetectIdleFromOutput(output, agentType)
+	isAtPrompt := idlePromptShowing(output, agentType)
 	if isAtPrompt && isLowVelocity {
 		// Agent is at prompt and not actively outputting - clearly idle
 		return StateIdle, ErrorNone
@@ -498,32 +514,7 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 	if err != nil {
 		return status, err
 	}
-	status.PaneName = pane.Title
-	status.AgentType = string(pane.Type)
-
-	// Now that the agent type is known, the preview can drop that agent's
-	// composer and status line rather than showing them as "recent output".
-	status.LastOutput = LastMeaningfulOutput(output, status.AgentType, d.config.OutputPreviewLength)
-
-	// Use shared logic
-	state, errType := d.determineState(output, status.AgentType, status.LastActive)
-	status.State = state
-	status.ErrorType = errType
-
-	// Extract metrics using agent parser
-	if isKnownAgentType(status.AgentType) {
-		parser := agent.NewParser()
-		if parsed, err := parser.ParseWithHint(output, agent.AgentType(status.AgentType)); err == nil {
-			if parsed.ContextRemaining != nil {
-				status.ContextUsage = 100.0 - *parsed.ContextRemaining
-			}
-			if parsed.TokensUsed != nil {
-				status.TokensUsed = *parsed.TokensUsed
-			}
-		}
-	}
-
-	return status, nil
+	return d.analyzeAt(paneID, pane.Title, string(pane.Type), output, status.LastActive, status.UpdatedAt, pane.Width, pane.Height), nil
 }
 
 func resolveDetectedPane(panes []tmux.PaneActivity, target string) (tmux.Pane, error) {
@@ -918,7 +909,7 @@ func (o *SessionObserver) buildPaneObservation(cache *sessionObservationCache, p
 	if pane.Pane.Height > 0 {
 		classificationOutput = util.GetLastNLines(output, pane.Pane.Height)
 	}
-	status := o.detector.AnalyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, classificationOutput, lastActivity, observedAt)
+	status := o.detector.analyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, classificationOutput, lastActivity, observedAt, pane.Pane.Width, 0)
 	confidence := observationConfidence(status, classificationOutput)
 	observation.Current = StateObservation{
 		Status:     status,
@@ -988,7 +979,7 @@ func observationConfidence(status AgentStatus, output string) float64 {
 	if status.State == StateUnknown {
 		return 0.25
 	}
-	if status.State == StateIdle && !DetectIdleFromOutput(output, status.AgentType) {
+	if status.State == StateIdle && !idlePromptShowing(output, status.AgentType) {
 		// The detector's fallback idle heuristics intentionally improve display
 		// quality for quiet panes, but a short line or a generic "done" marker is
 		// not strong enough evidence to authorize dispatching more work.

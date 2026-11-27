@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -338,6 +339,108 @@ var (
 )
 
 const agyLiveTailLines = 15
+
+// Claude lists counted job kinds in front of the manage action. Match the
+// list's grammar so new kinds and mixed lists use the same readiness rule.
+const countedJobKind = `[0-9]+\s+[a-zA-Z]+(?:\s+[a-zA-Z]+)*`
+const claudeJobMode = `(?:[⏵▶]{2}[^\n]*?|\? for shortcuts)`
+
+var (
+	jobComposerRe           = regexp.MustCompile(`(?m)^[ \t]*(?:[│┃|][ \t]*)?(?:[❯›»>](?:[ \t].*)?|codex>)[ \t]*$`)
+	claudeModeFooterRe      = regexp.MustCompile(`(?m)^[ \t]*` + claudeJobMode + `[ \t]*$`)
+	claudeJobFooterRe       = regexp.MustCompile(`(?m)^[ \t]*(?:` + claudeJobMode + `[ \t]*·\s*)?(` + countedJobKind + `(?:,\s*` + countedJobKind + `)*)\s*·\s*↓\s+to\s+manage(?:[ \t]*·[^\n]*)?[ \t]*$`)
+	claudeJobSuffixRe       = regexp.MustCompile(`·\s*([0-9]+)\s+shells?\s+still\s+running\s*$`)
+	claudeJobContinuationRe = regexp.MustCompile(`(?m)^[ \t]*·\s*([0-9]+)\s+shells?\s+still\s+running[ \t]*$`)
+	codexJobFooterRe        = regexp.MustCompile(`(?m)^[ \t]*(?:\? for shortcuts[ \t]+(?:·[ \t]*)?|[•·◐◑◒◓⬤][ \t]+(?:Working|Waiting|Thinking)\b[^\n]*?·\s*)?([0-9]+)\s+background\s+terminals?\s+running(?:[ \t]*·[^\n]*)?[ \t]*$`)
+	agyJobFooterRe          = regexp.MustCompile(`(?m)^[ \t]*(?:\? for shortcuts[ \t]+(?:·[ \t]*)?)?([0-9]+)\s+task(?:s|\(s\))?\s*·\s*/tasks(?:[ \t]*·[^\n]*)?[ \t]*$`)
+)
+
+// BackgroundJobCount reports jobs the provider still owns after returning to
+// its composer. Read the newest count in the live frame; the completion
+// summary and management footer can both describe the same jobs.
+func BackgroundJobCount(output string, agentType AgentType, paneWidth int) int {
+	agentType = agentType.Canonical()
+	var footer *regexp.Regexp
+	switch agentType {
+	case AgentTypeClaudeCode:
+		footer = claudeJobFooterRe
+	case AgentTypeCodex:
+		footer = codexJobFooterRe
+	case AgentTypeAntigravity:
+		footer = agyJobFooterRe
+	default:
+		return 0
+	}
+	clean := trimTrailingBlankLines(stripANSICodes(strings.ReplaceAll(output, "\r\n", "\n")))
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, claudeLiveTailLines))
+	if trailingShellExitPromptRe.MatchString(strings.TrimSpace(tail[strings.LastIndexByte(tail, '\n')+1:])) {
+		return 0
+	}
+	tail = strings.ReplaceAll(tail, "\u00a0", " ")
+	var summaryCount int
+	if agentType == AgentTypeClaudeCode {
+		// A fresh completion supersedes job reports from earlier turns.
+		if completions := claudeCompletionLineRe.FindAllStringIndex(tail, -1); len(completions) > 0 {
+			last := completions[len(completions)-1]
+			if m := claudeJobSuffixRe.FindStringSubmatch(tail[last[0]:last[1]]); m != nil {
+				summaryCount, _ = strconv.Atoi(m[1])
+			}
+			tail = tail[last[1]:]
+		}
+		// A narrow capture can place the turn's "· N shells still running"
+		// segment on a row of its own.
+		if rows := claudeJobContinuationRe.FindAllStringSubmatchIndex(tail, -1); len(rows) > 0 {
+			last := rows[len(rows)-1]
+			summaryCount, _ = strconv.Atoi(tail[last[2]:last[3]])
+			tail = tail[last[1]:]
+		}
+	}
+	// Scope controls to the current composer. Codex can put its terminal
+	// footer immediately ABOVE the composer, alone or on its Working line.
+	// Only whitespace separates that live row from the composer.
+	if prompts := jobComposerRe.FindAllStringIndex(tail, -1); len(prompts) > 0 {
+		if len(prompts) > 1 {
+			summaryCount = 0
+		}
+		prompt := prompts[len(prompts)-1]
+		before := tail[:prompt[0]]
+		tail = tail[prompt[1]:]
+		if agentType == AgentTypeCodex {
+			before = strings.TrimRightFunc(before, unicode.IsSpace)
+			if rows := footer.FindAllStringIndex(before, -1); len(rows) > 0 {
+				last := rows[len(rows)-1]
+				if last[1] == len(before) {
+					tail = before[last[0]:] + "\n" + tail
+				}
+			}
+		}
+	}
+	// Multiple mode rows can survive a redraw. Ignore counts from earlier
+	// renders, but allow a separate management row beside the current mode.
+	if agentType == AgentTypeClaudeCode {
+		if modes := claudeModeFooterRe.FindAllStringIndex(tail, -1); len(modes) > 0 {
+			if len(modes) > 1 {
+				tail = tail[modes[len(modes)-1][0]:]
+			}
+			summaryCount = 0
+		}
+	}
+	matches := footer.FindAllStringSubmatch(tail, -1)
+	if len(matches) == 0 {
+		return summaryCount
+	}
+	total := 0
+	for item := range strings.SplitSeq(matches[len(matches)-1][1], ",") {
+		// The regexp only captures unsigned decimal counts. Atoi saturates
+		// at MaxInt on overflow; also avoid overflow summing mixed kinds.
+		count, _ := strconv.Atoi(strings.Fields(item)[0])
+		if count > math.MaxInt-total {
+			return math.MaxInt
+		}
+		total += count
+	}
+	return total
+}
 
 // AntigravityActivelyWorking reports whether the trailing live TUI frame
 // contains the provider's in-flight cancel hint.

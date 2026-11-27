@@ -799,6 +799,14 @@ func TestDetermineState(t *testing.T) {
 			wantError:    ErrorNone,
 		},
 		{
+			name:         "job still running at a quiet composer",
+			output:       "Task done\n────────────\n❯ \n────────────\n1 shell · ↓ to manage",
+			agentType:    "claude",
+			lastActivity: time.Now().Add(-time.Hour),
+			wantState:    StateWorking,
+			wantError:    ErrorNone,
+		},
+		{
 			name:         "idle at claude prompt",
 			output:       "Task done\nclaude>",
 			agentType:    "cc",
@@ -922,7 +930,7 @@ func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
 	// velocity heuristic sees maximum freshness for this quiet pane.
 	freshActivity := observedAt
 
-	state, errType := d.determineStateAt(codexIdleAtComposerCapture, "cod", freshActivity, observedAt)
+	state, errType, _ := d.determineStateAt(codexIdleAtComposerCapture, "cod", freshActivity, observedAt, 0)
 	if state != StateIdle || errType != ErrorNone {
 		t.Fatalf("codex at composer with fresh window activity = %v/%v, want idle", state, errType)
 	}
@@ -930,14 +938,14 @@ func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
 	// Negative case: a genuinely working Codex pane must stay working under the
 	// exact same (fresh) velocity input — the idle arm must not swallow a live
 	// turn.
-	state, errType = d.determineStateAt(codexWorkingCapture, "cod", freshActivity, observedAt)
+	state, errType, _ = d.determineStateAt(codexWorkingCapture, "cod", freshActivity, observedAt, 0)
 	if state != StateWorking || errType != ErrorNone {
 		t.Fatalf("codex mid-turn = %v/%v, want working", state, errType)
 	}
 
 	// Negative case: a working Codex pane stays working even when velocity is
 	// low (a long quiet tool call produces no new scrollback).
-	state, _ = d.determineStateAt(codexWorkingCapture, "cod", observedAt.Add(-time.Hour), observedAt)
+	state, _, _ = d.determineStateAt(codexWorkingCapture, "cod", observedAt.Add(-time.Hour), observedAt, 0)
 	if state != StateWorking {
 		t.Fatalf("quiet codex mid-turn = %v, want working", state)
 	}
@@ -1165,6 +1173,7 @@ func TestPaneObservationSafeToDispatchFailsClosed(t *testing.T) {
 		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = minimumDispatchConfidence - 0.01 }, refusal: DispatchRefusalLowConfidence},
 		{name: "invalid high confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = 1.01 }, refusal: DispatchRefusalLowConfidence},
 		{name: "capture error", mutate: func(p *PaneObservation) { p.Current.Error = "capture failed" }, refusal: DispatchRefusalError},
+		{name: "jobs at an idle prompt", mutate: func(p *PaneObservation) { p.Current.Status.BackgroundJobCount = 1 }, refusal: DispatchRefusalBackgroundJobs},
 		{name: "working", mutate: func(p *PaneObservation) { p.Current.Status.State = StateWorking }, refusal: DispatchRefusalNotIdle},
 		{name: "error", mutate: func(p *PaneObservation) { p.Current.Status.State = StateError }, refusal: DispatchRefusalNotIdle},
 		{name: "unknown", mutate: func(p *PaneObservation) { p.Current.Status.State = StateUnknown }, refusal: DispatchRefusalNotIdle},

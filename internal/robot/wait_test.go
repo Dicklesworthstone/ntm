@@ -874,6 +874,7 @@ func TestAgentReadyWaitCondition(t *testing.T) {
 		want     bool
 	}{
 		{"waiting at prompt is ready", &AgentActivity{State: StateWaiting}, true},
+		{"running own jobs is ready", &AgentActivity{State: StateWaitingOnJob}, true},
 		{"thinking is ready", &AgentActivity{State: StateThinking}, true},
 		{"generating is ready", &AgentActivity{State: StateGenerating}, true},
 		{"unknown (bare shell / booting) pending", &AgentActivity{State: StateUnknown}, false},
@@ -894,21 +895,51 @@ func TestAgentReadyWaitCondition(t *testing.T) {
 	}
 }
 
-// GitHub #387 end to end: --robot-wait --wait-until=idle timed out on an idle
-// Codex pane whose last reply quoted a hook's "ERROR: ..." line. The pane here
-// prints the reported capture and then sits in cat, so nothing on it changes.
-func TestGetWaitIdleReturnsForCodexPaneQuotingAnErrorRealTmux(t *testing.T) {
-	testutil.RequireTmuxThrottled(t)
-	capture := filepath.Join(t.TempDir(), "codex-capture.txt")
-	if err := os.WriteFile(capture, []byte("• Ran git commit; the pre-commit hook rejected the commit:\n"+
-		"  ERROR: mcp-agent-mail: file reservation conflict detected!\n"+
-		"  exited with status 1\n\n"+
-		"› Ask Codex to do anything\n\n"+
-		"  GPT-6.2-Sol high · /tmp/demo · GPT-6.2-Sol · high\n"+
-		"  ← for agents · ? for shortcuts\n"), 0o600); err != nil {
-		t.Fatalf("write capture: %v", err)
+func TestWaitIdleAndCompleteAcrossBackgroundJob(t *testing.T) {
+	t.Parallel()
+	const prompt = "› Ask Codex to do anything\n"
+	sc := NewStateClassifier("%8", &ClassifierConfig{AgentType: "codex", PaneHeight: 3, HysteresisDuration: time.Nanosecond})
+	observe := func(output string) *AgentActivity {
+		t.Helper()
+		activity, err := sc.ClassifyWithOutput(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return activity
 	}
-	sessName := fmt.Sprintf("ntm-wait-quoted-error-%d", time.Now().UnixNano())
+	if got := observe(prompt); !meetsSingleWaitCondition(got, WaitConditionIdle) {
+		t.Fatalf("expected initially idle prompt, got %+v", got)
+	}
+	busy := observe("  2 background terminals running · /ps to view · /stop to close\n\n" + prompt)
+	if busy.State != StateWaitingOnJob || busy.BackgroundJobCount != 2 {
+		t.Fatalf("first poll after footer appeared = %+v", busy)
+	}
+	busy.LastOutput = time.Now().Add(-2 * CompleteIdleThreshold)
+	if meetsSingleWaitCondition(busy, WaitConditionIdle) || meetsSingleWaitCondition(busy, WaitConditionComplete) {
+		t.Fatalf("running jobs satisfied idle or complete: %+v", busy)
+	}
+	// The old footer has scrolled above the three visible rows.
+	updated := "2 background terminals running\n\n" + prompt + "? for shortcuts"
+	observe(updated)
+	observe(updated)
+	done := observe(updated)
+	if done.BackgroundJobCount != 0 || !meetsSingleWaitCondition(done, WaitConditionIdle) {
+		t.Fatalf("expected idle after the footer disappeared: %+v", done)
+	}
+	done.LastOutput = time.Now()
+	if meetsSingleWaitCondition(done, WaitConditionComplete) {
+		t.Fatalf("idle without a quiet interval satisfied complete: %+v", done)
+	}
+	done.LastOutput = time.Now().Add(-2 * CompleteIdleThreshold)
+	if !meetsSingleWaitCondition(done, WaitConditionComplete) {
+		t.Fatalf("expected completion after the quiet interval: %+v", done)
+	}
+}
+
+func newCodexWaitTestPane(t *testing.T) (session, paneID string) {
+	t.Helper()
+	testutil.RequireTmuxThrottled(t)
+	sessName := fmt.Sprintf("ntm-wait-codex-%d", time.Now().UnixNano())
 	if err := tmux.CreateSession(sessName, ""); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}
@@ -917,24 +948,44 @@ func TestGetWaitIdleReturnsForCodexPaneQuotingAnErrorRealTmux(t *testing.T) {
 	if err != nil || len(panes) != 1 {
 		t.Fatalf("panes = %+v, err = %v", panes, err)
 	}
-	pane := panes[0].ID
-	if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", pane, "cat "+capture+"; exec cat"); err != nil {
+	return sessName, panes[0].ID
+}
+
+func renderCodexWaitFrame(t *testing.T, session, pane, frame, marker string) {
+	t.Helper()
+	capture := filepath.Join(t.TempDir(), "codex-capture.txt")
+	if err := os.WriteFile(capture, []byte(frame), 0o600); err != nil {
+		t.Fatalf("write capture: %v", err)
+	}
+	if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", pane, "sh", "-c", `cat "$1"; exec cat`, "sh", capture); err != nil {
 		t.Fatalf("respawn codex stand-in: %v", err)
 	}
-	if _, err := tmux.DefaultClient.Run("select-pane", "-t", pane, "-T", sessName+"__cod_1"); err != nil {
+	if _, err := tmux.DefaultClient.Run("select-pane", "-t", pane, "-T", session+"__cod_1"); err != nil {
 		t.Fatalf("title codex pane: %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		shown, captureErr := tmux.CapturePaneVisible(pane)
-		if captureErr == nil && strings.Contains(shown, "Ask Codex to do anything") {
-			break
+		if captureErr == nil && strings.Contains(shown, marker) {
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("codex stand-in never rendered: %q (%v)", shown, captureErr)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// GitHub #387 end to end: --robot-wait --wait-until=idle timed out on an idle
+// Codex pane whose last reply quoted a hook's "ERROR: ..." line.
+func TestGetWaitIdleReturnsForCodexPaneQuotingAnErrorRealTmux(t *testing.T) {
+	sessName, pane := newCodexWaitTestPane(t)
+	renderCodexWaitFrame(t, sessName, pane, "• Ran git commit; the pre-commit hook rejected the commit:\n"+
+		"  ERROR: mcp-agent-mail: file reservation conflict detected!\n"+
+		"  exited with status 1\n\n"+
+		"› Ask Codex to do anything\n\n"+
+		"  GPT-6.2-Sol high · /tmp/demo · GPT-6.2-Sol · high\n"+
+		"  ← for agents · ? for shortcuts\n", "Ask Codex to do anything")
 
 	response, exitCode := GetWaitContext(t.Context(), WaitOptions{
 		Session: sessName, Condition: WaitConditionIdle, Timeout: 10 * time.Second, PollInterval: 100 * time.Millisecond,
@@ -944,5 +995,24 @@ func TestGetWaitIdleReturnsForCodexPaneQuotingAnErrorRealTmux(t *testing.T) {
 	}
 	if len(response.Agents) != 1 || response.Agents[0].State != string(StateWaiting) {
 		t.Fatalf("wait agents = %+v, want one WAITING codex pane", response.Agents)
+	}
+}
+
+func TestGetWaitIdleBlocksUntilBackgroundJobClearsRealTmux(t *testing.T) {
+	session, pane := newCodexWaitTestPane(t)
+	const prompt = "› Ask Codex to do anything\n"
+	renderCodexWaitFrame(t, session, pane, "  1 background terminal running · /ps to view · /stop to close\n\n"+prompt, "background terminal running")
+
+	opts := WaitOptions{Session: session, Condition: WaitConditionIdle, PollInterval: 50 * time.Millisecond, Timeout: 1 * time.Second}
+	response, code := GetWaitContext(t.Context(), opts)
+	if code == 0 || response.ErrorCode != ErrCodeTimeout || len(response.AgentsPending) != 1 || response.AgentsPending[0] != pane {
+		t.Fatalf("wait on live background terminal = %d, %+v; want timeout with target pending", code, response)
+	}
+
+	renderCodexWaitFrame(t, session, pane, "The test run finished.\n\n"+prompt, "test run finished")
+	opts.Timeout = 5 * time.Second
+	response, code = GetWaitContext(t.Context(), opts)
+	if code != 0 || !response.Success || len(response.Agents) != 1 || response.Agents[0].Pane != pane || response.Agents[0].State != string(StateWaiting) {
+		t.Fatalf("wait after the terminal finished = %d, %+v; want original pane idle", code, response)
 	}
 }

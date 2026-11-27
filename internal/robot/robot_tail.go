@@ -1087,15 +1087,16 @@ type ActivityOutput struct {
 
 // AgentActivityInfo contains activity state for a single agent pane.
 type AgentActivityInfo struct {
-	Pane             string   `json:"pane"`                        // pane index as string
-	PaneIdx          int      `json:"pane_idx"`                    // pane index as int
-	AgentType        string   `json:"agent_type"`                  // claude, codex, antigravity, grok, gemini, or another supported type
-	State            string   `json:"state"`                       // GENERATING, WAITING, THINKING, ERROR, STALLED, UNKNOWN
-	Confidence       float64  `json:"confidence"`                  // 0.0-1.0
-	Velocity         float64  `json:"velocity"`                    // chars/sec
-	StateSince       string   `json:"state_since,omitempty"`       // RFC3339 timestamp
-	DetectedPatterns []string `json:"detected_patterns,omitempty"` // pattern names that matched
-	LastOutput       string   `json:"last_output,omitempty"`       // RFC3339 timestamp of last output
+	Pane               string   `json:"pane"`       // pane index as string
+	PaneIdx            int      `json:"pane_idx"`   // pane index as int
+	AgentType          string   `json:"agent_type"` // claude, codex, antigravity, grok, gemini, or another supported type
+	State              string   `json:"state"`      // AgentState from the activity classifier
+	BackgroundJobCount int      `json:"background_job_count,omitempty"`
+	Confidence         float64  `json:"confidence"`                  // 0.0-1.0
+	Velocity           float64  `json:"velocity"`                    // chars/sec
+	StateSince         string   `json:"state_since,omitempty"`       // RFC3339 timestamp
+	DetectedPatterns   []string `json:"detected_patterns,omitempty"` // pattern names that matched
+	LastOutput         string   `json:"last_output,omitempty"`       // RFC3339 timestamp of last output
 
 	// PanePID is the tmux shell PID (`#{pane_pid}`) of the pane this
 	// observation came from. Populated additively so callers can detect a
@@ -1337,8 +1338,9 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 		// Preserve the richer velocity/pattern classifier, but feed it the exact
 		// output from the canonical observation instead of capturing tmux again.
 		classifier := NewStateClassifier(pane.ID, &ClassifierConfig{
-			AgentType: agentType,
-			PaneWidth: pane.Width,
+			AgentType:  agentType,
+			PaneWidth:  pane.Width,
+			PaneHeight: pane.Height,
 		})
 
 		paneCapturedAt := FormatTimestamp(paneObservation.Current.ObservedAt)
@@ -1381,6 +1383,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			PaneIdx:               pane.Index,
 			AgentType:             activity.AgentType,
 			State:                 string(activity.State),
+			BackgroundJobCount:    activity.BackgroundJobCount,
 			Confidence:            activity.Confidence,
 			Velocity:              activity.Velocity,
 			DetectedPatterns:      activity.DetectedPatterns,
@@ -1415,7 +1418,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 		switch activity.State {
 		case StateWaiting:
 			availableAgents = append(availableAgents, paneKey)
-		case StateGenerating, StateThinking:
+		case StateGenerating, StateThinking, StateWaitingOnJob:
 			busyAgents = append(busyAgents, paneKey)
 		case StateError, StateStalled:
 			problemAgents = append(problemAgents, paneKey)

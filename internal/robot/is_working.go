@@ -117,6 +117,10 @@ type PaneWorkStatus struct {
 	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
 	QueuedMessages   bool `json:"queued_messages,omitempty"`
 
+	// A positive count keeps the pane occupied even after its foreground turn ends.
+	BackgroundJobCount int  `json:"background_job_count,omitempty"`
+	WaitingOnOwnJob    bool `json:"waiting_on_own_job,omitempty"`
+
 	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
 	// present only under --semantic and omitted entirely otherwise. It is
 	// advisory: it never changes IsWorking/IsIdle/Recommendation above.
@@ -217,6 +221,9 @@ func workIndicatorBasis(
 	}
 	if final.Recommendation == string(agent.RecommendErrorState) {
 		return "error_indicator"
+	}
+	if final.WaitingOnOwnJob {
+		return "background_job_footer"
 	}
 	if liveBusy {
 		switch state.Type.Canonical() {
@@ -539,6 +546,12 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		// context-low signals retain their normal precedence. ParseWithHint
 		// returns a fresh *AgentState, so this mutation is local to this pane.
 		liveBusy := applyLiveBusyOverride(content, state, paneObservation.Metadata.Width)
+		status.BackgroundJobCount = paneObservation.Current.Status.BackgroundJobCount
+		if agent.AgentType(paneObservation.AgentType).Canonical() != state.Type.Canonical() {
+			// The parser can identify a provider even when tmux has no agent hint.
+			status.BackgroundJobCount = state.BackgroundJobCount
+		}
+		status.WaitingOnOwnJob = status.BackgroundJobCount > 0 && !liveBusy
 		if liveBusy {
 			status.IsWorking = true
 			status.IsIdle = false
@@ -755,6 +768,19 @@ func applyProviderErrorOverride(workStatus *PaneWorkStatus, agentType agent.Agen
 // never talk a mid-tool-call pane back down to idle.
 func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.PaneObservation, liveBusy bool) {
 	if workStatus == nil {
+		return
+	}
+	if workStatus.BackgroundJobCount > 0 {
+		workStatus.IsWorking = true
+		workStatus.IsIdle = false
+		workStatus.SafeToDispatch = false
+		switch agent.Recommendation(workStatus.Recommendation) {
+		case agent.RecommendRateLimitedWait, agent.RecommendErrorState, agent.RecommendContextLowContinue:
+			// Preserve the more specific action while keeping dispatch blocked.
+		default:
+			workStatus.Recommendation = string(agent.RecommendDoNotInterrupt)
+			workStatus.RecommendationReason = "The agent still has background work running"
+		}
 		return
 	}
 	switch observation.Current.Status.State {

@@ -262,7 +262,7 @@ func isRelaxableThinkingPane(observation statuspkg.SessionObservation, pane tmux
 	if paneObs.Current.Freshness != statuspkg.FreshnessFresh || paneObs.Current.Error != "" {
 		return false
 	}
-	if paneObs.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+	if paneObs.Current.Confidence < statuspkg.MinimumDispatchConfidence || paneObs.Current.Status.BackgroundJobCount > 0 {
 		return false
 	}
 	stateStr := strings.ToLower(strings.TrimSpace(string(paneObs.Current.Status.State)))

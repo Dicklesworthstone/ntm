@@ -1086,6 +1086,17 @@ func TestResolveAssignCandidatePool_RelaxThinkingAndProvenance(t *testing.T) {
 				},
 				RawOutput: "• Thinking...\n",
 			},
+			{
+				Pane:      tmux.PaneRef{ID: "%13", WindowIndex: 0, PaneIndex: 3},
+				AgentType: "claude",
+				Current: statuspkg.StateObservation{
+					Status:     statuspkg.AgentStatus{State: statuspkg.StateWorking, BackgroundJobCount: 1},
+					ObservedAt: now,
+					Freshness:  statuspkg.FreshnessFresh,
+					Confidence: 0.95,
+				},
+				RawOutput: "· thinking… (3s)\n1 shell · ↓ to manage\n",
+			},
 		},
 	}
 
@@ -1096,8 +1107,8 @@ func TestResolveAssignCandidatePool_RelaxThinkingAndProvenance(t *testing.T) {
 	if len(idlePanes) != 0 {
 		t.Fatalf("idlePanes = %v, want empty", idlePanes)
 	}
-	if len(agents) != 2 || !agents[0].relaxEligible || !agents[1].relaxEligible {
-		t.Fatalf("agents = %+v, want both thinking panes relaxEligible", agents)
+	if len(agents) != 3 || !agents[0].relaxEligible || !agents[1].relaxEligible || agents[2].relaxEligible {
+		t.Fatalf("agents = %+v, want only thinking panes without background jobs relaxEligible", agents)
 	}
 
 	occupied := map[string]struct{}{"%12": {}}

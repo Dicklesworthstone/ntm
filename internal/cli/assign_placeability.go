@@ -33,6 +33,7 @@ const (
 	PlaceabilityObservationStale = string(statuspkg.DispatchRefusalStale)
 	PlaceabilityObservationError = string(statuspkg.DispatchRefusalError)
 	PlaceabilityLowConfidence    = string(statuspkg.DispatchRefusalLowConfidence)
+	PlaceabilityBackgroundJobs   = string(statuspkg.DispatchRefusalBackgroundJobs)
 	PlaceabilityNotIdle          = string(statuspkg.DispatchRefusalNotIdle)
 	// PlaceabilityRoleIneligible: the pane cleared every dispatch gate but is
 	// bound to the opposite persona role of the requested template.
@@ -49,6 +50,7 @@ var placeabilityVerdictOrder = []string{
 	PlaceabilityObservationStale,
 	PlaceabilityObservationError,
 	PlaceabilityLowConfidence,
+	PlaceabilityBackgroundJobs,
 	PlaceabilityNotIdle,
 	PlaceabilityRoleIneligible,
 }
@@ -189,6 +191,8 @@ func dispatchRefusalDetail(p statuspkg.PaneObservation, refusal statuspkg.Dispat
 		return p.Current.Error
 	case statuspkg.DispatchRefusalLowConfidence:
 		return fmt.Sprintf("confidence %.2f outside [%.2f, 1.00]", p.Current.Confidence, statuspkg.MinimumDispatchConfidence)
+	case statuspkg.DispatchRefusalBackgroundJobs:
+		return fmt.Sprintf("background_job_count=%d", p.Current.Status.BackgroundJobCount)
 	case statuspkg.DispatchRefusalNotIdle:
 		return "state=" + string(p.Current.Status.State)
 	default:

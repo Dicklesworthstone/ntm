@@ -669,6 +669,9 @@ type AgentActivity struct {
 	// RateLimited indicates the agent has hit provider rate limits.
 	RateLimited bool `json:"rate_limited,omitempty"`
 
+	// BackgroundJobCount is current footer evidence and can coexist with a foreground turn.
+	BackgroundJobCount int `json:"background_job_count,omitempty"`
+
 	// Composer work is independent of output activity: a waiting agent can
 	// still hold an unsent draft or an already queued follow-up.
 	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
@@ -838,8 +841,19 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// Calculate proposed state and confidence
 	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
 
-	// Apply hysteresis
-	finalState := sc.applyHysteresis(proposedState, confidence, trigger)
+	jobCount := agent.BackgroundJobCount(visibleContent, agent.AgentType(sc.agentType), sc.paneWidth)
+	var finalState AgentState
+	if jobCount > 0 {
+		// A newly appeared footer must block dispatch on this very poll, even
+		// if hysteresis would retain a previous WAITING state. Preserve a
+		// concurrent live foreground turn or error.
+		if proposedState != StateThinking && proposedState != StateError {
+			proposedState, confidence, trigger = StateWaitingOnJob, 0.95, "background_jobs"
+		}
+		finalState = sc.transitionNow(proposedState, confidence, trigger)
+	} else {
+		finalState = sc.applyHysteresis(proposedState, confidence, trigger)
+	}
 
 	// Check whether any matched pattern is a rate-limit indicator so the
 	// RateLimited flag on AgentActivity is set from real pattern evidence.
@@ -856,18 +870,19 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 
 	// Build result
 	activity := &AgentActivity{
-		PaneID:           sc.velocityTracker.PaneID,
-		AgentType:        sc.agentType,
-		State:            finalState,
-		Confidence:       confidence,
-		Velocity:         velocity,
-		StateSince:       sc.stateSince,
-		DetectedPatterns: detectedPatterns,
-		StateHistory:     sc.getHistoryCopy(),
-		LastOutput:       sc.velocityTracker.LastOutputTime(),
-		RateLimited:      rateLimited,
-		UnsubmittedInput: composer.HoldsText,
-		QueuedMessages:   composer.QueuedMessages,
+		PaneID:             sc.velocityTracker.PaneID,
+		AgentType:          sc.agentType,
+		State:              finalState,
+		Confidence:         confidence,
+		Velocity:           velocity,
+		StateSince:         sc.stateSince,
+		DetectedPatterns:   detectedPatterns,
+		StateHistory:       sc.getHistoryCopy(),
+		LastOutput:         sc.velocityTracker.LastOutputTime(),
+		RateLimited:        rateLimited,
+		BackgroundJobCount: jobCount,
+		UnsubmittedInput:   composer.HoldsText,
+		QueuedMessages:     composer.QueuedMessages,
 	}
 
 	return activity, nil
@@ -1329,6 +1344,17 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 	return StateUnknown, 0.50, "insufficient_signals"
 }
 
+func (sc *StateClassifier) transitionNow(proposed AgentState, confidence float64, trigger string) AgentState {
+	if sc.currentState != proposed {
+		sc.recordTransition(sc.currentState, proposed, confidence, trigger)
+		sc.currentState = proposed
+		sc.stateSince = time.Now()
+	}
+	sc.pendingState = ""
+	sc.pendingSince = time.Time{}
+	return proposed
+}
+
 // applyHysteresis prevents rapid state flapping.
 // ERROR transitions immediately; other states require stability.
 func (sc *StateClassifier) applyHysteresis(proposed AgentState, confidence float64, trigger string) AgentState {
@@ -1336,24 +1362,14 @@ func (sc *StateClassifier) applyHysteresis(proposed AgentState, confidence float
 
 	// ERROR state transitions immediately (safety)
 	if proposed == StateError {
-		if sc.currentState != StateError {
-			sc.recordTransition(sc.currentState, StateError, confidence, trigger)
-			sc.currentState = StateError
-			sc.stateSince = now
-		}
-		sc.pendingState = ""
-		sc.pendingSince = time.Time{}
-		return StateError
+		return sc.transitionNow(proposed, confidence, trigger)
 	}
 
 	// First classification - transition immediately to establish baseline
 	// This ensures single-shot queries (like PrintActivity) get useful results
 	// rather than always returning UNKNOWN due to hysteresis delay
 	if len(sc.stateHistory) == 0 && sc.currentState == StateUnknown && proposed != StateUnknown {
-		sc.recordTransition(sc.currentState, proposed, confidence, trigger)
-		sc.currentState = proposed
-		sc.stateSince = now
-		return proposed
+		return sc.transitionNow(proposed, confidence, trigger)
 	}
 
 	// If state matches current, reset pending
@@ -1372,13 +1388,7 @@ func (sc *StateClassifier) applyHysteresis(proposed AgentState, confidence float
 
 	// Check if pending state has been stable long enough
 	if now.Sub(sc.pendingSince) >= sc.hysteresisDuration {
-		oldState := sc.currentState
-		sc.recordTransition(oldState, proposed, confidence, trigger)
-		sc.currentState = proposed
-		sc.stateSince = now
-		sc.pendingState = ""
-		sc.pendingSince = time.Time{}
-		return proposed
+		return sc.transitionNow(proposed, confidence, trigger)
 	}
 
 	// Not stable long enough, keep current state

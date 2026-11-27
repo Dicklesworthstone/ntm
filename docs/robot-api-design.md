@@ -263,12 +263,19 @@ it is not itself a precedence explanation.
 | `claude_finished_turn_prompt` | A completed Claude turn and prompt outrank stale elapsed-time labels. |
 | `codex_live_working_indicator` | A current Codex working/interrupt marker is present in the live window. |
 | `codex_composer_placeholder` | Codex's `Ask Codex` composer is waiting for input, not working. |
+| `background_job_footer` | The foreground turn is quiet and the pane still reports agent-owned background work. |
 | `canonical_working_observation` / `canonical_idle_observation` | The fresh canonical pane observation safely corrected the parser verdict. |
 | `rate_limit_indicator`, `error_indicator`, `parser_work_indicator`, `idle_prompt`, `insufficient_evidence` | The corresponding fallback or terminal signal determined the result. |
 
-Treat a pane waiting on a background terminal as working only when a current
-live indicator is present; elapsed labels and old scrollback alone are not
-authoritative.
+For Claude Code, Codex, and Antigravity, a live job count keeps
+`is_working: true`, `is_idle: false`, and `safe_to_dispatch: false`.
+`background_job_count` totals the jobs listed by the CLI. For example,
+Claude's `1 shell, 2 monitors · ↓ to manage` reports three jobs.
+`waiting_on_own_job: true` identifies a pane with jobs and no foreground
+work indicator. The activity classifier reports `WAITING_ON_JOB` for a quiet
+turn with outstanding jobs. Idle and completion waits stay pending while
+jobs run, and assignment skips the pane, including with `--watch` or
+`--relax`. Once the job evidence clears, normal idle detection resumes.
 
 ### 3.4 Post-Action Verification Evidence
 

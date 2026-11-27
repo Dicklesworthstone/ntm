@@ -110,18 +110,19 @@ func contextUsageForPane(usage map[string]float64, paneID string) float64 {
 // classifier's authoritative pane state, including live rate-limit evidence.
 func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActivity, contextUsage map[string]float64) ScoredAgent {
 	return ScoredAgent{
-		PaneID:           pane.ID,
-		AgentType:        agentType,
-		PaneIndex:        pane.Index,
-		State:            activity.State,
-		Confidence:       activity.Confidence,
-		Velocity:         activity.Velocity,
-		ContextUsage:     contextUsageForPane(contextUsage, pane.ID),
-		LastActivity:     activity.LastOutput,
-		HealthState:      deriveHealthState(activity.State),
-		RateLimited:      activity.RateLimited,
-		UnsubmittedInput: activity.UnsubmittedInput,
-		QueuedMessages:   activity.QueuedMessages,
+		PaneID:             pane.ID,
+		AgentType:          agentType,
+		PaneIndex:          pane.Index,
+		State:              activity.State,
+		Confidence:         activity.Confidence,
+		Velocity:           activity.Velocity,
+		ContextUsage:       contextUsageForPane(contextUsage, pane.ID),
+		LastActivity:       activity.LastOutput,
+		HealthState:        deriveHealthState(activity.State),
+		RateLimited:        activity.RateLimited,
+		UnsubmittedInput:   activity.UnsubmittedInput,
+		QueuedMessages:     activity.QueuedMessages,
+		BackgroundJobCount: activity.BackgroundJobCount,
 	}
 }
 
@@ -148,8 +149,9 @@ type ScoredAgent struct {
 	RateLimited bool        `json:"rate_limited"`
 
 	// Drafts and queued follow-ups make a pane unavailable for new routing.
-	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
-	QueuedMessages   bool `json:"queued_messages,omitempty"`
+	UnsubmittedInput   bool `json:"unsubmitted_input,omitempty"`
+	QueuedMessages     bool `json:"queued_messages,omitempty"`
+	BackgroundJobCount int  `json:"background_job_count,omitempty"`
 
 	// Scoring results
 	Score         float64        `json:"score"`    // Final composite score (0-100)
@@ -876,6 +878,9 @@ func (s *AgentScorer) checkExclusion(agent *ScoredAgent) (bool, string) {
 	if agent.QueuedMessages {
 		return true, "agent has queued messages"
 	}
+	if agent.BackgroundJobCount > 0 || agent.State == StateWaitingOnJob {
+		return true, "agent has running background jobs"
+	}
 
 	if s.config.ExcludeIfErrorState && agent.State == StateError {
 		return true, "agent in ERROR state"
@@ -1493,7 +1498,7 @@ func hasHardRoutingBlock(a ScoredAgent) bool {
 	if a.RateLimited || a.HealthState == HealthUnhealthy || a.HealthState == HealthBlocked || a.UnsubmittedInput || a.QueuedMessages {
 		return true
 	}
-	if a.State == StateError || a.State == StateGenerating || a.State == StateStalled {
+	if a.State == StateError || a.State == StateGenerating || a.State == StateStalled || a.State == StateWaitingOnJob || a.BackgroundJobCount > 0 {
 		return true
 	}
 	if a.ExcludeReason == "agent CLI exited to a bare shell" {

@@ -1737,6 +1737,63 @@ func TestClaudeCompletionLine_DoneAndShellSuffixes(t *testing.T) {
 	}
 }
 
+func TestBackgroundJobCount(t *testing.T) {
+	const summary = "✻ Sautéed for 36s · done 11:09 PM · 2 shells still running"
+	const management = "  ⏵⏵ bypass permissions on · 1 shell, 2 monitors · ↓ to manage"
+	for _, tc := range []struct {
+		name  string
+		agent AgentType
+		frame string
+		count int
+	}{
+		{"claude shell", "claude", "❯\n1 shell · ↓ to manage", 1},
+		{"claude tasks", "cc", "❯\n2 background tasks · ↓ to manage", 2},
+		{"mixed kinds", "cc", "❯\n" + management, 3},
+		{"mode footer glyph variant", "cc", "❯\n▶▶ bypass permissions on · 1 shell · ↓ to manage", 1},
+		{"wrapped mixed kinds", "cc", "❯\n1 shell, 2 background\ntasks · ↓ to manage", 3},
+		{"new job kind", "cc", "2 test runners, 4 timers · ↓ to manage", 6},
+		{"turn suffix only", "cc", summary + "\n────\n❯", 2},
+		{"wrapped suffix", "cc", "✻ Cooked for 3s · done 4:02 PM\n· 1 shell still running\n❯", 1},
+		{"live count supersedes summary", "cc", summary + "\n❯\n" + management, 3},
+		{"jobs finished while summary remains", "cc", summary + "\n❯\n⏵⏵ bypass permissions on", 0},
+		{"clean shortcut footer supersedes summary", "cc", summary + "\n❯\n? for shortcuts", 0},
+		{"explicit zero supersedes summary", "cc", summary + "\n❯\n0 shells · ↓ to manage", 0},
+		{"new completion", "cc", summary + "\n✻ Cooked for 4s\n❯", 0},
+		{"stale management", "cc", management + "\n❯\n⏵⏵ bypass permissions on", 0},
+		{"clean footer after counted footer", "cc", management + "\n⏵⏵ bypass permissions on", 0},
+		{"management and shortcut rows", "cc", "❯\n1 shell · ↓ to manage\n? for shortcuts", 1},
+		{"codex terminal", "codex", "›\n1 background terminal running", 1},
+		{"codex terminal above composer", "cod", "1 background terminal running · /ps to view · /stop to close\n\n› follow up", 1},
+		{"codex working terminal", "cod", "• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view…\n\n› follow up", 1},
+		{"codex wrapped footer", "cod", "›\n2 background terminals\nrunning · /ps to view", 2},
+		{"agy task", "antigravity", ">\n1 task(s) · /tasks", 1},
+		{"agy styling", "agy", ">\n\x1b[35m3\u00a0tasks\x1b[0m · /tasks", 3},
+		{"empty task list", "agy", ">\n0 tasks · /tasks", 0},
+		{"exited cli", "cod", "1 background terminal running\nuser@host:~/demo$", 0},
+		{"outside live tail", "agy", "1 task(s) · /tasks\n" + strings.Repeat("next line\n", 20), 0},
+		{"transcript example", "cod", "1 background terminal running\nThe task has finished.\n›\n? for shortcuts", 0},
+		{"prose", "cc", "I started 1 shell · ↓ to manage", 0},
+		{"draft", "agy", "> investigate 2 tasks · /tasks", 0},
+		{"wrong provider", "gmi", ">\n1 task(s) · /tasks", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BackgroundJobCount(tc.frame, tc.agent, 0); got != tc.count {
+				t.Errorf("count = %d, want %d", got, tc.count)
+			}
+			state, err := NewParser().ParseWithHint(tc.frame, tc.agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.BackgroundJobCount != tc.count {
+				t.Fatalf("parser count = %d, want %d", state.BackgroundJobCount, tc.count)
+			}
+			if tc.count > 0 && (!state.IsWorking || state.IsIdle || state.GetRecommendation() != RecommendDoNotInterrupt) {
+				t.Errorf("parser exposed a pane with active background jobs to dispatch: %+v", state)
+			}
+		})
+	}
+}
+
 // TestClaudeComposeBoxFooter_FreshSpawnIdle guards the Fix-5 recognition of the
 // "⏵⏵" compose-box footer as an idle signal. A freshly-spawned Claude agent
 // shows its init prompt prefilled (or just the "…" ellipsis) with NO completion

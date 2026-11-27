@@ -197,7 +197,40 @@ esac
 		wantDispatch    bool
 		wantObservation string
 		wantRecommend   string
+		wantJobs        int
+		wantBasis       string
+		wantJobWait     bool
 	}{
+		{
+			name: "Claude permissions footer counts shells and monitors", agentType: "cc", height: 20,
+			capture:  "✻ Churned for 6s\n───────\n❯\n───────\n⏵⏵ bypass permissions on · 1 shell, 2 monitors · ↓ to manage",
+			wantJobs: 3, wantJobWait: true, wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt), wantBasis: "background_job_footer",
+		},
+		{
+			name: "Codex background terminal at prompt", agentType: "cod", height: 4,
+			capture:  "1 background terminal running · /ps to view\n" + codexIdle,
+			wantJobs: 1, wantJobWait: true, wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt), wantBasis: "background_job_footer",
+		},
+		{
+			name: "Codex foreground work alongside terminal", agentType: "cod", height: 4,
+			capture:  "• Working (12s • esc to interrupt) · 1 background terminal running · /ps to view\n" + codexIdle,
+			wantJobs: 1, wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt), wantBasis: "codex_live_working_indicator",
+		},
+		{
+			name: "Antigravity task at prompt", agentType: "agy", height: 4,
+			capture:  agyIdle + "\n2 task(s) · /tasks",
+			wantJobs: 2, wantJobWait: true, wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt), wantBasis: "background_job_footer",
+		},
+		{
+			name: "job footer above viewport", agentType: "cod", height: 3,
+			capture:  "1 background terminal running\n" + codexIdle,
+			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
+		},
+		{
+			name: "rate limit with background terminal", agentType: "cod", height: 5,
+			capture:  "Rate limit exceeded\n" + codexIdle + "\n1 background terminal running",
+			wantJobs: 1, wantJobWait: true, wantLimited: true, wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendRateLimitedWait), wantBasis: "rate_limit_indicator",
+		},
 		{
 			name: "codex spinner above viewport", agentType: "cod", height: 3, capture: codexBusy,
 			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
@@ -255,6 +288,10 @@ esac
 				t.Fatalf("unexpected work-state response: %+v", output)
 			}
 			pane, ok := output.Panes["1"]
+			if pane.BackgroundJobCount != tc.wantJobs || pane.WaitingOnOwnJob != tc.wantJobWait ||
+				(tc.wantBasis != "" && pane.IndicatorBasis != tc.wantBasis) {
+				t.Fatalf("background work verdict = %+v, want jobs=%d basis=%q", pane, tc.wantJobs, tc.wantBasis)
+			}
 			if !ok || pane.AgentType != tc.agentType || pane.IsWorking != tc.wantWorking ||
 				pane.IsIdle != tc.wantIdle || pane.IsRateLimited != tc.wantLimited ||
 				pane.SafeToDispatch != tc.wantDispatch || pane.Recommendation != tc.wantRecommend ||
