@@ -570,6 +570,13 @@ func TestPreflightRestartBeadDryRunValidatesDurableLedgerConflicts(t *testing.T)
 					paneCalls++
 					return []tmux.Pane{pane}, nil
 				},
+				// The occupant's work is still open, so the pane stays held.
+				GetBeadStatus: func(_ context.Context, _, id string) (string, error) {
+					if id != "ntm-other-work" {
+						t.Fatalf("tracker status read for %q, want only the occupant", id)
+					}
+					return "in_progress", nil
+				},
 			})
 
 			preflight, err := preflightRestartBead(t.Context(), RestartPaneOptions{
@@ -678,9 +685,212 @@ func TestValidateRestartStorePreflightAcceptsReleasedRequiredTerminalAssignment(
 		ReservationState:    assignment.ReservationReleased,
 	}
 
-	if err := validateRestartStorePreflight(store, "ntm-released", "%7"); err != nil {
+	if err := validateRestartStorePreflight(store, "ntm-released", "%7", nil); err != nil {
 		t.Fatalf("released required terminal assignment was rejected: %v", err)
 	}
+}
+
+// GitHub #385: an earlier --restart-bead assignment stays active in the
+// ledger after its agent closes the bead with `br close`, so the next
+// --restart-bead on the same pane was refused as "already occupied" until an
+// operator ran `ntm assign --clear-pane`.
+func TestPreflightRestartBeadRetiresOccupantWhoseBeadIsClosed(t *testing.T) {
+	const (
+		session    = "restart-closed-occupant"
+		oldBead    = "demo-old"
+		newBead    = "demo-new"
+		projectDir = "/demo/project"
+	)
+	pane := tmux.Pane{ID: "%7", Index: 2, WindowIndex: 0, Title: session + "__cod_1", Type: tmux.AgentCodex}
+	actor := restartPaneAssignmentActor(session, pane.ID)
+	// The row --restart-bead records for delivered work: claimed, sent, no
+	// file reservations.
+	occupant := func() *assignment.Assignment {
+		return &assignment.Assignment{
+			BeadID: oldBead, BeadTitle: "Finished task", Pane: pane.Index, AgentType: "codex", AgentName: actor,
+			Status: assignment.StatusAssigned, AssignedAt: time.Now().UTC().Add(-time.Hour),
+			IdempotencyKey: "old-restart-key", ClaimActor: actor, ClaimState: assignment.ClaimClaimed,
+			DispatchState: assignment.DispatchSent, DispatchTarget: pane.ID, OccupancyKey: pane.ID,
+		}
+	}
+	type harness struct {
+		deps          RestartPaneDependencies
+		statusReads   []string
+		claimReleases []string
+	}
+	setup := func(t *testing.T, seeded *assignment.Assignment, trackerStatus string, trackerErr, releaseErr error) *harness {
+		t.Helper()
+		t.Setenv("HOME", t.TempDir())
+		store := assignment.NewStore(session)
+		store.Assignments[seeded.BeadID] = seeded
+		if err := store.Save(); err != nil {
+			t.Fatalf("seed assignment ledger: %v", err)
+		}
+		h := &harness{}
+		h.deps = restartPaneDeps(&RestartPaneDependencies{
+			LoadAssignmentPolicy: func(string, string, bool) (*config.Config, error) { return config.Default(), nil },
+			FetchActionable: func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+				return []bv.TriageRecommendation{{ID: newBead, Title: "Follow-up task", Status: "open", Priority: 1}}, nil
+			},
+			FetchBeadDetails: func(context.Context, string, string) (*bv.BeadAssignmentDetails, error) {
+				return &bv.BeadAssignmentDetails{ID: newBead, Title: "Follow-up task", Status: "open", Priority: 1}, nil
+			},
+			GetBeadStatus: func(_ context.Context, dir, id string) (string, error) {
+				h.statusReads = append(h.statusReads, dir+":"+id)
+				return trackerStatus, trackerErr
+			},
+			ReleaseBeadClaim: func(_ context.Context, dir, id, claimActor string) (bool, error) {
+				h.claimReleases = append(h.claimReleases, dir+":"+id+":"+claimActor)
+				return releaseErr == nil, releaseErr
+			},
+			NewIdempotencyKey: func() (string, error) { return "new-restart-key", nil },
+			ListPanes:         func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil },
+		})
+		return h
+	}
+	preflight := func(h *harness, dryRun bool) (*restartBeadPreflight, error) {
+		return preflightRestartBead(t.Context(), RestartPaneOptions{
+			Session: session, Bead: newBead, ProjectDir: projectDir, DryRun: dryRun,
+		}, pane, h.deps)
+	}
+	ledgerRow := func(t *testing.T) *assignment.Assignment {
+		t.Helper()
+		store, err := assignment.LoadStoreStrictReadOnly(session)
+		if err != nil {
+			t.Fatalf("reload assignment ledger: %v", err)
+		}
+		return store.Get(oldBead)
+	}
+	wantRelease := []string{projectDir + ":" + oldBead + ":" + actor}
+
+	for _, test := range []struct {
+		trackerStatus string
+		want          assignment.AssignmentStatus
+	}{
+		{"closed", assignment.StatusCompleted},
+		{"tombstone", assignment.StatusFailed},
+	} {
+		t.Run("live restart retires "+test.trackerStatus+" occupant", func(t *testing.T) {
+			h := setup(t, occupant(), test.trackerStatus, nil, nil)
+			got, err := preflight(h, false)
+			if err != nil || got == nil || got.Coordinator == nil {
+				t.Fatalf("preflight = (%+v, %v), want an authorized restart", got, err)
+			}
+			row := ledgerRow(t)
+			if row == nil || row.Status != test.want || row.ClearState != assignment.ClearStateNone || row.PendingTerminalStatus != "" {
+				t.Fatalf("occupant after restart preflight = %+v, want %s with no pending clear", row, test.want)
+			}
+			// The atomic coordinator re-checks occupancy against the ledger
+			// before claiming; the retired row must no longer hold the pane.
+			if err := validateRestartStorePreflight(got.Store, newBead, pane.ID, nil); err != nil {
+				t.Fatalf("retired occupant still holds the pane: %v", err)
+			}
+			if !slices.Equal(h.claimReleases, wantRelease) {
+				t.Fatalf("claim releases = %v, want %v", h.claimReleases, wantRelease)
+			}
+			if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], oldBead) {
+				t.Fatalf("warnings = %v, want one naming %s", got.Warnings, oldBead)
+			}
+		})
+	}
+
+	t.Run("dry run reports a free pane without changing ledger or tracker", func(t *testing.T) {
+		h := setup(t, occupant(), "closed", nil, nil)
+		got, err := preflight(h, true)
+		if err != nil || got == nil {
+			t.Fatalf("dry-run preflight = (%+v, %v), want success", got, err)
+		}
+		if row := ledgerRow(t); row == nil || row.Status != assignment.StatusAssigned || row.ClearState != assignment.ClearStateNone {
+			t.Fatalf("dry run changed the occupant: %+v", row)
+		}
+		if len(h.claimReleases) != 0 {
+			t.Fatalf("dry run released claims: %v", h.claimReleases)
+		}
+		if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "will first record") {
+			t.Fatalf("dry-run warnings = %v", got.Warnings)
+		}
+	})
+
+	for _, test := range []struct {
+		name          string
+		trackerStatus string
+		trackerErr    error
+		want          string
+	}{
+		{name: "open work keeps the pane", trackerStatus: "in_progress", want: "already occupied by bead " + oldBead},
+		{name: "unreadable tracker keeps the pane", trackerErr: errors.New("tracker unavailable"), want: "tracker unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := setup(t, occupant(), test.trackerStatus, test.trackerErr, nil)
+			got, err := preflight(h, false)
+			if got != nil || err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "already occupied") {
+				t.Fatalf("preflight = (%+v, %v), want occupied error containing %q", got, err, test.want)
+			}
+			if row := ledgerRow(t); row == nil || row.Status != assignment.StatusAssigned || row.ClearState != assignment.ClearStateNone {
+				t.Fatalf("refused restart changed the occupant: %+v", row)
+			}
+			if len(h.claimReleases) != 0 {
+				t.Fatalf("refused restart released claims: %v", h.claimReleases)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		edit func(*assignment.Assignment)
+	}{
+		{name: "dispatch outcome unknown", edit: func(a *assignment.Assignment) { a.DispatchState = assignment.DispatchSending }},
+		{name: "claim still in progress", edit: func(a *assignment.Assignment) { a.Status = assignment.StatusClaimed }},
+		{name: "file reservations held", edit: func(a *assignment.Assignment) {
+			a.ReservationRequired, a.ReservationState, a.ReservationCompleted = true, assignment.ReservationReserved, true
+			a.ReservationIDs, a.ReservedPaths = []int{41}, []string{"internal/robot/**"}
+		}},
+		{name: "clear in progress", edit: func(a *assignment.Assignment) { a.ClearState = assignment.ClearStateReservationReleasing }},
+	} {
+		t.Run("closed bead but "+test.name, func(t *testing.T) {
+			seeded := occupant()
+			test.edit(seeded)
+			h := setup(t, seeded, "closed", nil, nil)
+			got, err := preflight(h, false)
+			if got != nil || err == nil || !strings.Contains(err.Error(), "already occupied by bead "+oldBead) {
+				t.Fatalf("preflight = (%+v, %v), want occupied error", got, err)
+			}
+			if len(h.statusReads) != 0 || len(h.claimReleases) != 0 {
+				t.Fatalf("unsafe occupant reached tracker: reads=%v releases=%v", h.statusReads, h.claimReleases)
+			}
+		})
+	}
+
+	t.Run("failed claim release is resumed by the next restart", func(t *testing.T) {
+		h := setup(t, occupant(), "closed", nil, errors.New("beads locked"))
+		if got, err := preflight(h, false); got != nil || err == nil || !strings.Contains(err.Error(), "beads locked") {
+			t.Fatalf("preflight = (%+v, %v), want the claim-release error", got, err)
+		}
+		row := ledgerRow(t)
+		if row == nil || row.Status != assignment.StatusAssigned || row.ClearState != assignment.ClearStateLeasesReleased ||
+			row.PendingTerminalStatus != assignment.StatusCompleted {
+			t.Fatalf("occupant after failed claim release = %+v, want a durable completion barrier", row)
+		}
+
+		h.deps.GetBeadStatus = func(context.Context, string, string) (string, error) {
+			t.Fatal("resuming a recorded barrier re-read the tracker")
+			return "", nil
+		}
+		h.deps.ReleaseBeadClaim = func(_ context.Context, dir, id, claimActor string) (bool, error) {
+			h.claimReleases = append(h.claimReleases, dir+":"+id+":"+claimActor)
+			return true, nil
+		}
+		got, err := preflight(h, false)
+		if err != nil || got == nil {
+			t.Fatalf("resumed preflight = (%+v, %v), want success", got, err)
+		}
+		if row := ledgerRow(t); row == nil || row.Status != assignment.StatusCompleted || row.ClearState != assignment.ClearStateNone {
+			t.Fatalf("occupant after resumed retirement = %+v, want completed", row)
+		}
+		if len(h.claimReleases) != 2 || h.claimReleases[1] != wantRelease[0] {
+			t.Fatalf("claim releases = %v, want a retry of %v", h.claimReleases, wantRelease)
+		}
+	})
 }
 
 func TestRestartAssignmentEligibilityPortRechecksAuthoritativeLiveState(t *testing.T) {

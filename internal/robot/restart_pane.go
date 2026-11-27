@@ -287,6 +287,7 @@ type RestartPaneDependencies struct {
 	ClaimBead              func(context.Context, string, string, string) (bv.BeadClaimResult, error)
 	ClaimBeadWithPolicy    func(context.Context, string, string, string, []string) (bv.BeadClaimResult, error)
 	GetBeadStatus          func(context.Context, string, string) (string, error)
+	ReleaseBeadClaim       func(context.Context, string, string, string) (bool, error)
 	NewIdempotencyKey      func() (string, error)
 	ListPanes              func(context.Context, string) ([]tmux.Pane, error)
 	ObserveSession         func(context.Context, string) (statuspkg.SessionObservation, error)
@@ -311,6 +312,9 @@ type restartBeadPreflight struct {
 	Request     assignment.AtomicRequest
 	Coordinator *assignment.AtomicCoordinator
 	Fence       *restartAssignmentFence
+	// Warnings names occupants of the target whose closed work was retired
+	// (or, on a dry run, would be) to free the pane.
+	Warnings []string
 }
 
 // The assignment coordinator keeps its existing claim/ledger/dispatch protocol.
@@ -661,6 +665,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		}
 		promptToSend = beadPreflight.Prompt
 		output.BeadAssigned = beadID
+		output.Warnings = append(output.Warnings, beadPreflight.Warnings...)
 	}
 	if err := ctx.Err(); err != nil {
 		setRestartPaneCancellation(output, err, "restart canceled after assignment preflight")
@@ -1187,6 +1192,7 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 		ClaimBead:              bv.ClaimBeadForAssignment,
 		ClaimBeadWithPolicy:    bv.ClaimBeadForAssignmentWithOperatorGatedLabels,
 		GetBeadStatus:          bv.GetBeadStatusContext,
+		ReleaseBeadClaim:       bv.ReleaseBeadClaim,
 		NewIdempotencyKey:      assignment.NewAssignmentIdempotencyKey,
 		ListPanes:              tmux.GetPanesContext,
 		ObserveSession:         observer.Observe,
@@ -1228,6 +1234,9 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 	}
 	if custom.GetBeadStatus != nil {
 		deps.GetBeadStatus = custom.GetBeadStatus
+	}
+	if custom.ReleaseBeadClaim != nil {
+		deps.ReleaseBeadClaim = custom.ReleaseBeadClaim
 	}
 	if custom.NewIdempotencyKey != nil {
 		deps.NewIdempotencyKey = custom.NewIdempotencyKey
@@ -1361,6 +1370,14 @@ func preflightRestartBead(
 		return nil, err
 	}
 	var store *assignment.AssignmentStore
+	var warnings []string
+	freeOccupant := func(occupant *assignment.Assignment) (bool, error) {
+		freed, note, err := freeClosedRestartOccupant(ctx, store, occupant, projectDir, target, opts.DryRun, deps)
+		if freed {
+			warnings = append(warnings, note)
+		}
+		return freed, err
+	}
 	if ledgerExists {
 		loadStore := deps.LoadStore
 		if opts.DryRun {
@@ -1373,7 +1390,7 @@ func preflightRestartBead(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := validateRestartStorePreflight(store, beadID, target); err != nil {
+		if err := validateRestartStorePreflight(store, beadID, target, freeOccupant); err != nil {
 			return nil, err
 		}
 	}
@@ -1425,14 +1442,14 @@ func preflightRestartBead(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return &restartBeadPreflight{Details: details, Prompt: prompt, Policy: policy, Store: store, Recovery: recovery}, nil
+		return &restartBeadPreflight{Details: details, Prompt: prompt, Policy: policy, Store: store, Recovery: recovery, Warnings: warnings}, nil
 	}
 	if store == nil {
 		store, err = deps.LoadStore(opts.Session)
 		if err != nil {
 			return nil, fmt.Errorf("load assignment ledger: %w", err)
 		}
-		if err := validateRestartStorePreflight(store, beadID, target); err != nil {
+		if err := validateRestartStorePreflight(store, beadID, target, freeOccupant); err != nil {
 			return nil, err
 		}
 		if existing := store.Get(beadID); existing != nil && !robotAtomicAssignmentTerminal(existing.Status) {
@@ -1475,7 +1492,7 @@ func preflightRestartBead(
 	)
 	return &restartBeadPreflight{
 		Details: details, Prompt: prompt, Policy: policy, Store: store, Recovery: recovery,
-		Request: request, Coordinator: coordinator, Fence: fence,
+		Request: request, Coordinator: coordinator, Fence: fence, Warnings: warnings,
 	}, nil
 }
 
@@ -1507,7 +1524,9 @@ func newRestartAssignmentEligibilityPort(
 	})
 }
 
-func validateRestartStorePreflight(store *assignment.AssignmentStore, beadID, target string) error {
+// validateRestartStorePreflight refuses a target held by another active
+// assignment unless freeOccupant (when non-nil) frees it.
+func validateRestartStorePreflight(store *assignment.AssignmentStore, beadID, target string, freeOccupant func(*assignment.Assignment) (bool, error)) error {
 	if store == nil {
 		return errors.New("assignment ledger is required")
 	}
@@ -1519,9 +1538,19 @@ func validateRestartStorePreflight(store *assignment.AssignmentStore, beadID, ta
 		if err != nil {
 			return fmt.Errorf("verify active assignment %s occupancy: %w", current.BeadID, err)
 		}
-		if identity == target {
-			return fmt.Errorf("target %s is already occupied by bead %s", target, current.BeadID)
+		if identity != target {
+			continue
 		}
+		if freeOccupant != nil {
+			freed, err := freeOccupant(current)
+			if err != nil {
+				return fmt.Errorf("target %s is already occupied by bead %s: %w", target, current.BeadID, err)
+			}
+			if freed {
+				continue
+			}
+		}
+		return fmt.Errorf("target %s is already occupied by bead %s", target, current.BeadID)
 	}
 	prior := store.Get(beadID)
 	if prior == nil {
@@ -1539,6 +1568,156 @@ func validateRestartStorePreflight(store *assignment.AssignmentStore, beadID, ta
 		}
 	}
 	return nil
+}
+
+// freeClosedRestartOccupant frees a target still held by an assignment whose
+// bead the tracker already closed or tombstoned (#385). Nothing completes a
+// --restart-bead assignment when its agent closes the bead with `br close`, so
+// every later --restart-bead on that pane was refused until an operator ran
+// `ntm assign --clear-pane`. It retires the occupant the way the session
+// coordinator reconciles closed work, and returns false (pane still occupied)
+// for anything it cannot retire safely. A dry run only reports the outcome.
+func freeClosedRestartOccupant(
+	ctx context.Context,
+	store *assignment.AssignmentStore,
+	occupant *assignment.Assignment,
+	projectDir, target string,
+	dryRun bool,
+	deps RestartPaneDependencies,
+) (bool, string, error) {
+	if store == nil || !restartOccupantRetirable(occupant) {
+		return false, "", nil
+	}
+	terminal, reason := occupant.PendingTerminalStatus, occupant.PendingTerminalReason
+	why := "an earlier retirement of it was interrupted"
+	if !restartOccupantHasTerminalBarrier(occupant) {
+		if deps.GetBeadStatus == nil {
+			return false, "", nil
+		}
+		status, err := readRobotAssignmentPreflight(ctx, projectDir, dryRun, func() (string, error) {
+			return deps.GetBeadStatus(ctx, projectDir, occupant.BeadID)
+		})
+		if err != nil {
+			return false, "", fmt.Errorf("read tracker status of %s: %w", occupant.BeadID, err)
+		}
+		var closed bool
+		if terminal, reason, closed = restartOccupantTerminalOutcome(status); !closed {
+			return false, "", nil
+		}
+		why = fmt.Sprintf("the tracker reports it %s", strings.ToLower(strings.TrimSpace(status)))
+	}
+	if dryRun {
+		return true, fmt.Sprintf("%s is held by bead %s and %s; the restart will first record that assignment as %s", target, occupant.BeadID, why, terminal), nil
+	}
+	if deps.ReleaseBeadClaim == nil {
+		return false, "", nil
+	}
+	retired, err := retireClosedRestartOccupant(ctx, store, occupant, projectDir, terminal, reason, deps.ReleaseBeadClaim)
+	if err != nil || !retired {
+		return false, "", err
+	}
+	return true, fmt.Sprintf("recorded the assignment of bead %s on %s as %s because %s", occupant.BeadID, target, terminal, why), nil
+}
+
+// restartOccupantTerminalOutcome maps a tracker status to the terminal ledger
+// outcome the session coordinator records for delivered work.
+func restartOccupantTerminalOutcome(trackerStatus string) (assignment.AssignmentStatus, string, bool) {
+	switch strings.ToLower(strings.TrimSpace(trackerStatus)) {
+	case "closed":
+		return assignment.StatusCompleted, "", true
+	case "tombstone":
+		return assignment.StatusFailed, "tracker work item was tombstoned", true
+	default:
+		return "", "", false
+	}
+}
+
+// restartOccupantRetirable admits only delivered work with no file
+// reservations, which is every assignment --restart-bead itself records, or an
+// interrupted retirement of one. A dispatch in flight, a pending continuation,
+// a clear in progress, a completion event awaiting its consumer, or any
+// reservation evidence keeps the pane occupied: those need their own release
+// path (`ntm assign --clear-pane`, or the coordinator).
+func restartOccupantRetirable(occupant *assignment.Assignment) bool {
+	if occupant == nil || occupant.DispatchState == assignment.DispatchSending || occupant.HasPendingPaneContinuation() ||
+		strings.TrimSpace(occupant.PendingCompletionEventID) != "" ||
+		occupant.ReservationRequired || occupant.ReservationAttempts > 0 ||
+		len(occupant.ReservationIDs) > 0 || len(occupant.ReservedPaths) > 0 {
+		return false
+	}
+	switch occupant.ReservationState {
+	case "", assignment.ReservationPending, assignment.ReservationReleased:
+	default:
+		return false
+	}
+	if restartOccupantHasTerminalBarrier(occupant) {
+		return true
+	}
+	return occupant.ClearState == assignment.ClearStateNone &&
+		(occupant.Status == assignment.StatusAssigned || occupant.Status == assignment.StatusWorking)
+}
+
+// restartOccupantHasTerminalBarrier reports a terminal reconciliation that was
+// started and not finished. Its recorded outcome owns the retry.
+func restartOccupantHasTerminalBarrier(occupant *assignment.Assignment) bool {
+	return (occupant.ClearState == assignment.ClearStateReservationReleasing || occupant.ClearState == assignment.ClearStateLeasesReleased) &&
+		(occupant.PendingTerminalStatus == assignment.StatusCompleted || occupant.PendingTerminalStatus == assignment.StatusFailed)
+}
+
+// retireClosedRestartOccupant follows the coordinator's terminal
+// reconciliation for an occupant without reservations: under the bead's
+// external cleanup lock, a durable barrier on the exact generation observed,
+// release of the occupant's Beads claim (the bead keeps its closed status),
+// then the terminal transition. If a step fails, the barrier stays for a
+// later restart or the coordinator to finish.
+func retireClosedRestartOccupant(
+	ctx context.Context,
+	store *assignment.AssignmentStore,
+	observed *assignment.Assignment,
+	projectDir string,
+	terminal assignment.AssignmentStatus,
+	reason string,
+	releaseClaim func(context.Context, string, string, string) (bool, error),
+) (bool, error) {
+	beadID := observed.BeadID
+	cleanupUnlock, err := store.AcquireExternalCleanupLock(ctx, beadID)
+	if err != nil {
+		return false, fmt.Errorf("lock assignment %s cleanup: %w", beadID, err)
+	}
+	defer cleanupUnlock()
+	if err := store.LoadStrict(); err != nil {
+		return false, fmt.Errorf("refresh assignment %s: %w", beadID, err)
+	}
+	current := store.Get(beadID)
+	if current == nil || !assignment.SameAssignmentGeneration(observed, current) || !restartOccupantRetirable(current) {
+		return false, nil
+	}
+	barrier, applied, err := store.BeginTerminalReconciliationIfCurrent(ctx, current, terminal, reason)
+	if err != nil {
+		return false, fmt.Errorf("begin terminal reconciliation for %s: %w", beadID, err)
+	}
+	if !applied {
+		return false, nil
+	}
+	if _, err := store.RecordClearLeasesReleased(ctx, beadID); err != nil {
+		return false, fmt.Errorf("record %s holds no reservations: %w", beadID, err)
+	}
+	if actor := strings.TrimSpace(barrier.ClaimActor); actor != "" && !barrier.TerminalClaimReleased {
+		if _, err := releaseClaim(ctx, projectDir, beadID, actor); err != nil {
+			if persistErr := store.RecordClearReleaseFailed(ctx, beadID, err); persistErr != nil {
+				err = errors.Join(err, persistErr)
+			}
+			return false, fmt.Errorf("release Beads claim of %s: %w", beadID, err)
+		}
+	}
+	released, err := store.RecordTerminalClaimReleased(ctx, beadID)
+	if err != nil {
+		return false, fmt.Errorf("record %s claim release: %w", beadID, err)
+	}
+	if err := store.CompleteTerminalReconciliation(ctx, beadID, released.PendingTerminalStatus, released.PendingTerminalReason); err != nil {
+		return false, fmt.Errorf("complete terminal reconciliation for %s: %w", beadID, err)
+	}
+	return true, nil
 }
 
 func restartAssignmentHasReservationEvidence(current *assignment.Assignment) bool {
