@@ -163,6 +163,7 @@ var knownAgentTypes = map[string]bool{
 	"grok":     true, // Grok Build renders a bordered "│ ❯" composer (GH#251)
 	"oc":       true, // OpenCode renders an "Ask anything..." composer (ntm#261)
 	"omp":      true, // Oh My Pi renders a status-line composer box
+	"pi":       true, // Pi renders a horizontal-rule composer, not a shell $ prompt
 }
 
 // knownAgentPromptPrefixes matches prompts that belong to specific agent types.

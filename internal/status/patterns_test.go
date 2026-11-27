@@ -73,6 +73,12 @@ func TestIsPromptLine(t *testing.T) {
 		{name: "antigravity shell prompt means exited", line: "user@host:~$", agentType: "agy", expected: false},
 		{name: "antigravity alias shell prompt means exited", line: "user@host:~$", agentType: " Antigravity ", expected: false},
 
+		// All 12 built-in harnesses (including pi) must reject shell $ exit prompts.
+		{name: "pi shell prompt means exited", line: "user@host:~$ ", agentType: "pi", expected: false},
+		{name: "omp shell prompt means exited", line: "user@host:~$ ", agentType: "omp", expected: false},
+		{name: "opencode shell prompt means exited", line: "user@host:~$ ", agentType: "oc", expected: false},
+		{name: "grok shell prompt means exited", line: "user@host:~$ ", agentType: "grok", expected: false},
+
 		// User shell prompts
 		{name: "dollar prompt", line: "user@host:~$ ", agentType: "user", expected: true},
 		{name: "percent prompt", line: "user@host %", agentType: "user", expected: true},
