@@ -19,6 +19,7 @@ import (
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1345,4 +1346,37 @@ func TestRealSavedLaunchGuardedAgainstReplacementAndLongCommand(t *testing.T) {
 			t.Fatalf("replaced pane executed refused launch command: %v", statErr)
 		}
 	})
+}
+
+func TestWaitForFreshRestoreShells_ImmediateAndCanceled(t *testing.T) {
+	t.Parallel()
+
+	// Already-idle, dead, claimed, or nil-plan panes return immediately without polling tmux.
+	launches := []savedPaneLaunch{
+		{plan: &resilience.AgentLaunchPlan{}},
+		{plan: &resilience.AgentLaunchPlan{}},
+		{plan: nil},
+	}
+	panes := []tmux.Pane{
+		{ID: "%1", PID: 0, Command: "zsh"},
+		{ID: "%2", PID: 999999, Dead: true, Command: "sleep"},
+		{ID: "%3", PID: 999999, Command: "sleep"},
+	}
+	start := time.Now()
+	waitForFreshRestoreShells(context.Background(), "nonexistent-session", launches, panes)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("waitForFreshRestoreShells stalled %v on non-pending panes", elapsed)
+	}
+
+	// Canceled context must return immediately even when a pane is not yet idle.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start = time.Now()
+	waitForFreshRestoreShells(canceledCtx, "nonexistent-session",
+		[]savedPaneLaunch{{plan: &resilience.AgentLaunchPlan{}}},
+		[]tmux.Pane{{ID: "%9", PID: os.Getpid(), Command: "sleep"}},
+	)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("waitForFreshRestoreShells stalled %v on canceled context", elapsed)
+	}
 }
