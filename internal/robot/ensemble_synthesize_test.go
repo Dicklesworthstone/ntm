@@ -205,6 +205,27 @@ func TestGetEnsembleSynthesize_ForceAndOutputPersistence(t *testing.T) {
 		t.Fatalf("persisted synthesis markdown missing finding text: %s", string(persistedBytes))
 	}
 
+	// Relative Output resolves under opts.ProjectDir rather than process CWD.
+	projectDir := t.TempDir()
+	relOut, err := GetEnsembleSynthesize(context.Background(), EnsembleSynthesizeOptions{
+		Session:    sessName,
+		ProjectDir: projectDir,
+		Strategy:   "consensus",
+		Format:     "markdown",
+		Output:     filepath.Join("reports", "relative-synthesis.md"),
+		Force:      true,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("GetEnsembleSynthesize(relative output): %v", err)
+	}
+	wantRelPath := filepath.Join(projectDir, "reports", "relative-synthesis.md")
+	if !relOut.Success || relOut.Report == nil || relOut.Report.OutputPath != wantRelPath {
+		t.Fatalf("relative output = (%v, %+v), want OutputPath %q", relOut.Success, relOut.Report, wantRelPath)
+	}
+	if _, err := os.Stat(wantRelPath); err != nil {
+		t.Fatalf("expected relative synthesis output under ProjectDir %q: %v", wantRelPath, err)
+	}
+
 	// Schema registry includes ensemble_synthesize.
 	schemaOut, err := GetSchema("ensemble_synthesize")
 	if err != nil {
