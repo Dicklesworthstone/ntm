@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -230,11 +231,13 @@ Examples:
 }
 
 type scalePlan struct {
-	before           map[string]int
-	after            map[string]int
-	scaleUpActions   []ScaleAction
-	scaleDownActions []ScaleAction
-	allActions       []ScaleAction
+	before            map[string]int
+	after             map[string]int
+	requested         map[string]int
+	removalCandidates map[string][]tmux.Pane
+	scaleUpActions    []ScaleAction
+	scaleDownActions  []ScaleAction
+	allActions        []ScaleAction
 }
 
 func planScaleSession(ctx context.Context, session string, targets []scaleTarget) (*scalePlan, error) {
@@ -264,12 +267,15 @@ func planScaleSession(ctx context.Context, session string, targets []scaleTarget
 
 	var scaleUpActions []ScaleAction
 	var scaleDownActions []ScaleAction
+	requested := make(map[string]int)
+	removalCandidates := make(map[string][]tmux.Pane)
 
 	for _, t := range targets {
 		if !t.set {
 			continue
 		}
 		typeStr := string(t.agentType)
+		requested[typeStr] = t.count
 		current := currentCounts[typeStr]
 		delta := t.count - current
 
@@ -297,6 +303,7 @@ func planScaleSession(ctx context.Context, session string, targets []scaleTarget
 			for i := 0; i < toKill; i++ {
 				killTitles = append(killTitles, agentPanes[i].Title)
 			}
+			removalCandidates[typeStr] = append([]tmux.Pane(nil), agentPanes[:toKill]...)
 
 			scaleDownActions = append(scaleDownActions, ScaleAction{
 				ActionType: "kill",
@@ -313,11 +320,13 @@ func planScaleSession(ctx context.Context, session string, targets []scaleTarget
 	allActions = append(allActions, scaleDownActions...)
 
 	return &scalePlan{
-		before:           before,
-		after:            after,
-		scaleUpActions:   scaleUpActions,
-		scaleDownActions: scaleDownActions,
-		allActions:       allActions,
+		before:            before,
+		after:             after,
+		requested:         requested,
+		removalCandidates: removalCandidates,
+		scaleUpActions:    scaleUpActions,
+		scaleDownActions:  scaleDownActions,
+		allActions:        allActions,
 	}, nil
 }
 
@@ -342,10 +351,45 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 		finalCounts[agentType] = count
 	}
 
+	release, err := pressure.AcquireScaleAdmission(ctx, session)
+	if err != nil {
+		recordOperationError("acquire scale admission", err)
+		return finalCounts, operationErrors, cancellationErr
+	}
+	defer release()
+
+	// Plans may have waited for confirmation or another process. Recount
+	// under the scale fence instead of executing their original deltas.
+	refresh := func() ([]tmux.Pane, error) {
+		panes, err := tmux.GetPanesContext(ctx, session)
+		if err != nil {
+			return nil, err
+		}
+		for agentType := range finalCounts {
+			finalCounts[agentType] = 0
+		}
+		for _, pane := range panes {
+			if label := scaleAgentTypeLabel(pane.Type); label != "user" && label != "unknown" {
+				finalCounts[label]++
+			}
+		}
+		return panes, nil
+	}
+
 	for _, action := range plan.scaleUpActions {
 		if err := ctx.Err(); err != nil {
 			recordOperationError("scale-up canceled", err)
 			break
+		}
+		if _, err := refresh(); err != nil {
+			if recordOperationError("refresh panes before scale-up", err) {
+				break
+			}
+			continue
+		}
+		action.Count = plan.requested[action.AgentType] - finalCounts[action.AgentType]
+		if action.Count <= 0 {
+			continue
 		}
 		slog.Default().Debug("scale: spawn", "session", session, "agent_type", action.AgentType, "count", action.Count)
 		specs := AgentSpecs{
@@ -397,10 +441,26 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 		}
 	}
 
-	// Scale-up protects existing capacity only if every requested replacement
-	// actually launched. Preserve the old agents after any launch failure or
-	// skipped seat; successful additions and any panes left by a failed launch
-	// remain available for inspection. The final census reports their state.
+	// A successful add receipt does not prove capacity still exists. Check
+	// every requested target before allowing the first destructive action.
+	if cancellationErr == nil {
+		if _, err := refresh(); err != nil {
+			recordOperationError("verify capacity before scale-down", err)
+		} else {
+			for _, harness := range scaleHarnessOrder {
+				key := string(harness)
+				if target, requested := plan.requested[key]; requested && finalCounts[key] < target {
+					operationErrors = append(operationErrors, fmt.Sprintf(
+						"scale capacity for %s is below target before removal: requested %d, observed %d",
+						key, target, finalCounts[key]))
+				}
+			}
+		}
+	}
+
+	// Preserve existing agents after any failed or incomplete expansion.
+	// Successful additions and panes left by failed launches remain available
+	// for inspection; the final census reports their observed state.
 	scaleUpIncomplete := len(operationErrors) > 0
 	if scaleUpIncomplete && len(plan.scaleDownActions) > 0 && cancellationErr == nil {
 		message := "scale-down skipped because scale-up did not reach every requested target; existing agents were preserved"
@@ -414,56 +474,56 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 		if scaleUpIncomplete || cancellationErr != nil {
 			break
 		}
-		if err := ctx.Err(); err != nil {
-			recordOperationError("scale-down canceled", err)
-			break
-		}
-		slog.Default().Debug("scale: kill", "session", session, "agent_type", action.AgentType, "count", action.Count)
-
-		currentPanes, err := tmux.GetPanesContext(ctx, session)
-		if err != nil {
-			if recordOperationError("refetch panes for kill", err) {
-				break
-			}
-			continue
-		}
-
-		var matchingPanes []tmux.Pane
-		for _, p := range currentPanes {
-			if scaleAgentTypeLabel(p.Type) == action.AgentType {
-				matchingPanes = append(matchingPanes, p)
-			}
-		}
-		sort.Slice(matchingPanes, func(i, j int) bool {
-			return matchingPanes[i].NTMIndex > matchingPanes[j].NTMIndex
-		})
-
-		killed := 0
-		for i := 0; i < action.Count && i < len(matchingPanes); i++ {
+		target := plan.requested[action.AgentType]
+		for _, expected := range plan.removalCandidates[action.AgentType] {
 			if err := ctx.Err(); err != nil {
 				recordOperationError("scale-down canceled", err)
 				break
 			}
-			p := matchingPanes[i]
-			slog.Default().Debug("scale: kill pane", "session", session, "agent_type", action.AgentType, "pane_id", p.ID, "title", p.Title)
-			if err := tmux.KillPaneContext(ctx, p.ID); err != nil {
-				stop := recordOperationError(fmt.Sprintf("kill pane %s", p.Title), err)
+			currentPanes, err := refresh()
+			if err != nil {
+				recordOperationError("refetch panes for kill", err)
+				break
+			}
+			if finalCounts[action.AgentType] <= target {
+				break
+			}
+
+			var current tmux.Pane
+			found := false
+			for _, pane := range currentPanes {
+				if pane.ID == expected.ID {
+					current = pane
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Another actor already removed this approved pane. Do not
+				// replace it with a newer pane that was never in the plan.
+				continue
+			}
+			if current.PID != expected.PID || current.Type.Canonical() != expected.Type.Canonical() {
+				recordOperationError(fmt.Sprintf("preserve changed pane %s", expected.Title), tmux.ErrPaneIdentityChanged)
+				continue
+			}
+
+			slog.Default().Debug("scale: kill pane", "session", session, "agent_type", action.AgentType,
+				"pane_id", expected.ID, "title", expected.Title)
+			if err := tmux.DefaultClient.KillPaneIfCurrentContext(ctx, expected); err != nil {
+				stop := recordOperationError(fmt.Sprintf("kill pane %s", expected.Title), err)
 				if emitHuman {
-					fmt.Printf("  ERROR killing %s: %v\n", p.Title, err)
+					fmt.Printf("  ERROR killing %s: %v\n", expected.Title, err)
 				}
 				if stop {
 					break
 				}
 			} else {
-				killed++
 				finalCounts[action.AgentType]--
 				if emitHuman {
-					fmt.Printf("  Terminated %s\n", p.Title)
+					fmt.Printf("  Terminated %s\n", expected.Title)
 				}
 			}
-		}
-		if killed < action.Count && cancellationErr == nil {
-			operationErrors = append(operationErrors, fmt.Sprintf("only killed %d/%d %s agents", killed, action.Count, action.AgentType))
 		}
 	}
 
@@ -474,18 +534,16 @@ func applyScalePlan(ctx context.Context, session string, plan *scalePlan, emitHu
 	}
 
 	if cancellationErr == nil {
-		finalPanes, fetchErr := tmux.GetPanesContext(ctx, session)
-		if fetchErr != nil {
-			recordOperationError("verify final pane state", fetchErr)
-			slog.Debug("scale: could not verify final pane state", "session", session, "error", fetchErr)
+		if _, err := refresh(); err != nil {
+			recordOperationError("verify final pane state", err)
+			slog.Debug("scale: could not verify final pane state", "session", session, "error", err)
 		} else {
-			for agentType := range finalCounts {
-				finalCounts[agentType] = 0
-			}
-			for _, p := range finalPanes {
-				typeStr := scaleAgentTypeLabel(p.Type)
-				if _, ok := finalCounts[typeStr]; ok {
-					finalCounts[typeStr]++
+			for _, harness := range scaleHarnessOrder {
+				key := string(harness)
+				if target, requested := plan.requested[key]; requested && finalCounts[key] != target {
+					operationErrors = append(operationErrors, fmt.Sprintf(
+						"scale target not reached for %s: requested %d, observed %d; inspect the session before retrying",
+						key, target, finalCounts[key]))
 				}
 			}
 		}

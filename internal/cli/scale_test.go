@@ -645,6 +645,241 @@ func TestScaleSuccessfulExpansionStillAppliesScaleDown(t *testing.T) {
 	}
 }
 
+func newScaleConvergenceTestSession(t *testing.T, count int) string {
+	t.Helper()
+	session := newScaleJSONTestSession(t, testAgentCatCommandTemplate)
+	response, err := executeScaleRobot(t.Context(), robot.ScaleInput{
+		Session: session, Targets: map[string]int{"cc": count}, Force: true,
+	})
+	if err != nil || response == nil || !response.Success || response.After["cc"] != count {
+		t.Fatalf("create scale fixture: response=%+v err=%v", response, err)
+	}
+	return session
+}
+
+func TestScaleStaleExpansionDoesNotDuplicateAgents(t *testing.T) {
+	session := newScaleConvergenceTestSession(t, 0)
+	targets := []scaleTarget{{agentType: AgentTypeClaude, count: 2, set: true}}
+	first, err := planScaleSession(t.Context(), session, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := planScaleSession(t.Context(), session, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, plan := range []*scalePlan{first, second} {
+		after, operationErrors, err := applyScalePlan(t.Context(), session, plan, false)
+		if err != nil || len(operationErrors) != 0 || after["cc"] != 2 {
+			t.Fatalf("plan %d duplicated or failed expansion: after=%v errors=%v err=%v",
+				i, after, operationErrors, err)
+		}
+	}
+}
+
+func TestScaleConcurrentReductionPlansConverge(t *testing.T) {
+	session := newScaleConvergenceTestSession(t, 4)
+	targets := []scaleTarget{{agentType: AgentTypeClaude, count: 2, set: true}}
+	plans := make([]*scalePlan, 2)
+	for i := range plans {
+		plan, err := planScaleSession(t.Context(), session, targets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans[i] = plan
+	}
+
+	type result struct {
+		after  map[string]int
+		errors []string
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan result, len(plans))
+	for _, plan := range plans {
+		go func(plan *scalePlan) {
+			<-start
+			after, operationErrors, err := applyScalePlan(t.Context(), session, plan, false)
+			results <- result{after: after, errors: operationErrors, err: err}
+		}(plan)
+	}
+	close(start)
+	completed := make([]result, 0, len(plans))
+	for range plans {
+		completed = append(completed, <-results)
+	}
+	for _, result := range completed {
+		if result.err != nil || len(result.errors) != 0 || result.after["cc"] != 2 {
+			t.Fatalf("concurrent reduction did not converge: after=%v errors=%v err=%v",
+				result.after, result.errors, result.err)
+		}
+	}
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, pane := range panes {
+		if scaleAgentTypeLabel(pane.Type) == "cc" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("concurrent plans left %d Claude panes, want 2", count)
+	}
+}
+
+func TestScaleReductionRecountsAfterUnrelatedExit(t *testing.T) {
+	session := newScaleConvergenceTestSession(t, 4)
+	plan, err := planScaleSession(t.Context(), session, []scaleTarget{
+		{agentType: AgentTypeClaude, count: 2, set: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := make(map[string]bool)
+	for _, pane := range plan.removalCandidates["cc"] {
+		approved[pane.ID] = true
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := false
+	for _, pane := range panes {
+		if scaleAgentTypeLabel(pane.Type) == "cc" && !approved[pane.ID] {
+			if err := tmux.KillPane(pane.ID); err != nil {
+				t.Fatal(err)
+			}
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		t.Fatal("fixture had no unrelated agent to remove")
+	}
+
+	after, operationErrors, err := applyScalePlan(t.Context(), session, plan, false)
+	if err != nil || len(operationErrors) != 0 || after["cc"] != 2 {
+		t.Fatalf("stale reduction over-killed: after=%v errors=%v err=%v",
+			after, operationErrors, err)
+	}
+}
+
+func TestScaleDoesNotSubstituteNewPaneForMissingApproval(t *testing.T) {
+	session := newScaleConvergenceTestSession(t, 2)
+	plan, err := planScaleSession(t.Context(), session, []scaleTarget{
+		{agentType: AgentTypeClaude, count: 1, set: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := plan.removalCandidates["cc"]
+	if len(candidates) != 1 {
+		t.Fatalf("fixture removal candidates: %+v", candidates)
+	}
+	if err := tmux.KillPane(candidates[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIDs := make(map[string]bool)
+	for _, pane := range remaining {
+		originalIDs[pane.ID] = true
+	}
+
+	response, err := executeScaleRobot(t.Context(), robot.ScaleInput{
+		Session: session, Targets: map[string]int{"cc": 2}, Force: true,
+	})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("create replacement agent: response=%+v err=%v", response, err)
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replacement tmux.Pane
+	for _, pane := range panes {
+		if scaleAgentTypeLabel(pane.Type) == "cc" && !originalIDs[pane.ID] {
+			replacement = pane
+		}
+	}
+	if replacement.ID == "" || replacement.PID <= 0 {
+		t.Fatalf("fixture did not create a live replacement: %+v", panes)
+	}
+
+	after, operationErrors, err := applyScalePlan(t.Context(), session, plan, false)
+	if err != nil || len(operationErrors) == 0 || after["cc"] != 2 {
+		t.Fatalf("missing approval was silently substituted: after=%v errors=%v err=%v",
+			after, operationErrors, err)
+	}
+	if !strings.Contains(strings.Join(operationErrors, "; "), "scale target not reached") {
+		t.Fatalf("unmet target was not reported: %v", operationErrors)
+	}
+	panes, err = tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range panes {
+		if pane.ID == replacement.ID && pane.PID == replacement.PID && !pane.Dead {
+			return
+		}
+	}
+	t.Fatalf("unapproved replacement was removed: replacement=%+v panes=%+v", replacement, panes)
+}
+
+func TestScalePreservesRespawnedPaneFromApprovedPlan(t *testing.T) {
+	session := newScaleConvergenceTestSession(t, 3)
+	plan, err := planScaleSession(t.Context(), session, []scaleTarget{
+		{agentType: AgentTypeClaude, count: 2, set: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := plan.removalCandidates["cc"]
+	if len(candidates) != 1 {
+		t.Fatalf("fixture removal candidates: %+v", candidates)
+	}
+	expected := candidates[0]
+	if err := tmux.DefaultClient.RunSilentContext(t.Context(),
+		"respawn-pane", "-k", "-t", tmux.ExactTarget(expected.ID),
+		"/bin/sh", "-c", "exec cat"); err != nil {
+		t.Fatalf("respawn fixture pane: %v", err)
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replacement tmux.Pane
+	for _, pane := range panes {
+		if pane.ID == expected.ID {
+			replacement = pane
+		}
+	}
+	if replacement.PID <= 0 || replacement.PID == expected.PID || replacement.Dead {
+		t.Fatalf("fixture did not replace the pane process: old=%+v new=%+v", expected, replacement)
+	}
+
+	after, operationErrors, err := applyScalePlan(t.Context(), session, plan, false)
+	if err != nil || len(operationErrors) == 0 || after["cc"] != 3 {
+		t.Fatalf("changed pane identity was not refused: after=%v errors=%v err=%v",
+			after, operationErrors, err)
+	}
+	panes, err = tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range panes {
+		if pane.ID == replacement.ID && pane.PID == replacement.PID && !pane.Dead {
+			return
+		}
+	}
+	t.Fatalf("replacement process was removed: replacement=%+v panes=%+v", replacement, panes)
+}
+
 func newScaleJSONTestSession(t *testing.T, claudeTemplate string) string {
 	t.Helper()
 	testutil.RequireTmuxThrottled(t)

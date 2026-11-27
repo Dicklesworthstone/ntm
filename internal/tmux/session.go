@@ -4331,6 +4331,16 @@ func (c *Client) KillPaneContext(ctx context.Context, paneID string) error {
 	return c.RunSilentContext(ctx, "kill-pane", "-t", ExactTarget(paneID))
 }
 
+// KillPaneIfCurrentContext removes only the pane process and agent identity
+// observed by the caller. The predicate and kill share tmux's command queue.
+func (c *Client) KillPaneIfCurrentContext(ctx context.Context, pane Pane) error {
+	if pane.PID <= 0 || pane.RotationToken != "" || pane.IsServicePane() {
+		return fmt.Errorf("pane %s cannot be safely removed: %w", pane.ID, ErrPaneIdentityChanged)
+	}
+	return c.runPaneMutationIfCurrentContext(WithObservedPaneAgentType(ctx, pane), pane.ID, pane.PID, paneMutationAny,
+		"kill-pane", "-t", ExactTarget(pane.ID))
+}
+
 // KillPane kills a tmux pane (default client)
 func KillPane(paneID string) error {
 	return DefaultClient.KillPane(paneID)

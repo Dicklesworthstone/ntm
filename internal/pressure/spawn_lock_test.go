@@ -262,3 +262,64 @@ func TestSpawnAdmissionLockDoesNotSurviveExec(t *testing.T) {
 	}
 	next()
 }
+
+func TestScaleAdmissionSeparatesSessionsAndFleet(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", root)
+
+	release, err := AcquireScaleAdmission(t.Context(), "scale-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	other, err := AcquireScaleAdmission(t.Context(), "scale-b")
+	if err != nil {
+		t.Fatalf("different sessions shared a scale fence: %v", err)
+	}
+	other()
+
+	fleet, err := AcquireSpawnAdmission(t.Context())
+	if err != nil {
+		t.Fatalf("scale fence deadlocked nested fleet admission: %v", err)
+	}
+	fleet()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	defer cancel()
+	if next, err := AcquireScaleAdmission(ctx, "scale-a"); next != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("same-session scale bypassed owner: release=%t err=%v", next != nil, err)
+	}
+
+	release()
+	next, err := AcquireScaleAdmission(t.Context(), "scale-a")
+	if err != nil {
+		t.Fatalf("released scale fence remained owned: %v", err)
+	}
+	next()
+}
+
+func TestScaleAdmissionRejectsInvalidInputWithoutFiles(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", root)
+
+	if release, err := AcquireScaleAdmission(nil, "scale-a"); release != nil || err == nil {
+		t.Fatal("nil context accepted")
+	}
+	for _, session := range []string{"", " scale-a", "scale-a "} {
+		if release, err := AcquireScaleAdmission(t.Context(), session); release != nil || err == nil {
+			t.Fatalf("invalid exact session %q accepted", session)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if release, err := AcquireScaleAdmission(ctx, "scale-a"); release != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled scale accepted: release=%t err=%v", release != nil, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("invalid scale created files: %v %v", entries, err)
+	}
+}
