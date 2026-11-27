@@ -104,8 +104,8 @@ var defaultPatterns = []patternDef{
 	{CategoryPrivateKey, privateKeyBlockPattern, 95, []literalRequirement{{anyOf: []string{"private key"}, ignoreCase: true}}},
 	{CategoryPrivateKey, `-----BEGIN\s+(RSA\s+|DSA\s+|EC\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE KEY-----`, 95, []literalRequirement{{anyOf: []string{"private key"}, ignoreCase: true}}},
 
-	// Database URLs with credentials
-	{CategoryDatabaseURL, `(?i)(postgres|mysql|mongodb|redis)://[^:"]+:[^@"]+@[^\s"]+`, 85, []literalRequirement{{anyOf: []string{"postgres://", "mysql://", "mongodb://", "redis://"}, ignoreCase: true}}},
+	// Database URLs with credentials (including postgresql://, mongodb+srv://, rediss://, and password-only redis://:pass@)
+	{CategoryDatabaseURL, `(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?)://[^:@"\s]*:[^@"\s]+@[^\s"'<>]+`, 85, []literalRequirement{{anyOf: []string{"postgres://", "postgresql://", "mysql://", "mongodb://", "mongodb+srv://", "redis://", "rediss://"}, ignoreCase: true}}},
 
 	// Generic patterns (lower priority)
 	{CategoryPassword, `(?i)(password|passwd|pwd)\s*[=:]\s*["']?[^\s"']{8,}["']?`, 50, []literalRequirement{{anyOf: []string{"password", "passwd", "pwd"}, ignoreCase: true}}},

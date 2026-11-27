@@ -38,6 +38,34 @@ func TestModeOff_SkipsScanning(t *testing.T) {
 	}
 }
 
+func TestDatabaseURLRedactionCoversModernURIs(t *testing.T) {
+	resetPatternsForTest(t)
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"postgresql", "DATABASE_URL=postgresql://admin:s3cr3tPass@db.example.com:5432/prod"},
+		{"mongodb+srv", "MONGO_URI=mongodb+srv://app:topSecret99@cluster0.example.net/appdb"},
+		{"rediss", "REDIS_URL=rediss://default:upstashSecret@redis.example.com:6379"},
+		{"redis password-only", "REDIS_URL=redis://:onlyPassword123@127.0.0.1:6379/0"},
+		{"rediss password-only", "REDIS_URL=rediss://:tlsOnlyPass456@cache.example.com:6380"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			redacted := ScanAndRedact(tc.input, Config{Mode: ModeRedact})
+			if len(redacted.Findings) == 0 || redacted.Findings[0].Category != CategoryDatabaseURL {
+				t.Fatalf("ModeRedact missed %s URI: findings=%+v output=%q", tc.name, redacted.Findings, redacted.Output)
+			}
+			blocked := ScanAndRedact(tc.input, Config{Mode: ModeBlock})
+			if !blocked.Blocked {
+				t.Fatalf("ModeBlock failed to block %s URI", tc.name)
+			}
+		})
+	}
+}
+
 func TestModeWarn_DoesNotModifyOutput(t *testing.T) {
 	resetPatternsForTest(t)
 
