@@ -903,6 +903,10 @@ func (s *Server) handleBeadsTriage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if recs == nil {
+		recs = []bv.Recommendation{}
+	}
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"recommendations": recs,
 		"count":           len(recs),

@@ -697,6 +697,9 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 			}
 			reservations = filtered
 		}
+		if reservations == nil {
+			reservations = []FileReservation{}
+		}
 		return reservations, nil
 	}
 

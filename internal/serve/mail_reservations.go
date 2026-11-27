@@ -81,6 +81,10 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if reservations == nil {
+		reservations = []agentmail.FileReservation{}
+	}
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"reservations": reservations,
 		"count":        len(reservations),
@@ -136,6 +140,12 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 	}
 	if result == nil {
 		result = &agentmail.ReservationResult{}
+	}
+	if result.Granted == nil {
+		result.Granted = []agentmail.FileReservation{}
+	}
+	if result.Conflicts == nil {
+		result.Conflicts = []agentmail.ReservationConflict{}
 	}
 
 	if len(result.Granted) > 0 {
