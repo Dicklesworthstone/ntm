@@ -109,7 +109,7 @@ func (p checkpointImportPublisher) publish(cpDir string, files map[string][]byte
 	retained := ""
 	publicationAttempted := false
 	defer func() {
-		err = errors.Join(err, parent.Close()) // Closing also releases the import lock.
+		err = errors.Join(err, closeCheckpointImportDirectory(parent))
 		if err != nil && publicationAttempted {
 			err = &ImportPublicationError{CheckpointDir: cpDir, RetainedDir: retained, Published: published, Cause: err}
 		}
