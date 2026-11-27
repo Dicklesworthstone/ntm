@@ -558,6 +558,14 @@ func mapAgentTypeToPatternAgent(agentType tmux.AgentType) string {
 		return "pi"
 	case tmux.AgentOpencode:
 		return "opencode"
+	case tmux.AgentCursor:
+		return "cursor"
+	case tmux.AgentWindsurf:
+		return "windsurf"
+	case tmux.AgentAider:
+		return "aider"
+	case tmux.AgentOllama:
+		return "ollama"
 	default:
 		return "*"
 	}
@@ -1254,8 +1262,41 @@ var filePathPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
 		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
 	},
+	"pi": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
 	"opencode": {
 		regexp.MustCompile(`"filePath"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"cursor": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"windsurf": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"aider": {
+		regexp.MustCompile(`(?im)^Applied edit to\s+([^\s,]+)`),
+		regexp.MustCompile(`(?im)^Wrote\s+([^\s,]+)`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"ollama": {
 		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
 		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
 		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
