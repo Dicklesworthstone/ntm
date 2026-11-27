@@ -76,7 +76,7 @@ const watermarkTypeCaamProviderActivated = "caam_provider_activated"
 type AccountFailoverDecision struct {
 	PaneID                     string // tmux pane ID (%N)
 	AgentID                    string // canonical agent ID (pane title, e.g. sess__cc_1)
-	Provider                   string // caam provider ("claude", "openai", "gemini")
+	Provider                   string // caam provider ("claude", "openai", "gemini", "agy")
 	Action                     string // "switched", "switch_failed", "declined"
 	DeclineReason              string // populated when Action == "declined"
 	Banner                     string // evidence: matched rate-limit banner line (best-effort)
@@ -1256,14 +1256,19 @@ func failoverEvidence(d failoverDecision) string {
 
 // providerForAgentType maps a canonical agent type to its caam provider.
 // Empty means the type has no provider mapping and can never fail over.
+// Antigravity is its own caam tool ("agy"), with credential files separate
+// from gemini's: activating a gemini profile would leave an agy pane on the
+// same account it was rate-limited on (#388).
 func providerForAgentType(t agent.AgentType) string {
 	switch t {
 	case agent.AgentTypeClaudeCode:
 		return "claude"
 	case agent.AgentTypeCodex:
 		return "openai"
-	case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
+	case agent.AgentTypeGemini:
 		return "gemini"
+	case agent.AgentTypeAntigravity:
+		return "agy"
 	default:
 		return ""
 	}
@@ -1277,8 +1282,10 @@ func canonicalFailoverProvider(p string) string {
 		return "claude"
 	case "openai", "codex", "cod", "gpt":
 		return "openai"
-	case "gemini", "gmi", "google", "antigravity", "agy":
+	case "gemini", "gmi", "google":
 		return "gemini"
+	case "antigravity", "agy":
+		return "agy"
 	default:
 		return ""
 	}

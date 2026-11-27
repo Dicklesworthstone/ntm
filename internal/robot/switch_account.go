@@ -28,7 +28,7 @@ type SwitchAccountResult struct {
 
 // SwitchAccountOptions contains options for the switch account command
 type SwitchAccountOptions struct {
-	Provider  string // claude, openai, gemini
+	Provider  string // claude, openai, gemini, agy
 	AccountID string // Optional specific account to switch to
 	Pane      string // Optional pane filter
 }
@@ -46,7 +46,7 @@ func GetSwitchAccount(opts SwitchAccountOptions) (*SwitchAccountOutput, error) {
 			RobotResponse: NewErrorResponse(
 				providerErr,
 				ErrCodeInvalidFlag,
-				"Specify a valid provider (claude, openai, gemini)",
+				"Specify a valid provider (claude, openai, gemini, agy)",
 			),
 			Switch: SwitchAccountResult{
 				Success:  false,
@@ -221,13 +221,13 @@ func ParseSwitchAccountArg(arg string) SwitchAccountOptions {
 	// Handle "provider:account" format
 	for i := 0; i < len(trimmed); i++ {
 		if trimmed[i] == ':' {
-			opts.Provider = canonicalRobotProvider(strings.TrimSpace(trimmed[:i]))
+			opts.Provider = canonicalRobotAccountProvider(strings.TrimSpace(trimmed[:i]))
 			opts.AccountID = strings.TrimSpace(trimmed[i+1:])
 			return opts
 		}
 	}
 
 	// Just provider
-	opts.Provider = canonicalRobotProvider(trimmed)
+	opts.Provider = canonicalRobotAccountProvider(trimmed)
 	return opts
 }

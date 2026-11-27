@@ -10621,7 +10621,7 @@
       ],
       "display_name": "Antigravity CLI",
       "provider": "google",
-      "caam_tool": "gemini",
+      "caam_tool": "agy",
       "needs_double_enter": true,
       "graceful_exit": "escape_interrupt",
       "supports_builtin_compact": false,

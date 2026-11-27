@@ -103,6 +103,23 @@ func canonicalRobotProvider(provider string) string {
 	}
 }
 
+// canonicalRobotAccountProvider names the caam account pool a provider's
+// logins live in. It differs from canonicalRobotProvider for Antigravity
+// only: agy counts against the Gemini quota bucket, but caam keeps its logins
+// under a separate tool, "agy", with its own credential files (the OAuth
+// token under ~/.gemini/antigravity-cli). Activating a gemini profile never
+// changes which account agy runs as (#388).
+func canonicalRobotAccountProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "antigravity", "agy":
+		return "agy"
+	default:
+		return canonicalRobotProvider(provider)
+	}
+}
+
+// validateRobotAccountProvider resolves an account-surface provider argument
+// (switch, list, status) to its caam account pool.
 func validateRobotAccountProvider(provider string) (string, error) {
 	trimmed := strings.TrimSpace(provider)
 	if trimmed == "" {
@@ -111,12 +128,12 @@ func validateRobotAccountProvider(provider string) (string, error) {
 	if strings.HasPrefix(trimmed, "-") {
 		return "", fmt.Errorf("invalid provider %q: must not begin with '-'", provider)
 	}
-	canonical := canonicalRobotProvider(trimmed)
+	canonical := canonicalRobotAccountProvider(trimmed)
 	switch canonical {
-	case "claude", "openai", "gemini":
+	case "claude", "openai", "gemini", "agy":
 		return canonical, nil
 	default:
-		return "", fmt.Errorf("unsupported provider %q (supported: claude, openai, gemini)", provider)
+		return "", fmt.Errorf("unsupported provider %q (supported: claude, openai, gemini, agy)", provider)
 	}
 }
 

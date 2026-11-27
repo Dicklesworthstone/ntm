@@ -489,8 +489,9 @@ func buildRateLimitRecommendation(paneIndex int, paneTarget string, session stri
 		rec.Action = "wait_or_switch"
 		rec.Reason = "Rate limited, consider switching accounts or waiting"
 		// caam needs the provider to switch; ntm maps it to caam's tool name.
-		switch provider := canonicalRobotProvider(check.AgentType); provider {
-		case "claude", "openai", "gemini":
+		// An agy pane switches caam's agy tool, never gemini's (#388).
+		switch provider := canonicalRobotAccountProvider(check.AgentType); provider {
+		case "claude", "openai", "gemini", "agy":
 			rec.FixCommand = fmt.Sprintf("ntm --robot-switch-account=%s  # or wait for rate limit to reset", provider)
 		default:
 			rec.FixCommand = "ntm --robot-switch-account=PROVIDER  # or wait for rate limit to reset"

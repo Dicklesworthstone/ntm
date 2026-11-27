@@ -28,7 +28,7 @@ type AccountInfo struct {
 
 // AccountsListOptions contains options for the accounts list command
 type AccountsListOptions struct {
-	Provider string // Optional filter for a specific provider (claude, openai, gemini)
+	Provider string // Optional filter for a specific provider (claude, openai, gemini, agy)
 }
 
 // GetAccountsList returns the list of accounts.
@@ -40,7 +40,7 @@ func GetAccountsList(opts AccountsListOptions) (*AccountsListOutput, error) {
 			RobotResponse: NewErrorResponse(
 				providerErr,
 				ErrCodeInvalidFlag,
-				"Specify a valid provider (claude, openai, gemini)",
+				"Specify a valid provider (claude, openai, gemini, agy)",
 			),
 			Accounts: []AccountInfo{},
 		}, nil
@@ -76,10 +76,10 @@ func GetAccountsList(opts AccountsListOptions) (*AccountsListOutput, error) {
 		RobotResponse: NewRobotResponse(true),
 		Accounts:      []AccountInfo{}, // Initialize to empty array
 	}
-	opts.Provider = canonicalRobotProvider(opts.Provider)
+	opts.Provider = canonicalRobotAccountProvider(opts.Provider)
 
 	for _, acc := range accounts {
-		provider := canonicalRobotProvider(acc.Provider)
+		provider := canonicalRobotAccountProvider(acc.Provider)
 		// Filter by provider if specified
 		if opts.Provider != "" && provider != opts.Provider {
 			continue

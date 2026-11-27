@@ -1580,7 +1580,7 @@ type CAAMConfig struct {
 	ResetHorizonMinutes int `toml:"reset_horizon_minutes"`
 
 	// FailoverProviders is the per-provider allow-list for auto-failover
-	// (canonical names: "claude", "openai", "gemini"). Empty means NO
+	// (canonical names: "claude", "openai", "gemini", "agy"). Empty means NO
 	// providers — the feature is doubly opt-in (auto_failover AND an
 	// explicit allow-list). Deliberately separate from Providers above,
 	// whose empty value means "all available".
@@ -3911,7 +3911,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# Doubly opt-in: auto_failover must be true AND failover_providers non-empty.")
 	fmt.Fprintf(w, "auto_failover = %t\n", cfg.Integrations.CAAM.AutoFailover)
 	fmt.Fprintf(w, "reset_horizon_minutes = %d  # Only fail over when the reset is further away than this\n", cfg.Integrations.CAAM.ResetHorizonMinutes)
-	fmt.Fprintf(w, "failover_providers = %s  # Allow-list (\"claude\", \"openai\", \"gemini\"); empty = none\n", renderTOMLStringArray(cfg.Integrations.CAAM.FailoverProviders))
+	fmt.Fprintf(w, "failover_providers = %s  # Allow-list (\"claude\", \"openai\", \"gemini\", \"agy\"); empty = none\n", renderTOMLStringArray(cfg.Integrations.CAAM.FailoverProviders))
 	fmt.Fprintln(w, "# Seat selection for UNPINNED spawn/add panes (ntm#319). Unrelated to")
 	fmt.Fprintln(w, "# auto_failover above: this only picks which account a NEW pane launches on,")
 	fmt.Fprintln(w, "# ranked by earliest reset with headroom. An explicit --persona always wins;")

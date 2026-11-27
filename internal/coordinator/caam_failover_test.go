@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -1102,6 +1103,28 @@ func TestRunCycle_CaamFailoverGating(t *testing.T) {
 
 // TestNewFailoverChecker_ConstructionGate verifies the production constructor
 // honors the default-off gate and canonicalizes the provider allow-list.
+// TestFailoverProviderKeepsAntigravityOnItsOwnCAAMTool pins #388: caam keeps
+// agy logins under their own tool, so an agy pane must never fail over by
+// activating a gemini profile, and a gemini allow-list entry must not cover it.
+func TestFailoverProviderKeepsAntigravityOnItsOwnCAAMTool(t *testing.T) {
+	if got := providerForAgentType(agent.AgentTypeAntigravity); got != "agy" {
+		t.Errorf("providerForAgentType(antigravity) = %q, want agy", got)
+	}
+	if got := providerForAgentType(agent.AgentTypeGemini); got != "gemini" {
+		t.Errorf("providerForAgentType(gemini) = %q, want gemini", got)
+	}
+	for _, entry := range []string{"agy", "Antigravity"} {
+		if got := canonicalFailoverProvider(entry); got != "agy" {
+			t.Errorf("canonicalFailoverProvider(%q) = %q, want agy", entry, got)
+		}
+	}
+	for _, entry := range []string{"gemini", "gmi", "google"} {
+		if got := canonicalFailoverProvider(entry); got != "gemini" {
+			t.Errorf("canonicalFailoverProvider(%q) = %q, want gemini", entry, got)
+		}
+	}
+}
+
 func TestNewFailoverChecker_ConstructionGate(t *testing.T) {
 	off := config.DefaultCAAMConfig()
 	if fc := newFailoverChecker("s", t.TempDir(), off); fc != nil {

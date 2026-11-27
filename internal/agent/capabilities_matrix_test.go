@@ -224,9 +224,14 @@ func TestHarnessConformanceMatrix12x15CrossSubsystem(t *testing.T) {
 				if seatProv != "codex" || h.CAAMTool != "codex" {
 					t.Errorf("[13:caam] codex seatProv=%q CAAMTool=%q", seatProv, h.CAAMTool)
 				}
-			case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
+			case agent.AgentTypeGemini:
 				if seatProv != "" || h.CAAMTool != "gemini" {
 					t.Errorf("[13:caam] %s seatProv=%q CAAMTool=%q, want seatProv=\"\" CAAMTool=\"gemini\"", h.Type, seatProv, h.CAAMTool)
+				}
+			case agent.AgentTypeAntigravity:
+				// caam keeps agy logins under their own tool (#388).
+				if seatProv != "" || h.CAAMTool != "agy" {
+					t.Errorf("[13:caam] %s seatProv=%q CAAMTool=%q, want seatProv=\"\" CAAMTool=\"agy\"", h.Type, seatProv, h.CAAMTool)
 				}
 			default:
 				if seatProv != "" || h.CAAMTool != "" {

@@ -200,6 +200,9 @@ func TestNormalizeProvider(t *testing.T) {
 		{"gemini-cli", "google"},
 		{"google-gemini", "google"},
 		{"google-ai", "google"},
+		// caam keeps Antigravity logins under their own "agy" tool (#388).
+		{"agy", "agy"},
+		{"antigravity", "agy"},
 		{"unknown", "unknown"},
 		{"openai", "openai"},
 		{"google", "google"},
@@ -212,6 +215,9 @@ func TestNormalizeProvider(t *testing.T) {
 				t.Errorf("normalizeProvider(%q) = %q, want %q", tt.agentType, result, tt.expected)
 			}
 		})
+	}
+	if tool := caamToolName(normalizeProvider("agy")); tool != "agy" {
+		t.Errorf("caamToolName(normalizeProvider(agy)) = %q, want caam's agy tool", tool)
 	}
 }
 

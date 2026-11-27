@@ -66,7 +66,7 @@ type ProviderSeatQuota struct {
 
 // AccountStatusOptions contains options for the account status command
 type AccountStatusOptions struct {
-	Provider string // Optional filter for a specific provider (claude, openai, gemini)
+	Provider string // Optional filter for a specific provider (claude, openai, gemini, agy)
 }
 
 // GetAccountStatus returns account status information.
@@ -75,7 +75,7 @@ func GetAccountStatus(opts AccountStatusOptions) (*AccountStatusOutput, error) {
 	canonicalProvider, err := validateRobotAccountProvider(opts.Provider)
 	if err != nil {
 		return &AccountStatusOutput{
-			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Specify a valid provider: claude, openai, or gemini"),
+			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Specify a valid provider: claude, openai, gemini, or agy"),
 			Accounts:      make(map[string]ProviderStatus),
 		}, nil
 	}
@@ -108,10 +108,10 @@ func GetAccountStatus(opts AccountStatusOptions) (*AccountStatusOutput, error) {
 	// Build per-provider status map
 	providerAccounts := make(map[string][]tools.CAAMAccount)
 	for _, acc := range status.Accounts {
-		provider := canonicalRobotProvider(acc.Provider)
+		provider := canonicalRobotAccountProvider(acc.Provider)
 		providerAccounts[provider] = append(providerAccounts[provider], acc)
 	}
-	opts.Provider = canonicalRobotProvider(opts.Provider)
+	opts.Provider = canonicalRobotAccountProvider(opts.Provider)
 
 	// Build output
 	output := &AccountStatusOutput{

@@ -27,7 +27,7 @@ type HarnessCapability struct {
 	ProfileName               string
 	ShortBadge                string
 	Provider                  string // Canonical rate-limit / account provider ("anthropic", "openai", "google", "xai", ...)
-	CAAMTool                  string // CAAM CLI tool name ("claude", "codex", "gemini", or "" if unsupported)
+	CAAMTool                  string // CAAM CLI tool name ("claude", "codex", "gemini", "agy", or "" if unsupported)
 	NeedsDoubleEnter          bool
 	GracefulExit              GracefulExitStrategy
 	SupportsBuiltinCompact    bool
@@ -103,7 +103,7 @@ var canonicalHarnesses = []HarnessCapability{
 		ProfileName:               "Antigravity",
 		ShortBadge:                "agy",
 		Provider:                  "google",
-		CAAMTool:                  "gemini",
+		CAAMTool:                  "agy", // caam's own tool; its credential files are separate from gemini's (#388)
 		NeedsDoubleEnter:          true,
 		GracefulExit:              GracefulExitEscapeInterrupt,
 		SupportsBuiltinCompact:    false,

@@ -143,9 +143,10 @@ func TestHarnessCapabilityConformanceMatrix12x15(t *testing.T) {
 	}
 
 	// Spot-check key parity invariants from Track 2.1:
-	// - Antigravity shares Google provider + Gemini CAAM tool + escape_interrupt exit + /clear
+	// - Antigravity shares the Google provider with Gemini but has its own
+	//   CAAM tool (#388) + escape_interrupt exit + /clear
 	agy := CapabilitiesFor(AgentTypeAntigravity)
-	if agy.Provider != "google" || agy.CAAMTool != "gemini" || agy.GracefulExit != GracefulExitEscapeInterrupt || !agy.SupportsHistoryClear {
+	if agy.Provider != "google" || agy.CAAMTool != "agy" || agy.GracefulExit != GracefulExitEscapeInterrupt || !agy.SupportsHistoryClear {
 		t.Errorf("unexpected Antigravity capabilities: %+v", agy)
 	}
 	// - Pi is distinct from OMP and first-class in the 12-harness registry

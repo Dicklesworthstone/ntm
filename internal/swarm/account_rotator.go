@@ -301,12 +301,12 @@ func (r *AccountRotator) logger() *slog.Logger {
 }
 
 // caamToolName converts NTM's internal provider name to the tool name caam
-// actually accepts on the command line. caam names its tools "codex", "claude"
-// and "gemini"; NTM has long used "openai" and "google" internally, and passing
-// those straight through makes caam fail with `unknown tool: openai`. Internal
-// names stay unchanged so rate-limit tracking and pinned-account map keys keep
-// working; only the caam boundary is translated. Mirrors ntmProviderForCAAM in
-// internal/tools/caam.go.
+// actually accepts on the command line. caam names its tools "codex",
+// "claude", "gemini" and "agy"; NTM has long used "openai" and "google"
+// internally, and passing those straight through makes caam fail with
+// `unknown tool: openai`. Internal names stay unchanged so rate-limit tracking
+// and pinned-account map keys keep working; only the caam boundary is
+// translated. Mirrors ntmProviderForCAAM in internal/tools/caam.go.
 func caamToolName(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai":
@@ -339,6 +339,12 @@ func normalizeProvider(agentType string) string {
 	if cap, ok := agent.LookupHarness(agent.AgentType(trimmed)); ok {
 		if cap.Type == agent.AgentTypeClaudeCode {
 			return "claude"
+		}
+		// Antigravity bills to Google like Gemini, but caam keeps its logins
+		// under a separate "agy" tool; folding it into "google" would
+		// activate a gemini profile and leave agy on the same account (#388).
+		if cap.Type == agent.AgentTypeAntigravity {
+			return "agy"
 		}
 		if cap.Provider != "" {
 			return cap.Provider
