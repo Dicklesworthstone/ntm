@@ -180,9 +180,9 @@ func TestSaveLoadStatePreservesNumericFilterDecisions(t *testing.T) {
 	state := &ExecutionState{
 		RunID: "numeric-recovery", WorkflowID: "numeric-recovery", Status: StatusRunning,
 		Variables: map[string]interface{}{
-			"large": json.Number("9007199254740993"),
-			"huge":  json.Number("1e1000"),
-			"tiny":  json.Number("1e-1000"),
+			"large":   json.Number("9007199254740993"),
+			"huge":    json.Number("1e1000"),
+			"tiny":    json.Number("1e-1000"),
 			"decimal": json.Number("1.00"), "exponent": json.Number("1e0"), "zero": json.Number("-0.00e999999"),
 			"small": 42, "fraction": 0.125, "text": "9007199254740993",
 			"nested": []interface{}{map[string]interface{}{"exact": json.Number("1.0000000000000001")}},

@@ -221,7 +221,7 @@ func TestResumePipelineJobForwardsCanonicalRecoveryControls(t *testing.T) {
 				PipelineResumeRequest: PipelineResumeRequest{
 					Mode: pipeline.ResumeModeForceIter, Reset: reset,
 					StepID: "batch", Iteration: 2, MaxResumeAge: " 1W ",
-					OnRosterChange: pipeline.ResumeRosterProceed,
+					OnRosterChange:              pipeline.ResumeRosterProceed,
 					MaxSelectorOutputBytesTotal: 1234, MaxStepCountTotal: 50, MaxMaterializedStepNodes: 60,
 				},
 			}
@@ -234,7 +234,7 @@ func TestResumePipelineJobForwardsCanonicalRecoveryControls(t *testing.T) {
 					want := pipeline.ResumeOptions{
 						Mode: pipeline.ResumeModeForceIter, Reset: reset, KeepState: !reset,
 						StepID: "batch", Iteration: 2, MaxResumeAge: 7 * 24 * time.Hour,
-						OnRosterChange: pipeline.ResumeRosterProceed,
+						OnRosterChange:              pipeline.ResumeRosterProceed,
 						MaxSelectorOutputBytesTotal: 1234, MaxStepCountTotal: 50, MaxMaterializedStepNodes: 60,
 					}
 					if opts != want {

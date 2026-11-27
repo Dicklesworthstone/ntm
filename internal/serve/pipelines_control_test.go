@@ -2052,7 +2052,7 @@ func TestPipelineResumePreservesNumericDecisionsHTTPAndJobs(t *testing.T) {
 					{ID: "saved", DependsOn: []string{"gate"}, Foreach: &pipeline.ForeachConfig{
 						Items: "${vars.payload_parsed.rows}", As: "row",
 						Filter: "item.enabled && (item.amount == 1e0 || item.amount == 9007199254740993)",
-						Steps: []pipeline.Step{{ID: "record", Command: "printf '%s\\n' '${row.id}' >> numeric-saved"}},
+						Steps:  []pipeline.Step{{ID: "record", Command: "printf '%s\\n' '${row.id}' >> numeric-saved"}},
 					}},
 					{ID: "live", DependsOn: []string{"saved"}, Foreach: &pipeline.ForeachConfig{
 						Items: "${vars.live_rows}", As: "row", Filter: "item.enabled && item.amount == 1e0",
@@ -2193,7 +2193,7 @@ func TestPipelineResumePoliciesHTTPAndJobsPreserveRejectedCheckpoints(t *testing
 				"session": "original", "workflow": pipeline.Workflow{
 					SchemaVersion: pipeline.SchemaVersion, Name: "surface-recovery-policy",
 					Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
-					Steps: []pipeline.Step{{ID: "once", Command: "printf 'once\\n' >> policy-once"}},
+					Steps:    []pipeline.Step{{ID: "once", Command: "printf 'once\\n' >> policy-once"}},
 				},
 			})
 			completed := pollJobTerminal(t, srv, initial.Job.ID)
