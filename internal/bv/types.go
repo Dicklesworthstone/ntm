@@ -120,6 +120,9 @@ func (d DriftStatus) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON accepts either canonical string labels or legacy integer enum codes.
 func (d *DriftStatus) UnmarshalJSON(data []byte) error {
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		switch strings.ToLower(strings.TrimSpace(s)) {
