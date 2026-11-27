@@ -570,6 +570,9 @@ var (
 		"esc again to interrupt",
 	}
 
+	// ocHeaderPattern matches explicit OpenCode footer/banner branding lines.
+	ocHeaderPattern = regexp.MustCompile(`(?i)(?:•\s+OpenCode\s+\d+\.\d+|^\s*opencode\s+v?\d+\.\d+)`)
+
 	// ocInterruptHintRe matches the footer hint OpenCode shows only while a
 	// turn is in flight.
 	ocInterruptHintRe = regexp.MustCompile(`(?i)\besc\s+(?:again\s+to\s+)?interrupt\b`)

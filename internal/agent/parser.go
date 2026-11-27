@@ -99,6 +99,11 @@ func (p *parserImpl) DetectAgentType(output string) AgentType {
 		return AgentTypePi
 	}
 
+	// OpenCode (oc): structural heavy-bar composer or explicit version banner.
+	if _, found := ParseOpencodeComposer(output); found || ocHeaderPattern.MatchString(output) {
+		return AgentTypeOpencode
+	}
+
 	// Antigravity patterns (checked before Gemini so an agy pane is not
 	// misclassified as the legacy Gemini CLI; the two share other signatures).
 	if agyHeaderPattern.MatchString(output) {
@@ -141,16 +146,38 @@ func (p *parserImpl) detectByPatternFrequency(output string) AgentType {
 	scores[AgentTypeClaudeCode] = p.countMatches(output, ccWorkingPatterns)
 	scores[AgentTypeCodex] = p.countMatches(output, codWorkingPatterns)
 	scores[AgentTypeGemini] = p.countMatches(output, gmiWorkingPatterns)
+	scores[AgentTypeGrok] = p.countMatches(output, grokWorkingPatterns)
+	if GrokActivelyWorking(output, 0) {
+		scores[AgentTypeGrok]++
+	}
+	scores[AgentTypeOpencode] = p.countMatches(output, ocWorkingPatterns)
+	if OpencodeActivelyWorking(output, 0) {
+		scores[AgentTypeOpencode]++
+	}
+	scores[AgentTypeOmp] = p.countMatches(output, ompWorkingPatterns)
+	if OmpActivelyWorking(output, 0) {
+		scores[AgentTypeOmp]++
+	}
+	if ParsePiComposer(output).Working {
+		scores[AgentTypePi]++
+	}
+	if AntigravityActivelyWorking(output, 0) {
+		scores[AgentTypeAntigravity]++
+	}
 	scores[AgentTypeCursor] = p.countMatches(output, cursorWorkingPatterns)
 	scores[AgentTypeWindsurf] = p.countMatches(output, windsurfWorkingPatterns)
 	scores[AgentTypeAider] = p.countMatches(output, aiderWorkingPatterns)
 	scores[AgentTypeOllama] = p.countMatches(output, ollamaWorkingPatterns)
 
-	// Find highest scoring type with deterministic tie-breaking
-	// Priority: Claude > Codex > Gemini > Cursor > Windsurf > Aider > Ollama
+	// Find highest scoring type with deterministic tie-breaking across all 12 built-in harnesses.
 	priority := []AgentType{
 		AgentTypeClaudeCode,
 		AgentTypeCodex,
+		AgentTypeGrok,
+		AgentTypeOmp,
+		AgentTypePi,
+		AgentTypeOpencode,
+		AgentTypeAntigravity,
 		AgentTypeGemini,
 		AgentTypeCursor,
 		AgentTypeWindsurf,
@@ -502,6 +529,9 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ccRateLimitPatterns) ||
 			matchAny(recentOutput, codRateLimitPatterns) ||
 			matchAny(recentOutput, gmiRateLimitPatterns) ||
+			matchAny(recentOutput, grokRateLimitPatterns) ||
+			matchAny(recentOutput, ocRateLimitPatterns) ||
+			matchAny(recentOutput, piRateLimitPatterns) ||
 			matchAny(recentOutput, cursorRateLimitPatterns) ||
 			matchAny(recentOutput, windsurfRateLimitPatterns) ||
 			matchAny(recentOutput, aiderRateLimitPatterns) ||
@@ -566,6 +596,14 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ccWorkingPatterns) ||
 			matchAny(recentOutput, codWorkingPatterns) ||
 			matchAny(recentOutput, gmiWorkingPatterns) ||
+			matchAny(recentOutput, grokWorkingPatterns) ||
+			matchAny(recentOutput, ocWorkingPatterns) ||
+			matchAny(recentOutput, ompWorkingPatterns) ||
+			GrokActivelyWorking(output, 0) ||
+			OpencodeActivelyWorking(output, 0) ||
+			OmpActivelyWorking(output, 0) ||
+			AntigravityActivelyWorking(output, 0) ||
+			ParsePiComposer(output).Working ||
 			matchAny(recentOutput, cursorWorkingPatterns) ||
 			matchAny(recentOutput, windsurfWorkingPatterns) ||
 			matchAny(recentOutput, aiderWorkingPatterns) ||
@@ -704,9 +742,15 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 			}
 		}
 		// Check all idle patterns for unknown type
+		if c := ParsePiComposer(output); c.Found && !c.Working {
+			return true
+		}
 		return matchAnyRegex(lastLines, ccIdlePatterns) ||
 			matchAnyRegex(lastLines, codIdlePatterns) ||
 			matchAnyRegex(lastLines, gmiIdlePatterns) ||
+			matchAnyRegex(lastLines, grokIdlePatterns) ||
+			OpencodeIdlePromptShowing(output) ||
+			OmpIdlePromptShowing(output) ||
 			matchAnyRegex(lastLines, cursorIdlePatterns) ||
 			matchAnyRegex(lastLines, windsurfIdlePatterns) ||
 			matchAnyRegex(lastLines, aiderIdlePatterns) ||
@@ -775,6 +819,10 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ccErrorPatterns) ||
 			matchAny(recentOutput, codErrorPatterns) ||
 			matchAny(recentOutput, gmiErrorPatterns) ||
+			matchAny(recentOutput, grokErrorPatterns) ||
+			matchAny(recentOutput, ocErrorPatterns) ||
+			matchAny(recentOutput, ompErrorPatterns) ||
+			matchAny(recentOutput, piErrorPatterns) ||
 			matchAny(recentOutput, cursorErrorPatterns) ||
 			matchAny(recentOutput, windsurfErrorPatterns) ||
 			matchAny(recentOutput, aiderErrorPatterns) ||
@@ -820,6 +868,9 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		matches := collectMatches(recentOutput, ccRateLimitPatterns)
 		matches = append(matches, collectMatches(recentOutput, codRateLimitPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, gmiRateLimitPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, grokRateLimitPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, ocRateLimitPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, piRateLimitPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, cursorRateLimitPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, windsurfRateLimitPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, aiderRateLimitPatterns)...)
@@ -889,6 +940,9 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		matches := collectMatches(recentOutput, ccWorkingPatterns)
 		matches = append(matches, collectMatches(recentOutput, codWorkingPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, gmiWorkingPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, grokWorkingPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, ocWorkingPatterns)...)
+		matches = append(matches, collectMatches(recentOutput, ompWorkingPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, cursorWorkingPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, windsurfWorkingPatterns)...)
 		matches = append(matches, collectMatches(recentOutput, aiderWorkingPatterns)...)
