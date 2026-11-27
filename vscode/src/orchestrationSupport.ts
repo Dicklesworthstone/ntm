@@ -238,11 +238,16 @@ export function normalizeDoctorResult(raw: unknown): DoctorResult {
             const status =
                 (typeof r.status === 'string' && r.status) ||
                 (r.installed === true || r.running === true ? 'ok' : (r.required ? 'error' : 'warning'));
+            const detailsText = typeof r.details === 'string' && r.details
+                ? r.details
+                : Array.isArray(r.details)
+                    ? r.details.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).join('; ')
+                    : '';
             const detailParts = [
                 typeof r.version === 'string' && r.version ? r.version : '',
                 typeof r.path === 'string' && r.path ? r.path : '',
                 typeof r.port === 'number' ? `port ${r.port}` : '',
-                typeof r.details === 'string' && r.details ? r.details : '',
+                detailsText,
             ].filter(Boolean);
             checks.push({
                 name: r.name,
@@ -259,7 +264,47 @@ export function normalizeDoctorResult(raw: unknown): DoctorResult {
     pushRows(obj.daemons, 'Daemon');
     pushRows(obj.configuration, 'Configuration');
     pushRows(obj.invariants, 'Invariant');
-    pushRows(obj.safety_defaults, 'Safety Default');
+    if (Array.isArray(obj.safety_defaults)) {
+        pushRows(obj.safety_defaults, 'Safety Default');
+    } else {
+        const sd = asObj(obj.safety_defaults);
+        if (sd) {
+            const hookWarn = typeof sd.claude_agent_hooks_warning === 'string' ? sd.claude_agent_hooks_warning.trim() : '';
+            checks.push(
+                {
+                    name: 'redaction_mode',
+                    category: 'Safety Default',
+                    status: typeof sd.redaction_mode === 'string' && sd.redaction_mode !== 'off' ? 'ok' : 'warning',
+                    message: `redaction_mode=${String(sd.redaction_mode ?? 'unknown')}`,
+                },
+                {
+                    name: 'privacy_default',
+                    category: 'Safety Default',
+                    status: 'ok',
+                    message: `privacy_default_enabled=${Boolean(sd.privacy_default_enabled)}`,
+                },
+                {
+                    name: 'encryption_at_rest',
+                    category: 'Safety Default',
+                    status: 'ok',
+                    message: `encryption_at_rest_enabled=${Boolean(sd.encryption_at_rest_enabled)}`,
+                },
+                {
+                    name: 'preflight_strict',
+                    category: 'Safety Default',
+                    status: 'ok',
+                    message: `preflight_default_strict=${Boolean(sd.preflight_default_strict)}`,
+                },
+                {
+                    name: 'claude_policy_hook',
+                    category: 'Safety Default',
+                    status: hookWarn ? 'warning' : 'ok',
+                    message: `claude_policy_hook_registered=${Boolean(sd.claude_policy_hook_registered)}`,
+                    details: hookWarn || undefined,
+                }
+            );
+        }
+    }
     pushRows(obj.checks, 'Diagnostic');
 
     const gh = asObj(obj.guard_hook);
