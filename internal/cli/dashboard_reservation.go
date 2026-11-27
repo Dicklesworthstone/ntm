@@ -99,6 +99,8 @@ type dashboardReservationStartup struct {
 	// wait is an optional deterministic clock boundary for lifecycle tests.
 	// Production always uses the cancellable timer below.
 	wait func(context.Context, time.Duration) bool
+	// probeTimeout optionally overrides the per-probe deadline (default 2s).
+	probeTimeout time.Duration
 }
 
 // run owns the single watcher started by the dashboard. Cancellation joins
@@ -133,8 +135,12 @@ func (s dashboardReservationStartup) waitUntilReady(ctx context.Context) bool {
 	if delay <= 0 {
 		delay = time.Second
 	}
+	probeTimeout := s.probeTimeout
+	if probeTimeout <= 0 {
+		probeTimeout = 2 * time.Second
+	}
 	for ctx.Err() == nil {
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		err := s.probe(probeCtx)
 		// A late success after either deadline is not readiness evidence.
 		ready := err == nil && probeCtx.Err() == nil
