@@ -971,7 +971,10 @@ func TestGetSpawnAssignWorkPacesWorkPromptsAndCarriesInitialPrompt(t *testing.T)
 	if len(out.PromptDeliveries) != 0 {
 		t.Fatalf("assign mode must report outcomes on assignments[], got prompt_deliveries %+v", out.PromptDeliveries)
 	}
-	if out.Recovery == nil || !reflect.DeepEqual(out.Recovery.DeliveredTo, []string{"0.1", "0.2"}) {
+	// In assign mode delivered_to names panes the way assignments[] does
+	// (docs/robot-api-design.md); a single-window session uses the bare index.
+	if out.Recovery == nil || !reflect.DeepEqual(out.Recovery.DeliveredTo, []string{out.Assignments[0].Pane, out.Assignments[1].Pane}) ||
+		!reflect.DeepEqual(out.Recovery.DeliveredTo, []string{"1", "2"}) {
 		t.Fatalf("assignment handoff receipts = %+v", out.Recovery)
 	}
 }
