@@ -1984,8 +1984,9 @@ brew install dicklesworthstone/tap/ntm
 ### Docker
 
 Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub
-Container Registry via DSR (`ghcr.io/dicklesworthstone/ntm`), tagged by semver
-(`1`, `1.38`, `1.38.0`) and commit SHA:
+Container Registry via DSR (`ghcr.io/dicklesworthstone/ntm`). Each release is
+tagged by semver, with and without the `v` prefix (`1.40.0`, `v1.40.0`), by its
+minor and major lines (`1.40`, `1`), and as `latest`:
 
 ```bash
 docker pull ghcr.io/dicklesworthstone/ntm:1
