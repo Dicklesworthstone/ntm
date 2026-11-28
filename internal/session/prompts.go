@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,12 @@ type PromptHistory struct {
 // SessionDir returns the path to the session-specific directory.
 // Creates the directory if it doesn't exist.
 func SessionDir(sessionName string) (string, error) {
+	// sanitizeFilename keeps dots, so "." and ".." would resolve to the
+	// sessions directory itself or to the ntm directory above it.
+	if trimmed := strings.TrimSpace(sessionName); trimmed == "." || trimmed == ".." {
+		return "", fmt.Errorf("invalid session name %q", sessionName)
+	}
+
 	ntmDir, err := util.NTMDir()
 	if err != nil {
 		return "", err

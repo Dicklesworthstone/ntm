@@ -24,7 +24,7 @@ func acquireLock() (func(), error) {
 	}
 
 	lockPath := filepath.Join(dir, "session.lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0666)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		localMu.Unlock()
 		return nil, err
