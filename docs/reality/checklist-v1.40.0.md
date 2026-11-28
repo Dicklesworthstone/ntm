@@ -1,0 +1,208 @@
+# Vision Checklist — v1.40.0
+
+generated: 2026-11-28T00:25:22Z by scripts/reality_audit.sh (seed 1179245615)
+
+- README.md:29 TL;DR
+- README.md:31 The Problem
+- README.md:38 The Solution
+- README.md:50 Why NTM
+- README.md:61 Quick Start
+- README.md:63 Requirements
+- README.md:72 First Session
+- README.md:108 Core Workflows
+- README.md:110 1. Multi-Agent Session Orchestration
+- README.md:134 Grok Build
+- README.md:167 Oh My Pi (`omp`)
+- README.md:247 OpenCode (`oc`)
+- README.md:315 Staggered prompts (thundering-herd prevention)
+- README.md:341 Worktree isolation and reservations
+- README.md:368 2. Dispatch, Monitoring, and Recovery
+- README.md:441 3. Work Graph Triage and Assignment
+- README.md:543 4. Coordination, Reservations, and Human Oversight
+- README.md:571 Pane identity badges
+- README.md:664 5. Safety Policy and Approvals
+- README.md:708 6. Pipelines, Templates, Recipes, and Workflow Assets
+- README.md:1308 7. Durable State, Audit, and Recovery
+- README.md:1407 8. Multi-Project Swarm Execution
+- README.md:1458 Robot Mode and Local API
+- README.md:1465 Canonical Robot Surfaces
+- README.md:1504 REST, SSE, WebSocket, and OpenAPI
+- README.md:1564 Pipeline recovery
+- README.md:1608 Embedded Web Dashboard (`ntm web`)
+- README.md:1670 Command Map
+- README.md:1688 Configuration and Project Assets
+- README.md:1692 User-Level
+- README.md:1700 Project-Level
+- README.md:1730 CAAM Seat Selection (opt-in, default off)
+- README.md:1786 Rano Network Activity
+- README.md:1804 Agent Plugins
+- README.md:1822 Pi coding agent (`pi`)
+- README.md:1901 Design Principles
+- README.md:1903 No Silent Data Loss
+- README.md:1908 Graceful Degradation
+- README.md:1913 Idempotent Orchestration
+- README.md:1918 Recoverable State
+- README.md:1922 Auditable Actions
+- README.md:1926 Safe by Default
+- README.md:1931 Architecture
+- README.md:1970 Installation
+- README.md:1972 Install Script
+- README.md:1978 Homebrew
+- README.md:1984 Docker
+- README.md:2002 From Source
+- README.md:2010 Troubleshooting
+- README.md:2012 `tmux not found`
+- README.md:2020 Agent panes start empty or an agent CLI fails immediately
+- README.md:2025 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells
+- README.md:2060 A work command has nothing useful to say
+- README.md:2065 Mail, locks, or overseer commands say the server is unavailable
+- README.md:2070 Pipeline resume or cleanup does not see the state you expect
+- README.md:2075 FAQ
+- README.md:2077 Does NTM replace tmux?
+- README.md:2081 Can I use it with one agent instead of a swarm?
+- README.md:2085 Do I need every optional integration?
+- README.md:2090 Is robot mode the preferred automation surface?
+- README.md:2095 Can multiple swarms work on the same project?
+- README.md:2099 Does NTM preserve history and state?
+- README.md:2104 Limitations
+- README.md:2112 Development
+- README.md:2128 About Contributions
+- README.md:2132 License
+- docs/ORCHESTRATION_FEATURES.md:16 Revision History
+- docs/ORCHESTRATION_FEATURES.md:28 Key Improvements in v2.0
+- docs/ORCHESTRATION_FEATURES.md:30 Activity Detection
+- docs/ORCHESTRATION_FEATURES.md:35 Health & Resilience
+- docs/ORCHESTRATION_FEATURES.md:40 Smart Routing
+- docs/ORCHESTRATION_FEATURES.md:45 Output Synthesis
+- docs/ORCHESTRATION_FEATURES.md:49 CASS Injection
+- docs/ORCHESTRATION_FEATURES.md:53 Workflow Pipelines (Major Enhancements)
+- docs/ORCHESTRATION_FEATURES.md:60 Executive Summary
+- docs/ORCHESTRATION_FEATURES.md:69 The Vision
+- docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection
+- docs/ORCHESTRATION_FEATURES.md:90 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:100 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:104 Core Concepts
+- docs/ORCHESTRATION_FEATURES.md:170 API Design
+- docs/ORCHESTRATION_FEATURES.md:248 Implementation Considerations
+- docs/ORCHESTRATION_FEATURES.md:260 Why This is Foundational
+- docs/ORCHESTRATION_FEATURES.md:270 Feature 2: Agent Health & Resilience
+- docs/ORCHESTRATION_FEATURES.md:274 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:285 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:289 Health States
+- docs/ORCHESTRATION_FEATURES.md:302 Health Check Components
+- docs/ORCHESTRATION_FEATURES.md:327 Automatic Recovery
+- docs/ORCHESTRATION_FEATURES.md:357 Configuration
+- docs/ORCHESTRATION_FEATURES.md:391 Bounded Background Archives
+- docs/ORCHESTRATION_FEATURES.md:413 API Design
+- docs/ORCHESTRATION_FEATURES.md:482 Implementation Notes
+- docs/ORCHESTRATION_FEATURES.md:494 Feature 3: Smart Work Distribution
+- docs/ORCHESTRATION_FEATURES.md:498 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:505 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:509 Scoring System
+- docs/ORCHESTRATION_FEATURES.md:530 Routing Strategies
+- docs/ORCHESTRATION_FEATURES.md:560 API Design
+- docs/ORCHESTRATION_FEATURES.md:630 Integration with Health
+- docs/ORCHESTRATION_FEATURES.md:640 Feature 4: Output Synthesis
+- docs/ORCHESTRATION_FEATURES.md:644 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:651 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:655 Scope (Phase 1)
+- docs/ORCHESTRATION_FEATURES.md:663 File Conflict Detection
+- docs/ORCHESTRATION_FEATURES.md:679 API Design
+- docs/ORCHESTRATION_FEATURES.md:732 Feature 5: CASS Auto-Injection
+- docs/ORCHESTRATION_FEATURES.md:736 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:743 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:747 How It Works
+- docs/ORCHESTRATION_FEATURES.md:774 Configuration
+- docs/ORCHESTRATION_FEATURES.md:792 API Integration
+- docs/ORCHESTRATION_FEATURES.md:825 Assignment-time injection
+- docs/ORCHESTRATION_FEATURES.md:857 Feature 6: Workflow Pipelines
+- docs/ORCHESTRATION_FEATURES.md:861 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:865 Solution Overview
+- docs/ORCHESTRATION_FEATURES.md:869 Workflow Schema (v2.0)
+- docs/ORCHESTRATION_FEATURES.md:931 Parallel Steps
+- docs/ORCHESTRATION_FEATURES.md:958 Conditional Execution
+- docs/ORCHESTRATION_FEATURES.md:979 Loop Constructs
+- docs/ORCHESTRATION_FEATURES.md:1007 Output Parsing
+- docs/ORCHESTRATION_FEATURES.md:1023 Execution Model
+- docs/ORCHESTRATION_FEATURES.md:1040 Variable Substitution
+- docs/ORCHESTRATION_FEATURES.md:1054 Error Handling
+- docs/ORCHESTRATION_FEATURES.md:1061 State Persistence
+- docs/ORCHESTRATION_FEATURES.md:1068 API Design
+- docs/ORCHESTRATION_FEATURES.md:1131 Dependency Graph
+- docs/ORCHESTRATION_FEATURES.md:1167 Feature 7: Thundering Herd Prevention
+- docs/ORCHESTRATION_FEATURES.md:1171 Problem Statement
+- docs/ORCHESTRATION_FEATURES.md:1186 Solution: Staggered Spawn
+- docs/ORCHESTRATION_FEATURES.md:1213 Why 90 Seconds Default?
+- docs/ORCHESTRATION_FEATURES.md:1223 Spawn Order Awareness
+- docs/ORCHESTRATION_FEATURES.md:1239 Alternative: Orchestrator Work Assignment
+- docs/ORCHESTRATION_FEATURES.md:1266 Historical Proposal: Soft-Claim Files
+- docs/ORCHESTRATION_FEATURES.md:1272 Coordinator Toggle Persistence
+- docs/ORCHESTRATION_FEATURES.md:1296 Session Coordinator Runtime
+- docs/ORCHESTRATION_FEATURES.md:1353 API Design
+- docs/ORCHESTRATION_FEATURES.md:1422 Session handoff recovery
+- docs/ORCHESTRATION_FEATURES.md:1448 Configuration
+- docs/ORCHESTRATION_FEATURES.md:1468 Implementation Order
+- docs/ORCHESTRATION_FEATURES.md:1483 Success Criteria
+- SKILL.md:27 Quick Start
+- SKILL.md:48 Session Orchestration
+- SKILL.md:89 Dispatch and Reusable Assets
+- SKILL.md:117 Reasoning Ensembles
+- SKILL.md:131 Work Intelligence
+- SKILL.md:151 Coordination and Recovery
+- SKILL.md:198 Safety and Approvals
+- SKILL.md:221 Canonical Robot Mode
+- SKILL.md:307 Serve API and Pipeline Surfaces
+- SKILL.md:324 Project Resolution
+- SKILL.md:337 Reference Index
+- SKILL.md:348 Related Skills
+- command_palette.md:27 Analysis & Review
+- command_palette.md:29 fresh_review | Fresh Review
+- command_palette.md:32 check_other_agents_work | Check Other Agents Work
+- command_palette.md:35 randomly_inspect_code | Randomly Inspect Code
+- command_palette.md:38 analyze_beads_and_allocate | Analyze Beads and Allocate
+- command_palette.md:41 check_orm_and_schemas | Check ORM and Schemas
+- command_palette.md:44 scrutinize_and_improve_workflow_and_ui | Scrutinize and Improve Workflow and UI
+- command_palette.md:47 apply_ubs | Apply UBS
+- command_palette.md:50 Coding & Development
+- command_palette.md:52 fix_bug | Fix Bug
+- command_palette.md:55 create_tests | Create Tests
+- command_palette.md:58 leverage_tanstack_libraries | Leverage TanStack Libraries
+- command_palette.md:61 build_ui_ux | Build UI/UX
+- command_palette.md:64 Ensemble
+- command_palette.md:66 ensemble_suggest | Ensemble Suggest Preset
+- command_palette.md:69 ensemble_list | Ensemble Presets (Core)
+- command_palette.md:72 ensemble_run | Ensemble Run (Pick Preset + Prompt)
+- command_palette.md:77 ensemble_status | Ensemble Status
+- command_palette.md:80 ensemble_synthesize | Ensemble Synthesize
+- command_palette.md:83 ensemble_modes_core | Ensemble Modes (Core)
+- command_palette.md:86 ensemble_modes_advanced | Ensemble Modes (Advanced)
+- command_palette.md:89 Documentation
+- command_palette.md:91 complete_docusaurus_site | Complete Docusaurus Site
+- command_palette.md:94 improve_readme | Improve README
+- command_palette.md:97 revise_readme | Revise README
+- command_palette.md:100 add_missing_features_to_readme | Add Missing Features to README
+- command_palette.md:103 Planning & Workflow
+- command_palette.md:105 combine_plans_into_hybrid | Combine Plans Into Hybrid
+- command_palette.md:108 improve_beads | Improve Beads
+- command_palette.md:111 turn_plan_into_beads | Turn Plan Into Beads
+- command_palette.md:114 use_bv | Use BV
+- command_palette.md:117 next_bead | Next Bead
+- command_palette.md:120 work_on_your_beads | Work on Your Beads
+- command_palette.md:123 do_all_of_it | Do All Of It
+- command_palette.md:126 Git & Operations
+- command_palette.md:128 git_commit | Git Commit
+- command_palette.md:131 do_gh_flow | Commit, Preflight & DSR Release
+- command_palette.md:134 Swarm Triage & Diagnostics
+- command_palette.md:136 attention_triage | Attention Triage
+- command_palette.md:139 backpressure_heatmap | Swarm Backpressure & Heatmap
+- command_palette.md:142 Agent Coordination
+- command_palette.md:144 default_new_agent | Default New Agent
+- command_palette.md:147 check_and_respond_to_mail | Check and Respond to Mail
+- command_palette.md:150 introduce_to_fellow_agents | Introduce to Fellow Agents
+- command_palette.md:153 check_project_inbox | Check Project Inbox
+- command_palette.md:157 start_out_with_agent_mail | Start Out With Agent Mail
+- command_palette.md:159 Investigation
+- command_palette.md:161 read_agents_and_investigate | Read Agents and Investigate
+- command_palette.md:164 reread_agents_md | Reread AGENTS.md
+- command_palette.md:167 Quick Commands
+- command_palette.md:169 ultrathink | Ultrathink
