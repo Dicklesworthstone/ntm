@@ -580,7 +580,12 @@ func TestRotationChecker_OpenCodeAutoConfirm(t *testing.T) {
 	}
 }
 
-func TestRotationChecker_NoInventedPiOrAntigravityUsage(t *testing.T) {
+// Pi renders its own context gauge in the footer ("90%/200k" in the fixture),
+// so that reading is measured, pane-attributed evidence and may rotate the
+// pane (see TestRotationPiGaugeAndServerScopedTranscript). Antigravity has no
+// native context accounting: it must produce no decision, and neither pane
+// may borrow a reading from process transcripts.
+func TestRotationChecker_NoInventedAntigravityUsage(t *testing.T) {
 	panes := []tmux.Pane{
 		{ID: "%30", Title: "rotsess__pi_1", Type: tmux.AgentPi, PID: 101, Width: 120},
 		{ID: "%31", Title: "rotsess__agy_1", Type: tmux.AgentAntigravity, PID: 102, Width: 120},
@@ -590,11 +595,24 @@ func TestRotationChecker_NoInventedPiOrAntigravityUsage(t *testing.T) {
 		"%31": antigravityNudgeCapture("", false),
 	}, nil)
 	env.rc.processUsage = func(string, int) (*ntmctx.TranscriptUsage, bool) {
-		t.Fatal("harness without native context accounting consulted another source")
+		t.Fatal("a pane consulted process transcripts instead of its own evidence")
 		return nil, false
 	}
-	if decisions := env.rc.runOnce(t.Context()); len(decisions) != 0 || len(env.confirmed) != 0 || len(env.published) != 0 {
-		t.Fatalf("unknown native usage triggered rotation: decisions=%+v confirmed=%v published=%+v", decisions, env.confirmed, env.published)
+	decisions := env.rc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].PaneID != "%30" || decisions[0].Source != "status_bar" {
+		t.Fatalf("decisions = %+v, want only the pi pane, from its footer gauge", decisions)
+	}
+	for _, id := range env.confirmed {
+		if id != "rotsess__pi_1" {
+			t.Fatalf("unknown native usage triggered rotation: confirmed=%v", env.confirmed)
+		}
+	}
+	for _, rec := range env.published {
+		for _, target := range rec.Targets {
+			if target != "rotsess__pi_1" {
+				t.Fatalf("unknown native usage triggered rotation: published=%+v", env.published)
+			}
+		}
 	}
 }
 

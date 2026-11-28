@@ -620,8 +620,16 @@ func TestRunCycleNativeHarnessNudgesAndOpenCodeRotation(t *testing.T) {
 	if len(env.dispatch) != len(panes) {
 		t.Fatalf("native harnesses not nudged by tick: %v", env.dispatch)
 	}
-	if len(rot.published) != 1 || rot.published[0].ReasonCode != "context_rotation_enqueued" ||
-		len(rot.published[0].Targets) != 1 || rot.published[0].Targets[0] != panes[1].Title {
-		t.Fatalf("tick did not enqueue measured OpenCode rotation: %+v", rot.published)
+	// Pi's footer gauge (90%/200k) and OpenCode's status bar are both measured
+	// readings above the threshold; Antigravity has none and must not rotate.
+	enqueued := map[string]int{}
+	for _, rec := range rot.published {
+		if rec.ReasonCode != "context_rotation_enqueued" || len(rec.Targets) != 1 {
+			t.Fatalf("unexpected rotation event: %+v", rot.published)
+		}
+		enqueued[rec.Targets[0]]++
+	}
+	if len(rot.published) != 2 || enqueued[panes[0].Title] != 1 || enqueued[panes[1].Title] != 1 {
+		t.Fatalf("tick did not enqueue the measured Pi and OpenCode rotations: %+v", rot.published)
 	}
 }
