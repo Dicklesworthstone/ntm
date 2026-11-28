@@ -1000,7 +1000,12 @@ func Execute() error {
 	// send, …) continue to receive the OS signal directly — Go delivers it
 	// to every registered consumer — so adding a root-level consumer does
 	// not interfere with their existing shutdown logic.
-	err := executeRootWithSignals(rootCmd.ExecuteContext)
+	err := executeRootWithSignals(func(ctx context.Context) error {
+		if machineInvocation {
+			ctx = withMachineOutput(ctx)
+		}
+		return rootCmd.ExecuteContext(ctx)
+	})
 	if err == nil && robotProcessExit != nil {
 		err = robotProcessExit
 	}
@@ -1073,6 +1078,28 @@ func executeRootWithSignals(run func(context.Context) error) error {
 	cancel()
 	<-watcherDone
 	return err
+}
+
+// machineOutputKey marks the command context of an invocation whose stdout is
+// a single machine-readable document (--robot-*, --json). Shared helpers that
+// print human diagnostics check it: such output keeps stdout data-only and
+// stderr empty, and carries machine-actionable context in the response
+// envelope instead.
+type machineOutputKey struct{}
+
+func withMachineOutput(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, machineOutputKey{}, true)
+}
+
+func isMachineOutput(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(machineOutputKey{}).(bool)
+	return marked
 }
 
 func suppressRobotDiagnostics(cmd *cobra.Command) func() {

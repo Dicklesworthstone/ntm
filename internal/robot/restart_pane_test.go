@@ -2362,13 +2362,17 @@ func TestNotifyRestartPaneIdentityHookForwardsRestartedAgentPanes(t *testing.T) 
 
 	var gotSession string
 	var got []RestartedAgentPane
-	SetRestartPaneIdentityHook(func(_ context.Context, session string, panes []RestartedAgentPane) {
+	SetRestartPaneIdentityHook(func(_ context.Context, session string, panes []RestartedAgentPane) []string {
 		gotSession = session
 		got = panes
+		return []string{"Agent Mail registration failed: server unavailable"}
 	})
 	defer SetRestartPaneIdentityHook(nil)
 
-	notifyRestartPaneIdentityHook(t.Context(), "demo", targets, restarted, false)
+	warnings := notifyRestartPaneIdentityHook(t.Context(), "demo", targets, restarted, false)
+	if len(warnings) != 1 || warnings[0] != "Agent Mail registration failed: server unavailable" {
+		t.Fatalf("hook warnings = %q, want the hook's single warning passed through for the restart envelope", warnings)
+	}
 	if gotSession != "demo" {
 		t.Fatalf("hook session = %q, want %q", gotSession, "demo")
 	}
@@ -2382,7 +2386,9 @@ func TestNotifyRestartPaneIdentityHookForwardsRestartedAgentPanes(t *testing.T) 
 
 	// Nothing restarted: the hook must not fire at all.
 	got = nil
-	notifyRestartPaneIdentityHook(t.Context(), "demo", targets, nil, false)
+	if warnings := notifyRestartPaneIdentityHook(t.Context(), "demo", targets, nil, false); warnings != nil {
+		t.Fatalf("warnings with no restarted panes = %q, want none", warnings)
+	}
 	if got != nil {
 		t.Fatalf("hook fired with no restarted panes: %+v", got)
 	}

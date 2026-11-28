@@ -4454,8 +4454,58 @@ func isCLIIdentityOutputSuppressed(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
+	if isMachineOutput(ctx) {
+		return true
+	}
 	suppressed, _ := ctx.Value(suppressCLIIdentityOutputKey{}).(bool)
 	return suppressed
+}
+
+// identityWarningCollector is the coordinator Reporter for callers that report
+// Agent Mail problems in their own response envelope: it keeps the warnings
+// instead of printing them. It is safe for concurrent use.
+type identityWarningCollector struct {
+	mu       sync.Mutex
+	warnings []string
+}
+
+type identityWarningCollectorKey struct{}
+
+func withIdentityWarningCollector(ctx context.Context, collector *identityWarningCollector) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, identityWarningCollectorKey{}, collector)
+}
+
+func identityWarningCollectorFrom(ctx context.Context) *identityWarningCollector {
+	if ctx == nil {
+		return nil
+	}
+	collector, _ := ctx.Value(identityWarningCollectorKey{}).(*identityWarningCollector)
+	return collector
+}
+
+func (c *identityWarningCollector) Infof(string, ...any) {}
+
+func (c *identityWarningCollector) Warnf(format string, args ...any) {
+	c.add(fmt.Sprintf(format, args...))
+}
+
+func (c *identityWarningCollector) add(message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.warnings = append(c.warnings, message)
+}
+
+// list returns a copy of the collected warnings; nil for a nil collector.
+func (c *identityWarningCollector) list() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.warnings...)
 }
 
 func registerSessionAgent(parentCtx context.Context, sessionName, workingDir string) string {
@@ -4497,7 +4547,9 @@ func spawnIdentityOptions() spawnidentity.Options {
 
 func spawnIdentityOptionsForContext(ctx context.Context) spawnidentity.Options {
 	opts := spawnidentity.ConfigOptions(cfg)
-	if !isCLIIdentityOutputSuppressed(ctx) {
+	if collector := identityWarningCollectorFrom(ctx); collector != nil {
+		opts.Reporter = collector
+	} else if !isCLIIdentityOutputSuppressed(ctx) {
 		opts.Reporter = cliIdentityReporter{}
 	}
 	opts.ListPanes = spawnIdentityPaneProbe

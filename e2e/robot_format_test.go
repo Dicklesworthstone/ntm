@@ -981,11 +981,17 @@ func TestE2EHealthAutoRestartUsesEffectiveAgentConfig(t *testing.T) {
 	time.Sleep(31 * time.Second)
 
 	tmuxWrapper := filepath.Join(fixture.root, "tmux")
+	// ntm guards pane mutations as `if-shell -F -t <pane> <predicate>
+	// <command>`, so the respawn arrives inside if-shell's arguments rather
+	// than as $1. Matching only $1 let the respawn through: the pane was
+	// replaced, so the follow-up run below found nothing stuck.
 	tmuxWrapperScript := `#!/bin/sh
-if [ "${1:-}" = "respawn-pane" ]; then
-  printf 'injected respawn failure\n' >&2
-  exit 72
-fi
+case "$*" in
+  *respawn-pane*)
+    printf 'injected respawn failure\n' >&2
+    exit 72
+    ;;
+esac
 exec "$NTM_E2E_REAL_TMUX" "$@"
 `
 	if err := os.WriteFile(tmuxWrapper, []byte(tmuxWrapperScript), 0o700); err != nil {
@@ -1029,14 +1035,21 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		t.Fatalf("configured health restart exit=%d stdout=%s stderr=%s", process.exitCode, process.stdout, process.stderr)
 	}
 	var output struct {
-		Success    bool  `json:"success"`
-		StuckPanes []int `json:"stuck_panes"`
-		Restarted  []int `json:"restarted"`
-		Failed     []int `json:"failed"`
+		Success    bool     `json:"success"`
+		StuckPanes []int    `json:"stuck_panes"`
+		Restarted  []int    `json:"restarted"`
+		Failed     []int    `json:"failed"`
+		Warnings   []string `json:"warnings"`
 	}
 	decodeSingleRobotJSON(t, process.stdout, &output)
 	if !output.Success || !slices.Equal(output.StuckPanes, []int{0}) || !slices.Equal(output.Restarted, []int{0}) || len(output.Failed) != 0 {
 		t.Fatalf("configured health restart output=%+v", output)
+	}
+	// The fixture points Agent Mail at a refusing port, so the restarted
+	// pane's identity refresh fails. That warning belongs in the envelope,
+	// not ahead of it on stdout or on stderr.
+	if !slices.ContainsFunc(output.Warnings, func(warning string) bool { return strings.Contains(warning, "Agent Mail") }) {
+		t.Fatalf("configured health restart warnings=%q, want the Agent Mail re-registration failure", output.Warnings)
 	}
 	fixture.waitForFileContents(t, markerPath, "configured")
 	deadline := time.Now().Add(5 * time.Second)

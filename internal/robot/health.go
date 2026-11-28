@@ -1328,6 +1328,9 @@ type AutoRestartStuckOutput struct {
 	Threshold string            `json:"threshold"`
 	DryRun    bool              `json:"dry_run,omitempty"`
 	CheckedAt string            `json:"checked_at"`
+	// Warnings carries non-fatal problems the pane restarts reported, such
+	// as an Agent Mail identity that could not be re-registered.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // AutoRestartStuckOptions configures the auto-restart-stuck operation.
@@ -1495,10 +1498,19 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 	}
 
 	// Restart stuck panes using only the stuck records (never healthy siblings).
-	restarted, failed, restartErr := restartAutoRestartStuckPanes(ctx, opts, stuckRecords, stuckPanes, GetRestartPaneContext)
+	var restartWarnings []string
+	restartAndCollectWarnings := func(ctx context.Context, restartOpts RestartPaneOptions) (*RestartPaneOutput, error) {
+		restartOut, err := GetRestartPaneContext(ctx, restartOpts)
+		if restartOut != nil {
+			restartWarnings = append(restartWarnings, restartOut.Warnings...)
+		}
+		return restartOut, err
+	}
+	restarted, failed, restartErr := restartAutoRestartStuckPanes(ctx, opts, stuckRecords, stuckPanes, restartAndCollectWarnings)
 	if restartErr != nil {
 		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false)
 		output.Skipped = skipped
+		output.Warnings = restartWarnings
 		code := ErrCodeNotImplemented
 		hint := agent.GrokPhaseOneCapabilityHint
 		if errors.Is(restartErr, context.Canceled) || errors.Is(restartErr, context.DeadlineExceeded) {
@@ -1511,6 +1523,7 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 
 	output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false)
 	output.Skipped = skipped
+	output.Warnings = restartWarnings
 	return output, nil
 }
 

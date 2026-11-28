@@ -415,22 +415,25 @@ type RestartedAgentPane struct {
 // restartPaneIdentityHook is invoked after panes are respawned so restarted
 // panes regain resolvable Agent Mail identities. The cli package installs the
 // gated registration flow here (robot cannot import cli without a cycle); the
-// hook must be best-effort and must never fail the restart.
-var restartPaneIdentityHook func(ctx context.Context, session string, panes []RestartedAgentPane)
+// hook must be best-effort and must never fail the restart. It returns the
+// warnings that belong in the restart response (machine-output invocations);
+// human invocations print their own and return none.
+var restartPaneIdentityHook func(ctx context.Context, session string, panes []RestartedAgentPane) []string
 
 // SetRestartPaneIdentityHook registers the post-restart identity callback.
 // Passing nil disables it. The hook is shared by every restart caller
 // (ntm respawn, ntm robot restart-pane, health auto-restart, diagnose).
-func SetRestartPaneIdentityHook(hook func(ctx context.Context, session string, panes []RestartedAgentPane)) {
+func SetRestartPaneIdentityHook(hook func(ctx context.Context, session string, panes []RestartedAgentPane) []string) {
 	restartPaneIdentityHook = hook
 }
 
 // notifyRestartPaneIdentityHook translates successfully restarted agent panes
-// into RestartedAgentPane records and invokes the identity hook. User/unknown
-// panes are skipped: they never carry an Agent Mail identity.
-func notifyRestartPaneIdentityHook(ctx context.Context, session string, targets []tmux.Pane, restarted []string, multiWindow bool) {
+// into RestartedAgentPane records, invokes the identity hook, and returns the
+// hook's warnings. User/unknown panes are skipped: they never carry an Agent
+// Mail identity.
+func notifyRestartPaneIdentityHook(ctx context.Context, session string, targets []tmux.Pane, restarted []string, multiWindow bool) []string {
 	if restartPaneIdentityHook == nil || len(restarted) == 0 {
-		return
+		return nil
 	}
 	restartedKeys := make(map[string]bool, len(restarted))
 	for _, key := range restarted {
@@ -453,9 +456,9 @@ func notifyRestartPaneIdentityHook(ctx context.Context, session string, targets 
 		})
 	}
 	if len(panes) == 0 {
-		return
+		return nil
 	}
-	restartPaneIdentityHook(ctx, session, panes)
+	return restartPaneIdentityHook(ctx, session, panes)
 }
 
 func restartPaneCancellationError(ctx context.Context, err error) error {
@@ -824,7 +827,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				verifiedTargets[paneKey] = true
 			}
 		}
-		notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, verifiedRestarts, multiWindow)
+		output.Warnings = append(output.Warnings, notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, verifiedRestarts, multiWindow)...)
 
 		output.AgentRelaunched = make(map[string]bool)
 		output.AgentRelaunchStatus = make(map[string]RestartAgentRelaunchStatus)

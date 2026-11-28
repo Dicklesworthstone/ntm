@@ -702,8 +702,9 @@ func TestGetRestartPaneMetadataTransportHelper(t *testing.T) {
 	saved := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model 'original' --custom 'retained'", Model: "original"}
 	var recorded *tmux.AgentLaunchSpec
 	identityRefreshed := false
-	SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) {
+	SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) []string {
 		identityRefreshed = true
+		return nil
 	})
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 	deps := &RestartPaneDependencies{
@@ -1026,13 +1027,14 @@ exec "$@"
 	}
 	var recorded *tmux.AgentLaunchSpec
 	identityRefreshed := false
-	SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) {
+	SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) []string {
 		identityRefreshed = true
 		if mode == "stale-after-identity" {
 			if err := os.WriteFile(filepath.Join(root, "foreign-pid"), nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
+		return nil
 	})
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 	listCalls := 0

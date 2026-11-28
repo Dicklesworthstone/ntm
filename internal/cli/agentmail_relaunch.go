@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -22,22 +23,35 @@ import (
 // cleaned), and re-persists the registry so resolve_pane_identity keeps
 // working after a restart. Best-effort by construction: Agent Mail being
 // disabled or unavailable never fails the restart (mirrors spawn).
-func registerRelaunchedPanes(ctx context.Context, session string, panes []robot.RestartedAgentPane) {
+//
+// Human invocations print the flow's warnings. Machine-output invocations
+// (--robot-*, --json) own stdout, so the warnings are returned instead and the
+// restart engine adds them to the response envelope's warnings.
+func registerRelaunchedPanes(ctx context.Context, session string, panes []robot.RestartedAgentPane) []string {
 	if len(panes) == 0 || !spawnidentity.RegistrationEnabled(cfg) {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var collector *identityWarningCollector
+	if isMachineOutput(ctx) {
+		collector = &identityWarningCollector{}
+		ctx = withIdentityWarningCollector(ctx, collector)
+	}
 	dir, err := resolveWorkspaceProjectDirForExplicitSession(ctx, session)
 	if err != nil {
-		if !IsJSONOutput() {
-			output.PrintWarningf("Agent Mail re-registration skipped for restarted panes: %v", err)
+		message := fmt.Sprintf("Agent Mail re-registration skipped for restarted panes: %v", err)
+		if collector != nil {
+			collector.add(message)
+		} else if !IsJSONOutput() && !isCLIIdentityOutputSuppressed(ctx) {
+			output.PrintWarningf("%s", message)
 		}
-		return
+		return collector.list()
 	}
 	registerSessionAgent(ctx, session, dir)
 	_ = registerSpawnedAgents(ctx, dir, session, relaunchRegistrationInputs(panes))
+	return collector.list()
 }
 
 // relaunchRegistrationInputs translates restarted panes into the exact

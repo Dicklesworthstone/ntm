@@ -548,7 +548,10 @@ esac
 				}
 				var recorded *tmux.AgentLaunchSpec
 				var launchReads, identityCalls int
-				SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) { identityCalls++ })
+				SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) []string {
+					identityCalls++
+					return nil
+				})
 				t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 				deps := RestartPaneDependencies{
 					ListPanes: func(context.Context, string) ([]tmux.Pane, error) {

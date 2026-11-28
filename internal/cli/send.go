@@ -3908,7 +3908,7 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 				Command: command,
 				Reason:  reason,
 			}
-			logDCGBlocked(command, session, panes, blocked)
+			logDCGBlocked(ctx, command, session, panes, blocked)
 			recordBlockedCommandMetric(session, command, reason, panes)
 			return fmt.Errorf("%w: %s", robot.ErrSendCommandBlocked, reason)
 		}
@@ -3917,7 +3917,7 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 			return err
 		}
 		if blocked != nil {
-			logDCGBlocked(command, session, panes, blocked)
+			logDCGBlocked(ctx, command, session, panes, blocked)
 			reason := strings.TrimSpace(blocked.Reason)
 			if reason == "" {
 				reason = "blocked by dcg"
@@ -4584,14 +4584,16 @@ func timelineAgentIDFromPane(p tmux.Pane) string {
 	return ""
 }
 
-func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.BlockedCommand) {
+func logDCGBlocked(ctx context.Context, command, session string, panes []tmux.Pane, blocked *tools.BlockedCommand) {
 	config := dcg.DefaultAuditLoggerConfig()
 	if cfg != nil && cfg.Integrations.DCG.AuditLog != "" {
 		config.Path = cfg.Integrations.DCG.AuditLog
 	}
 	logger, err := dcg.NewAuditLogger(config)
 	if err != nil {
-		if !jsonOutput {
+		// Robot sends reach this through the shared send guard; their stdout
+		// is the response envelope, which already reports the block.
+		if !jsonOutput && !isMachineOutput(ctx) {
 			fmt.Printf("⚠ DCG audit log unavailable: %v\n", err)
 		}
 		return
