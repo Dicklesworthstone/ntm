@@ -1642,6 +1642,39 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 	}
 }
 
+// A restart canceled while a live agent has not yet shown its prompt must
+// still report the agent as alive. The post-cancellation readiness wait polls
+// until its observation window runs out, so a liveness probe that shares that
+// window sees an expired context.
+func TestObserveRestartPaneAgentAfterCancellationReportsLiveAgentThatNeverBecameReady(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cancel() // the restart was canceled before this observation runs
+	info := restartPromptTarget{Pane: "1", Target: "%1", AgentType: tmux.AgentClaude, ResolvedType: "claude"}
+	outcome := observeRestartPaneAgentAfterCancellation(
+		ctx,
+		info,
+		func(context.Context, string) (int, error) { return 100, nil },
+		func(readyCtx context.Context, _ string, _ int, _ string, _ time.Duration) (bool, error) {
+			<-readyCtx.Done()
+			return false, readyCtx.Err()
+		},
+		func(probeCtx context.Context, target string, shellPID int) (int, error) {
+			if err := probeCtx.Err(); err != nil {
+				return 0, err
+			}
+			if target != "%1" || shellPID != 100 {
+				t.Errorf("probe target=%q shellPID=%d", target, shellPID)
+			}
+			return 101, nil
+		},
+	)
+	if !outcome.ProcessAlive || outcome.Ready || outcome.Status != RestartAgentRelaunchUnknown || outcome.ShellPID != 100 {
+		t.Fatalf("post-cancellation outcome=%+v, want a live agent of unknown readiness", outcome)
+	}
+}
+
 func TestApplyRestartAtomicResultMapsCancellationToTimeout(t *testing.T) {
 	t.Parallel()
 	output := &RestartPaneOutput{

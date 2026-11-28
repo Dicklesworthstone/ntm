@@ -981,19 +981,14 @@ func TestE2EHealthAutoRestartUsesEffectiveAgentConfig(t *testing.T) {
 	time.Sleep(31 * time.Second)
 
 	tmuxWrapper := filepath.Join(fixture.root, "tmux")
-	// ntm guards pane mutations as `if-shell -F -t <pane> <predicate>
-	// <command>`, so the respawn arrives inside if-shell's arguments rather
-	// than as $1. Matching only $1 let the respawn through: the pane was
-	// replaced, so the follow-up run below found nothing stuck.
-	tmuxWrapperScript := `#!/bin/sh
-case "$*" in
-  *respawn-pane*)
-    printf 'injected respawn failure\n' >&2
-    exit 72
-    ;;
-esac
-exec "$NTM_E2E_REAL_TMUX" "$@"
-`
+	// The respawn arrives as a guarded if-shell (see restartFakeTMUXScript).
+	// Matching only $1 let it through: the pane was replaced, so the
+	// follow-up run below found nothing stuck.
+	tmuxWrapperScript := restartFakeTMUXScript(`if [ "$cmd" = respawn-pane ]; then
+  printf 'injected respawn failure\n' >&2
+  exit 72
+fi
+`)
 	if err := os.WriteFile(tmuxWrapper, []byte(tmuxWrapperScript), 0o700); err != nil {
 		t.Fatalf("write failing tmux wrapper: %v", err)
 	}
@@ -1065,6 +1060,121 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 	}
 }
 
+// restartFakeTMUXScript returns a tmux wrapper script for the built-binary
+// restart tests. It records pane actuations to $NTM_E2E_RESTART_ACTUATION_LOG
+// when that is set, runs body, and then hands the call to $NTM_E2E_REAL_TMUX.
+//
+// ntm sends guarded pane mutations (respawn-pane, send-keys, paste-buffer) as
+// `if-shell -F -t <pane> <predicate> '<command>' 'display-message -p
+// ntm_pane_identity_changed'`, with each word of <command> single-quoted, so
+// the mutation is not $1. A wrapper that only reads $1 never sees it: its
+// injected failures never fire and its "no actuation" checks pass vacuously.
+// The prelude recovers the effective command for both forms. body reads it as
+// $cmd (the tmux command name), $last (its final word) and $words (every word,
+// space-joined and space-padded), while "$@" stays the original argv for the
+// real tmux.
+func restartFakeTMUXScript(body string) string {
+	return `#!/bin/sh
+ntm_e2e_effective() {
+  cmd=${1:-}
+  last=
+  for arg in "$@"; do last=$arg; done
+  line=$*
+  words=" $* "
+}
+if [ "$#" -eq 7 ] && [ "$1" = if-shell ] && [ "$2" = -F ] && [ "$3" = -t ] &&
+   [ "$7" = "display-message -p ntm_pane_identity_changed" ]; then
+  eval "ntm_e2e_effective $6"
+else
+  ntm_e2e_effective "$@"
+fi
+if [ -n "${NTM_E2E_RESTART_ACTUATION_LOG:-}" ]; then
+  case "$cmd" in
+    respawn-pane|send-keys|load-buffer|paste-buffer|set-buffer|delete-buffer)
+      printf '%s\n' "$line" >> "$NTM_E2E_RESTART_ACTUATION_LOG"
+      ;;
+  esac
+fi
+` + body + `exec "$NTM_E2E_REAL_TMUX" "$@"
+`
+}
+
+// A guarded mutation must look the same to the wrapper as a direct call, and
+// the real tmux must still get the guarded argv unchanged.
+func TestRestartFakeTMUXScriptSeesGuardedMutations(t *testing.T) {
+	dir := t.TempDir()
+	realTMUX := filepath.Join(dir, "real-tmux")
+	if err := os.WriteFile(realTMUX, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NTM_E2E_TEST_REAL_LOG\"\n"), 0o700); err != nil {
+		t.Fatalf("write real tmux stub: %v", err)
+	}
+	wrapper := filepath.Join(dir, "tmux")
+	body := `printf '%s|%s\n' "$cmd" "$last" >> "$NTM_E2E_TEST_SEEN_LOG"
+`
+	if err := os.WriteFile(wrapper, []byte(restartFakeTMUXScript(body)), 0o700); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+	realLog := filepath.Join(dir, "real.log")
+	seenLog := filepath.Join(dir, "seen.log")
+	actuationLog := filepath.Join(dir, "actuation.log")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(wrapper, args...)
+		cmd.Env = append(os.Environ(),
+			"NTM_E2E_REAL_TMUX="+realTMUX,
+			"NTM_E2E_TEST_REAL_LOG="+realLog,
+			"NTM_E2E_TEST_SEEN_LOG="+seenLog,
+			"NTM_E2E_RESTART_ACTUATION_LOG="+actuationLog,
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("wrapper %q: %v output=%s", args, err, out)
+		}
+	}
+	guarded := func(words ...string) []string {
+		quoted := make([]string, len(words))
+		for i, word := range words {
+			quoted[i] = tmux.ShellQuote(word)
+		}
+		return []string{"if-shell", "-F", "-t", "%7", "#{==:#{pane_pid},42}",
+			strings.Join(quoted, " "), "display-message -p ntm_pane_identity_changed"}
+	}
+	// Quotes and substitutions in a prompt must reach the body as literal
+	// text, never run.
+	prompt := "it's $(touch " + filepath.Join(dir, "ran") + ") `true`"
+	guardedRespawn := guarded("respawn-pane", "-t", "%7", "-k")
+	run(guardedRespawn...)
+	run(guarded("send-keys", "-t", "%7", "-l", "--", prompt)...)
+	run(guarded("send-keys", "-t", "%7", "Enter")...)
+	run("send-keys", "-t", "%7", "Enter")
+	run("capture-pane", "-p", "-t", "%7")
+
+	if _, err := os.Stat(filepath.Join(dir, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("wrapper executed text from a guarded command: stat err=%v", err)
+	}
+	seen, err := os.ReadFile(seenLog)
+	if err != nil {
+		t.Fatalf("read seen log: %v", err)
+	}
+	wantSeen := "respawn-pane|-k\nsend-keys|" + prompt + "\nsend-keys|Enter\nsend-keys|Enter\ncapture-pane|%7\n"
+	if string(seen) != wantSeen {
+		t.Fatalf("wrapper saw\n%s\nwant\n%s", seen, wantSeen)
+	}
+	actuations, err := os.ReadFile(actuationLog)
+	if err != nil {
+		t.Fatalf("read actuation log: %v", err)
+	}
+	wantActuations := "respawn-pane -t %7 -k\nsend-keys -t %7 -l -- " + prompt + "\nsend-keys -t %7 Enter\nsend-keys -t %7 Enter\n"
+	if string(actuations) != wantActuations {
+		t.Fatalf("actuation log\n%s\nwant\n%s", actuations, wantActuations)
+	}
+	realCalls, err := os.ReadFile(realLog)
+	if err != nil {
+		t.Fatalf("read real tmux log: %v", err)
+	}
+	if first := strings.SplitN(string(realCalls), "\n", 2)[0]; first != strings.Join(guardedRespawn, " ") {
+		t.Fatalf("real tmux got %q, want the guarded argv %q", first, strings.Join(guardedRespawn, " "))
+	}
+}
+
 func TestE2EAtomicRestartBeadPolicyAndDurabilityBuiltProcess(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	fixture := newRobotProcessFixture(t, "atomic-restart-bead")
@@ -1122,6 +1232,9 @@ func TestE2EAtomicRestartBeadPolicyAndDurabilityBuiltProcess(t *testing.T) {
 		}
 	}
 	agentLog := filepath.Join(fixture.root, "restart-agent.log")
+	// Every launch of the fake codex touches agentStarted, so a section can
+	// tell when a restart relaunched it.
+	agentStarted := filepath.Join(fixture.root, "restart-agent-started")
 	agentPath := filepath.Join(fakeBin, "restart-codex")
 	// The fake codex must be a non-shell foreground process: the respawned
 	// pane's prompt dispatch crosses the PANE_AGENT_DEAD liveness gate
@@ -1135,8 +1248,9 @@ func TestE2EAtomicRestartBeadPolicyAndDurabilityBuiltProcess(t *testing.T) {
 		t.Fatalf("build fakeshell fixture: %v", fakeshellErr)
 	}
 	agentScript := fmt.Sprintf(`#!/bin/sh
+: > %s
 exec %s --mode=echo --tty-noecho --log=%s --prompt='Codex> › ' --banner='100%% context left'
-`, tmux.ShellQuote(fakeshellBin), tmux.ShellQuote(agentLog))
+`, tmux.ShellQuote(agentStarted), tmux.ShellQuote(fakeshellBin), tmux.ShellQuote(agentLog))
 	if err := os.WriteFile(agentPath, []byte(agentScript), 0o700); err != nil {
 		t.Fatalf("write restart agent: %v", err)
 	}
@@ -1317,20 +1431,13 @@ exec %s --mode=echo --tty-noecho --log=%s --prompt='Codex> › ' --banner='100%%
 
 	actuationLog := filepath.Join(fixture.root, "restart-rejection-actuation.log")
 	tmuxWrapper := filepath.Join(fakeBin, "tmux-guard")
-	wrapper := `#!/bin/sh
-case "${1:-}" in
-  respawn-pane|send-keys|load-buffer|paste-buffer|set-buffer|delete-buffer)
-    printf '%s\n' "$*" >> "$NTM_E2E_RESTART_ACTUATION_LOG"
-    ;;
-esac
-if [ "${1:-}" = "capture-pane" ] &&
+	wrapper := restartFakeTMUXScript(`if [ "$cmd" = capture-pane ] &&
    [ -n "${NTM_E2E_RESTART_READINESS_CAPTURE:-}" ] &&
    [ -n "${NTM_E2E_RESTART_AGENT_STARTED:-}" ] &&
    [ -e "$NTM_E2E_RESTART_AGENT_STARTED" ]; then
   : > "$NTM_E2E_RESTART_READINESS_CAPTURE"
 fi
-exec "$NTM_E2E_REAL_TMUX" "$@"
-`
+`)
 	if err := os.WriteFile(tmuxWrapper, []byte(wrapper), 0o700); err != nil {
 		t.Fatalf("write restart tmux guard: %v", err)
 	}
@@ -1382,8 +1489,10 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 	}
 	var dryRunOutput restartOutput
 	decodeSingleRobotJSON(t, dryRunConflict.stdout, &dryRunOutput)
+	// dry_run echoes the requested preview mode, refusals included (9b989d87;
+	// TestPrintRestartPaneOrdinaryPromptPolicyPreflight pins it).
 	if dryRunOutput.Success || dryRunOutput.ErrorCode != "INVALID_FLAG" ||
-		!strings.Contains(strings.ToLower(dryRunOutput.Error), "already occupied") || dryRunOutput.DryRun ||
+		!strings.Contains(strings.ToLower(dryRunOutput.Error), "already occupied") || !dryRunOutput.DryRun ||
 		len(dryRunOutput.WouldAffect) != 0 || len(dryRunOutput.Restarted) != 0 || len(dryRunOutput.Failed) != 0 {
 		t.Fatalf("dry-run conflict output=%+v", dryRunOutput)
 	}
@@ -1659,23 +1768,16 @@ while :; do sleep 1; done
 	normalRespawnDone := filepath.Join(fixture.root, "normal-respawn-completed")
 	normalActuationLog := filepath.Join(fixture.root, "normal-respawn-actuation.log")
 	normalTmuxWrapper := filepath.Join(fakeBin, "tmux-normal-respawn-guard")
-	normalWrapperScript := `#!/bin/sh
-case "${1:-}" in
-  respawn-pane|send-keys|load-buffer|paste-buffer|set-buffer|delete-buffer)
-    printf '%s\n' "$*" >> "$NTM_E2E_RESTART_ACTUATION_LOG"
-    ;;
-esac
-if [ "${1:-}" = "respawn-pane" ]; then
+	normalWrapperScript := restartFakeTMUXScript(`if [ "$cmd" = respawn-pane ]; then
   "$NTM_E2E_REAL_TMUX" "$@"
   status=$?
   if [ "$status" -eq 0 ]; then
     : > "$NTM_E2E_NORMAL_RESPAWN_DONE"
-	  exec sleep 30
+    exec sleep 30
   fi
   exit "$status"
 fi
-exec "$NTM_E2E_REAL_TMUX" "$@"
-`
+`)
 	if err := os.WriteFile(normalTmuxWrapper, []byte(normalWrapperScript), 0o700); err != nil {
 		t.Fatalf("write normal respawn tmux guard: %v", err)
 	}
@@ -1807,36 +1909,19 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		t.Fatalf("late normal respawn actuation after joined cancellation: err=%v before=%s after=%s", err, normalActuationBefore, normalActuationAfter)
 	}
 
-	lateRelaunchStarted := filepath.Join(fixture.root, "late-relaunch-agent-started")
+	// Relaunch replays the pane's saved launch specification, not the agent a
+	// --config names ("Relaunch preserves the saved launch specification",
+	// docs/robot-api-design.md), so the agent that comes back is restart-codex.
+	// Its fresh start marker shows the relaunch landed, and its log receives
+	// the late prompt below.
+	lateRelaunchStarted := agentStarted
+	if err := os.Remove(lateRelaunchStarted); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clear restart agent start marker: %v", err)
+	}
 	lateRelaunchDone := filepath.Join(fixture.root, "late-relaunch-send-return")
-	lateRelaunchAgentLog := filepath.Join(fixture.root, "late-relaunch-agent.log")
-	lateRelaunchAgentPath := filepath.Join(fakeBin, "late-relaunch-codex")
-	// Same PANE_AGENT_DEAD constraint as restart-codex above: the relaunched
-	// agent must be a non-shell foreground process (fakeshell) or the
-	// follow-up prompt readiness gate refuses to type into the pane.
-	lateRelaunchAgentScript := fmt.Sprintf(`#!/bin/sh
-: > %s
-exec %s --mode=echo --tty-noecho --log=%s --prompt='Codex> › ' --banner='100%% context left'
-`, tmux.ShellQuote(lateRelaunchStarted), tmux.ShellQuote(fakeshellBin), tmux.ShellQuote(lateRelaunchAgentLog))
-	if err := os.WriteFile(lateRelaunchAgentPath, []byte(lateRelaunchAgentScript), 0o700); err != nil {
-		t.Fatalf("write late relaunch agent: %v", err)
-	}
-	lateRelaunchConfigPath := filepath.Join(fixture.root, "late-relaunch-config.toml")
-	lateRelaunchConfig := fmt.Sprintf("[agents]\ncodex = %q\n\n[spawn_pacing]\nenabled = false\n", lateRelaunchAgentPath)
-	if err := os.WriteFile(lateRelaunchConfigPath, []byte(lateRelaunchConfig), 0o600); err != nil {
-		t.Fatalf("write late relaunch config: %v", err)
-	}
 	lateRelaunchActuationLog := filepath.Join(fixture.root, "late-relaunch-actuation.log")
 	lateRelaunchTmuxWrapper := filepath.Join(fakeBin, "tmux-late-relaunch-guard")
-	lateRelaunchWrapperScript := `#!/bin/sh
-case "${1:-}" in
-  respawn-pane|send-keys|load-buffer|paste-buffer|set-buffer|delete-buffer)
-    printf '%s\n' "$*" >> "$NTM_E2E_RESTART_ACTUATION_LOG"
-    ;;
-esac
-last=""
-for arg in "$@"; do last="$arg"; done
-if [ "${1:-}" = "send-keys" ] && [ "$last" = "Enter" ] && [ ! -e "$NTM_E2E_LATE_RELAUNCH_DONE" ]; then
+	lateRelaunchWrapperScript := restartFakeTMUXScript(`if [ "$cmd" = send-keys ] && [ "$last" = Enter ] && [ ! -e "$NTM_E2E_LATE_RELAUNCH_DONE" ]; then
   "$NTM_E2E_REAL_TMUX" "$@"
   status=$?
   if [ "$status" -eq 0 ]; then
@@ -1851,8 +1936,7 @@ if [ "${1:-}" = "send-keys" ] && [ "$last" = "Enter" ] && [ ! -e "$NTM_E2E_LATE_
   fi
   exit "$status"
 fi
-exec "$NTM_E2E_REAL_TMUX" "$@"
-`
+`)
 	if err := os.WriteFile(lateRelaunchTmuxWrapper, []byte(lateRelaunchWrapperScript), 0o700); err != nil {
 		t.Fatalf("write late relaunch tmux guard: %v", err)
 	}
@@ -1869,7 +1953,7 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		"late relaunch",
 		lateRelaunchDone,
 		lateRelaunchEnv,
-		"--config="+lateRelaunchConfigPath,
+		"--config="+configPath,
 		"--robot-format=json",
 		"--robot-restart-pane="+fixture.session,
 		"--panes="+normalMutatedIndex,
@@ -1909,13 +1993,7 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 	latePromptDone := filepath.Join(fixture.root, "late-prompt-consumed")
 	latePromptActuationLog := filepath.Join(fixture.root, "late-prompt-actuation.log")
 	latePromptTmuxWrapper := filepath.Join(fakeBin, "tmux-late-prompt-guard")
-	latePromptWrapperScript := `#!/bin/sh
-case "${1:-}" in
-  respawn-pane|send-keys|load-buffer|paste-buffer|set-buffer|delete-buffer)
-    printf '%s\n' "$*" >> "$NTM_E2E_RESTART_ACTUATION_LOG"
-    ;;
-esac
-case " $* " in
+	latePromptWrapperScript := restartFakeTMUXScript(`case "$words" in
   *"$NTM_E2E_LATE_PROMPT"*)
     "$NTM_E2E_REAL_TMUX" "$@"
     status=$?
@@ -1923,9 +2001,7 @@ case " $* " in
     exit "$status"
     ;;
 esac
-last=""
-for arg in "$@"; do last="$arg"; done
-if [ "${1:-}" = "send-keys" ] && [ "$last" = "Enter" ] && [ -e "$NTM_E2E_LATE_PROMPT_STAGED" ] && [ ! -e "$NTM_E2E_LATE_PROMPT_DONE" ]; then
+if [ "$cmd" = send-keys ] && [ "$last" = Enter ] && [ -e "$NTM_E2E_LATE_PROMPT_STAGED" ] && [ ! -e "$NTM_E2E_LATE_PROMPT_DONE" ]; then
   "$NTM_E2E_REAL_TMUX" "$@"
   status=$?
   if [ "$status" -eq 0 ]; then
@@ -1940,8 +2016,7 @@ if [ "${1:-}" = "send-keys" ] && [ "$last" = "Enter" ] && [ -e "$NTM_E2E_LATE_PR
   fi
   exit "$status"
 fi
-exec "$NTM_E2E_REAL_TMUX" "$@"
-`
+`)
 	if err := os.WriteFile(latePromptTmuxWrapper, []byte(latePromptWrapperScript), 0o700); err != nil {
 		t.Fatalf("write late prompt tmux guard: %v", err)
 	}
@@ -1952,13 +2027,13 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		"NTM_E2E_LATE_PROMPT":           latePrompt,
 		"NTM_E2E_LATE_PROMPT_STAGED":    latePromptStaged,
 		"NTM_E2E_LATE_PROMPT_DONE":      latePromptDone,
-		"NTM_E2E_LATE_PROMPT_LOG":       lateRelaunchAgentLog,
+		"NTM_E2E_LATE_PROMPT_LOG":       agentLog,
 	})
 	latePromptExit, latePromptStdout, latePromptStderr := runCancelableRestartAtMarker(
 		"late prompt",
 		latePromptDone,
 		latePromptEnv,
-		"--config="+lateRelaunchConfigPath,
+		"--config="+configPath,
 		"--robot-format=json",
 		"--robot-restart-pane="+fixture.session,
 		"--restart-prompt="+latePrompt,
@@ -1979,7 +2054,7 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 	if latePromptOutput.Failed[0].Pane != normalMutatedIndex || !strings.Contains(latePromptOutput.Failed[0].Reason, "prompt delivery canceled") {
 		t.Fatalf("late prompt failure=%+v", latePromptOutput.Failed)
 	}
-	latePromptLog, err := os.ReadFile(lateRelaunchAgentLog)
+	latePromptLog, err := os.ReadFile(agentLog)
 	if err != nil || strings.Count(string(latePromptLog), latePrompt) != 1 {
 		t.Fatalf("late prompt consumption count=%d err=%v data=%s", strings.Count(string(latePromptLog), latePrompt), err, latePromptLog)
 	}

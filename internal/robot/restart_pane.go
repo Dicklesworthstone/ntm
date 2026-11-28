@@ -2193,7 +2193,13 @@ func observeRestartPaneAgentAfterCancellation(
 		return outcome
 	}
 	ready, readyErr := waitReady(observationCtx, info.Target, shellPID, info.ResolvedType, restartPaneMutationObservationTimeout)
-	agentPID, processErr := observeProcess(observationCtx, info.Target, shellPID)
+	// An agent that never shows its prompt keeps the readiness wait polling
+	// until observationCtx expires, so the liveness probe gets its own window.
+	// On the spent context the probe always failed, and a live agent was
+	// reported as process_alive=false.
+	probeCtx, cancelProbe := context.WithTimeout(context.WithoutCancel(ctx), restartPaneMutationObservationTimeout)
+	defer cancelProbe()
+	agentPID, processErr := observeProcess(probeCtx, info.Target, shellPID)
 	outcome.ProcessAlive = processErr == nil && agentPID > 0
 	outcome.Ready = ready && outcome.ProcessAlive
 
