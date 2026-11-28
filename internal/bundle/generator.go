@@ -151,6 +151,21 @@ func (g *Generator) AddFile(relativePath string, data []byte, contentType string
 		g.errors = append(g.errors, fmt.Sprintf("unsafe archive path: %s: %v", relativePath, err))
 		return err
 	}
+	// Generate writes the manifest itself, and Verify reads one entry per
+	// name, so a caller-supplied manifest or a second copy of a member would
+	// replace or shadow what the manifest describes.
+	if archivePath == ManifestFileName {
+		err := fmt.Errorf("archive path %q is reserved for the bundle manifest", archivePath)
+		g.errors = append(g.errors, err.Error())
+		return err
+	}
+	for _, existing := range g.files {
+		if existing.path == archivePath {
+			err := fmt.Errorf("duplicate archive path %q", archivePath)
+			g.errors = append(g.errors, err.Error())
+			return err
+		}
+	}
 
 	// Apply redaction if mode is not off
 	var fileRedaction *FileRedaction
