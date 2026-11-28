@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -181,6 +182,9 @@ func isolatedSurfaceRuntime(t *testing.T) (string, []string) {
 		"NO_COLOR=1",
 		"TERM=xterm-256color",
 	)
+	// A dropped AGENT_MAIL_URL makes ntm fall back to the default local
+	// server, so point it at a refusing port instead.
+	env = append(env, internaltestutil.ClosedAgentMailEnv()...)
 	return root, env
 }
 

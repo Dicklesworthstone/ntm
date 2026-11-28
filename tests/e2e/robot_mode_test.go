@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -2211,6 +2212,16 @@ func TestMain(m *testing.M) {
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isolate E2E tmux tests: %v\n", err)
+		os.Exit(1)
+	}
+	// The Agent Mail tests run against the disposable server AGENT_MAIL_URL
+	// names; with none named (or one naming the default port), point every
+	// ntm this suite launches at a refusing port instead of the real server.
+	if err := internaltestutil.IsolateAgentMailProcess(true); err != nil {
+		fmt.Fprintf(os.Stderr, "isolate E2E Agent Mail: %v\n", err)
+		if cleanupErr := cleanupTmux(); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "clean up isolated E2E tmux: %v\n", cleanupErr)
+		}
 		os.Exit(1)
 	}
 

@@ -328,12 +328,15 @@ func NewClient(opts ...Option) *Client {
 		baseURL: DefaultBaseURL,
 		httpClient: &http.Client{
 			Timeout: DefaultTimeout,
-			Transport: &http.Transport{
+			// In a test binary the transport refuses the default server port,
+			// so a test whose environment lost AGENT_MAIL_URL cannot reach a
+			// developer's real Agent Mail server (testbinary_guard.go).
+			Transport: guardTestBinaryTransport(&http.Transport{
 				Proxy:               http.ProxyFromEnvironment,
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 10,
 				IdleConnTimeout:     90 * time.Second,
-			},
+			}),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

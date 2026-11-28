@@ -90,9 +90,10 @@ func WithPreserveKeys(keys ...string) HermeticOption {
 }
 
 // HermeticEnv scrubs ambient AGENT_MAIL_*, TMUX, TMUX_PANE, NTM_*, BEADS_DB,
-// and BD_* environment variables via t.Setenv, isolates HOME and XDG_*
-// directories inside t.TempDir(), and registers a failure diagnostic summary
-// via t.Cleanup. It returns the sandbox root path.
+// and BD_* environment variables via t.Setenv, points AGENT_MAIL_URL at
+// ClosedAgentMailURL (unless preserved), isolates HOME and XDG_* directories
+// inside t.TempDir(), and registers a failure diagnostic summary via
+// t.Cleanup. It returns the sandbox root path.
 func HermeticEnv(t testing.TB, opts ...HermeticOption) string {
 	t.Helper()
 	return NewHermeticSandbox(t, opts...).Root
@@ -181,6 +182,11 @@ func NewHermeticSandbox(t testing.TB, opts ...HermeticOption) HermeticSandbox {
 	sort.Strings(scrubbedKeys)
 	for _, key := range scrubbedKeys {
 		t.Setenv(key, "")
+	}
+	// An empty AGENT_MAIL_URL makes ntm fall back to the default local server,
+	// so point it at a port that refuses connections instead.
+	if !isPreserved("AGENT_MAIL_URL") {
+		t.Setenv("AGENT_MAIL_URL", ClosedAgentMailURL)
 	}
 
 	preservedKeys := make([]string, 0, len(preservedSet))

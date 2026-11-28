@@ -254,6 +254,8 @@ func TestE2EAgentMailCommunicationFlow(t *testing.T) {
 // independently of NTM agent spawning and its optional safety integrations.
 // Run against an isolated Agent Mail server with NTM_E2E_TESTS=1 and
 // AGENT_MAIL_URL; set AGENT_MAIL_TOKEN to include authentication rejection.
+// The default port 8765 is refused in tests unless
+// NTM_TEST_ALLOW_DEFAULT_AGENT_MAIL=1, so give the server another port.
 // Rust test servers must opt into temporary projects with
 // AM_ALLOW_EPHEMERAL_PROJECT_ROOTS=1; keep that guard enabled on real mailboxes.
 func TestE2EHumanOverseerIntervention(t *testing.T) {

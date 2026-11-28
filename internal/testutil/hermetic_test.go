@@ -25,8 +25,10 @@ func TestHermeticEnvScrubsAmbientVarsAndIsolatesXDG(t *testing.T) {
 		t.Fatal("HermeticEnv returned empty root")
 	}
 
+	if got := os.Getenv("AGENT_MAIL_URL"); got != ClosedAgentMailURL {
+		t.Errorf("AGENT_MAIL_URL = %q, want the closed port %q after HermeticEnv", got, ClosedAgentMailURL)
+	}
 	for _, scrubbed := range []string{
-		"AGENT_MAIL_URL",
 		"AGENT_MAIL_TOKEN",
 		"TMUX",
 		"TMUX_PANE",

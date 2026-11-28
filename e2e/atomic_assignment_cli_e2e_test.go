@@ -32,6 +32,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -11731,6 +11732,14 @@ func atomicAssignmentIsolatedEnv(overrides map[string]string) []string {
 	}
 	if _, ok := overrides["BD_NO_DAEMON"]; !ok {
 		result = append(result, "BD_NO_DAEMON=1")
+	}
+	// A dropped AGENT_MAIL_URL makes ntm fall back to the default local
+	// server, so unless the test names its own stub, point it at a refusing port.
+	if _, ok := overrides["AGENT_MAIL_URL"]; !ok {
+		result = append(result, "AGENT_MAIL_URL="+internaltestutil.ClosedAgentMailURL)
+	}
+	if _, ok := overrides["AGENT_MAIL_TOKEN"]; !ok {
+		result = append(result, "AGENT_MAIL_TOKEN=")
 	}
 	sort.Strings(result)
 	return result

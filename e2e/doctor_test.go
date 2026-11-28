@@ -7,9 +7,11 @@ package e2e
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -655,9 +657,19 @@ func TestDoctorDaemonPortsPopulated(t *testing.T) {
 		t.Fatalf("[E2E-DOCTOR] Failed to get JSON output: %v", err)
 	}
 
-	// Expected ports
+	// Expected ports. TestMain points AGENT_MAIL_URL at a refusing port so
+	// doctor never probes a developer's real server, and the agent-mail row
+	// must report that configured port rather than the 8765 default.
+	mailURL, err := url.Parse(os.Getenv("AGENT_MAIL_URL"))
+	if err != nil {
+		t.Fatalf("[E2E-DOCTOR] parse AGENT_MAIL_URL: %v", err)
+	}
+	mailPort, err := strconv.Atoi(mailURL.Port())
+	if err != nil {
+		t.Fatalf("[E2E-DOCTOR] AGENT_MAIL_URL %q has no numeric port: %v", mailURL, err)
+	}
 	expectedPorts := map[string]int{
-		"agent-mail": 8765,
+		"agent-mail": mailPort,
 		"cm-server":  8766,
 	}
 

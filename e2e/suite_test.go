@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -32,6 +33,17 @@ func TestMain(m *testing.M) {
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "E2E: failed to isolate tmux: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Every ntm the suite launches with os.Environ() inherits this process's
+	// environment. Point Agent Mail at a refusing port so no test falls back
+	// to the default local server; tests that need one pass a stub URL.
+	if err := internaltestutil.IsolateAgentMailProcess(false); err != nil {
+		fmt.Fprintf(os.Stderr, "E2E: failed to isolate Agent Mail: %v\n", err)
+		if cleanupErr := cleanupTmux(); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "E2E: failed to clean up isolated tmux: %v\n", cleanupErr)
+		}
 		os.Exit(1)
 	}
 

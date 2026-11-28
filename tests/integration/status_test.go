@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/status"
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -44,6 +45,16 @@ func TestMain(m *testing.M) {
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isolate integration tmux tests: %v\n", err)
+		os.Exit(1)
+	}
+	// The NTM_MAIL_TESTS cases run against the disposable server
+	// AGENT_MAIL_URL names; with none named (or one naming the default port),
+	// point every ntm this suite launches at a refusing port instead.
+	if err := internaltestutil.IsolateAgentMailProcess(true); err != nil {
+		fmt.Fprintf(os.Stderr, "isolate integration Agent Mail: %v\n", err)
+		if cleanupErr := cleanupTmux(); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "clean up isolated integration tmux: %v\n", cleanupErr)
+		}
 		os.Exit(1)
 	}
 
