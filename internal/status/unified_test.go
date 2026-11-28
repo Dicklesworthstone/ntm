@@ -770,6 +770,14 @@ func TestLooksLikeIdle(t *testing.T) {
 	}
 }
 
+// determineState classifies output observed now at an unknown pane width,
+// dropping the background-job count. Only tests use this two-result form;
+// Detect calls determineStateAt directly.
+func (d *UnifiedDetector) determineState(output, agentType string, lastActivity time.Time) (AgentState, ErrorType) {
+	state, errType, _ := d.determineStateAt(output, agentType, lastActivity, time.Now(), 0)
+	return state, errType
+}
+
 // TestDetermineState tests the state determination logic
 func TestDetermineState(t *testing.T) {
 	d := NewDetector()

@@ -109,12 +109,8 @@ func (d *UnifiedDetector) analyzeAt(paneID, paneName, agentType string, output s
 	return status
 }
 
-// determineState calculates state based on output and activity
-func (d *UnifiedDetector) determineState(output, agentType string, lastActivity time.Time) (AgentState, ErrorType) {
-	state, errType, _ := d.determineStateAt(output, agentType, lastActivity, time.Now(), 0)
-	return state, errType
-}
-
+// determineStateAt calculates state based on output and activity, and returns
+// the background-job count read from the agent's footer.
 func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivity, observedAt time.Time, paneWidth int) (AgentState, ErrorType, int) {
 	canonical := agent.AgentType(agentType).Canonical()
 	state, errType := d.foregroundStateAt(output, string(canonical), lastActivity, observedAt)
